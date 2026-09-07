@@ -142,11 +142,18 @@ def main() -> int:
         "{password}", os.environ.get("GOLFREELZ_CAM_PASSWORD", ""),
     )
 
+    # SAY SOMETHING AT STARTUP. State-change logging alone meant the
+    # normal case -- running fine, nobody watching yet -- printed
+    # nothing at all, which is indistinguishable from hung.
+    _log(f"bridge up · camera token ...{token[-6:]} · {args.backend}")
+    _log("waiting for an operator to press Watch")
+
     proc = None
     gen = None
     sent = 0
     last_poll = 0.0
     watching = False
+    polls = 0
     try:
         while True:
             now = time.time()
@@ -155,9 +162,14 @@ def main() -> int:
                 try:
                     st = watch_status(args.backend, token)
                     was, watching = watching, bool(st.get("watching"))
+                    polls += 1
                     if watching != was:
                         _log("operator is watching — streaming" if watching
                              else "nobody watching — idle")
+                    elif not watching and polls % 20 == 1:
+                        # A heartbeat, so a long idle stretch still looks
+                        # alive rather than wedged.
+                        _log("still idle — nobody watching")
                 except Exception as exc:  # noqa: BLE001
                     _log(f"watch-status failed: {exc}")
 
