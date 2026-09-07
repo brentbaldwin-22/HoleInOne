@@ -719,6 +719,16 @@ export default function AdminCameras() {
   const [newHole, setNewHole] = useState("");
   const [newRole, setNewRole] = useState("tee");
   const [newName, setNewName] = useState("");
+  // A Pi calls in and is discovered; an IP camera has to be written
+  // down. Wisenet's defaults are prefilled because that is what is
+  // going up on the poles.
+  const [newKind, setNewKind] = useState("pi");
+  const [newHost, setNewHost] = useState("");
+  const [newPort, setNewPort] = useState("554");
+  const [newPath, setNewPath] = useState("/profile1/media.smp");
+  const [newSubPath, setNewSubPath] = useState("/profile2/media.smp");
+  const [newUser, setNewUser] = useState("admin");
+  const [newModel, setNewModel] = useState("");
   const [creating, setCreating] = useState(false);
 
   async function load() {
@@ -854,14 +864,27 @@ export default function AdminCameras() {
     }
     setCreating(true);
     try {
+      if (newKind === "ip" && !newHost.trim()) {
+        setError("An IP camera needs a stream host (its IP address).");
+        setCreating(false);
+        return;
+      }
       await api.createCamera(adminPassword, {
         courseId: parseInt(newCourseId, 10),
         assignedHole: parseInt(newHole, 10),
         assignedRole: newRole,
         name: newName.trim(),
+        kind: newKind,
+        streamHost: newHost.trim(),
+        streamPort: parseInt(newPort, 10) || 554,
+        streamPath: newPath.trim(),
+        streamSubstreamPath: newSubPath.trim(),
+        streamUsername: newUser.trim(),
+        streamModel: newModel.trim(),
       });
       setNewHole("");
       setNewName("");
+      setNewHost("");
       await load();
     } catch (e) {
       setError(e.message);
@@ -1132,6 +1155,15 @@ export default function AdminCameras() {
         <h4 style={{ marginBottom: 8 }}>Register new camera</h4>
         <form onSubmit={createCamera}>
           <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div className="field" style={{ flex: 1, minWidth: 150 }}>
+              <label className="small">Type</label>
+              <select value={newKind}
+                      onChange={(e) => setNewKind(e.target.value)}
+                      disabled={creating}>
+                <option value="pi">Pi agent</option>
+                <option value="ip">IP camera (RTSP)</option>
+              </select>
+            </div>
             <div className="field" style={{ flex: 2, minWidth: 200 }}>
               <label className="small">Course</label>
               <select
@@ -1176,6 +1208,56 @@ export default function AdminCameras() {
               </button>
             </div>
           </div>
+
+          {/* AN IP CAMERA CANNOT INTRODUCE ITSELF. A Pi arrives holding
+              its token; this one answers RTSP and waits, so everything
+              needed to find it has to be typed here. */}
+          {newKind === "ip" && (
+            <div style={{ marginTop: 10, paddingTop: 10,
+                          borderTop: "1px solid rgba(120,120,120,0.25)" }}>
+              <div className="tiny muted" style={{ marginBottom: 8 }}>
+                Where to reach it. The <b>password is not stored here</b> —
+                it lives in the recorder's own config, because a camera
+                credential in a database its network cannot reach is risk
+                with nothing bought for it.
+              </div>
+              <div className="row" style={{ gap: 8, flexWrap: "wrap",
+                                            alignItems: "flex-end" }}>
+                <div className="field" style={{ flex: 2, minWidth: 160 }}>
+                  <label className="small">Host / IP</label>
+                  <input type="text" placeholder="10.0.0.249"
+                         value={newHost} disabled={creating}
+                         onChange={(e) => setNewHost(e.target.value)} />
+                </div>
+                <div className="field" style={{ flex: 1, minWidth: 90 }}>
+                  <label className="small">RTSP port</label>
+                  <input type="number" value={newPort} disabled={creating}
+                         onChange={(e) => setNewPort(e.target.value)} />
+                </div>
+                <div className="field" style={{ flex: 2, minWidth: 190 }}>
+                  <label className="small">Main stream path</label>
+                  <input type="text" value={newPath} disabled={creating}
+                         onChange={(e) => setNewPath(e.target.value)} />
+                </div>
+                <div className="field" style={{ flex: 2, minWidth: 190 }}>
+                  <label className="small">Substream path</label>
+                  <input type="text" value={newSubPath} disabled={creating}
+                         onChange={(e) => setNewSubPath(e.target.value)} />
+                </div>
+                <div className="field" style={{ flex: 1, minWidth: 110 }}>
+                  <label className="small">Username</label>
+                  <input type="text" value={newUser} disabled={creating}
+                         onChange={(e) => setNewUser(e.target.value)} />
+                </div>
+                <div className="field" style={{ flex: 2, minWidth: 170 }}>
+                  <label className="small">Model (optional)</label>
+                  <input type="text" placeholder="Hanwha XNV-L6080"
+                         value={newModel} disabled={creating}
+                         onChange={(e) => setNewModel(e.target.value)} />
+                </div>
+              </div>
+            </div>
+          )}
         </form>
       </div>
 
@@ -1292,11 +1374,44 @@ export default function AdminCameras() {
                   {cam.name && (
                     <span className="tiny muted"> · “{cam.name}”</span>
                   )}
+                  {cam.kind === "ip" && (
+                    <span className="tiny" style={{
+                      marginLeft: 6, padding: "1px 7px", borderRadius: 999,
+                      border: "1px solid rgba(70,130,200,0.55)",
+                      background: "rgba(70,130,200,0.14)",
+                    }}>IP camera</span>
+                  )}
                   <div className="tiny muted" style={{ marginTop: 2 }}>
-                    last seen: {tsRel(cam.last_seen_at)}
-                    {cam.last_event_at && <> · last event: {tsRel(cam.last_event_at)} ({cam.last_event_status})</>}
-                    {cam.firmware_version && <> · fw {cam.firmware_version}</>}
+                    {/* "last seen" is a Pi word: it means the agent called
+                        in. An IP camera never calls, so reporting it as
+                        never-seen would read as broken when it is fine. */}
+                    {cam.kind === "ip" ? (
+                      <>
+                        {cam.stream_model || "IP camera"} · nothing calls in
+                        from an RTSP camera, so there is no heartbeat here
+                      </>
+                    ) : (
+                      <>
+                        last seen: {tsRel(cam.last_seen_at)}
+                        {cam.last_event_at && <> · last event: {tsRel(cam.last_event_at)} ({cam.last_event_status})</>}
+                        {cam.firmware_version && <> · fw {cam.firmware_version}</>}
+                      </>
+                    )}
                   </div>
+                  {cam.kind === "ip" && cam.rtsp_url && (
+                    <div className="tiny" style={{ marginTop: 6,
+                                                   fontFamily: "monospace" }}>
+                      <div>main: <code>{cam.rtsp_url}</code></div>
+                      {cam.rtsp_substream_url && (
+                        <div>sub:{" "}<code>{cam.rtsp_substream_url}</code></div>
+                      )}
+                      <div className="muted" style={{ fontFamily: "inherit",
+                                                      marginTop: 3 }}>
+                        Swap <code>PASSWORD</code> for the camera's own — it is
+                        deliberately not stored here.
+                      </div>
+                    </div>
+                  )}
                   <div className="tiny" style={{ marginTop: 6, fontFamily: "monospace" }}>
                     auth_token:{" "}
                     {tokenVisible ? (

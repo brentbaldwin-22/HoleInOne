@@ -391,6 +391,42 @@ class Camera(Base):
     )
     # Display name the operator sets ("Hole 3 tee", "Hole 7 green").
     name: Mapped[str] = mapped_column(String(120), default="")
+
+    # ── IP cameras (Hanwha / ONVIF), as opposed to a Pi agent ────────
+    # A Pi CALLS IN: it holds the auth_token, opens its own camera, and
+    # pushes clips and frames up. An IP camera does the opposite -- it
+    # answers RTSP and otherwise waits to be asked -- so nothing about
+    # it can be discovered from an inbound request. Its address has to
+    # be written down here, by the operator, for whatever ends up
+    # pulling from it.
+    #
+    # NULL means 'pi', because every row that existed before this did.
+    kind: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    stream_host: Mapped[Optional[str]] = mapped_column(
+        String(120), nullable=True,
+    )
+    stream_port: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Wisenet serves /profileN/media.smp; profile 1 is the main stream
+    # and 2 the substream. Kept as free text rather than a profile
+    # number so a camera from another maker still fits.
+    stream_path: Mapped[Optional[str]] = mapped_column(
+        String(200), nullable=True,
+    )
+    # The small stream. Detection runs on this and recording copies the
+    # main one, which is the whole reason an IP camera is cheaper to run
+    # than a Pi holding a ribbon cable.
+    stream_substream_path: Mapped[Optional[str]] = mapped_column(
+        String(200), nullable=True,
+    )
+    # USERNAME ONLY. The password stays in the agent's local config: a
+    # camera credential in a cloud database that the camera's own
+    # network cannot reach is risk bought with no benefit.
+    stream_username: Mapped[Optional[str]] = mapped_column(
+        String(80), nullable=True,
+    )
+    stream_model: Mapped[Optional[str]] = mapped_column(
+        String(80), nullable=True,
+    )
     # JSON-encoded {x, y, w, h} in the camera's native pixel coords —
     # the bounding box the tee-side person detector treats as "on the
     # tee". Green cameras leave this null.

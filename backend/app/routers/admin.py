@@ -14700,6 +14700,26 @@ def hio_decide(event_id: int, payload: HIOReviewAction, db: Session = Depends(ge
 _CAMERA_ROLES = ("tee", "green")
 
 
+def _rtsp_url_for(c: Camera, sub: bool = False) -> str | None:
+    """The stream URL for an IP camera, with the password left out.
+
+    Shown so an operator can copy it straight into ffmpeg or VLC to
+    check a camera themselves. The password is a placeholder rather than
+    a stored value -- see the note on `stream_username`.
+    """
+    if (c.kind or "pi") != "ip" or not c.stream_host:
+        return None
+    path = (c.stream_substream_path if sub else c.stream_path) or ""
+    if not path:
+        return None
+    if not path.startswith("/"):
+        path = "/" + path
+    port = int(c.stream_port or 554)
+    hostpart = c.stream_host if port == 554 else f"{c.stream_host}:{port}"
+    user = (c.stream_username or "admin").strip()
+    return f"rtsp://{user}:PASSWORD@{hostpart}{path}"
+
+
 def _camera_to_dict(
     c: Camera,
     last_event: CameraEvent | None = None,
@@ -14722,6 +14742,18 @@ def _camera_to_dict(
         "paired_with_camera_id": c.paired_with_camera_id,
         "auth_token": c.auth_token,
         "name": c.name,
+        # NULL predates IP cameras, and every one of those rows was a Pi.
+        "kind": (c.kind or "pi"),
+        "stream_host": c.stream_host,
+        "stream_port": c.stream_port,
+        "stream_path": c.stream_path,
+        "stream_substream_path": c.stream_substream_path,
+        "stream_username": c.stream_username,
+        "stream_model": c.stream_model,
+        # Ready to paste into ffmpeg or VLC, with the password left as a
+        # placeholder because it is not stored here and never will be.
+        "rtsp_url": _rtsp_url_for(c),
+        "rtsp_substream_url": _rtsp_url_for(c, sub=True),
         "tee_box_roi": c.tee_box_roi,
         "ball_side": c.ball_side,
         "last_seen_at": c.last_seen_at.isoformat() if c.last_seen_at else None,
@@ -15500,6 +15532,13 @@ def create_camera(
     assigned_hole: int = Form(...),
     assigned_role: str = Form(...),
     name: str = Form(""),
+    kind: str = Form("pi"),
+    stream_host: str = Form(""),
+    stream_port: int = Form(554),
+    stream_path: str = Form(""),
+    stream_substream_path: str = Form(""),
+    stream_username: str = Form(""),
+    stream_model: str = Form(""),
     db: Session = Depends(get_db),
 ):
     """Mint a new camera + auth_token. The operator runs this once per
@@ -15514,11 +15553,28 @@ def create_camera(
     hole = int(assigned_hole)
     if hole < 1 or hole > 18:
         raise HTTPException(400, "assigned_hole must be 1..18")
+    _kind = (kind or "pi").strip().lower()
+    if _kind not in ("pi", "ip"):
+        raise HTTPException(400, "kind must be 'pi' or 'ip'")
+    # AN IP CAMERA WITHOUT AN ADDRESS IS A ROW NOBODY CAN USE. A Pi is
+    # found by the token it calls in with; this one is only ever found
+    # by the address written here, so refuse to create it without one.
+    if _kind == "ip" and not (stream_host or "").strip():
+        raise HTTPException(400, "an IP camera needs a stream host")
     cam = Camera(
         course_id=course.id,
         assigned_hole=hole,
         assigned_role=role,
         name=(name or "").strip()[:120],
+        kind=_kind,
+        stream_host=((stream_host or "").strip()[:120] or None),
+        stream_port=(int(stream_port or 554) if _kind == "ip" else None),
+        stream_path=((stream_path or "").strip()[:200] or None),
+        stream_substream_path=(
+            (stream_substream_path or "").strip()[:200] or None
+        ),
+        stream_username=((stream_username or "").strip()[:80] or None),
+        stream_model=((stream_model or "").strip()[:80] or None),
     )
     db.add(cam)
     db.flush()

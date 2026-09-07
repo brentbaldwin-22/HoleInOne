@@ -416,12 +416,24 @@ export const api = {
       body: { x, y },
     }),
   listCameras: (key) => request(`/api/admin/cameras`, { adminPassword: key }),
-  createCamera: (key, { courseId, assignedHole, assignedRole, name }) => {
+  createCamera: (key, {
+    courseId, assignedHole, assignedRole, name,
+    kind, streamHost, streamPort, streamPath, streamSubstreamPath,
+    streamUsername, streamModel,
+  }) => {
     const fd = new FormData();
     fd.append("course_id", String(courseId));
     fd.append("assigned_hole", String(assignedHole));
     fd.append("assigned_role", assignedRole);
     fd.append("name", name || "");
+    fd.append("kind", kind || "pi");
+    // Only meaningful for an IP camera; harmless empties otherwise.
+    fd.append("stream_host", streamHost || "");
+    fd.append("stream_port", String(streamPort || 554));
+    fd.append("stream_path", streamPath || "");
+    fd.append("stream_substream_path", streamSubstreamPath || "");
+    fd.append("stream_username", streamUsername || "");
+    fd.append("stream_model", streamModel || "");
     return request(`/api/admin/cameras`, {
       method: "POST",
       adminPassword: key,
