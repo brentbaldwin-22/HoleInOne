@@ -37,9 +37,12 @@ in `ps` on a shared machine.
 from __future__ import annotations
 
 import argparse
+import collections
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -47,6 +50,9 @@ import urllib.request
 SOI = b"\xff\xd8"          # JPEG start of image
 EOI = b"\xff\xd9"          # JPEG end of image
 MAX_FRAME_BYTES = 500_000  # the backend's own limit; drop rather than 413
+# No frame for this long while an operator IS watching means the stream
+# has stalled rather than gone quiet, so tear ffmpeg down and start over.
+STALL_SEC = 20.0
 
 
 def _log(msg: str) -> None:
@@ -76,6 +82,28 @@ def post_frame(backend: str, token: str, jpeg: bytes,
     except Exception as exc:  # noqa: BLE001
         _log(f"live-frame failed: {exc}")
         return False
+
+
+def _drain(pipe, sink: collections.deque) -> None:
+    """Keep ffmpeg's stderr moving.
+
+    NOTHING READ THIS BEFORE, and that was a deadlock: ffmpeg writes a
+    line per corrupt macroblock, the OS pipe buffer fills at 64 KB, and
+    ffmpeg then BLOCKS trying to write it. Blocked on stderr it stops
+    producing stdout, so the reader waits forever for bytes that cannot
+    come. It looked exactly like a healthy process that had gone quiet:
+    twelve good minutes, then silence with no error.
+    """
+    try:
+        for line in iter(pipe.readline, b""):
+            sink.append(line.decode(errors="replace").rstrip())
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        try:
+            pipe.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def start_ffmpeg(ffmpeg: str, rtsp: str, fps: float, width: int,
@@ -149,11 +177,45 @@ def main() -> int:
     _log("waiting for an operator to press Watch")
 
     proc = None
-    gen = None
+    reader = None
+    errs: collections.deque = collections.deque(maxlen=40)
+    frames: "queue.Queue[bytes]" = queue.Queue(maxsize=2)
     sent = 0
     last_poll = 0.0
+    last_frame = 0.0
     watching = False
     polls = 0
+
+    def stop_ffmpeg():
+        nonlocal proc, reader
+        if proc is not None:
+            try:
+                proc.kill(); proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
+        proc, reader = None, None
+        while not frames.empty():
+            try:
+                frames.get_nowait()
+            except queue.Empty:
+                break
+
+    def read_frames(p: subprocess.Popen):
+        # NEWEST FRAME WINS. A live view wants what is happening now, so
+        # a full queue drops the stale one rather than blocking the
+        # reader -- which would re-create the very stall this fixes.
+        for f in frames_from(p):
+            if len(f) > MAX_FRAME_BYTES:
+                continue
+            try:
+                frames.put_nowait(f)
+            except queue.Full:
+                try:
+                    frames.get_nowait()
+                    frames.put_nowait(f)
+                except (queue.Empty, queue.Full):
+                    pass
+
     try:
         while True:
             now = time.time()
@@ -166,38 +228,49 @@ def main() -> int:
                     if watching != was:
                         _log("operator is watching — streaming" if watching
                              else "nobody watching — idle")
+                        if watching:
+                            last_frame = time.time()
                     elif not watching and polls % 20 == 1:
-                        # A heartbeat, so a long idle stretch still looks
-                        # alive rather than wedged.
                         _log("still idle — nobody watching")
                 except Exception as exc:  # noqa: BLE001
                     _log(f"watch-status failed: {exc}")
 
-            # NOTHING RUNS WHILE NOBODY LOOKS. On a metered cellular link
-            # a live view that streams to an empty page is pure cost.
             if not watching:
                 if proc is not None:
-                    proc.kill(); proc.wait(timeout=5)
-                    proc, gen = None, None
+                    stop_ffmpeg()
                 time.sleep(0.4)
                 continue
 
             if proc is None or proc.poll() is not None:
                 if proc is not None:
-                    err = (proc.stderr.read() or b"").decode()[:400]
-                    _log(f"ffmpeg exited: {err.strip() or 'no error text'}")
+                    tail = " | ".join(list(errs)[-3:]) or "no error text"
+                    _log(f"ffmpeg exited: {tail}")
+                    stop_ffmpeg()
+                errs.clear()
                 _log("starting ffmpeg")
                 proc = start_ffmpeg(args.ffmpeg, rtsp, args.fps,
                                     args.width, args.quality)
-                gen = frames_from(proc)
+                threading.Thread(target=_drain, args=(proc.stderr, errs),
+                                 daemon=True).start()
+                reader = threading.Thread(target=read_frames, args=(proc,),
+                                          daemon=True)
+                reader.start()
+                last_frame = time.time()
 
             try:
-                frame = next(gen)
-            except StopIteration:
-                proc = None
+                frame = frames.get(timeout=1.0)
+            except queue.Empty:
+                # A WATCHDOG, because a wedged ffmpeg does not exit. It
+                # sits there holding a pipe, and without this the bridge
+                # waits on it for as long as the operator is patient.
+                if time.time() - last_frame > STALL_SEC:
+                    tail = " | ".join(list(errs)[-3:]) or "no error text"
+                    _log(f"no frames for {STALL_SEC:.0f}s — restarting "
+                         f"ffmpeg · {tail}")
+                    stop_ffmpeg()
                 continue
-            if len(frame) > MAX_FRAME_BYTES:
-                continue
+
+            last_frame = time.time()
             if post_frame(args.backend, token, frame):
                 sent += 1
                 if sent % 20 == 1:
@@ -205,8 +278,7 @@ def main() -> int:
     except KeyboardInterrupt:
         _log("stopping")
     finally:
-        if proc is not None:
-            proc.kill()
+        stop_ffmpeg()
     return 0
 
 
