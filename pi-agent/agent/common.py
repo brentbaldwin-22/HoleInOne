@@ -1703,6 +1703,47 @@ def open_camera(cam_cfg: dict):
     import cv2
 
     device = cam_cfg.get("device", "auto")
+
+    # ── AN RTSP CAMERA IS JUST ANOTHER DEVICE STRING ────────────────
+    # An IP camera hands over frames the same way a ribbon cable does,
+    # so everything downstream -- the detector, the pre-roll buffer,
+    # the trigger, the recorder -- is unchanged. Only the opening is
+    # different, and it returns early because the v4l2 tuning below
+    # (resolution, fps, shutter) describes a sensor this process does
+    # not own. The camera's own web UI sets those on a Hanwha.
+    if isinstance(device, str) and device.startswith(("rtsp://", "rtsps://")):
+        # TCP, NOT UDP. A dropped datagram over cellular arrives as a
+        # torn frame, and a torn frame is a false negative in the
+        # detector rather than an obvious failure. Set before the
+        # capture is constructed; OpenCV reads it at open time.
+        os.environ.setdefault(
+            "OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp",
+        )
+        url = device.replace(
+            "{password}", os.environ.get("GOLFREELZ_CAM_PASSWORD", ""),
+        )
+        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+        if not cap.isOpened():
+            raise RuntimeError(
+                "could not open the RTSP stream — check the host, the "
+                "path, and that GOLFREELZ_CAM_PASSWORD is set"
+            )
+        # A DEEP BUFFER IS LATENCY, NOT SAFETY. Frames queued inside
+        # OpenCV are frames the detector sees late, and a trigger that
+        # fires two seconds after the golfer addressed the ball has
+        # already missed the backswing the pre-roll exists to catch.
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:  # noqa: BLE001
+            pass
+        aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        af = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        # The password is in the URL, so log the host and never the URL.
+        _safe = url.split("@")[-1] if "@" in url else url
+        log.info("camera open: rtsp %s — %dx%d@%.1f", _safe, aw, ah, af)
+        return cap
+
     cap = None
     if device == "auto":
         for idx in range(4):
