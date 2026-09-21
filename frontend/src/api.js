@@ -487,6 +487,19 @@ export const api = {
       fd.append("assigned_role", patch.assignedRole);
     if (patch.ballSide !== undefined)
       fd.append("ball_side", patch.ballSide || "auto");
+    if (patch.kind !== undefined) fd.append("kind", patch.kind || "pi");
+    if (patch.streamHost !== undefined)
+      fd.append("stream_host", patch.streamHost || "");
+    if (patch.streamPort !== undefined)
+      fd.append("stream_port", String(patch.streamPort || 554));
+    if (patch.streamPath !== undefined)
+      fd.append("stream_path", patch.streamPath || "");
+    if (patch.streamSubstreamPath !== undefined)
+      fd.append("stream_substream_path", patch.streamSubstreamPath || "");
+    if (patch.streamUsername !== undefined)
+      fd.append("stream_username", patch.streamUsername || "");
+    if (patch.streamModel !== undefined)
+      fd.append("stream_model", patch.streamModel || "");
     return request(`/api/admin/cameras/${cameraId}/update`, {
       method: "POST",
       adminPassword: key,

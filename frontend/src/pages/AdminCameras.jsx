@@ -704,7 +704,11 @@ export default function AdminCameras() {
   // standing there — unlike the calibration above, which is done once.
   const [dailyCam, setDailyCam] = useState(null);
   const [movingCam, setMovingCam] = useState(null); // camera_id whose move form is open
-  const [moveDraft, setMoveDraft] = useState({ courseId: "", hole: "", role: "", name: "", ballSide: "" });
+  const [moveDraft, setMoveDraft] = useState({
+    courseId: "", hole: "", role: "", name: "", ballSide: "",
+    kind: "pi", streamHost: "", streamPort: "554", streamPath: "",
+    streamSubstreamPath: "", streamUsername: "", streamModel: "",
+  });
 
   // Live-watch state: one camera at a time. We poll /live-frame via
   // fetch (rather than letting <img> do it) because the admin endpoint
@@ -1052,6 +1056,13 @@ export default function AdminCameras() {
       role: cam.assigned_role,
       name: cam.name || "",
       ballSide: cam.ball_side || "",
+      kind: cam.kind || "pi",
+      streamHost: cam.stream_host || "",
+      streamPort: String(cam.stream_port || 554),
+      streamPath: cam.stream_path || "",
+      streamSubstreamPath: cam.stream_substream_path || "",
+      streamUsername: cam.stream_username || "",
+      streamModel: cam.stream_model || "",
     });
     setMovingCam(cam.id);
   }
@@ -1075,6 +1086,20 @@ export default function AdminCameras() {
         assignedRole: moveDraft.role,
         name: moveDraft.name,
         ballSide: moveDraft.ballSide,
+        kind: moveDraft.kind,
+        // Sent only for an IP camera. Blanking a Pi's stream fields on
+        // every rename would be a silent write to columns the operator
+        // never opened.
+        ...(moveDraft.kind === "ip"
+          ? {
+              streamHost: moveDraft.streamHost.trim(),
+              streamPort: parseInt(moveDraft.streamPort, 10) || 554,
+              streamPath: moveDraft.streamPath.trim(),
+              streamSubstreamPath: moveDraft.streamSubstreamPath.trim(),
+              streamUsername: moveDraft.streamUsername.trim(),
+              streamModel: moveDraft.streamModel.trim(),
+            }
+          : {}),
       });
       if (updated && updated.auto_unpaired) {
         window.alert(
@@ -1790,6 +1815,18 @@ export default function AdminCameras() {
                         <option value="green">green</option>
                       </select>
                     </div>
+                    <div className="field" style={{ flex: 1, minWidth: 130 }}>
+                      <label className="small">Kind</label>
+                      <select
+                        value={moveDraft.kind}
+                        onChange={(e) => setMoveDraft((d) => ({ ...d, kind: e.target.value }))}
+                        disabled={isBusy}
+                        title="A Pi calls in with its token and carries a fixed-lens module. An IP camera is reached at an address and has a motorised lens the app can drive."
+                      >
+                        <option value="pi">Pi (fixed lens)</option>
+                        <option value="ip">IP camera (RTSP)</option>
+                      </select>
+                    </div>
                     <div className="inline" style={{ gap: 6 }}>
                       <button
                         type="button"
@@ -1805,6 +1842,77 @@ export default function AdminCameras() {
                         Cancel
                       </button>
                     </div>
+                    {moveDraft.kind === "ip" && (
+                      <div style={{
+                        width: "100%", marginTop: 4, paddingTop: 8,
+                        borderTop: "1px solid rgba(120,120,120,0.3)",
+                        display: "flex", gap: 8, flexWrap: "wrap",
+                        alignItems: "flex-end",
+                      }}>
+                        <div className="tiny muted" style={{ width: "100%" }}>
+                          Where the recorder finds this camera. The password
+                          is deliberately not stored here — it lives in the
+                          Pi's own config, because a credential in a cloud
+                          database the camera's network cannot reach is risk
+                          with no benefit.
+                        </div>
+                        <div className="field" style={{ flex: 2, minWidth: 150 }}>
+                          <label className="small">Host</label>
+                          <input
+                            type="text" placeholder="192.168.50.11"
+                            value={moveDraft.streamHost}
+                            onChange={(e) => setMoveDraft((d) => ({ ...d, streamHost: e.target.value }))}
+                            disabled={isBusy}
+                          />
+                        </div>
+                        <div className="field" style={{ flex: 1, minWidth: 80 }}>
+                          <label className="small">Port</label>
+                          <input
+                            type="number" placeholder="554"
+                            value={moveDraft.streamPort}
+                            onChange={(e) => setMoveDraft((d) => ({ ...d, streamPort: e.target.value }))}
+                            disabled={isBusy}
+                          />
+                        </div>
+                        <div className="field" style={{ flex: 2, minWidth: 160 }}>
+                          <label className="small">Main path</label>
+                          <input
+                            type="text" placeholder="/profile2/media.smp"
+                            value={moveDraft.streamPath}
+                            onChange={(e) => setMoveDraft((d) => ({ ...d, streamPath: e.target.value }))}
+                            disabled={isBusy}
+                            title="Profile numbering differs per model — ffprobe it rather than assuming profile1 is the main stream."
+                          />
+                        </div>
+                        <div className="field" style={{ flex: 2, minWidth: 160 }}>
+                          <label className="small">Sub path</label>
+                          <input
+                            type="text" placeholder="/profile3/media.smp"
+                            value={moveDraft.streamSubstreamPath}
+                            onChange={(e) => setMoveDraft((d) => ({ ...d, streamSubstreamPath: e.target.value }))}
+                            disabled={isBusy}
+                          />
+                        </div>
+                        <div className="field" style={{ flex: 1, minWidth: 110 }}>
+                          <label className="small">Username</label>
+                          <input
+                            type="text" placeholder="admin"
+                            value={moveDraft.streamUsername}
+                            onChange={(e) => setMoveDraft((d) => ({ ...d, streamUsername: e.target.value }))}
+                            disabled={isBusy}
+                          />
+                        </div>
+                        <div className="field" style={{ flex: 1, minWidth: 130 }}>
+                          <label className="small">Model</label>
+                          <input
+                            type="text" placeholder="XNV-6080R"
+                            value={moveDraft.streamModel}
+                            onChange={(e) => setMoveDraft((d) => ({ ...d, streamModel: e.target.value }))}
+                            disabled={isBusy}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

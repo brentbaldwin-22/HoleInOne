@@ -15747,6 +15747,13 @@ def update_camera(
     assigned_hole: int | None = Form(None),
     assigned_role: str | None = Form(None),
     ball_side: str | None = Form(None),
+    kind: str | None = Form(None),
+    stream_host: str | None = Form(None),
+    stream_port: int | None = Form(None),
+    stream_path: str | None = Form(None),
+    stream_substream_path: str | None = Form(None),
+    stream_username: str | None = Form(None),
+    stream_model: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Patch a camera's display name / enabled flag / tee-box ROI /
@@ -15786,6 +15793,37 @@ def update_camera(
         if not isinstance(roi, dict) or not all(k in roi for k in ("x", "y", "w", "h")):
             raise HTTPException(400, "tee_box_roi must be an object with x/y/w/h")
         cam.tee_box_roi = roi
+
+    # A CAMERA'S KIND CAN CHANGE UNDER IT. Camera #1 was born a Pi with
+    # a ribbon-cable module and is now a Hanwha on an RTSP link: same
+    # mount, same token, same pairing, different eyes. Deleting and
+    # recreating the row to flip a flag would throw away its
+    # calibration, its pairing and every event it has ever recorded, so
+    # the kind is editable in place.
+    if kind is not None and (kind or "").strip():
+        _kind = (kind or "").strip().lower()
+        if _kind not in ("pi", "ip"):
+            raise HTTPException(400, "kind must be 'pi' or 'ip'")
+        cam.kind = _kind
+    for _field, _value, _limit in (
+        ("stream_host", stream_host, 120),
+        ("stream_path", stream_path, 200),
+        ("stream_substream_path", stream_substream_path, 200),
+        ("stream_username", stream_username, 80),
+        ("stream_model", stream_model, 80),
+    ):
+        if _value is not None:
+            setattr(cam, _field, ((_value or "").strip()[:_limit] or None))
+    if stream_port is not None:
+        cam.stream_port = int(stream_port) or None
+    if (cam.kind or "pi") == "ip":
+        # Same rule creation enforces: a Pi is found by the token it
+        # calls in with, an IP camera only by the address written here,
+        # so never leave one without a host.
+        if not (cam.stream_host or "").strip():
+            raise HTTPException(400, "an IP camera needs a stream host")
+        if not cam.stream_port:
+            cam.stream_port = 554
 
     # Track placement changes (course / hole / role) so we can
     # auto-unpair if the existing pair would no longer be valid.
