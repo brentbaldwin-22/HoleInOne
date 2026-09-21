@@ -387,6 +387,15 @@ export const api = {
       adminPassword: key,
       body: { seconds },
     }),
+  // Zoom / focus on an IP camera's motorised lens. Queued server-side
+  // and applied by the recorder on its next poll — the backend cannot
+  // reach the camera itself.
+  cameraLens: (key, cameraId, op, amount = 0) =>
+    request(`/api/admin/cameras/${cameraId}/lens`, {
+      method: "POST",
+      adminPassword: key,
+      body: { op, amount },
+    }),
   stopFocusMode: (key, cameraId) =>
     request(`/api/admin/cameras/${cameraId}/focus-mode/stop`, {
       method: "POST",

@@ -1695,6 +1695,84 @@ class FrameBuffer:
 # Camera open helper
 # ---------------------------------------------------------------------
 
+# ── driving an IP camera's motorised lens ─────────────────────────────
+# Discovered against an XNV-6080R by reading its own attributes.cgi and
+# probing: the camera reports ZoomAdjust, FocusAdjust, SimpleFocus and
+# ResetFocus as True, and Absolute/Query as False -- so zoom and focus
+# are RELATIVE NUDGES and the current position cannot be read back. Any
+# caller has to steer by the live picture, not by a number.
+#
+# Everything lives under one submenu, which is not obvious: zoom is not
+# under ptz.cgi (that 404s on this model, RealPTZ=False) but alongside
+# focus in image.cgi.
+_LENS_PARAM = {
+    "zoom":         lambda a: ("Zoom", str(int(a))),
+    "focus":        lambda a: ("Focus", str(max(-1, min(1, int(a) or 1)))),
+    "simple_focus": lambda a: ("Mode", "SimpleFocus"),
+    "reset_focus":  lambda a: ("Mode", "Reset"),
+}
+
+
+def lens_control(cam_cfg: dict, op: str, amount: int = 0,
+                 timeout: float = 8.0) -> bool:
+    """Apply one lens nudge to the RTSP camera this agent is watching.
+
+    Host and credentials come out of the configured rtsp:// URL rather
+    than from separate settings: there is exactly one camera here, its
+    address is already written down, and a second copy of the password
+    is a second thing to get out of step.
+    """
+    from urllib.parse import urlsplit
+
+    device = str(cam_cfg.get("device", ""))
+    if not device.startswith(("rtsp://", "rtsps://")):
+        log.warning("lens: this camera is not an RTSP camera")
+        return False
+    device = device.replace(
+        "{password}", os.environ.get("GOLFREELZ_CAM_PASSWORD", ""),
+    )
+    u = urlsplit(device)
+    if not u.hostname:
+        log.warning("lens: no host in the configured stream URL")
+        return False
+    build = _LENS_PARAM.get((op or "").lower())
+    if build is None:
+        log.warning("lens: unknown op %r", op)
+        return False
+    param, value = build(amount)
+
+    try:
+        import requests
+        from requests.auth import HTTPDigestAuth
+    except Exception as exc:  # noqa: BLE001
+        log.warning("lens: requests unavailable: %s", exc)
+        return False
+
+    url = (
+        f"http://{u.hostname}/stw-cgi/image.cgi"
+        f"?msubmenu=focus&action=control&{param}={value}"
+    )
+    try:
+        r = requests.get(
+            url, timeout=timeout,
+            auth=HTTPDigestAuth(u.username or "admin", u.password or ""),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("lens: %s %s failed: %s", op, value, exc)
+        return False
+    body = (r.text or "").strip()
+    # The camera answers a bare "OK", or an "NG" block with a numbered
+    # code. 604 means the value was out of range -- worth logging as
+    # itself rather than as a generic failure, because it is the one an
+    # operator can act on by nudging less.
+    if r.status_code == 200 and not body.upper().startswith("NG"):
+        log.info("lens: %s %s=%s -> ok", op, param, value)
+        return True
+    log.warning("lens: %s %s=%s -> %s %s", op, param, value,
+                r.status_code, body.replace("\n", " ")[:120])
+    return False
+
+
 def open_camera(cam_cfg: dict):
     """Open the configured camera with OpenCV. `device: "auto"` tries
     /dev/video0..3 and returns the first that opens; otherwise uses

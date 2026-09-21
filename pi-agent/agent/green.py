@@ -30,6 +30,7 @@ from .common import (
     FrameBuffer,
     HeartbeatThread,
     build_audio_recorder,
+    lens_control,
     mux_audio_into_video,
     open_camera,
 )
@@ -116,6 +117,7 @@ class GreenAgent:
         # watching.
         self.streamer = LiveStreamer(
             self.client, on_focus_mode=self._on_focus_mode,
+            on_lens_command=self._on_lens_command,
         )
         self.streamer.start()
 
@@ -232,6 +234,18 @@ class GreenAgent:
             self.streamer.stop()
 
     # -----------------------------------------------------------------
+
+    def _on_lens_command(self, op: str, amount: int) -> None:
+        """Apply an operator's zoom/focus nudge to the camera.
+
+        Best-effort: a lens that refuses a step is a message for the
+        operator watching the live view, not a reason to disturb a
+        capture agent that is otherwise working.
+        """
+        try:
+            lens_control(self.cam_cfg, op, amount)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("lens command %s failed: %s", op, exc)
 
     def _on_focus_mode(self, seconds: float) -> None:
         """Backend says focus mode is armed for `seconds` (0 = off).

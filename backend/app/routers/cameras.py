@@ -595,6 +595,33 @@ def heartbeat(
 _CAPTURE_LOCK = threading.Lock()
 _CAPTURE_REQUESTS: dict[int, int] = {}
 
+# ── lens commands for IP cameras ──────────────────────────────────────
+# A QUEUE, not a single slot like the capture request above. Aiming a
+# lens is a series of nudges -- three taps of zoom-in then a focus --
+# and a single slot would silently drop two of them. Ordering matters
+# too: Simple Focus after a zoom means something different from before
+# it.
+#
+# Capped, because the queue grows from the operator's clicks and drains
+# only when an agent polls. A camera whose Pi is offline would otherwise
+# collect every press until the process restarts, then fire all of them
+# at a lens nobody is watching.
+_LENS_LOCK = threading.Lock()
+_LENS_QUEUES: dict[int, list[dict]] = {}
+LENS_QUEUE_MAX = 24
+
+
+def request_lens(camera_id: int, op: str, amount: int = 0) -> int:
+    """Queue one lens nudge. Returns the queue depth after adding."""
+    with _LENS_LOCK:
+        q = _LENS_QUEUES.setdefault(int(camera_id), [])
+        if len(q) >= LENS_QUEUE_MAX:
+            # Drop the OLDEST. A stale zoom from two minutes ago is worth
+            # less than the one just clicked.
+            del q[0]
+        q.append({"op": op, "amount": int(amount)})
+        return len(q)
+
 
 _FOCUS_LOCK = threading.Lock()
 _FOCUS_UNTIL: dict[int, float] = {}
@@ -654,6 +681,10 @@ def watch_status(token: str, db: Session = Depends(get_db)):
         watching = bool(last and _utcnow_naive() - last < WATCH_TTL)
     with _CAPTURE_LOCK:
         capture_seconds = _CAPTURE_REQUESTS.pop(cam.id, None)
+    # Drained whole, like capture: one poll delivers every pending nudge
+    # in the order they were clicked.
+    with _LENS_LOCK:
+        lens_commands = _LENS_QUEUES.pop(cam.id, [])
     if capture_seconds:
         log.info(
             "cameras: delivering capture request to camera %s (%ss)",
@@ -662,6 +693,9 @@ def watch_status(token: str, db: Session = Depends(get_db)):
     return {
         "watching": watching,
         "capture_seconds": capture_seconds,
+        # Empty list on almost every poll; only non-empty right after an
+        # operator touches the zoom or focus controls.
+        "lens_commands": lens_commands,
         # Not consumed on read, unlike the capture above: this is a mode
         # the agent stays in, not a one-shot, and it has to survive every
         # poll until it expires.

@@ -67,6 +67,7 @@ from ..config import settings
 from ..database import SessionLocal, get_db
 from ..deps import require_admin
 from .cameras import _LIVE_FRAMES, _WATCHERS, _LIVE_LOCK, WATCH_TTL, FRAME_TTL
+from .cameras import request_lens as _request_lens
 from .cameras import battery_status as _battery_status
 from .cameras import focus_status as _focus_status
 from .cameras import _focus_remaining as _cam_focus_remaining
@@ -15504,6 +15505,69 @@ def stop_watch_camera(camera_id: int):
         _WATCHERS.pop(camera_id, None)
         _LIVE_FRAMES.pop(camera_id, None)
     return {"ok": True}
+
+
+_LENS_OPS = {
+    # op            -> (SUNAPI param, whether the amount is used)
+    "zoom":         ("Zoom", True),
+    "focus":        ("Focus", True),
+    "simple_focus": ("Mode", False),
+    "reset_focus":  ("Mode", False),
+}
+
+
+@router.post("/cameras/{camera_id}/lens")
+def control_camera_lens(
+    camera_id: int,
+    op: str = Form(...),
+    amount: int = Form(0),
+    db: Session = Depends(get_db),
+):
+    """Nudge an IP camera's zoom or focus.
+
+    THE BACKEND CANNOT REACH THE CAMERA. It sits on a private link
+    behind the Pi, so this does not talk to the lens -- it queues a
+    command that the agent collects on its next watch-status poll and
+    executes locally. Same channel the operator-capture request already
+    rides on, so no new endpoint on the device.
+
+    Only an 'ip' camera has a lens to drive: a Pi's ribbon-cable module
+    has a fixed lens and nothing to say to.
+    """
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    if (cam.kind or "pi") != "ip":
+        raise HTTPException(
+            409, "only an IP camera has a motorised lens to drive",
+        )
+    _op = (op or "").strip().lower()
+    if _op not in _LENS_OPS:
+        raise HTTPException(
+            400, f"op must be one of {sorted(_LENS_OPS)}",
+        )
+    # The camera answers 604 to a focus step outside +/-1 and clamps
+    # zoom silently, so bound both here rather than shipping a value the
+    # lens will reject after a round trip through the Pi.
+    amt = int(amount or 0)
+    if _op == "focus":
+        amt = max(-1, min(1, amt or 1))
+    elif _op == "zoom":
+        amt = max(-2000, min(2000, amt or 100))
+        if amt == 0:
+            amt = 100
+    depth = _request_lens(camera_id, _op, amt)
+    db.add(AuditLog(
+        actor="admin", action="camera_lens",
+        target=f"camera:{camera_id}", detail=f"op={_op} amount={amt}",
+    ))
+    db.commit()
+    return {
+        "ok": True, "op": _op, "amount": amt, "queued": depth,
+        # The agent polls every few seconds, so tell the operator when
+        # to expect the lens to move rather than leaving them clicking.
+        "note": "queued — the camera's recorder applies it on its next poll",
+    }
 
 
 @router.get("/cameras/{camera_id}/live-frame")

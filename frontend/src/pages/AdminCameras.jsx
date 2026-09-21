@@ -695,6 +695,7 @@ export default function AdminCameras() {
   const [cameras, setCameras] = useState(null);
   const [courses, setCourses] = useState([]);
   const [error, setError] = useState(null);
+  const [lensNote, setLensNote] = useState({});
   const [busy, setBusy] = useState({}); // {camera_id: true}
   const [revealedToken, setRevealedToken] = useState({}); // {camera_id: true}
   const [cal, setCal] = useState(null);  // green→tee calibrator
@@ -983,6 +984,23 @@ export default function AdminCameras() {
       setError(e.message);
     } finally {
       setBusy((b) => ({ ...b, [cam.id]: false }));
+    }
+  }
+
+  // ZOOM AND FOCUS ARE NUDGES, NOT POSITIONS. The camera reports
+  // Absolute.Zoom and Query.Zoom as false, so there is no value to show
+  // and no slider to build -- the operator steers by the live view,
+  // which is why these controls sit directly under it.
+  async function lens(cam, op, amount) {
+    setError(null);
+    try {
+      await api.cameraLens(adminPassword, cam.id, op, amount);
+      setLensNote((m) => ({ ...m, [cam.id]: "sent — applies on the next poll" }));
+      setTimeout(
+        () => setLensNote((m) => ({ ...m, [cam.id]: null })), 4000,
+      );
+    } catch (e) {
+      setError(e?.message || String(e));
     }
   }
 
@@ -1575,6 +1593,55 @@ export default function AdminCameras() {
                       ? `Focusing ${cam.focus.focus_seconds}s`
                       : "Focus mode"}
                   </button>
+                  {cam.kind === "ip" && (
+                    <div
+                      style={{
+                        display: "flex", flexWrap: "wrap", gap: 6,
+                        alignItems: "center", width: "100%",
+                        padding: "6px 8px", borderRadius: 8,
+                        border: "1px solid rgba(120,120,120,0.35)",
+                        background: "rgba(120,120,120,0.06)",
+                      }}
+                    >
+                      <span className="tiny muted" style={{ width: "100%" }}>
+                        Lens — watch the live view; these are nudges, the
+                        camera cannot report its position.
+                      </span>
+                      <button type="button" className="secondary small"
+                        style={{ width: "auto" }} disabled={isBusy}
+                        title="Zoom wider (shorter focal length)"
+                        onClick={() => lens(cam, "zoom", -200)}>− Zoom</button>
+                      <button type="button" className="secondary small"
+                        style={{ width: "auto" }} disabled={isBusy}
+                        title="Zoom tighter (longer focal length)"
+                        onClick={() => lens(cam, "zoom", 200)}>+ Zoom</button>
+                      <button type="button" className="secondary small"
+                        style={{ width: "auto" }} disabled={isBusy}
+                        title="Nudge focus nearer"
+                        onClick={() => lens(cam, "focus", -1)}>− Focus</button>
+                      <button type="button" className="secondary small"
+                        style={{ width: "auto" }} disabled={isBusy}
+                        title="Nudge focus further"
+                        onClick={() => lens(cam, "focus", 1)}>+ Focus</button>
+                      <button type="button" className="small"
+                        style={{ width: "auto" }} disabled={isBusy}
+                        title="One-shot autofocus. Set the zoom FIRST, then press this — the camera focuses once and holds."
+                        onClick={() => lens(cam, "simple_focus", 0)}>
+                        Auto focus
+                      </button>
+                      <button type="button" className="ghost small"
+                        style={{ width: "auto" }} disabled={isBusy}
+                        title="Return focus to its default position"
+                        onClick={() => lens(cam, "reset_focus", 0)}>
+                        Reset
+                      </button>
+                      {lensNote[cam.id] && (
+                        <span className="tiny" style={{ color: "#2f6b45" }}>
+                          {lensNote[cam.id]}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   <button
                     type="button" className="secondary small"
                     onClick={() => openMove(cam)} disabled={isBusy}

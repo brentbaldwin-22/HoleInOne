@@ -50,6 +50,7 @@ class LiveStreamer:
         watched_poll_seconds: float = 5.0,
         on_capture_request=None,
         on_focus_mode=None,
+        on_lens_command=None,
     ) -> None:
         self.client = client
         # Called with (seconds) when the backend asks for an on-demand
@@ -62,6 +63,7 @@ class LiveStreamer:
         # Called on every poll with the seconds of focus mode remaining
         # (0 when off), so the agent can raise its measurement rate.
         self.on_focus_mode = on_focus_mode
+        self.on_lens_command = on_lens_command
         self.frame_interval = 1.0 / max(1, fps)
         self.jpeg_quality = max(20, min(95, jpeg_quality))
         self.idle_poll = idle_poll_seconds
@@ -137,6 +139,19 @@ class LiveStreamer:
                     self.on_focus_mode(float(fsecs or 0))
                 except Exception as exc:  # noqa: BLE001
                     log.debug("focus-mode handler failed: %s", exc)
+            # A LIST, drained whole. Applied in the order the operator
+            # clicked, because a Simple Focus after a zoom means
+            # something different from one before it.
+            cmds = payload.get("lens_commands") or []
+            if cmds and self.on_lens_command:
+                log.info("lens: %d command(s) from the operator", len(cmds))
+                for c in cmds:
+                    try:
+                        self.on_lens_command(
+                            str(c.get("op") or ""), int(c.get("amount") or 0),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.error("lens command handler failed: %s", exc)
             secs = payload.get("capture_seconds")
             if secs and self.on_capture_request:
                 log.info("capture requested by operator: %ss", secs)
