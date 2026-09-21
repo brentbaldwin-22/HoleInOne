@@ -390,12 +390,21 @@ export const api = {
   // Zoom / focus on an IP camera's motorised lens. Queued server-side
   // and applied by the recorder on its next poll — the backend cannot
   // reach the camera itself.
-  cameraLens: (key, cameraId, op, amount = 0) =>
-    request(`/api/admin/cameras/${cameraId}/lens`, {
+  cameraLens: (key, cameraId, op, amount = 0) => {
+    // THE ADMIN API IS FORM-ENCODED, NOT JSON. The endpoint declares
+    // Form(...), which FastAPI answers with a 422 when handed an
+    // application/json body -- so a plain object here fails before the
+    // command queue is ever touched, and the camera never hears a
+    // thing. That is exactly how this shipped broken the first time.
+    const fd = new FormData();
+    fd.append("op", op);
+    fd.append("amount", String(amount ?? 0));
+    return request(`/api/admin/cameras/${cameraId}/lens`, {
       method: "POST",
       adminPassword: key,
-      body: { op, amount },
-    }),
+      body: fd,
+    });
+  },
   stopFocusMode: (key, cameraId) =>
     request(`/api/admin/cameras/${cameraId}/focus-mode/stop`, {
       method: "POST",
