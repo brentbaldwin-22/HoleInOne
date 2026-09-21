@@ -15516,6 +15516,10 @@ _LENS_OPS = {
 }
 
 
+# The only magnitudes the lens accepts, per the camera's own schema.
+_LENS_STEPS = (1, 10, 100)
+
+
 @router.post("/cameras/{camera_id}/lens")
 def control_camera_lens(
     camera_id: int,
@@ -15546,16 +15550,17 @@ def control_camera_lens(
         raise HTTPException(
             400, f"op must be one of {sorted(_LENS_OPS)}",
         )
-    # The camera answers 604 to a focus step outside +/-1 and clamps
-    # zoom silently, so bound both here rather than shipping a value the
-    # lens will reject after a round trip through the Pi.
-    amt = int(amount or 0)
-    if _op == "focus":
-        amt = max(-1, min(1, amt or 1))
-    elif _op == "zoom":
-        amt = max(-2000, min(2000, amt or 100))
-        if amt == 0:
-            amt = 100
+    # ZOOM AND FOCUS ARE AN ENUM, NOT A RANGE. The camera's own
+    # attributes.cgi declares both as
+    #     enum { -100, -10, -1, 1, 10, 100 }
+    # -- three step sizes per direction and nothing in between. Anything
+    # else comes back "NG Error Code: 604 Invalid Input Value(s)", which
+    # is how this first shipped: the buttons sent 200 and every press
+    # was rejected by the lens. Snap to the nearest legal step rather
+    # than 604-ing a caller who asked for 200 and plainly meant "a lot".
+    _amt = int(amount or 0) or 100
+    _sign = -1 if _amt < 0 else 1
+    amt = _sign * min(_LENS_STEPS, key=lambda st: abs(st - abs(_amt)))
     depth = _request_lens(camera_id, _op, amt)
     db.add(AuditLog(
         actor="admin", action="camera_lens",

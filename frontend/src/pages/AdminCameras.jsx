@@ -1630,24 +1630,42 @@ export default function AdminCameras() {
                     >
                       <span className="tiny muted" style={{ width: "100%" }}>
                         Lens — watch the live view; these are nudges, the
-                        camera cannot report its position.
+                        camera cannot report its position. It accepts three
+                        step sizes only, so <b>·</b> is fine and <b>··</b> is
+                        coarse.
                       </span>
-                      <button type="button" className="secondary small"
-                        style={{ width: "auto" }} disabled={isBusy}
-                        title="Zoom wider (shorter focal length)"
-                        onClick={() => lens(cam, "zoom", -200)}>− Zoom</button>
-                      <button type="button" className="secondary small"
-                        style={{ width: "auto" }} disabled={isBusy}
-                        title="Zoom tighter (longer focal length)"
-                        onClick={() => lens(cam, "zoom", 200)}>+ Zoom</button>
-                      <button type="button" className="secondary small"
-                        style={{ width: "auto" }} disabled={isBusy}
-                        title="Nudge focus nearer"
-                        onClick={() => lens(cam, "focus", -1)}>− Focus</button>
-                      <button type="button" className="secondary small"
-                        style={{ width: "auto" }} disabled={isBusy}
-                        title="Nudge focus further"
-                        onClick={() => lens(cam, "focus", 1)}>+ Focus</button>
+                      {[
+                        { op: "zoom", label: "Zoom",
+                          minus: "wider (shorter focal length)",
+                          plus: "tighter (longer focal length)" },
+                        { op: "focus", label: "Focus",
+                          minus: "nearer", plus: "further" },
+                      ].map((axis) => (
+                        <div key={axis.op} style={{
+                          display: "flex", gap: 4, alignItems: "center",
+                          width: "100%",
+                        }}>
+                          <span className="tiny" style={{
+                            width: 46, textAlign: "right", opacity: 0.8,
+                          }}>{axis.label}</span>
+                          {[
+                            { amt: -100, text: "−··", why: axis.minus + ", coarse" },
+                            { amt: -10, text: "−·", why: axis.minus + ", fine" },
+                            { amt: 10, text: "+·", why: axis.plus + ", fine" },
+                            { amt: 100, text: "+··", why: axis.plus + ", coarse" },
+                          ].map((b) => (
+                            <button
+                              key={b.amt} type="button"
+                              className="secondary small"
+                              style={{ width: "auto", minWidth: 44,
+                                       fontFamily: "monospace" }}
+                              disabled={isBusy}
+                              title={`${axis.label} ${b.why}`}
+                              onClick={() => lens(cam, axis.op, b.amt)}
+                            >{b.text}</button>
+                          ))}
+                        </div>
+                      ))}
                       <button type="button" className="small"
                         style={{ width: "auto" }} disabled={isBusy}
                         title="One-shot autofocus. Set the zoom FIRST, then press this — the camera focuses once and holds."
