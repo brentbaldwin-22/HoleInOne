@@ -30,6 +30,28 @@ function tsRel(iso) {
   return `${Math.round(sec / 86400)}d ago`;
 }
 
+// Seconds since an ISO timestamp, or null when there isn't one. Same
+// naive-UTC correction as tsRel -- without it a healthy camera reads
+// hours stale by the size of the viewer's UTC offset.
+function secsAgo(iso) {
+  if (!iso) return null;
+  const utcIso = /[Zz]$|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + "Z";
+  return Math.round((Date.now() - new Date(utcIso).getTime()) / 1000);
+}
+
+// The agent heartbeats every 60s (heartbeat_seconds in the Pi config),
+// so one missed beat is noise and two is a signal. Colour the line
+// rather than making the operator do the subtraction: the whole point
+// of "last seen" is answering "is this thing alive right now".
+const HEARTBEAT_LATE_SEC = 150;
+const HEARTBEAT_DOWN_SEC = 900;
+function heartbeatTone(sec) {
+  if (sec == null) return { color: "#b3261e", label: "never called in" };
+  if (sec <= HEARTBEAT_LATE_SEC) return { color: "#2f6b45", label: "live" };
+  if (sec <= HEARTBEAT_DOWN_SEC) return { color: "#8a6d1f", label: "late" };
+  return { color: "#b3261e", label: "down" };
+}
+
 // Seconds after which an event that hasn't reached a terminal state is
 // treated as stuck. The tee-only fallback fires at 180s, so 300 gives it
 // a chance to work before we call anything wrong.
@@ -1425,20 +1447,40 @@ export default function AdminCameras() {
                     }}>IP camera</span>
                   )}
                   <div className="tiny muted" style={{ marginTop: 2 }}>
-                    {/* "last seen" is a Pi word: it means the agent called
-                        in. An IP camera never calls, so reporting it as
-                        never-seen would read as broken when it is fine. */}
-                    {cam.kind === "ip" ? (
+                    {/* KEY OFF THE HEARTBEAT, NOT THE KIND. An IP camera
+                        driven by a Pi still has an agent calling in with
+                        the token -- the Hanwha is only the lens -- so it
+                        has a real "last seen" and hiding it threw away
+                        the fastest way to tell whether the site is up.
+                        Only a camera nothing has EVER called in for gets
+                        the explanation instead of a time. */}
+                    {cam.kind === "ip" && cam.stream_model && (
+                      <>{cam.stream_model} · </>
+                    )}
+                    {cam.last_seen_at ? (
                       <>
-                        {cam.stream_model || "IP camera"} · nothing calls in
-                        from an RTSP camera, so there is no heartbeat here
-                      </>
-                    ) : (
-                      <>
-                        last seen: {tsRel(cam.last_seen_at)}
+                        last seen:{" "}
+                        <span style={{
+                          color: heartbeatTone(secsAgo(cam.last_seen_at)).color,
+                          fontWeight: 600,
+                        }}
+                          title={`The agent heartbeats every 60s. Under ${HEARTBEAT_LATE_SEC}s is healthy; beyond ${HEARTBEAT_DOWN_SEC}s it is down.`}
+                        >
+                          {tsRel(cam.last_seen_at)}
+                          {" · "}
+                          {heartbeatTone(secsAgo(cam.last_seen_at)).label}
+                        </span>
                         {cam.last_event_at && <> · last event: {tsRel(cam.last_event_at)} ({cam.last_event_status})</>}
                         {cam.firmware_version && <> · fw {cam.firmware_version}</>}
                       </>
+                    ) : cam.kind === "ip" ? (
+                      <>
+                        nothing has ever called in for this camera — an RTSP
+                        camera has no heartbeat of its own, so this needs a
+                        Pi or a bridge running against its token
+                      </>
+                    ) : (
+                      <>last seen: never</>
                     )}
                   </div>
                   {cam.kind === "ip" && cam.rtsp_url && (
