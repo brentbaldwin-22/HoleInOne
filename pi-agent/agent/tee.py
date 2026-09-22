@@ -1041,7 +1041,15 @@ class TeeAgent:
             # playback length to line it up with the trigger moment.
             preroll_seconds = preroll_span
             muxed = mux_audio_into_video(
-                clip_path, wav_done, audio_delay_seconds=preroll_seconds,
+                clip_path, wav_done,
+                # The pre-roll is silent (those frames were buffered
+                # before recording began), and an RTSP mic needs its
+                # session negotiated on top of that. lead_seconds is
+                # zero for an ALSA mic, so this is the same number as
+                # before wherever the mic hangs off the Pi.
+                audio_delay_seconds=(
+                    preroll_seconds + audio_recorder.lead_seconds
+                ),
             )
             if muxed:
                 log.info(

@@ -2002,6 +2002,11 @@ class AudioRecorder:
         self.enabled = bool(enabled)
         self._proc: Optional[subprocess.Popen] = None
         self._wav_path: Optional[Path] = None
+        # How long after start() the first sample actually landed. An
+        # ALSA device opens instantly, so this is zero here -- it exists
+        # so callers can add it to the mux delay without caring which
+        # recorder they were handed.
+        self.lead_seconds = 0.0
 
     def start(self, session_id: str) -> Optional[Path]:
         if not self.enabled:
@@ -2245,15 +2250,215 @@ def compress_for_upload(
     return True
 
 
-def build_audio_recorder(cfg: dict, work_dir: Path) -> AudioRecorder:
-    """Construct an AudioRecorder from the config's `audio:` block.
-    Missing block → enabled with auto-detected device + sensible
-    defaults; explicit `enabled: false` disables it."""
+class RtspAudioRecorder:
+    """Capture the camera's OWN audio track to a WAV, for installations
+    where the microphone hangs off the camera instead of off the Pi.
+
+    Same start()/stop() contract as AudioRecorder, so tee.py and green.py
+    never have to know which one they were handed. `arecord` cannot help
+    here: the mic is wired into the camera, and its audio arrives as an
+    AAC track inside the RTSP session rather than as an ALSA device.
+
+    Opens a SECOND, audio-only RTSP session rather than decoding the
+    1080p video all over again -- the capture loop already owns the
+    video, and this only wants the sound. `-allowed_media_types audio`
+    is what keeps the camera from setting up the video track at all.
+
+    Best-effort throughout: every failure path logs and returns None so
+    the clip still uploads, just silent.
+    """
+
+    def __init__(
+        self,
+        work_dir: Path,
+        device: str,
+        sample_rate: int = 16000,
+        channels: int = 1,
+        enabled: bool = True,
+        max_seconds: int = 300,
+        connect_timeout: float = 6.0,
+        extra_lead_seconds: float = 0.0,
+    ):
+        self.work_dir = Path(work_dir)
+        self.device = device          # rtsp:// URL -- NEVER log this
+        self.sample_rate = int(sample_rate)
+        self.channels = int(channels)
+        self.enabled = bool(enabled)
+        self.max_seconds = int(max_seconds)
+        self.connect_timeout = float(connect_timeout)
+        # Trim knob for lip-sync without a code change: positive pushes
+        # the audio later in the clip.
+        self.extra_lead_seconds = float(extra_lead_seconds)
+        self._proc: Optional[subprocess.Popen] = None
+        self._wav_path: Optional[Path] = None
+        self._err_path: Optional[Path] = None
+        self._err_fh = None
+        self._t0: Optional[float] = None
+        self.lead_seconds = 0.0
+
+    def _host(self) -> str:
+        from urllib.parse import urlsplit
+        return urlsplit(self.device).hostname or "?"
+
+    def start(self, session_id: str) -> Optional[Path]:
+        if not self.enabled:
+            return None
+        wav_path = self.work_dir / f"{session_id}.wav"
+        self._err_path = self.work_dir / f"{session_id}.audio.log"
+        cmd = [
+            "ffmpeg", "-y", "-nostdin", "-loglevel", "error",
+            "-rtsp_transport", "tcp",
+            "-allowed_media_types", "audio",
+            "-i", self.device,
+            "-vn",
+            "-ac", str(self.channels),
+            "-ar", str(self.sample_rate),
+            "-acodec", "pcm_s16le",
+            "-t", str(self.max_seconds),
+            str(wav_path),
+        ]
+        self._t0 = time.monotonic()
+        try:
+            # stderr goes to a FILE, not a pipe. A pipe nobody reads
+            # fills its kernel buffer and blocks the writer -- that is
+            # exactly how the RTSP bridge deadlocked, and a long clip
+            # gives ffmpeg plenty of time to do it.
+            self._err_fh = open(self._err_path, "wb")
+            self._proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=self._err_fh,
+            )
+        except FileNotFoundError:
+            log.warning("audio: ffmpeg not installed — clip will be silent")
+            return None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("audio: failed to launch ffmpeg: %s", exc)
+            return None
+
+        # Only long enough to catch an immediate failure (bad URL, auth
+        # refused, camera not serving audio). The connect delay itself
+        # is MEASURED in stop(), not guessed at here: ffmpeg buffers the
+        # WAV, so watching the file grow reports the timeout rather than
+        # the truth, and a wrong lead is worse than none.
+        time.sleep(0.5)
+        if self._proc.poll() is not None:
+            log.warning(
+                "audio: ffmpeg exited immediately for %s — clip will be "
+                "silent (%s)", self._host(), self._read_err(),
+            )
+            self._proc = None
+            return None
+
+        self._wav_path = wav_path
+        log.info(
+            "audio: capturing RTSP audio from %s -> %s",
+            self._host(), wav_path.name,
+        )
+        return wav_path
+
+    def _read_err(self) -> str:
+        try:
+            if self._err_path and self._err_path.exists():
+                return " ".join(
+                    self._err_path.read_text(errors="replace").split()
+                )[:200] or "no stderr"
+        except Exception:  # noqa: BLE001
+            pass
+        return "no stderr"
+
+    def stop(self) -> Optional[Path]:
+        proc = self._proc
+        wav = self._wav_path
+        self._proc = None
+        if proc is None:
+            return None
+        try:
+            # SIGTERM lets ffmpeg patch the WAV header's length fields
+            # on the way out; killing it outright leaves them at zero
+            # and the mux reads the file as empty.
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("audio: ffmpeg stop failed: %s", exc)
+            return None
+        finally:
+            # Close the stderr sink whatever happened, so a Pi running
+            # for weeks does not leak a file handle per clip.
+            try:
+                if self._err_fh is not None:
+                    self._err_fh.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._err_fh = None
+        if wav is None or not wav.exists() or wav.stat().st_size < 1024:
+            log.warning(
+                "audio: WAV missing or too small after stop (%s) — "
+                "uploading video without audio (%s)",
+                wav.name if wav else "?", self._read_err(),
+            )
+            return None
+
+        # MEASURE THE CONNECT DELAY, DON'T PREDICT IT. Everything
+        # between launching ffmpeg and the first sample is silence that
+        # never reached the file, so the gap is simply how much shorter
+        # the audio is than the window it was recorded in. PCM is a flat
+        # 2 bytes per sample per channel, so the duration is exact from
+        # the size -- no second ffprobe needed.
+        elapsed = time.monotonic() - (self._t0 or time.monotonic())
+        bytes_per_sec = self.sample_rate * self.channels * 2
+        duration = max(0.0, (wav.stat().st_size - 44) / float(bytes_per_sec))
+        self.lead_seconds = max(
+            0.0, elapsed - duration,
+        ) + self.extra_lead_seconds
+        log.info(
+            "audio: %.1fs captured over %.1fs — lead %.2fs",
+            duration, elapsed, self.lead_seconds,
+        )
+        return wav
+
+
+def build_audio_recorder(cfg: dict, work_dir: Path):
+    """Construct the right audio recorder for this camera.
+
+    An RTSP camera carries its own microphone, so its sound arrives in
+    the stream and only ffmpeg can reach it. A Pi-attached camera has
+    its mic on the Pi, where arecord can. Picking by the configured
+    device keeps that decision in one place instead of in both agents.
+
+    Missing `audio:` block → enabled with sensible defaults; explicit
+    `enabled: false` disables it either way.
+    """
     a = cfg.get("audio") or {}
+    enabled = bool(a.get("enabled", True))
+    device = str((cfg.get("camera") or {}).get("device", "") or "")
+
+    if device.startswith(("rtsp://", "rtsps://")):
+        device = device.replace(
+            "{password}", os.environ.get("GOLFREELZ_CAM_PASSWORD", ""),
+        )
+        return RtspAudioRecorder(
+            work_dir=work_dir,
+            device=device,
+            # The camera encodes at 16 kHz mono; asking for 44.1 here
+            # would just resample telephone-band audio upward.
+            sample_rate=int(a.get("sample_rate", 16000)),
+            channels=int(a.get("channels", 1)),
+            enabled=enabled,
+            max_seconds=int(a.get("max_seconds", 300)),
+            connect_timeout=float(a.get("connect_timeout", 6.0)),
+            extra_lead_seconds=float(a.get("extra_lead_seconds", 0.0)),
+        )
+
     return AudioRecorder(
         work_dir=work_dir,
         device=a.get("device") or None,
         sample_rate=int(a.get("sample_rate", 44100)),
         channels=int(a.get("channels", 1)),
-        enabled=bool(a.get("enabled", True)),
+        enabled=enabled,
     )
