@@ -141,6 +141,14 @@ export const api = {
   },
   listShowcase: () => request(`/api/public/showcase`),
   publicStats: () => request(`/api/public/stats`, { auth: false }),
+  // The site's colours, chosen in /admin. Read on every page load, so
+  // it is deliberately unauthenticated and tiny.
+  siteTheme: () => request(`/api/public/theme`, { auth: false }),
+  adminTheme: (key) => request(`/api/admin/theme`, { adminPassword: key }),
+  setAdminTheme: (key, theme) =>
+    request(`/api/admin/theme`, {
+      method: "POST", body: theme, adminPassword: key,
+    }),
   contests: () => request(`/api/public/contests`, { auth: false }),
   shotOfWeek: (viewerId) =>
     request(

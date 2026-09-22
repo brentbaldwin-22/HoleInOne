@@ -1,39 +1,28 @@
 import { Link } from "react-router-dom";
 import useAuth from "../hooks/useAuth.js";
+import useSiteTheme from "../hooks/useSiteTheme.js";
+import { logoUrl } from "../theme.js";
 
-// Brand logo lives at frontend/public/golfreelz-logo.png so Vite serves
-// it as /golfreelz-logo.png. The PNG includes the GR + golfer monogram
-// AND the GolfReelz wordmark, so we don't render a separate <h1> text
-// label next to it anymore.
-const LOGO_URL = "/golfreelz-logo.png";
+// The logo comes in one colourway per direction (blue/cyan, sunset red,
+// green/lime), and the site wears whichever an admin picked in /admin —
+// so the mark here follows the theme rather than being a fixed file.
+// Each PNG is the full lockup: golfer silhouette AND the GolfReelz
+// wordmark, so there is no separate text label beside it.
 
 export function Brand({ subtitle, hideAccount }) {
   const { user, logout } = useAuth();
+  const theme = useSiteTheme();
   return (
     <div className="brand" style={{ justifyContent: "space-between", width: "100%" }}>
       <Link
         to="/"
         style={{ display: "flex", alignItems: "center", gap: 14, textDecoration: "none", color: "inherit" }}
       >
-        {/* Source PNG has ~20% whitespace top/bottom. Wrap with
-            overflow:hidden so we display the tight logo content
-            cropped to ~60px tall while the underlying img renders at
-            100px — the 20px on each side gets clipped. */}
-        <div
-          aria-hidden="false"
-          style={{
-            height: 60,
-            overflow: "hidden",
-            display: "flex",
-            alignItems: "center",
-          }}
-        >
-          <img
-            src={LOGO_URL}
-            alt="GolfReelz"
-            style={{ height: 100, width: "auto", display: "block" }}
-          />
-        </div>
+        <img
+          src={logoUrl(theme.direction, "mark")}
+          alt="GolfReelz"
+          style={{ height: 56, width: "auto", display: "block" }}
+        />
         {subtitle && <div className="tag">{subtitle}</div>}
       </Link>
       {!hideAccount && (

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, API_BASE } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
+import AppearanceCard from "../components/AppearanceCard.jsx";
 import { fmtDateTime } from "../time.js";
 
 const ADMIN_PW_STORAGE = "golfreelz.adminPassword";
@@ -171,6 +172,8 @@ export default function Admin() {
       )}
 
       <TestEmailCard adminPassword={adminPassword} onToast={showToast} />
+
+      <AppearanceCard adminPassword={adminPassword} onToast={showToast} />
 
       <div className="card">
         <h3 style={{ marginBottom: 4 }}>Manual review queue</h3>

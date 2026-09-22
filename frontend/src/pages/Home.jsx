@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { Brand, Icon } from "../components/Brand.jsx";
 import { api } from "../api.js";
 import useAuth from "../hooks/useAuth.js";
+import { logoUrl } from "../theme.js";
+import useSiteTheme from "../hooks/useSiteTheme.js";
 
 // The four prize games, in the order they matter to a player standing on
 // the tee: the one you could win today, the one you could win with one
@@ -54,260 +56,285 @@ const GAMES = [
   },
 ];
 
+// Five steps, and they really are a sequence: each one only happens
+// after the one above it. That is why they carry numbers.
+const STEPS = [
+  {
+    icon: "qr",
+    title: "Register before you play",
+    body: "On this site, or scan the QR code at the pro shop. Under a minute.",
+  },
+  {
+    icon: "camera",
+    title: "Snap an outfit photo",
+    body: "Head-to-toe is all we need — that's how we match shots to you.",
+  },
+  {
+    icon: "sparkle",
+    title: "Play your par 3s",
+    body: "The cameras start themselves. Nothing to press, nothing to carry.",
+  },
+  {
+    icon: "share",
+    title: "Check your inbox",
+    body: "One email, every par-3 clip attached, tracer drawn on, ready to post.",
+  },
+];
+
 export default function Home() {
   const { user } = useAuth();
+  const theme = useSiteTheme();
   const [showcase, setShowcase] = useState(null);
-  const [contestData, setContestData] = useState(null);
   const [courses, setCourses] = useState(null);
   const [stats, setStats] = useState(null);
 
   useEffect(() => {
     api.listShowcase().then(setShowcase).catch(() => setShowcase([]));
-    api.contests().then(setContestData).catch(() => setContestData({}));
     api.listPublicCourses().then(setCourses).catch(() => setCourses([]));
     api.publicStats().then(setStats).catch(() => setStats(null));
   }, []);
-
-  const monthlyContest = contestData?.monthly?.contests?.[0];
-  const yearlyContest = contestData?.yearly?.contests?.[0];
 
   // Single featured video for now — only slot 1 appears on Home.
   const featured = (showcase || []).find((s) => s.position === 1 && s.source_url);
   const showcaseLoaded = showcase !== null;
 
-  return (
-    <div className="wrap wide">
-      <Brand subtitle="Par 3 video system · $10,000 hole-in-one contest" />
+  // The ticker only earns its row when there is something live to say.
+  const ticker = [];
+  if (stats?.clips_this_week > 0) {
+    ticker.push([stats.clips_this_week,
+      `clip${stats.clips_this_week === 1 ? "" : "s"} delivered this week`]);
+  }
+  if (stats?.golfers_today > 0) {
+    ticker.push([stats.golfers_today,
+      `golfer${stats.golfers_today === 1 ? "" : "s"} playing today`]);
+  }
+  if (stats?.aces_pending > 0) {
+    ticker.push([stats.aces_pending,
+      `ace claim${stats.aces_pending === 1 ? "" : "s"} under review`]);
+  }
+  if (!ticker.length && stats?.total_clips_delivered > 0) {
+    ticker.push([stats.total_clips_delivered, "clips delivered to date"]);
+  }
 
-      <div className="hero">
-        <span className="eyebrow">
-          <Icon name="sparkle" size={14} /> Now on course
-        </span>
-        <h1>Every par-3 shot, tracked and delivered.</h1>
-        <p>
-          Two ways to register: right here on the website, or by scanning the
-          QR code at your course. Every par-3 tee shot is filmed with tracer
-          overlays and emailed to you after your round. Make a hole-in-one and
-          win <b>$10,000</b>.
-        </p>
-        <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
-          <Link to="/courses" className="btn" style={{ width: "auto" }}>Pick a course — $20</Link>
-          <Link to="/sample" className="btn secondary" style={{ width: "auto" }}>See sample gallery</Link>
-        </div>
+  return (
+    <div className="home">
+      <div className="home-wrap" style={{ paddingTop: 20 }}>
+        <Brand />
       </div>
 
-      {courses && courses.length > 0 && (
-        <div className="trust-band">
-          <div className="label">Now live at</div>
-          <div className="logos">
-            {courses.map((c) => (
-              <div key={c.id} className="logo-plate">
-                <div className="name">{c.name}</div>
-                {c.location && <div className="loc">{c.location}</div>}
-              </div>
+      <header className="home-hero">
+        <div className="home-hero-bands" aria-hidden="true" />
+        <div className="home-wrap home-hero-in">
+          <div>
+            <p className="home-eyebrow">Par-3 video system</p>
+            <h1>
+              Every par&#8209;3 shot,<br />traced and <em>delivered.</em>
+            </h1>
+            <p className="home-sub">
+              Two cameras on every camera&apos;d par 3 — one at the tee, one on
+              the green. Your tee shot comes back with the ball&apos;s flight
+              drawn on it, in your inbox after the round. Make an ace and
+              win <b>$10,000</b>.
+            </p>
+            <div className="home-cta">
+              <Link to="/courses" className="btn">Pick a course — $20</Link>
+              <Link to="/sample" className="btn secondary">See sample clips</Link>
+            </div>
+          </div>
+          <div className="home-logo-plate">
+            <img src={logoUrl(theme.direction)} alt="GolfReelz" />
+          </div>
+        </div>
+      </header>
+
+      {ticker.length > 0 && (
+        <div className="home-ticker">
+          <div className="home-wrap home-ticker-in">
+            <span className="pulse" aria-hidden="true" />
+            {ticker.map(([n, label]) => (
+              <span key={label}><b>{n}</b>{label}</span>
             ))}
           </div>
-          {stats && (stats.clips_this_week > 0 || stats.golfers_today > 0 || stats.aces_pending > 0 || stats.total_clips_delivered > 0) && (
-            <div className="stats">
-              <span className="pulse" aria-hidden="true" />
-              {stats.clips_this_week > 0 && (
-                <span><b>{stats.clips_this_week}</b>clip{stats.clips_this_week === 1 ? "" : "s"} delivered this week</span>
-              )}
-              {stats.golfers_today > 0 && (
-                <span><b>{stats.golfers_today}</b>golfer{stats.golfers_today === 1 ? "" : "s"} playing today</span>
-              )}
-              {stats.aces_pending > 0 && (
-                <span><b>{stats.aces_pending}</b>ace claim{stats.aces_pending === 1 ? "" : "s"} under review</span>
-              )}
-              {stats.clips_this_week === 0 && stats.golfers_today === 0 && stats.total_clips_delivered > 0 && (
-                <span><b>{stats.total_clips_delivered}</b>clips delivered to date</span>
-              )}
-            </div>
-          )}
         </div>
       )}
 
-      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 16 }}>
-        {(featured || !showcaseLoaded) && (
-          <div className="card" style={{ marginBottom: 0 }}>
-            <h3 style={{ marginBottom: 4 }}>Our videos in action</h3>
-            <p className="small muted" style={{ marginBottom: 14 }}>
-              A clip from a real GolfReelz round.
+      {courses && courses.length > 0 && (
+        <section className="home-section">
+          <div className="home-wrap home-section-in">
+            <div className="home-rule" />
+            <div className="home-sec-head">
+              <h2>Now live at</h2>
+              <p>
+                Cameras are installed hole by hole. If your home course
+                isn&apos;t here yet, tell us and we&apos;ll reach out to them.
+              </p>
+            </div>
+            <div className="home-courses">
+              {courses.map((c) => (
+                <div key={c.id} className="course-plate">
+                  <div className="name">{c.name}</div>
+                  {c.location && <div className="loc">{c.location}</div>}
+                </div>
+              ))}
+              <div className="course-plate open">
+                <div className="name">Your course here</div>
+                <div className="loc">
+                  <a href="mailto:hello@golfreelz.com">Request an install</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      <section className="home-section">
+        <div className="home-wrap home-section-in">
+          <div className="home-rule" />
+          <div className="home-sec-head">
+            <h2>Four ways to win</h2>
+            <p>
+              Every round you play enters you automatically. No extra
+              sign-up, no separate entry fee.
             </p>
-            {!showcaseLoaded ? (
-              <div className="shimmer" style={{ aspectRatio: "16/9", borderRadius: 8 }} />
-            ) : (
-              <>
+          </div>
+          <div className="game-grid">
+            {GAMES.map((g) => (
+              <Link key={g.key} to={g.to} className="game-tile">
+                <div className="strip" aria-hidden="true" />
+                <div className="body">
+                  <div className="cadence">{g.cadence}</div>
+                  <h3>
+                    <span className="inline" style={{ gap: 8 }}>
+                      <Icon name={g.icon} size={16} /> {g.title}
+                    </span>
+                  </h3>
+                  <p>{g.blurb}</p>
+                </div>
+                <div className="prize">
+                  <span className="label">Prize</span>
+                  <span className="amount">{g.prize}</span>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="home-section">
+        <div className="home-wrap home-section-in">
+          <div className="home-rule" />
+          <div className="home-sec-head"><h2>How it works</h2></div>
+          <div className="step-row">
+            {STEPS.map((s, i) => (
+              <div key={s.title} className="step">
+                <div className="num">{i + 1}</div>
+                <h3>{s.title}</h3>
+                <p>{s.body}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="home-section">
+        <div className="home-wrap home-section-in">
+          <div className="home-rule" />
+          <div className="home-sec-head"><h2>What you get back</h2></div>
+          <div className="home-clip-grid">
+            <div className="home-clip-frame">
+              {!showcaseLoaded ? (
+                <div className="shimmer" />
+              ) : featured ? (
                 <video
                   src={featured.source_url}
                   poster={featured.thumbnail_url || undefined}
                   controls
                   playsInline
                   preload="metadata"
-                  style={{ width: "100%", aspectRatio: "16/9", borderRadius: 8, background: "#000", display: "block" }}
                 />
-                {(featured.title || featured.caption) && (
-                  <div style={{ marginTop: 10 }}>
-                    {featured.title && <b style={{ display: "block" }}>{featured.title}</b>}
-                    {featured.caption && <div className="small muted">{featured.caption}</div>}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        {/* THE GAMES. Each card a doorway to its own contest. The prizes
-            are the reason to play, so they lead. */}
-        <div className="card" style={{ marginBottom: 0 }}>
-          <div className="inline" style={{ justifyContent: "space-between", width: "100%", marginBottom: 4, flexWrap: "wrap", gap: 8 }}>
-            <h3>Games &amp; prizes</h3>
-          </div>
-          <p className="small muted" style={{ marginBottom: 14 }}>
-            Every round you play enters you automatically. Tap a game for
-            the current standings.
-          </p>
-          <div
-            className="grid"
-            style={{
-              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-              gap: 12,
-            }}
-          >
-            {GAMES.map((g) => (
-              <Link
-                key={g.key}
-                to={g.to}
-                className="game-card"
-                style={{
-                  display: "block", textDecoration: "none", color: "inherit",
-                  border: "1px solid var(--border)", borderRadius: 12,
-                  padding: 14, background: "var(--surface)",
-                }}
-              >
-                <div className="inline" style={{ gap: 8, marginBottom: 6 }}>
-                  <div className="icon"><Icon name={g.icon} /></div>
-                  <b>{g.title}</b>
-                </div>
-                <div className="tiny upper muted">{g.cadence}</div>
-                <p className="small" style={{ margin: "6px 0 10px" }}>
-                  {g.blurb}
+              ) : (
+                <div className="bandbg" aria-hidden="true" />
+              )}
+            </div>
+            <div>
+              <h3>Tee to green, in one cut.</h3>
+              <p className="muted" style={{ marginTop: 10 }}>
+                The tee camera follows the strike and draws the ball&apos;s
+                flight. The green camera catches it landing. Both halves are
+                spliced into a single clip with your name, the hole and the
+                distance from the pin.
+              </p>
+              <ul className="home-speclist">
+                <li>Tracer drawn from the real ball track, not an animation</li>
+                <li>Distance to the pin measured, not estimated</li>
+                <li>Vertical cut for stories, landscape for everywhere else</li>
+                <li>Yours to keep and post — no watermark on your own shot</li>
+              </ul>
+              {(featured?.title || featured?.caption) && (
+                <p className="small muted" style={{ marginTop: 12 }}>
+                  {featured.title}
+                  {featured.title && featured.caption ? " — " : ""}
+                  {featured.caption}
                 </p>
-                <div
-                  className="small"
-                  style={{
-                    display: "flex", justifyContent: "space-between",
-                    alignItems: "center", paddingTop: 8,
-                    borderTop: "1px solid var(--border)",
-                  }}
-                >
-                  <b style={{ color: "var(--emerald-700)" }}>{g.prize}</b>
-                  <span className="muted">Standings →</span>
-                </div>
-              </Link>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginTop: 16 }}>
-        <h3 style={{ marginBottom: 14 }}>How it works</h3>
-        <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
-          <div className="feature-row" style={{ borderBottom: "none", padding: "8px 0" }}>
-            <div className="icon"><Icon name="qr" /></div>
-            <div>
-              <h4>1. Register before you play</h4>
-              <p>Sign up here, or scan the QR at the pro shop. Takes under a minute.</p>
-            </div>
-          </div>
-          <div className="feature-row" style={{ borderBottom: "none", padding: "8px 0" }}>
-            <div className="icon"><Icon name="camera" /></div>
-            <div>
-              <h4>2. Snap an outfit photo</h4>
-              <p>Head-to-toe is all we need — that's how we match shots to you.</p>
-            </div>
-          </div>
-          <div className="feature-row" style={{ borderBottom: "none", padding: "8px 0" }}>
-            <div className="icon"><Icon name="sparkle" /></div>
-            <div>
-              <h4>3. Play golf. We do the rest.</h4>
-              <p>Every par-3 tee shot is filmed and tracer-overlaid automatically.</p>
-            </div>
-          </div>
-          <div className="feature-row" style={{ borderBottom: "none", padding: "8px 0" }}>
-            <div className="icon"><Icon name="share" /></div>
-            <div>
-              <h4>4. Email delivery</h4>
-              <p>One email with all your par-3 clips attached, ready to share.</p>
-            </div>
-          </div>
-          <div className="feature-row" style={{ borderBottom: "none", padding: "8px 0" }}>
-            <div className="icon"><Icon name="dollar" /></div>
-            <div>
-              <h4>5. Hole-in-one? Win <b>$10,000</b>.</h4>
-              <p>Ace any par 3, our cup camera verifies it, you get a $10,000 check.</p>
+              )}
             </div>
           </div>
         </div>
-      </div>
+      </section>
 
       {!user && (
-        <div
-          className="card"
-          style={{
-            background: "linear-gradient(135deg, var(--emerald-50), var(--emerald-100))",
-            border: "1px solid var(--emerald-200)",
-            display: "flex",
-            gap: 16,
-            alignItems: "flex-start",
-          }}
-        >
-          <div
-            style={{
-              flexShrink: 0,
-              width: 44, height: 44, borderRadius: 12,
-              background: "var(--emerald-600)", color: "white",
-              display: "grid", placeItems: "center",
-            }}
-          >
-            <Icon name="users" />
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <h3 style={{ color: "var(--emerald-800)", marginBottom: 4 }}>
-              Make an account, keep every shot
-            </h3>
-            <p className="small" style={{ color: "var(--emerald-800)", marginBottom: 12 }}>
-              Sign up with your email and every round you ever play with
-              GolfReelz lands in your personal dashboard. Pull up past shots,
-              re-share clips, and re-register for new rounds in one tap — no
-              more digging through old emails.
-            </p>
-            <div style={{ display: "flex", gap: 8 }}>
-              <Link to="/signup" className="btn small" style={{ width: "auto" }}>
-                Create free account
-              </Link>
-              <Link to="/login" className="btn secondary small" style={{ width: "auto" }}>
-                Log in
-              </Link>
+        <section className="home-section">
+          <div className="home-wrap home-section-in">
+            <div className="home-rule" />
+            <div className="home-sec-head">
+              <h2>Make an account, keep every shot</h2>
+              <p>
+                Every round you ever play with GolfReelz lands in one
+                dashboard. Pull up past shots, re-share clips, and
+                re-register in a tap — no digging through old emails.
+              </p>
+            </div>
+            <div className="home-cta">
+              <Link to="/signup" className="btn">Create free account</Link>
+              <Link to="/login" className="btn secondary">Log in</Link>
             </div>
           </div>
-        </div>
+        </section>
       )}
 
-      <div className="card" style={{ background: "var(--primary-soft)", border: "1px solid var(--emerald-200)" }}>
-        <h3 style={{ color: "var(--emerald-800)" }}>For operators + testers</h3>
-        <p className="small" style={{ color: "var(--emerald-800)" }}>
-          Real flows live at these paths:
-        </p>
-        <div className="stack" style={{ gap: 4, marginTop: 8 }}>
-          <div className="small"><code>/r/&lt;course_token&gt;</code> — mobile registration</div>
-          <div className="small"><code>/g/&lt;gallery_token&gt;</code> — golfer gallery</div>
-          <div className="small"><Link to="/admin">/admin</Link> — operator dashboard</div>
-          <div className="small"><Link to="/admin/long-upload">/admin/long-upload</Link> — long video upload + auto-cut</div>
-          <div className="small"><Link to="/admin/broadcast-clips">/admin/broadcast-clips</Link> — produced clips + share</div>
-          <div className="small"><Link to="/admin/cameras">/admin/cameras</Link> — on-course capture devices</div>
-          <div className="small"><Link to="/admin/review">/admin/review</Link> — hole-in-one verification queue</div>
+      <div className="home-close">
+        <div className="home-wrap home-close-in">
+          <div className="home-rule" />
+          <h2>Get your next round on camera.</h2>
+          <p>
+            Pick your course, play your par 3s, and check your email.
+            That&apos;s the whole thing.
+          </p>
+          <div className="home-cta">
+            <Link to="/courses" className="btn">Pick a course — $20</Link>
+            <Link to="/sample" className="btn secondary">See sample clips</Link>
+          </div>
+          <p className="home-price">
+            $20 per round, per course · $10,000 for an ace
+          </p>
         </div>
+      </div>
+
+      <div className="home-wrap" style={{ paddingBlock: 28 }}>
+        <details className="card" style={{ marginBottom: 0 }}>
+          <summary className="small muted" style={{ cursor: "pointer" }}>
+            For operators + testers
+          </summary>
+          <div className="stack" style={{ gap: 4, marginTop: 10 }}>
+            <div className="small"><code>/r/&lt;course_token&gt;</code> — mobile registration</div>
+            <div className="small"><code>/g/&lt;gallery_token&gt;</code> — golfer gallery</div>
+            <div className="small"><Link to="/admin">/admin</Link> — operator dashboard</div>
+            <div className="small"><Link to="/admin/long-upload">/admin/long-upload</Link> — long video upload + auto-cut</div>
+            <div className="small"><Link to="/admin/broadcast-clips">/admin/broadcast-clips</Link> — produced clips + share</div>
+            <div className="small"><Link to="/admin/cameras">/admin/cameras</Link> — on-course capture devices</div>
+            <div className="small"><Link to="/admin/review">/admin/review</Link> — hole-in-one verification queue</div>
+          </div>
+        </details>
       </div>
     </div>
   );

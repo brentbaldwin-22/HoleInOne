@@ -757,3 +757,21 @@ class ShotOfWeekVote(Base):
     # router so a re-vote moves the vote rather than being rejected.
     voter_key: Mapped[str] = mapped_column(String(80), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AppSetting(Base):
+    """A tiny key/value table for settings that belong to the SITE rather
+    than to a course, a camera or a person.
+
+    There is exactly one of these per key, edited from the admin screens
+    and read by everybody — the site's appearance being the first. It is
+    a table and not a config constant because the whole point is that it
+    changes without a deploy.
+    """
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+    value: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow)

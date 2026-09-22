@@ -95,6 +95,7 @@ from ..schemas import (
     HIOReviewAction,
 )
 from ..services import notifications, storage, thanks, tracer_examples
+from ..services import site_theme
 from ..services.matcher import match_clip
 from ..services.qr import generate_qr_png
 from ..services.auth import hash_password
@@ -244,6 +245,28 @@ detect_swings_combined = _timed(detect_swings_combined, "detect_swings")
 router = APIRouter(
     prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)]
 )
+
+
+@router.get("/theme")
+def admin_get_theme(db: Session = Depends(get_db)):
+    """The site's appearance, plus the choices that are on offer, so the
+    admin screen never has to hard-code a list the server would reject."""
+    return {
+        **site_theme.get_theme(db),
+        "directions": list(site_theme.DIRECTIONS),
+        "modes": list(site_theme.MODES),
+        "defaults": dict(site_theme.DEFAULT_THEME),
+    }
+
+
+@router.post("/theme")
+def admin_set_theme(payload: dict, db: Session = Depends(get_db)):
+    """Change the site's colours for everyone, at once. Send either key
+    on its own — {"mode": "light"} keeps the current direction."""
+    try:
+        return site_theme.set_theme(db, payload or {})
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @router.get("/courses", response_model=list[CourseOut])
