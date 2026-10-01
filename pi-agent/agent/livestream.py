@@ -147,8 +147,13 @@ class LiveStreamer:
                 log.info("lens: %d command(s) from the operator", len(cmds))
                 for c in cmds:
                     try:
+                        # `params` carries the commands that are not a
+                        # nudge — exposure, which has named values
+                        # rather than a step size. An older backend
+                        # sends none and the handler sees {}.
                         self.on_lens_command(
                             str(c.get("op") or ""), int(c.get("amount") or 0),
+                            dict(c.get("params") or {}),
                         )
                     except Exception as exc:  # noqa: BLE001
                         log.error("lens command handler failed: %s", exc)

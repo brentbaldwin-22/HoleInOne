@@ -4,7 +4,7 @@
  * integration; the event-trigger + upload-event endpoints the Pis
  * actually talk to land in phase 2.
  */
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import { Brand } from "../components/Brand.jsx";
@@ -113,6 +113,77 @@ const TONE_STYLE = {
  *  and worse — problem than one with no green file: the tee-only fallback
  *  filters on `tee_clip_filename.isnot(None)`, so a green-only event is
  *  never swept, never failed, and sits forever. */
+// WHAT THE CAMERA SAYS, not what we asked for. The agent reads the
+// camera after every change, and this renders that answer: the keys it
+// found, the values behind them, and the raw dump folded away for the
+// firmware we have not met yet. A refusal is shown as a refusal -- a
+// shutter we believe we set but did not is worse than one we never
+// touched.
+function ExposureReadout({ exp }) {
+  if (!exp) {
+    return (
+      <span className="tiny muted" style={{ width: "100%" }}>
+        Nothing read from this camera yet — press “Read from camera”.
+      </span>
+    );
+  }
+  const rows = [
+    ["Mode", exp.mode],
+    ["Shutter", exp.speed],
+    ["Slowest allowed", exp.slow_limit],
+    ["WDR", exp.wdr],
+  ].filter(([, v]) => v !== null && v !== undefined && v !== "");
+  return (
+    <div style={{ width: "100%" }}>
+      {exp.ok === false && (
+        <div className="tiny" style={{ color: "var(--danger)" }}>
+          The camera refused: {exp.error || "no reason given"}
+        </div>
+      )}
+      {rows.length > 0 ? (
+        <div className="tiny" style={{ display: "flex", flexWrap: "wrap",
+                                       gap: "2px 14px" }}>
+          {rows.map(([label, v]) => (
+            <span key={label}>
+              <span className="muted">{label}:</span> <b>{v}</b>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="tiny muted">
+          The camera reported no shutter key we have a name for — open
+          the raw list below and tell us what it calls one.
+        </div>
+      )}
+      <div className="tiny muted" style={{ marginTop: 2 }}>
+        read {tsRel(exp.updated_at)}
+        {exp.sent && (
+          <> · last sent {Object.entries(exp.sent)
+            .map(([k, v]) => `${k}=${v}`).join(", ")}</>
+        )}
+      </div>
+      {Object.keys(exp.raw || {}).length > 0 && (
+        <details className="tiny" style={{ marginTop: 4 }}>
+          <summary className="muted" style={{ cursor: "pointer" }}>
+            Everything the camera listed ({Object.keys(exp.raw).length})
+          </summary>
+          <div style={{ display: "grid",
+                        gridTemplateColumns: "auto 1fr",
+                        gap: "0 10px", marginTop: 4,
+                        maxHeight: 200, overflowY: "auto" }}>
+            {Object.entries(exp.raw).map(([k, v]) => (
+              <Fragment key={k}>
+                <span className="muted">{k}</span>
+                <span>{String(v)}</span>
+              </Fragment>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function stuckMessage(ev, teeInFlight) {
   const meta = EVENT_STATES[ev.status];
   // A clip the server is receiving right now is not a stuck one. Saying
@@ -1030,6 +1101,27 @@ export default function AdminCameras() {
     }
   }
 
+  // EXPOSURE IS NOT A NUDGE. Unlike zoom and focus, the camera will say
+  // what it currently has -- so every press here is followed by a read,
+  // and the card shows the camera's answer rather than the preset that
+  // was clicked. Which arrives on the agent's next heartbeat, so the
+  // list is reloaded a beat later.
+  async function exposure(cam, preset) {
+    setError(null);
+    try {
+      const out = await api.cameraExposure(adminPassword, cam.id, preset);
+      setLensNote((m) => ({ ...m, [cam.id]: out.note || "sent" }));
+      // The agent nudges its heartbeat as soon as it has applied this,
+      // so a few seconds is usually enough to have the answer.
+      setTimeout(() => { load(); }, 6000);
+      setTimeout(
+        () => setLensNote((m) => ({ ...m, [cam.id]: null })), 8000,
+      );
+    } catch (e) {
+      setError(e?.message || String(e));
+    }
+  }
+
   async function rotateToken(cam) {
     if (!window.confirm(
       "Rotate this camera's auth token? The Pi will stop authenticating with the old token immediately — you'll need to re-provision the SD card.",
@@ -1725,6 +1817,47 @@ export default function AdminCameras() {
                           {lensNote[cam.id]}
                         </span>
                       )}
+
+                      <div style={{ width: "100%", borderTop:
+                                    "1px solid rgba(120,120,120,0.25)",
+                                    paddingTop: 6, marginTop: 2 }}>
+                        <span className="tiny muted">
+                          Shutter — a struck ball crosses this frame at
+                          about 1100&nbsp;px/s and is ~4&nbsp;px across, so
+                          at 1/60 it smears over ~18&nbsp;px and the tracer
+                          can lose it against a pale sky. These cap how
+                          long the camera may expose; shorter costs
+                          brightness, so pick for the light.
+                        </span>
+                      </div>
+                      {[
+                        { key: "bright", text: "Bright 1/1000",
+                          why: "Full sun — the shortest useful exposure" },
+                        { key: "overcast", text: "Overcast 1/500",
+                          why: "Flat light — the setting that matters most "
+                               + "for the tracer" },
+                        { key: "dusk", text: "Dusk 1/250",
+                          why: "Last tee times — as short as the light "
+                               + "allows" },
+                        { key: "auto", text: "Auto",
+                          why: "Hand it back to the camera" },
+                      ].map((b) => (
+                        <button
+                          key={b.key} type="button"
+                          className="secondary small"
+                          style={{ width: "auto" }}
+                          disabled={isBusy}
+                          title={b.why}
+                          onClick={() => exposure(cam, b.key)}
+                        >{b.text}</button>
+                      ))}
+                      <button
+                        type="button" className="ghost small"
+                        style={{ width: "auto" }} disabled={isBusy}
+                        title="Ask the camera what it currently has, and change nothing"
+                        onClick={() => exposure(cam, "read")}
+                      >Read from camera</button>
+                      <ExposureReadout exp={cam.exposure} />
                     </div>
                   )}
                   <button

@@ -29,7 +29,8 @@ from .common import (
     HeartbeatThread,
     build_audio_recorder,
     mux_audio_into_video,
-    lens_control,
+    drain_camera_settings,
+    handle_camera_command,
     open_camera,
 )
 from .focus_meter import FocusMeter
@@ -448,17 +449,12 @@ class TeeAgent:
         )
         return MotionFallbackDetector(detect_width=det_width)
 
-    def _on_lens_command(self, op: str, amount: int) -> None:
-        """Apply an operator's zoom/focus nudge to the camera.
-
-        Best-effort: a lens that refuses a step is a message for the
-        operator watching the live view, not a reason to disturb a
-        capture agent that is otherwise working.
-        """
-        try:
-            lens_control(self.cam_cfg, op, amount)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("lens command %s failed: %s", op, exc)
+    def _on_lens_command(self, op: str, amount: int,
+                         params: dict | None = None) -> None:
+        """Zoom/focus nudge or an exposure change. See
+        common.handle_camera_command — shared with the green runner so
+        the two cannot drift."""
+        handle_camera_command(self, op, amount, params)
 
     def _on_focus_mode(self, seconds: float) -> None:
         """Backend says focus mode is armed for `seconds` (0 = off).
@@ -629,6 +625,9 @@ class TeeAgent:
                 out["battery_current_a"] = r["current_a"]
             if (f := _focus.read()):
                 out.update(f)
+            # What the camera said about its own exposure, if anyone has
+            # asked it since the last heartbeat.
+            out.update(drain_camera_settings(self))
             return out or None
 
         hb = HeartbeatThread(

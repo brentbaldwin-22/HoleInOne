@@ -413,6 +413,19 @@ export const api = {
       body: fd,
     });
   },
+  // Shutter on an IP camera. Same queue as the lens, same reason: the
+  // backend cannot reach the camera. `preset: "read"` changes nothing
+  // and just asks the camera what it has.
+  cameraExposure: (key, cameraId, preset, wdr = null) => {
+    const fd = new FormData();   // Form(...) endpoint — see cameraLens
+    fd.append("preset", preset);
+    if (wdr !== null) fd.append("wdr", wdr ? "1" : "0");
+    return request(`/api/admin/cameras/${cameraId}/exposure`, {
+      method: "POST",
+      adminPassword: key,
+      body: fd,
+    });
+  },
   stopFocusMode: (key, cameraId) =>
     request(`/api/admin/cameras/${cameraId}/focus-mode/stop`, {
       method: "POST",

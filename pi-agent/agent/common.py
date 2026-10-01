@@ -749,6 +749,13 @@ class HeartbeatThread(threading.Thread):
         self.fast_interval = 3
         self._fast_until = 0.0
 
+    def report_soon(self) -> None:
+        """Send the next heartbeat immediately instead of at the next
+        interval. For an answer the operator is waiting on — the camera's
+        exposure read-back — where a minute of silence reads as failure.
+        """
+        self._wake.set()
+
     def set_fast_until(self, monotonic_deadline: float) -> None:
         """Report at fast_interval until this monotonic time."""
         was_fast = self._fast_until > time.monotonic()
@@ -765,6 +772,12 @@ class HeartbeatThread(threading.Thread):
         # First heartbeat immediately so admin UI sees the camera
         # come online without waiting a full interval.
         while not self.stopping.is_set():
+            # CLEARED BEFORE THE PAYLOAD IS BUILT, not after the send. A
+            # request that arrives while this heartbeat is in flight has
+            # nothing in this payload, so the flag has to survive to the
+            # next loop — clearing it afterwards would swallow it and
+            # leave the operator waiting a full interval for an answer.
+            self._wake.clear()
             extra = None
             if self.extra_fn is not None:
                 try:
@@ -781,7 +794,6 @@ class HeartbeatThread(threading.Thread):
             # Wait the interval, but wake early if focus mode is armed
             # mid-sleep. Polling in short slices keeps stop() responsive
             # without a second event to reason about.
-            self._wake.clear()
             _deadline = time.monotonic() + self._sleep_interval()
             while time.monotonic() < _deadline:
                 if self.stopping.wait(0.25):
@@ -1713,64 +1725,287 @@ _LENS_PARAM = {
 }
 
 
-def lens_control(cam_cfg: dict, op: str, amount: int = 0,
-                 timeout: float = 8.0) -> bool:
-    """Apply one lens nudge to the RTSP camera this agent is watching.
+def _sunapi(cam_cfg: dict, submenu: str, action: str,
+            params: dict | None = None, timeout: float = 8.0):
+    """One SUNAPI call against the RTSP camera this agent is watching.
+
+    Returns (ok, body) — body is the camera's raw text, which is either
+    a bare "OK", an "NG" block with a numbered code, or, for a view, a
+    run of Key=Value lines.
 
     Host and credentials come out of the configured rtsp:// URL rather
     than from separate settings: there is exactly one camera here, its
     address is already written down, and a second copy of the password
     is a second thing to get out of step.
     """
-    from urllib.parse import urlsplit
+    from urllib.parse import urlencode, urlsplit
 
     device = str(cam_cfg.get("device", ""))
     if not device.startswith(("rtsp://", "rtsps://")):
-        log.warning("lens: this camera is not an RTSP camera")
-        return False
+        return False, "this camera is not an RTSP camera"
     device = device.replace(
         "{password}", os.environ.get("GOLFREELZ_CAM_PASSWORD", ""),
     )
     u = urlsplit(device)
     if not u.hostname:
-        log.warning("lens: no host in the configured stream URL")
-        return False
-    build = _LENS_PARAM.get((op or "").lower())
-    if build is None:
-        log.warning("lens: unknown op %r", op)
-        return False
-    param, value = build(amount)
+        return False, "no host in the configured stream URL"
 
     try:
         import requests
         from requests.auth import HTTPDigestAuth
     except Exception as exc:  # noqa: BLE001
-        log.warning("lens: requests unavailable: %s", exc)
-        return False
+        return False, f"requests unavailable: {exc}"
 
-    url = (
-        f"http://{u.hostname}/stw-cgi/image.cgi"
-        f"?msubmenu=focus&action=control&{param}={value}"
-    )
+    query = {"msubmenu": submenu, "action": action}
+    query.update(params or {})
+    url = f"http://{u.hostname}/stw-cgi/image.cgi?{urlencode(query)}"
     try:
         r = requests.get(
             url, timeout=timeout,
             auth=HTTPDigestAuth(u.username or "admin", u.password or ""),
         )
     except Exception as exc:  # noqa: BLE001
-        log.warning("lens: %s %s failed: %s", op, value, exc)
-        return False
+        return False, f"{exc}"
     body = (r.text or "").strip()
+    ok = r.status_code == 200 and not body.upper().startswith("NG")
+    return ok, body
+
+
+def lens_control(cam_cfg: dict, op: str, amount: int = 0,
+                 timeout: float = 8.0) -> bool:
+    """Apply one lens nudge to the RTSP camera this agent is watching."""
+    build = _LENS_PARAM.get((op or "").lower())
+    if build is None:
+        log.warning("lens: unknown op %r", op)
+        return False
+    param, value = build(amount)
+    ok, body = _sunapi(
+        cam_cfg, "focus", "control", {param: value}, timeout=timeout,
+    )
     # The camera answers a bare "OK", or an "NG" block with a numbered
     # code. 604 means the value was out of range -- worth logging as
     # itself rather than as a generic failure, because it is the one an
     # operator can act on by nudging less.
-    if r.status_code == 200 and not body.upper().startswith("NG"):
+    if ok:
         log.info("lens: %s %s=%s -> ok", op, param, value)
         return True
-    log.warning("lens: %s %s=%s -> %s %s", op, param, value,
-                r.status_code, body.replace("\n", " ")[:120])
+    log.warning("lens: %s %s=%s -> %s", op, param, value,
+                body.replace("\n", " ")[:120])
     return False
+
+
+# ── exposure ──────────────────────────────────────────────────────────
+# WHY THIS IS WORTH A CONTROL. A struck ball crosses this frame at
+# ~1100 px/s and is about 4 px across. At 1/60 it smears over ~18 px, so
+# each pixel along the smear sees it for a fifth of the exposure and its
+# contrast against the sky arrives divided by five. The band detector
+# thresholds a frame-to-frame difference at 8 grey levels: against blue
+# sky a smeared ball still clears it, against pale overcast it does not,
+# and the ascent chain never forms. Auto-exposure picks the long shutter
+# on exactly the dull days where the margin is already thin.
+#
+# On a USB camera the agent sets this itself through V4L2. On the Hanwha
+# it cannot -- open_camera returns early for an RTSP device because the
+# sensor belongs to the camera, not to this process -- so until now the
+# only way to change it was the camera's own web UI, from the course LAN.
+#
+# NAMES ARE DISCOVERED, NOT ASSUMED. Which keys exist under the camera
+# submenu varies by model and firmware, and a set to a key this firmware
+# does not have returns "NG" while a set to the WRONG key of a pair
+# (capping the fast end instead of the slow end) quietly does the
+# opposite of what was asked. So every change reads the camera first,
+# applies only to keys that are actually there, and reads back after --
+# and what the admin card shows is the read-back, never what we hoped we
+# sent.
+_SHUTTER_MODE_KEYS = ("ShutterMode", "ShutterControl", "Shutter")
+# The exact exposure, when the camera exposes a single fixed value.
+_SHUTTER_VALUE_KEYS = ("ShutterSpeed", "ShutterValue", "Exposure")
+# The SLOWEST exposure auto-exposure may choose. This is the one that
+# matters here: it leaves the camera free to expose for the light while
+# forbidding the long smear.
+_SHUTTER_SLOW_LIMIT_KEYS = ("MaxShutterSpeed", "MaximumShutterSpeed",
+                            "SlowShutterLimit", "MaxExposure")
+_WDR_KEYS = ("WDR", "WideDynamicRange", "SSDR")
+
+
+def handle_camera_command(runner, op: str, amount: int = 0,
+                          params: dict | None = None) -> None:
+    """Apply one operator command to the camera a role runner watches.
+
+    Shared by the tee and the green because the command channel is the
+    same for both and a lens is a lens. The runner only has to own a
+    `cam_cfg`; a `_hb` heartbeat thread is used when it exists.
+
+    Best-effort throughout: a camera that refuses a step is a message
+    for the operator watching the live view, not a reason to disturb a
+    capture agent that is otherwise working.
+
+    Exposure differs from a nudge in the one way that matters: the
+    camera can be ASKED what it currently has. So the answer is stashed
+    on the runner for the next heartbeat and the admin card shows the
+    camera's own words rather than the command we sent.
+    """
+    try:
+        if op in ("exposure_set", "exposure_view"):
+            if op == "exposure_view":
+                result = exposure_view(runner.cam_cfg)
+            else:
+                p = params or {}
+                _wdr = p.get("wdr")
+                result = exposure_set(
+                    runner.cam_cfg,
+                    mode=str(p.get("mode") or "auto"),
+                    speed=(str(p["speed"]) if p.get("speed") else None),
+                    wdr=(None if _wdr in (None, "")
+                         else str(_wdr).lower() in ("1", "true", "on", "yes")),
+                )
+            runner._camera_settings = result
+            # Don't make the operator wait out a whole heartbeat interval
+            # to learn whether it took.
+            hb = getattr(runner, "_hb", None)
+            if hb is not None:
+                hb.report_soon()
+            return
+        lens_control(runner.cam_cfg, op, amount)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("camera command %s failed: %s", op, exc)
+
+
+def drain_camera_settings(runner) -> dict:
+    """The pending exposure read-back as heartbeat fields, and clear it.
+
+    Sent once rather than on every heartbeat: it is the answer to a
+    question an operator asked, not a running measurement, and
+    re-sending it would keep refreshing a timestamp that ought to go
+    stale while nobody is asking.
+    """
+    result = getattr(runner, "_camera_settings", None)
+    if result is None:
+        return {}
+    runner._camera_settings = None
+    return {"camera_settings": json.dumps(result)[:4000]}
+
+
+def _parse_sunapi_view(body: str) -> dict:
+    """The Key=Value lines a view returns, as a dict.
+
+    Values can themselves contain '=' (rare), so split once only. Lines
+    without '=' are headers or blanks and are dropped.
+    """
+    out: dict[str, str] = {}
+    for line in (body or "").splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+
+def _first_present(view: dict, candidates) -> str | None:
+    """The first candidate key this camera actually reports.
+
+    Matched case-insensitively and ignoring any profile prefix the
+    firmware adds (e.g. "Camera.0.ShutterMode"), because the name we
+    have to send back is the one the camera printed.
+    """
+    lowered = {k.lower(): k for k in view}
+    for cand in candidates:
+        c = cand.lower()
+        if c in lowered:
+            return lowered[c]
+        for have_l, have in lowered.items():
+            if have_l.rsplit(".", 1)[-1] == c:
+                return have
+    return None
+
+
+def exposure_view(cam_cfg: dict, timeout: float = 8.0) -> dict:
+    """What the camera says its exposure settings are, right now."""
+    ok, body = _sunapi(cam_cfg, "camera", "view", timeout=timeout)
+    if not ok:
+        return {"ok": False, "error": body.replace("\n", " ")[:200]}
+    view = _parse_sunapi_view(body)
+    picked = {
+        "mode_key": _first_present(view, _SHUTTER_MODE_KEYS),
+        "value_key": _first_present(view, _SHUTTER_VALUE_KEYS),
+        "slow_limit_key": _first_present(view, _SHUTTER_SLOW_LIMIT_KEYS),
+        "wdr_key": _first_present(view, _WDR_KEYS),
+    }
+    reported = {
+        name: view.get(key)
+        for name, key in picked.items() if key
+    }
+    return {
+        "ok": True,
+        "keys": {k: v for k, v in picked.items() if v},
+        "values": reported,
+        # Everything the camera listed, so a setting we have no name for
+        # yet is still visible to whoever is looking at the card.
+        "raw": view,
+    }
+
+
+def exposure_set(cam_cfg: dict, mode: str, speed: str | None = None,
+                 wdr: bool | None = None, timeout: float = 8.0) -> dict:
+    """Set the shutter, by whichever key this camera actually has.
+
+    `mode` is "auto" or "manual"; `speed` is a shutter string in the
+    camera's own vocabulary ("1/500"). Returns the read-back, so the
+    caller reports what the camera now says rather than what it asked
+    for.
+    """
+    before = exposure_view(cam_cfg, timeout=timeout)
+    if not before.get("ok"):
+        return before
+    keys = before["keys"]
+    params: dict[str, str] = {}
+
+    mode = (mode or "auto").strip().lower()
+    note = None
+    # MANUAL WITHOUT A VALUE KEY IS A TRAP. Pinning the mode on a
+    # firmware that exposes no fixed-shutter key leaves the camera in
+    # manual at whatever exposure it happened to hold, which is the one
+    # outcome worse than not touching it. Fall back to auto with a cap:
+    # that is what the operator meant anyway -- do not smear.
+    if mode == "manual" and not keys.get("value_key"):
+        mode = "auto"
+        note = ("this camera exposes no fixed-shutter key, so the limit "
+                "was applied to auto exposure instead of pinning it")
+
+    if keys.get("mode_key"):
+        params[keys["mode_key"]] = "Manual" if mode == "manual" else "Auto"
+
+    if speed:
+        if mode == "manual":
+            params[keys["value_key"]] = speed
+        elif keys.get("slow_limit_key"):
+            # Auto exposure, but it may not expose for longer than this.
+            params[keys["slow_limit_key"]] = speed
+        elif keys.get("value_key"):
+            params[keys["value_key"]] = speed
+
+    if wdr is not None and keys.get("wdr_key"):
+        params[keys["wdr_key"]] = "On" if wdr else "Off"
+
+    if not params:
+        return {
+            "ok": False,
+            "error": "this camera reports no shutter key we recognise",
+            "raw": before.get("raw"),
+        }
+
+    ok, body = _sunapi(cam_cfg, "camera", "set", params, timeout=timeout)
+    log.info("exposure: set %s -> %s", params,
+             "ok" if ok else body.replace("\n", " ")[:120])
+    after = exposure_view(cam_cfg, timeout=timeout)
+    after["sent"] = params
+    if note:
+        after["note"] = note
+    if not ok:
+        after["ok"] = False
+        after["error"] = body.replace("\n", " ")[:200]
+    return after
 
 
 def open_camera(cam_cfg: dict):

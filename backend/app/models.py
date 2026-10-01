@@ -485,6 +485,17 @@ class Camera(Base):
     # Reset when focus mode is armed, so each session starts honest.
     focus_best: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     focus_best_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # EXPOSURE, AS THE CAMERA REPORTS IT. An IP camera owns its own
+    # sensor -- the agent cannot set a shutter through V4L2 the way it
+    # can on a USB module -- so this is a read-back, written whenever
+    # the agent asks the camera what it has. Stored whole, raw dump
+    # included: which keys a Hanwha exposes varies by firmware, and a
+    # setting we have no name for yet is still worth seeing.
+    #
+    # Null on a Pi camera, and on an IP camera nobody has asked yet.
+    camera_settings: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    camera_settings_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # Soft toggle distinct from `enabled`: when False the camera stays
     # online (heartbeats + live-watch still work) but the backend

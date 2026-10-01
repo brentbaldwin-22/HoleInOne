@@ -468,6 +468,40 @@ def battery_status(
     }
 
 
+def exposure_status(settings_blob, updated_at=None) -> dict | None:
+    """The camera's own exposure reading, for the dashboard. None until
+    something has asked it.
+
+    THE SHAPE IS THE AGENT'S, not ours: which keys a Hanwha exposes
+    varies by firmware, so the agent reports what it found and this does
+    no more than flatten the useful bits out front and keep the raw dump
+    behind them. `ok: false` with an error is a perfectly good answer —
+    it means the camera refused or we named a key it does not have, and
+    an operator needs to see that rather than a blank.
+    """
+    if not isinstance(settings_blob, dict):
+        return None
+    values = settings_blob.get("values") or {}
+    keys = settings_blob.get("keys") or {}
+    return {
+        "ok": bool(settings_blob.get("ok")),
+        "error": settings_blob.get("error"),
+        # Flattened for the card: the mode, the fixed value if there is
+        # one, the slow-end cap if there is one, and WDR.
+        "mode": values.get("mode_key"),
+        "speed": values.get("value_key"),
+        "slow_limit": values.get("slow_limit_key"),
+        "wdr": values.get("wdr_key"),
+        # Which key each of those came from, because on an unfamiliar
+        # firmware that is the thing worth knowing.
+        "keys": keys,
+        # What was last sent, when this reading followed a change.
+        "sent": settings_blob.get("sent"),
+        "raw": settings_blob.get("raw") or {},
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
 def focus_status(
     score: float | None,
     brightness: float | None,
@@ -521,6 +555,7 @@ def heartbeat(
     battery_current_a: float | None = Form(None),
     focus_score: float | None = Form(None),
     focus_brightness: float | None = Form(None),
+    camera_settings: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Cheap keepalive the Pi calls every ~60 s. Touches last_seen_at
@@ -586,6 +621,22 @@ def heartbeat(
                 )
             except Exception as exc:  # noqa: BLE001
                 log.warning("battery: low alert send failed: %s", exc)
+    # THE CAMERA'S OWN WORDS, not the command we sent. The agent asks
+    # the camera what its exposure is after every change (and on a bare
+    # read), and this is that answer — stored whole, including the raw
+    # key/value dump, because a setting we have no name for yet is still
+    # worth an operator being able to see.
+    if camera_settings:
+        try:
+            parsed = json.loads(camera_settings)
+            if isinstance(parsed, dict):
+                cam.camera_settings = parsed
+                cam.camera_settings_at = _utcnow_naive()
+        except (ValueError, TypeError) as exc:
+            log.warning(
+                "cameras: camera %s sent unparseable settings: %s",
+                cam.id, exc,
+            )
     db.commit()
     return {
         "ok": True,
@@ -626,15 +677,25 @@ _LENS_QUEUES: dict[int, list[dict]] = {}
 LENS_QUEUE_MAX = 24
 
 
-def request_lens(camera_id: int, op: str, amount: int = 0) -> int:
-    """Queue one lens nudge. Returns the queue depth after adding."""
+def request_lens(camera_id: int, op: str, amount: int = 0,
+                 params: dict | None = None) -> int:
+    """Queue one camera command. Returns the queue depth after adding.
+
+    `amount` is the step size for a zoom or focus nudge. `params`
+    carries the commands that are not a nudge — an exposure change has
+    named values ("manual", "1/500") rather than a step — and rides the
+    same queue so ordering still holds across both kinds.
+    """
     with _LENS_LOCK:
         q = _LENS_QUEUES.setdefault(int(camera_id), [])
         if len(q) >= LENS_QUEUE_MAX:
             # Drop the OLDEST. A stale zoom from two minutes ago is worth
             # less than the one just clicked.
             del q[0]
-        q.append({"op": op, "amount": int(amount)})
+        cmd = {"op": op, "amount": int(amount)}
+        if params:
+            cmd["params"] = {str(k): str(v) for k, v in params.items()}
+        q.append(cmd)
         return len(q)
 
 

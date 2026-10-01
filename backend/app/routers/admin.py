@@ -70,6 +70,7 @@ from .cameras import _LIVE_FRAMES, _WATCHERS, _LIVE_LOCK, WATCH_TTL, FRAME_TTL
 from .cameras import request_lens as _request_lens
 from .cameras import battery_status as _battery_status
 from .cameras import focus_status as _focus_status
+from .cameras import exposure_status as _exposure_status
 from .cameras import _focus_remaining as _cam_focus_remaining
 from ..models import (
     AuditLog,
@@ -14821,6 +14822,9 @@ def _camera_to_dict(
             best=c.focus_best,
             focus_seconds=_cam_focus_remaining(c.id),
         ),
+        "exposure": _exposure_status(
+            c.camera_settings, c.camera_settings_at,
+        ),
         "enabled": bool(c.enabled),
         "triggering_enabled": bool(c.triggering_enabled),
         "note": c.note,
@@ -15572,6 +15576,99 @@ _LENS_OPS = {
 
 # The only magnitudes the lens accepts, per the camera's own schema.
 _LENS_STEPS = (1, 10, 100)
+
+
+# EXPOSURE PRESETS, IN GOLF TERMS. The number that matters is how long
+# the sensor is open while the ball crosses the frame: at ~1100 px/s and
+# ~4 px wide, 1/60 smears it over ~18 px and divides its contrast against
+# the sky by five, which is the difference between an ascent chain that
+# forms and one that does not on a dull day.
+#
+# These are the SLOWEST exposure the camera may choose, not a fixed one,
+# wherever the camera exposes such a key -- it should still be free to
+# expose for the light, just not to smear. "manual" pins it instead, for
+# the case where auto keeps drifting.
+_EXPOSURE_PRESETS = {
+    "auto":     {"mode": "auto",   "speed": None,
+                 "label": "Auto — the camera decides"},
+    "bright":   {"mode": "auto",   "speed": "1/1000",
+                 "label": "Bright — cap at 1/1000"},
+    "overcast": {"mode": "auto",   "speed": "1/500",
+                 "label": "Overcast — cap at 1/500"},
+    "dusk":     {"mode": "auto",   "speed": "1/250",
+                 "label": "Dusk — cap at 1/250"},
+    "pin500":   {"mode": "manual", "speed": "1/500",
+                 "label": "Pinned at 1/500"},
+}
+
+
+@router.post("/cameras/{camera_id}/exposure")
+def control_camera_exposure(
+    camera_id: int,
+    preset: str = Form(...),
+    wdr: str | None = Form(None),
+    db: Session = Depends(get_db),
+):
+    """Set an IP camera's shutter, or just read what it currently has.
+
+    Like the lens endpoint, THE BACKEND CANNOT REACH THE CAMERA: this
+    queues a command the agent collects on its next watch-status poll
+    and runs against the camera's own API on the course LAN.
+
+    `preset=read` asks and changes nothing. Either way the agent reports
+    the camera's answer on its next heartbeat, so what the card shows is
+    the camera's reading and never the value we asked for -- which keys
+    a given firmware exposes varies, and a set that lands on the wrong
+    one must be visible rather than assumed.
+    """
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    if (cam.kind or "pi") != "ip":
+        raise HTTPException(
+            409,
+            "only an IP camera owns its own exposure; a Pi module's is "
+            "set by the agent itself",
+        )
+    _p = (preset or "").strip().lower()
+    if _p == "read":
+        depth = _request_lens(camera_id, "exposure_view", 0)
+        return {
+            "ok": True, "preset": "read", "queued": depth,
+            "note": "asked — the camera's answer arrives with its next "
+                    "heartbeat",
+        }
+    spec = _EXPOSURE_PRESETS.get(_p)
+    if spec is None:
+        raise HTTPException(
+            400, f"preset must be one of {sorted(_EXPOSURE_PRESETS)} or read",
+        )
+    params = {"mode": spec["mode"]}
+    if spec["speed"]:
+        params["speed"] = spec["speed"]
+    if wdr is not None and str(wdr).strip() != "":
+        params["wdr"] = "1" if str(wdr).lower() in ("1", "true", "on") else "0"
+    depth = _request_lens(camera_id, "exposure_set", 0, params)
+    db.add(AuditLog(
+        actor="admin", action="camera_exposure",
+        target=f"camera:{camera_id}",
+        detail=f"preset={_p} {params}",
+    ))
+    db.commit()
+    return {
+        "ok": True, "preset": _p, "sent": params, "queued": depth,
+        "note": "queued — the camera applies it on its next poll and "
+                "reports back what it then reads",
+    }
+
+
+@router.get("/cameras/exposure-presets")
+def list_exposure_presets():
+    """The presets the UI offers, named here so the two cannot drift."""
+    return [
+        {"key": k, "label": v["label"], "mode": v["mode"], "speed": v["speed"]}
+        for k, v in _EXPOSURE_PRESETS.items()
+    ]
 
 
 @router.post("/cameras/{camera_id}/lens")
