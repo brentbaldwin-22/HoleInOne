@@ -1631,14 +1631,20 @@ export default function AdminCameras() {
                     >
                       <div
                         className="inline"
-                        style={{ justifyContent: "space-between", marginBottom: 6 }}
+                        style={{ justifyContent: "space-between",
+                                 marginBottom: 6, gap: 8, width: "100%" }}
                       >
-                        <div className="small" style={{ color: "#bbb" }}>
+                        {/* The title wraps in this narrower column, so it
+                            takes the slack and Close keeps its corner. */}
+                        <div className="small" style={{ color: "#bbb",
+                                                        flex: 1, minWidth: 0 }}>
                           Live · #{cam.id}
                           {cam.name && <> — {cam.name}</>}
                           {" · "}hole {cam.assigned_hole} {cam.assigned_role}
                         </div>
-                        <button type="button" className="ghost small" onClick={stopWatch}>
+                        <button type="button" className="ghost small"
+                                style={{ width: "auto", flexShrink: 0 }}
+                                onClick={stopWatch}>
                           Close
                         </button>
                       </div>
