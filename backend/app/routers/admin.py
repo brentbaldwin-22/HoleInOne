@@ -95,7 +95,7 @@ from ..schemas import (
     HIOReviewAction,
 )
 from ..services import notifications, storage, thanks, tracer_examples
-from ..services import site_theme
+from ..services import site_theme, workload
 from ..services.matcher import match_clip
 from ..services.qr import generate_qr_png
 from ..services.auth import hash_password
@@ -4922,7 +4922,7 @@ def _screen_then_run(upload_id, tee_name, target, kwargs):
 
 
 @router.post("/clips/quick-upload")
-async def quick_upload_videos(
+def quick_upload_videos(
     course_id: int = Form(...),
     base_captured_at: str = Form(...),
     video: UploadFile = File(...),
@@ -4964,7 +4964,12 @@ async def quick_upload_videos(
         raise HTTPException(400, "invalid base_captured_at; use ISO 8601")
 
     # Save the tee video.
-    data = await video.read()
+    # Sync `def`, not `async def`: the write_bytes below is a blocking
+    # disk write of up to several hundred MB, and on the event loop it
+    # stops the whole server — health check included — until it ends.
+    # In the threadpool, blocking is the thread's job. Starlette has
+    # already buffered the body, so this reads its spooled temp file.
+    data = video.file.read()
     if not data:
         raise HTTPException(400, "empty tee video upload")
     if len(data) > 1024 * 1024 * 1024:
@@ -4984,7 +4989,7 @@ async def quick_upload_videos(
     green_src_name: str | None = None
     green_original_filename: str | None = None
     if dual_camera:
-        green_data = await video_green.read()
+        green_data = video_green.file.read()
         if not green_data:
             src_path.unlink(missing_ok=True)
             raise HTTPException(400, "empty green video upload")
@@ -5091,7 +5096,7 @@ async def quick_upload_videos(
 
 
 @router.post("/clips/long-upload")
-async def upload_long_video(
+def upload_long_video(
     course_id: int = Form(...),
     camera_type: str = Form("tee"),
     base_captured_at: str = Form(...),
@@ -5218,7 +5223,12 @@ async def upload_long_video(
         _stamps["source_" + _field.replace("_started_at", "") +
                 "_started_at"] = _dt.isoformat()
 
-    data = await video.read()
+    # Sync `def`, not `async def`: the write_bytes below is a blocking
+    # disk write of up to several hundred MB, and on the event loop it
+    # stops the whole server — health check included — until it ends.
+    # In the threadpool, blocking is the thread's job. Starlette has
+    # already buffered the body, so this reads its spooled temp file.
+    data = video.file.read()
     if not data:
         raise HTTPException(400, "empty video upload")
     if len(data) > 1024 * 1024 * 1024:  # 1GB cap on the long source
@@ -5237,7 +5247,7 @@ async def upload_long_video(
 
     green_src_path: Path | None = None
     if dual_camera:
-        green_data = await video_green.read()
+        green_data = video_green.file.read()
         if not green_data:
             src_path.unlink(missing_ok=True)
             raise HTTPException(400, "empty green video upload")
@@ -5292,8 +5302,15 @@ async def upload_long_video(
             except Exception as exc:  # pragma: no cover
                 log.warning("long-upload preview gen failed for %s: %s", p.name, exc)
 
+    def _preview_job() -> None:
+        # Niced but NOT gated: these are a handful of frames, and they
+        # are what the operator is staring at. Making them queue behind
+        # a ten-minute produce would be the wrong trade.
+        workload.deprioritize()
+        _preview_raw_sources(raw_sources)
+
     threading.Thread(
-        target=_preview_raw_sources, args=(raw_sources,),
+        target=_preview_job,
         daemon=True, name=f"long-upload-preview-{upload_id}",
     ).start()
 
@@ -5307,8 +5324,8 @@ async def upload_long_video(
     # per-segment pipeline. That is the only remaining caller of it, and
     # it is a deliberate one rather than a path nobody migrated.
     if seg_list:
-        threading.Thread(
-            target=_run_long_upload_job,
+        _heavy_thread(
+            _run_long_upload_job,
             kwargs={
                 "upload_id": upload_id,
                 "seg_list": list(seg_list),
@@ -5325,9 +5342,8 @@ async def upload_long_video(
                 "motion_only": bool(motion_only),
                 "single_hole": bool(motion_only),
             },
-            daemon=True,
             name=f"long-upload-manual-{upload_id}",
-        ).start()
+        )
     else:
         # An operator-supplied tee→green offset is real information the
         # cameras couldn't provide — persist it where the produce path's
@@ -11207,14 +11223,13 @@ def wizard_produce(
 
     _debugx_set("produce", upload_id, stage="Queued", done=0, total=0,
                 running=True, error=None)
-    threading.Thread(
-        target=run_wizard_produce_job,
+    _heavy_thread(
+        run_wizard_produce_job,
         args=(upload_id, (bx, by), impact_frame, hole_number,
               landing_frame, landing_spot, solo, swing_idx,
               points, launch_frame),
-        daemon=True,
         name=f"wizard-produce-{upload_id}",
-    ).start()
+    )
     log.info(
         "wizard produce: upload=%s queued with ball=(%.0f,%.0f) impact=f%d "
         "(%s)", upload_id, bx, by, impact_frame,
@@ -14185,24 +14200,30 @@ def produce_debug(
         row.last_error = None
         db.commit()
         wait_after = time.time()
-        threading.Thread(
-            target=_run_long_upload_job,
+        _heavy_thread(
+            _run_long_upload_job,
             kwargs={
                 "upload_id": row.id, "seg_list": [], "auto_detect_swings": True,
                 "starting_hole": 1, "ai_tracer_model": None,
                 "debug_artifacts": True,
             },
-            daemon=True, name=f"produce-debug-produce-{row.id}",
-        ).start()
+            name=f"produce-debug-produce-{row.id}",
+        )
 
     # 2) Report renderer — reads the produce run's record; adds the
     # classical-CV comparison and shows the production tracer.
+    def _analyze_job() -> None:
+        # Niced but NOT gated, deliberately: this waits for the produce
+        # thread above to finish, and a waiter holding the gate the
+        # thing it waits on needs is a deadlock.
+        workload.deprioritize()
+        _run_produce_debug_job(
+            upload_id=row.id, motion_only=motion_only,
+            wait_after=wait_after,
+        )
+
     threading.Thread(
-        target=_run_produce_debug_job,
-        kwargs={
-            "upload_id": row.id, "motion_only": motion_only,
-            "wait_after": wait_after,
-        },
+        target=_analyze_job,
         daemon=True, name=f"produce-debug-analyze-{row.id}",
     ).start()
     return {"ok": True, "upload_id": row.id, "ai_available": bool(os.environ.get("ANTHROPIC_API_KEY"))}
@@ -14254,7 +14275,7 @@ def rescan_ball(upload_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/clips/upload")
-async def upload_clip(
+def upload_clip(
     course_id: int = Form(...),
     hole_number: int = Form(...),
     camera_type: str = Form("tee"),
@@ -14293,7 +14314,12 @@ async def upload_clip(
     if not (video.content_type or "").startswith("video/"):
         raise HTTPException(400, "must be a video file")
 
-    data = await video.read()
+    # Sync `def`, not `async def`: the write_bytes below is a blocking
+    # disk write of up to several hundred MB, and on the event loop it
+    # stops the whole server — health check included — until it ends.
+    # In the threadpool, blocking is the thread's job. Starlette has
+    # already buffered the body, so this reads its spooled temp file.
+    data = video.file.read()
     if not data:
         raise HTTPException(400, "empty video upload")
     if len(data) > 500 * 1024 * 1024:
@@ -14357,7 +14383,7 @@ async def upload_clip(
     composite_url = None
     composite_info: dict | None = None
     if video_green is not None and not already_traced:
-        green_data = await video_green.read()
+        green_data = video_green.file.read()
         if green_data:
             if len(green_data) > 500 * 1024 * 1024:
                 raise HTTPException(413, "green video too large (max 500MB)")
@@ -14531,7 +14557,7 @@ def update_showcase(position: int, payload: dict, db: Session = Depends(get_db))
 
 
 @router.post("/showcase/{position}/upload")
-async def upload_showcase(
+def upload_showcase(
     position: int,
     video: UploadFile = File(...),
     title: str = Form(""),
@@ -14544,7 +14570,12 @@ async def upload_showcase(
     if not (video.content_type or "").startswith("video/"):
         raise HTTPException(400, "must be a video file")
 
-    data = await video.read()
+    # Sync `def`, not `async def`: the write_bytes below is a blocking
+    # disk write of up to several hundred MB, and on the event loop it
+    # stops the whole server — health check included — until it ends.
+    # In the threadpool, blocking is the thread's job. Starlette has
+    # already buffered the body, so this reads its spooled temp file.
+    data = video.file.read()
     if not data:
         raise HTTPException(400, "empty upload")
     if len(data) > 500 * 1024 * 1024:
@@ -17203,6 +17234,7 @@ def _debugx_start(kind: str, upload_id: int, runner) -> dict:
         # first is what an operator sees when they press Produce on a
         # course morning's backlog. Held until the gate is actually in
         # hand, then handed over to the run's own stages.
+        workload.deprioritize()
         _debugx_set(kind, upload_id,
                     stage="Waiting for the produce queue", running=True)
         _t_gate = time.monotonic()
@@ -22647,11 +22679,39 @@ _produce_worker: threading.Thread | None = None
 # does Debug3 / Re-Produce (which run on their own thread so the panel
 # can poll status) — so nothing produces concurrently, whatever started
 # it, even though only queued uploads are ordered among themselves.
-_produce_gate = threading.Lock()
+#
+# It is now the SITE-WIDE heavy-work gate, not just the produce one: the
+# re-encode a Pi upload kicks off takes the same lock, so a produce and
+# an ffmpeg transcode can no longer split the one core between them and
+# starve the health check.
+_produce_gate = workload.heavy_gate
+
+
+def _heavy_thread(target, *, name: str, args=(), kwargs=None,
+                  label: str | None = None) -> threading.Thread:
+    """Start a daemon thread for CPU-heavy media work.
+
+    Niced below the web server and holding the heavy gate for its whole
+    run, so it cannot share the one core with another produce or with a
+    Pi upload's re-encode. Use it for work that nothing else is waiting
+    on: a job that blocks until ANOTHER gated job finishes must not take
+    the gate itself, or the two deadlock.
+    """
+    def _run() -> None:
+        workload.deprioritize()
+        with workload.heavy(label or name):
+            target(*args, **(kwargs or {}))
+
+    t = threading.Thread(target=_run, daemon=True, name=name)
+    t.start()
+    return t
 
 
 def _produce_worker_loop() -> None:
     global _produce_running
+    # This thread exists only to produce, and produce is the heaviest
+    # thing the box does. Below uvicorn for the life of the thread.
+    workload.deprioritize()
     while True:
         try:
             _key, _seq, task = _produce_q.get()

@@ -72,7 +72,7 @@ from ..models import (
     DeletedCameraSession,
     VideoClip,
 )
-from ..services import storage
+from ..services import storage, workload
 from ..services.video import probe_video_info
 
 log = logging.getLogger("golfreelz.cameras")
@@ -182,6 +182,14 @@ def _post_process_raw_clip(filename: str) -> None:
     Designed to be called from a daemon thread so the Pi's
     upload-event HTTP response isn't blocked on a multi-second
     re-encode.
+
+    TAKES THE HEAVY GATE. It used to run alongside the production job
+    for the same event — two ffmpeg/OpenCV workloads splitting one core
+    while uvicorn waited for a slice, which is how a health check misses
+    its five seconds and Render restarts the instance mid-produce. It
+    also meant the SAME file could be transcoded twice at once, from
+    here and from _process_camera_event_job; now the second call finds
+    the marker and costs nothing.
     """
     from ..services.video import extract_thumbnail, transcode_for_web
 
@@ -189,8 +197,15 @@ def _post_process_raw_clip(filename: str) -> None:
     if not src.exists():
         log.warning("post-process: %s vanished before processing", filename)
         return
-    transcode_for_web(src)
-    extract_thumbnail(src)
+    workload.deprioritize()
+    with workload.heavy(f"post-process {filename}"):
+        # Re-checked under the gate: waiting out a produce is exactly
+        # the window in which the file can be deleted or replaced.
+        if not src.exists():
+            log.warning("post-process: %s vanished while queued", filename)
+            return
+        transcode_for_web(src)
+        extract_thumbnail(src)
 
 
 def _save_event_clip(
@@ -953,7 +968,7 @@ async def poll_trigger(
 
 
 @router.post("/{token}/upload-event")
-async def upload_event(
+def upload_event(
     token: str,
     session_id: str = Form(...),
     recording_started_at: float | None = Form(None),
@@ -977,7 +992,14 @@ async def upload_event(
 
     event, role = _resolve_event_role(cam, sid, db)
 
-    data = await video.read()
+    # SYNC ON PURPOSE. As an `async def` this ran on the event loop, and
+    # _save_event_clip's write_bytes of a multi-MB clip blocked it — the
+    # whole server, health check included, stopped for the length of that
+    # disk write. A plain `def` is handed to the threadpool instead, where
+    # blocking is what the thread is for. Starlette has already buffered
+    # the body by the time we are called, so this reads from its spooled
+    # temp file rather than the network.
+    data = video.file.read()
     if not data:
         raise HTTPException(400, "empty upload")
     if len(data) > MAX_EVENT_CLIP_BYTES:
@@ -1017,7 +1039,7 @@ def upload_status(
 
 
 @router.post("/{token}/upload-chunk")
-async def upload_chunk(
+def upload_chunk(
     token: str,
     upload_id: str = Form(...),
     offset: int = Form(...),
@@ -1043,9 +1065,15 @@ async def upload_chunk(
         )
     part, meta = _part_paths(cam.id, upload_id)
 
-    # Read the body BEFORE taking the lock — this awaits on the network
-    # and must not hold up other cameras' appends.
-    body = await chunk.read()
+    # SYNC ON PURPOSE — see upload_event. This one mattered more: as an
+    # `async def` it took _PARTS_LOCK and appended to disk ON THE EVENT
+    # LOOP, so two cameras uploading at once meant one of them blocked
+    # the entire server while it waited for the lock. Starlette has
+    # already buffered the body, so this read is from a temp file.
+    #
+    # Still read it before taking the lock: no reason to hold the lock
+    # across a copy other cameras are waiting on.
+    body = chunk.file.read()
     if not body:
         raise HTTPException(400, "empty chunk")
     if len(body) > PART_MAX_CHUNK_BYTES:
@@ -1146,6 +1174,10 @@ def _process_camera_event_job(event_id: int) -> None:
     # heavy modules at top level).
     from .admin import enqueue_produce_job
     from ..models import LongVideoUpload
+
+    # Own thread, and everything below it is media work: the rehydrate,
+    # the re-encodes, and the produce it waits on.
+    workload.deprioritize()
 
     db = SessionLocal()
     try:
