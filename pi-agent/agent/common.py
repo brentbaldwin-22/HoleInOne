@@ -1670,6 +1670,60 @@ class ClipWriter:
 # Frame ring buffer
 # ---------------------------------------------------------------------
 
+# ── is this clip's header lying about how long it is? ────────────────
+
+# Below this the file is honest enough to leave alone: a frame or two of
+# rounding is not worth a re-encode decision, and the measurement itself
+# has noise in it.
+RECLOCK_TOLERANCE = 0.05
+# Under this many seconds the span is too short to divide by.
+RECLOCK_MIN_SPAN = 2.0
+
+
+def reclock_fps(n_written: int, real_span: float, stamped_fps: float):
+    """The rate this clip should have been stamped at, or None.
+
+    A clip is written at a fixed `stamped_fps` and the gap filler holds
+    the previous frame through real gaps, so playback time normally
+    equals wall-clock time and there is nothing to fix. Two things break
+    that and both end the same way — a file with FEWER frames than its
+    own header claims the duration needs, which plays fast and jumpy:
+
+      * the filler's back-pressure skips fills while the encoder is
+        behind (it counts them as n_fills_skipped and says in its own
+        comment that timing drifts for that stretch), and
+      * a camera delivering steadily BELOW the nominal rate never trips
+        the filler at all — its 1.8x-period gap test does not fire at,
+        say, 30 fps delivered against a 50 fps clock, because 33 ms is
+        under the 36 ms threshold.
+
+    THIS IS NOT THE AVERAGE RE-TIMING BOTH RUNNERS REFUSE. That one
+    re-clocked every clip to its mean rate, so one stall inside an
+    otherwise healthy recording played the healthy parts slow. This asks
+    a narrower question: does the number of frames in the file, over the
+    wall-clock span they cover, match what the header says? When gap
+    filling did its job the answer is yes and this returns None, whatever
+    the camera did mid-clip. It only speaks up when the file is
+    genuinely short.
+
+    It is still an average over the clip, so a short file caused by one
+    long stall gets its missing time spread across the whole clip rather
+    than left where it happened. That is the accepted trade: a clip
+    whose duration matches the wall clock — and matches the paired
+    camera it will be spliced with — beats one that runs fast.
+    """
+    if n_written < 2 or real_span < RECLOCK_MIN_SPAN or stamped_fps <= 0:
+        return None
+    # The duration a player will give this file is n / stamped_fps.
+    # We want that to be real_span, so this is the rate that makes it so.
+    want = n_written / real_span
+    if abs(want - stamped_fps) <= RECLOCK_TOLERANCE * stamped_fps:
+        return None
+    if not 1.0 <= want <= 120.0:
+        return None
+    return want
+
+
 class FrameBuffer:
     """Thread-safe circular buffer of (timestamp, frame) tuples. Sized
     by `seconds * fps` so the operator can configure the pre-roll

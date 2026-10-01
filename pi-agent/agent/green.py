@@ -25,6 +25,7 @@ import cv2
 
 from .common import (
     ClipWriter,
+    reclock_fps,
     BackendClient,
     BackgroundUploader,
     FrameBuffer,
@@ -402,14 +403,27 @@ class GreenAgent:
                 )
 
         size = clip_path.stat().st_size if clip_path.exists() else 0
-        # NO average re-timing. Frame loss is BURSTY: one stall drags
-        # the average down, and re-clocking the whole clip to it plays
-        # the healthy frames slow — the "slow motion" artifact. The
-        # ClipWriter instead fills gaps by holding the previous frame,
-        # so playback time already equals wall-clock time.
-        real_fps = None
         real_span = last_written_ts - first_frame_ts
         frames_written = clip_writer.n_written
+        # NO AVERAGE RE-TIMING — that re-clocked every clip to its mean
+        # rate, and one stall inside an otherwise healthy recording then
+        # played the healthy parts slow. reclock_fps asks the narrower
+        # question instead: are there fewer frames in this file than its
+        # own header needs for the time it covers? When gap filling did
+        # its job there are not, and this is None.
+        # The green writer is clocked at the NOMINAL rate — unlike the
+        # tee it does no pre-roll measurement — so the stamp it has to
+        # be checked against is self.fps.
+        real_fps = reclock_fps(frames_written, real_span, self.fps)
+        if real_fps:
+            log.warning(
+                "clip is short for its length: %d frames over %.2fs is "
+                "%.2f fps, but it is stamped %.2f — re-clocking on upload "
+                "so it plays in real time and stays length-matched to the "
+                "tee (%.2fs instead of %.2fs)",
+                frames_written, real_span, real_fps, self.fps,
+                real_span, frames_written / self.fps,
+            )
         _captured = frames_written - clip_writer.n_filled
         log.info(
             "recorded %s: %d frames, %.1f MB (reason=%s) | timing: "

@@ -32,6 +32,7 @@ from .common import (
     drain_camera_settings,
     handle_camera_command,
     open_camera,
+    reclock_fps,
 )
 from . import tee_roi
 from .focus_meter import FocusMeter
@@ -1068,11 +1069,22 @@ class TeeAgent:
                     break
             time.sleep(0.02)
         clip_writer.close()
-        # No re-timing on upload: gap filling already made the file a
-        # correct constant-rate clip whose duration equals wall-clock.
-        real_fps = None
         real_span = last_written_ts - first_frame_ts
         n_frames_written = clip_writer.n_written
+        # DOES THE FILE'S OWN HEADER MATCH THE WALL CLOCK? Normally yes,
+        # because gap filling holds the previous frame through a stall —
+        # and then this is None and the upload is untouched. It speaks
+        # up only when the file is genuinely short of frames for the
+        # time it covers, which plays fast and jumpy. See reclock_fps.
+        real_fps = reclock_fps(n_frames_written, real_span, write_fps)
+        if real_fps:
+            log.warning(
+                "clip is short for its length: %d frames over %.2fs is "
+                "%.2f fps, but it is stamped %.2f — re-clocking on upload "
+                "so it plays in real time (%.2fs instead of %.2fs)",
+                n_frames_written, real_span, real_fps, write_fps,
+                real_span, n_frames_written / write_fps,
+            )
         _captured = n_frames_written - clip_writer.n_filled
         # Two rates, deliberately separate:
         #   camera  = what the SENSOR delivered to the capture thread
