@@ -51,6 +51,7 @@ class LiveStreamer:
         on_capture_request=None,
         on_focus_mode=None,
         on_lens_command=None,
+        on_tee_zones=None,
     ) -> None:
         self.client = client
         # Called with (seconds) when the backend asks for an on-demand
@@ -64,6 +65,13 @@ class LiveStreamer:
         # (0 when off), so the agent can raise its measurement rate.
         self.on_focus_mode = on_focus_mode
         self.on_lens_command = on_lens_command
+        # Called with the backend's trigger zones on every poll (None
+        # when the camera has none set). A STATE, like focus mode, not a
+        # command: the backend sends the current answer every time
+        # rather than trying to tell us only when it changes, because a
+        # Pi that restarts or wakes from curfew has no idea what it
+        # missed.
+        self.on_tee_zones = on_tee_zones
         self.frame_interval = 1.0 / max(1, fps)
         self.jpeg_quality = max(20, min(95, jpeg_quality))
         self.idle_poll = idle_poll_seconds
@@ -157,6 +165,11 @@ class LiveStreamer:
                         )
                     except Exception as exc:  # noqa: BLE001
                         log.error("lens command handler failed: %s", exc)
+            if self.on_tee_zones:
+                try:
+                    self.on_tee_zones(payload.get("tee_box_roi"))
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("tee-zone handler failed: %s", exc)
             secs = payload.get("capture_seconds")
             if secs and self.on_capture_request:
                 log.info("capture requested by operator: %ss", secs)

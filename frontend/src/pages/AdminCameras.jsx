@@ -10,6 +10,7 @@ import { api } from "../api.js";
 import { Brand } from "../components/Brand.jsx";
 import { ViewMapModal } from "../components/ViewMapModal.jsx";
 import { DailyMarksModal } from "../components/DailyMarksModal.jsx";
+import TriggerZones from "../components/TriggerZones.jsx";
 
 const ADMIN_PW_STORAGE = "golfreelz.adminPassword";
 const LEGACY_ADMIN_PW_STORAGE = "parone.adminPassword";
@@ -810,6 +811,16 @@ export default function AdminCameras() {
   // 204 (Pi hasn't uploaded a frame yet) just keeps the placeholder up.
   const [watchingCamId, setWatchingCamId] = useState(null);
   const [liveFrameSrc, setLiveFrameSrc] = useState(null);
+  // The camera's NATIVE frame size, read off the live JPEG the Pi
+  // pushes (it encodes the full frame, no resize) — which is the only
+  // honest source for it, and the unit the trigger zones are stored in.
+  const [liveNatural, setLiveNatural] = useState(null);
+  const [zoningCamId, setZoningCamId] = useState(null);
+  // The element the picture is painted in. The zone editor portals its
+  // drawing surface into it, so the surface covers the PICTURE and not
+  // the controls underneath — only one camera is ever watched, so one
+  // element is enough.
+  const [pictureEl, setPictureEl] = useState(null);
   const watchingCamIdRef = useRef(null);
 
   // New-camera form state
@@ -1649,6 +1660,7 @@ export default function AdminCameras() {
                         </button>
                       </div>
                       <div
+                        ref={setPictureEl}
                         style={{
                           position: "relative",
                           background: "#000",
@@ -1659,6 +1671,13 @@ export default function AdminCameras() {
                           <img
                             src={liveFrameSrc}
                             alt=""
+                            onLoad={(e) => {
+                              const { naturalWidth: w, naturalHeight: h } = e.target;
+                              if (w && h && (liveNatural?.w !== w
+                                             || liveNatural?.h !== h)) {
+                                setLiveNatural({ w, h });
+                              }
+                            }}
                             style={{
                               display: "block",
                               width: "100%",
@@ -1666,6 +1685,7 @@ export default function AdminCameras() {
                             }}
                           />
                         )}
+
                         {!liveFrameSrc && (
                           <div
                             style={{
@@ -1682,6 +1702,18 @@ export default function AdminCameras() {
                           </div>
                         )}
                       </div>
+
+                      {zoningCamId === cam.id && (
+                        <TriggerZones
+                          cam={cam}
+                          adminPassword={adminPassword}
+                          frameW={liveNatural?.w}
+                          frameH={liveNatural?.h}
+                          portalTarget={pictureEl}
+                          onSaved={() => load()}
+                          onClose={() => setZoningCamId(null)}
+                        />
+                      )}
                     </div>
                   )}
                 </div>
@@ -1809,6 +1841,28 @@ export default function AdminCameras() {
                       title="Record 30s now on this camera and its paired green, and send it through produce"
                     >
                       Capture
+                    </button>
+                  )}
+                  {cam.assigned_role === "tee" && (
+                    <button
+                      type="button"
+                      className={zoningCamId === cam.id ? "small" : "secondary small"}
+                      disabled={isBusy}
+                      title={
+                        watchingCamId === cam.id
+                          ? "Draw the boxes a golfer has to stand in for this camera to trigger — one per tee, so the path between them does not fire it"
+                          : "Watch this camera first: the zones are drawn on its live picture, so you can see where the tees actually are"
+                      }
+                      onClick={() => {
+                        if (watchingCamId !== cam.id) startWatch(cam);
+                        setZoningCamId(zoningCamId === cam.id ? null : cam.id);
+                      }}
+                    >
+                      {zoningCamId === cam.id
+                        ? "Done with zones"
+                        : `Trigger zones${
+                            (cam.tee_zones?.boxes || []).length
+                              ? ` (${cam.tee_zones.boxes.length})` : " — none"}`}
                     </button>
                   )}
                   <button

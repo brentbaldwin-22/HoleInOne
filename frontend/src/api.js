@@ -426,6 +426,21 @@ export const api = {
       body: fd,
     });
   },
+  // The boxes a person must stand in for a tee camera to trigger. One
+  // per tee; the agent picks them up on its next status poll.
+  getTeeZones: (key, cameraId) =>
+    request(`/api/admin/cameras/${cameraId}/tee-zones`, { adminPassword: key }),
+  setTeeZones: (key, cameraId, boxes, frameW, frameH) => {
+    const fd = new FormData();   // Form(...) endpoint — see cameraLens
+    fd.append("boxes", JSON.stringify(boxes));
+    fd.append("frame_w", String(frameW));
+    fd.append("frame_h", String(frameH));
+    return request(`/api/admin/cameras/${cameraId}/tee-zones`, {
+      method: "POST",
+      adminPassword: key,
+      body: fd,
+    });
+  },
   stopFocusMode: (key, cameraId) =>
     request(`/api/admin/cameras/${cameraId}/focus-mode/stop`, {
       method: "POST",

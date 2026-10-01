@@ -33,6 +33,7 @@ from .common import (
     handle_camera_command,
     open_camera,
 )
+from . import tee_roi
 from .focus_meter import FocusMeter
 from .livestream import LiveStreamer
 
@@ -299,12 +300,17 @@ class MotionFallbackDetector:
         pass
 
 
-def _in_roi(pt: tuple[int, int], roi: dict) -> bool:
-    x, y = pt
-    return (
-        roi["x"] <= x <= roi["x"] + roi["w"]
-        and roi["y"] <= y <= roi["y"] + roi["h"]
-    )
+def _in_roi(pt: tuple[int, int], roi) -> bool:
+    """Is the golfer on A tee? Any zone counts.
+
+    A par 3 is played from a back tee and a middle tee, and the camera
+    is given one box per tee rather than one box spanning both — a
+    rectangle wide enough to hold them both also holds the path between
+    them, and somebody walking that path is a recording nobody asked
+    for. tee_roi accepts either shape, so a rig still running one box
+    behaves exactly as it did.
+    """
+    return tee_roi.contains(pt, roi)
 
 
 # ---------------------------------------------------------------------
@@ -315,7 +321,19 @@ class TeeAgent:
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.client = BackendClient(cfg["backend_url"], cfg["auth_token"])
-        self.roi = cfg["tee_box_roi"]
+        # The zones this agent triggers on. The card's own config is the
+        # bootstrap; the backend's zones replace it on the first status
+        # poll and whenever an operator redraws them. Held behind a lock
+        # because the poll thread writes it while the capture loop reads
+        # it every frame.
+        self.roi = cfg.get("tee_box_roi")
+        self._roi_lock = threading.Lock()
+        self._roi_frame: tuple[int, int] | None = None
+        # The last payload the backend sent, exactly as sent. Only the
+        # backend's zones are re-scaled — a box from config.yaml has
+        # already been through _apply_capture_mode and scaling it again
+        # here would halve it twice.
+        self._roi_raw = None
         self.cam_cfg = cfg.get("camera", {})
         # Operator-requested capture, seconds, set from the
         # live-stream poll thread and consumed by the main loop.
@@ -456,6 +474,42 @@ class TeeAgent:
         the two cannot drift."""
         handle_camera_command(self, op, amount, params)
 
+    def apply_tee_zones(self, payload) -> None:
+        """Adopt the backend's trigger zones, scaled to OUR frames.
+
+        Called on every status poll with the current answer, so this is
+        mostly a no-op comparison; it logs only when something actually
+        moved, which makes "when did the zones change" answerable from
+        the Pi's own journal.
+
+        SILENTLY IGNORES AN EMPTY PAYLOAD. None means the camera has no
+        zones in the app, and the ones from this card's config are
+        better than none at all — a tee that stops triggering because
+        nobody has drawn a box in the UI yet would be a bad trade.
+        """
+        if not payload or not tee_roi.boxes(payload):
+            return
+        # KEEP THE PAYLOAD AS SENT, and scale a copy. The frame size is
+        # not known until the capture is open, so the first zones can
+        # arrive unscaled; run() re-applies this raw copy once it knows,
+        # and scaling the already-scaled result instead would shrink the
+        # zones a second time.
+        self._roi_raw = payload
+        size = self._roi_frame
+        scaled = tee_roi.scaled(payload, size[0], size[1]) if size else payload
+        boxes = tee_roi.boxes(scaled)
+        with self._roi_lock:
+            if tee_roi.boxes(self.roi) == boxes:
+                return
+            self.roi = scaled
+        log.info(
+            "trigger zones updated from the backend: %s",
+            ", ".join(
+                f"{b.get('label') or 'zone'} {b['x']},{b['y']} "
+                f"{b['w']}x{b['h']}" for b in boxes
+            ),
+        )
+
     def _on_focus_mode(self, seconds: float) -> None:
         """Backend says focus mode is armed for `seconds` (0 = off).
 
@@ -582,6 +636,26 @@ class TeeAgent:
 
     def run(self) -> None:
         cap = open_camera(self.cam_cfg)
+        # WHAT SIZE THE FRAMES ACTUALLY ARE, asked of the capture rather
+        # than taken from the config: a driver can hand back something
+        # other than what it was asked for, and the trigger zones are in
+        # pixels. Scaling them against a size we only believe in would
+        # put the tee in the wrong part of the picture.
+        try:
+            import cv2 as _cv2
+            _fw = int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            _fh = int(cap.get(_cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            if _fw and _fh:
+                self._roi_frame = (_fw, _fh)
+                log.info("trigger zones will be scaled to %dx%d", _fw, _fh)
+                # Zones that arrived before the capture was open went in
+                # unscaled. Now that the size is known, redo them.
+                if self._roi_raw is not None:
+                    with self._roi_lock:
+                        self.roi = None
+                    self.apply_tee_zones(self._roi_raw)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not read the frame size for zone scaling: %s", exc)
         fps = float(self.cam_cfg.get("fps", 30))
         self.fps = fps
         self.buffer = FrameBuffer(self.buffer_seconds, fps)
@@ -615,7 +689,9 @@ class TeeAgent:
         # patch whose focus decides whether a golfer is detected at all,
         # and a camera sharp on the horizon but soft on the tee is
         # exactly the failure this is meant to surface.
-        _focus = FocusMeter(roi=self.roi)
+        # One rectangle, because the meter only needs a patch of the
+        # right grass to measure sharpness on — the union of the zones.
+        _focus = FocusMeter(roi=tee_roi.union(self.roi) or self.roi)
         self._focus = _focus
 
         def _hb_extra():
@@ -641,6 +717,7 @@ class TeeAgent:
             self.client, on_capture_request=self._request_capture,
             on_focus_mode=self._on_focus_mode,
             on_lens_command=self._on_lens_command,
+            on_tee_zones=self.apply_tee_zones,
         )
         streamer.start()
         self.streamer = streamer
@@ -697,7 +774,9 @@ class TeeAgent:
                 # every few seconds; rides out on the heartbeat.
                 _focus.sample(frame)
                 centroid = detector.detect(frame)
-                in_roi = centroid is not None and _in_roi(centroid, self.roi)
+                with self._roi_lock:
+                    _roi_now = self.roi
+                in_roi = centroid is not None and _in_roi(centroid, _roi_now)
                 # Manual trigger, for testing the record+upload path
                 # without anyone walking into frame:
                 #     touch /tmp/golfreelz-trigger

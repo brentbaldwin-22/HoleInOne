@@ -68,10 +68,26 @@ def main(argv: list[str]) -> int:
 
     if role == "tee":
         from agent.tee import TeeAgent
-        if not cfg.get("tee_box_roi"):
-            log.error("tee_box_roi missing in config.yaml — required for tee role")
+        from agent import tee_roi
+
+        # ZONES CAN COME FROM EITHER END NOW. The card still carries a
+        # box for a rig provisioned the old way, but a camera whose
+        # zones were drawn in the app is fully configured without one —
+        # so refuse only when NEITHER end has any, which is the case
+        # where the agent really cannot know what counts as the tee.
+        server_zones = hb.get("tee_box_roi")
+        if not cfg.get("tee_box_roi") and not tee_roi.boxes(server_zones):
+            log.error(
+                "no trigger zones: none in config.yaml and none drawn for "
+                "this camera in the app — a tee agent has no way to tell "
+                "who is on the tee",
+            )
             return 2
         agent = TeeAgent(cfg)
+        if tee_roi.boxes(server_zones):
+            # Before the first status poll, so the very first golfer is
+            # judged against the zones an operator actually drew.
+            agent.apply_tee_zones(server_zones)
     else:
         from agent.green import GreenAgent
         agent = GreenAgent(cfg)

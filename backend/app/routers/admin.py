@@ -96,7 +96,7 @@ from ..schemas import (
     HIOReviewAction,
 )
 from ..services import notifications, storage, thanks, tracer_examples
-from ..services import site_theme, workload
+from ..services import site_theme, tee_roi, workload
 from ..services.matcher import match_clip
 from ..services.qr import generate_qr_png
 from ..services.auth import hash_password
@@ -14811,6 +14811,13 @@ def _camera_to_dict(
         "rtsp_url": _rtsp_url_for(c),
         "rtsp_substream_url": _rtsp_url_for(c, sub=True),
         "tee_box_roi": c.tee_box_roi,
+        # Normalised for the editor: always a list, whichever shape the
+        # column holds.
+        "tee_zones": {
+            "boxes": tee_roi.boxes(c.tee_box_roi),
+            "frame": (lambda f: {"w": f[0], "h": f[1]} if f else None)(
+                tee_roi.frame_size(c.tee_box_roi)),
+        },
         "ball_side": c.ball_side,
         "last_seen_at": c.last_seen_at.isoformat() if c.last_seen_at else None,
         "firmware_version": c.firmware_version,
@@ -15602,6 +15609,74 @@ _EXPOSURE_PRESETS = {
 }
 
 
+@router.get("/cameras/{camera_id}/tee-zones")
+def get_tee_zones(camera_id: int, db: Session = Depends(get_db)):
+    """The boxes a person has to stand in for this camera to trigger."""
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    fr = tee_roi.frame_size(cam.tee_box_roi)
+    return {
+        "camera_id": cam.id,
+        "boxes": tee_roi.boxes(cam.tee_box_roi),
+        "frame": {"w": fr[0], "h": fr[1]} if fr else None,
+        "union": tee_roi.union(cam.tee_box_roi),
+        "max_boxes": tee_roi.MAX_BOXES,
+    }
+
+
+@router.post("/cameras/{camera_id}/tee-zones")
+def set_tee_zones(
+    camera_id: int,
+    boxes: str = Form(...),       # JSON [{x,y,w,h,label?}, ...]
+    frame_w: int = Form(...),
+    frame_h: int = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Replace this camera's trigger zones.
+
+    ONE PER TEE, rather than one big box spanning them: a rectangle
+    wide enough to hold the back tee and the middle tee also holds the
+    path between them, and somebody walking that path is a recording
+    nobody asked for.
+
+    The frame size is required and stored alongside, because the boxes
+    are in the camera's native pixels and a box drawn at 1080p means
+    something else at 720p. The agent scales them to whatever it is
+    actually capturing.
+
+    Takes effect on the camera's next status poll — about a second —
+    with no restart and no SD card.
+    """
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    if (cam.assigned_role or "") != "tee":
+        raise HTTPException(
+            409, "only a tee camera triggers, so only a tee camera has zones")
+    try:
+        parsed = json.loads(boxes)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "boxes must be valid JSON")
+    try:
+        payload = tee_roi.store(parsed, int(frame_w), int(frame_h))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    cam.tee_box_roi = payload
+    db.add(AuditLog(
+        actor="admin", action="camera_tee_zones",
+        target=f"camera:{camera_id}",
+        detail=f"{len(payload['boxes'])} zone(s) on {frame_w}x{frame_h}",
+    ))
+    db.commit()
+    return {
+        "ok": True,
+        "boxes": payload["boxes"],
+        "frame": payload["frame"],
+        "note": "saved — the camera picks this up on its next status poll",
+    }
+
+
 @router.post("/cameras/{camera_id}/exposure")
 def control_camera_exposure(
     camera_id: int,
@@ -15946,8 +16021,11 @@ def update_camera(
             roi = json.loads(tee_box_roi)
         except json.JSONDecodeError:
             raise HTTPException(400, "tee_box_roi must be valid JSON")
-        if not isinstance(roi, dict) or not all(k in roi for k in ("x", "y", "w", "h")):
-            raise HTTPException(400, "tee_box_roi must be an object with x/y/w/h")
+        # Either shape: one {x,y,w,h} box, or {"boxes": [...], "frame": ...}
+        # from the zone editor. See services/tee_roi.
+        if not isinstance(roi, dict) or not tee_roi.boxes(roi):
+            raise HTTPException(
+                400, "tee_box_roi must be an {x,y,w,h} box or {boxes:[...]}")
         cam.tee_box_roi = roi
 
     # A CAMERA'S KIND CAN CHANGE UNDER IT. Camera #1 was born a Pi with
@@ -16645,9 +16723,22 @@ def _tee_box_roi_fractions(src_path, db, row) -> dict:
         except Exception as exc:  # noqa: BLE001
             log.debug("tee-box ROI: could not size the video: %s", exc)
         _cname = getattr(cam, "name", None) or f"camera {getattr(cam, 'id', '?')}"
+        # ONE BOX OUT OF HOWEVER MANY THE CAMERA TRIGGERS ON. A tee
+        # camera watches the back tee and the middle tee separately so a
+        # walker between them does not fire it, but the ball search has
+        # no such worry — it has to cover whichever tee was actually
+        # played from, so it takes the union.
+        #
+        # And scale it, rather than refusing a box drawn at another
+        # resolution: the zones record the frame they were drawn on, so
+        # a 1080p box on a 720p video is arithmetic, not a mystery.
+        _u = tee_roi.union(cam_roi)
+        _nbox = len(tee_roi.boxes(cam_roi))
+        if _u and fw and fh:
+            _u = tee_roi.union(tee_roi.scaled(cam_roi, fw, fh))
         try:
-            x, y = float(cam_roi["x"]), float(cam_roi["y"])
-            w, h = float(cam_roi["w"]), float(cam_roi["h"])
+            x, y = float(_u["x"]), float(_u["y"])
+            w, h = float(_u["w"]), float(_u["h"])
         except (KeyError, TypeError, ValueError):
             x = y = w = h = -1.0
         if x < 0:
@@ -16665,7 +16756,10 @@ def _tee_box_roi_fractions(src_path, db, row) -> dict:
             )
         else:
             out["roi"] = {"x": x / fw, "y": y / fh, "w": w / fw, "h": h / fh}
-            out["source"] = f"the tee camera's tee box ({_cname})"
+            out["source"] = (
+                f"the tee camera's {_nbox} trigger zones, merged ({_cname})"
+                if _nbox > 1 else f"the tee camera's tee box ({_cname})"
+            )
             return out
 
     # Anything below here means no box was drawn for this hole today, so

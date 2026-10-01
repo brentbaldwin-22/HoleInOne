@@ -72,7 +72,7 @@ from ..models import (
     DeletedCameraSession,
     VideoClip,
 )
-from ..services import storage, workload
+from ..services import storage, tee_roi, workload
 from ..services.video import probe_video_info
 
 log = logging.getLogger("golfreelz.cameras")
@@ -642,6 +642,15 @@ def heartbeat(
         "ok": True,
         "camera_id": cam.id,
         "enabled": cam.enabled,
+        # Read at startup, before the status poll has run once: a tee
+        # agent whose card carries no zones can still come up on the
+        # ones drawn in the app.
+        "tee_box_roi": (
+            {"boxes": tee_roi.boxes(cam.tee_box_roi),
+             "frame": (lambda f: {"w": f[0], "h": f[1]} if f else None)(
+                 tee_roi.frame_size(cam.tee_box_roi))}
+            if tee_roi.boxes(cam.tee_box_roi) else None
+        ),
         # Pi can read this to skip its person-detection loop entirely
         # while paused. Older agents that ignore it are still covered:
         # /event-trigger refuses to create events when this is False.
@@ -769,6 +778,19 @@ def watch_status(token: str, db: Session = Depends(get_db)):
     return {
         "watching": watching,
         "capture_seconds": capture_seconds,
+        # THE TRIGGER ZONES, on every poll rather than on a change. The
+        # agent cannot ask "what changed since?" — it can restart, or
+        # come back from a curfew, or have been provisioned with a stale
+        # card — so the current answer every second is simpler than any
+        # protocol for telling it only once, and it is a few hundred
+        # bytes. Null means the camera has none set and the agent keeps
+        # whatever its own config gave it.
+        "tee_box_roi": (
+            {"boxes": tee_roi.boxes(cam.tee_box_roi),
+             "frame": (lambda f: {"w": f[0], "h": f[1]} if f else None)(
+                 tee_roi.frame_size(cam.tee_box_roi))}
+            if tee_roi.boxes(cam.tee_box_roi) else None
+        ),
         # Empty list on almost every poll; only non-empty right after an
         # operator touches the zoom or focus controls.
         "lens_commands": lens_commands,
