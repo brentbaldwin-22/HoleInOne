@@ -13,6 +13,14 @@
  * where they actually are. Zoom with the lens buttons and the picture
  * underneath moves while you draw.
  *
+ * WHAT IS ACTUALLY TESTED IS ONE POINT. The detector finds people in
+ * the whole frame and hands back a single pixel — the centre of the
+ * highest-confidence person box — and the zone is a filter on that
+ * point, not a search window. So a zone does not have to be big enough
+ * to hold a body, and two zones never need to overlap to "fit" one.
+ * What it does have to do is sit where the middle of a standing golfer
+ * appears, which is chest height and not the turf.
+ *
  * Coordinates are the camera's NATIVE pixels, taken from the image's
  * natural size, and the frame size is saved alongside them. The agent
  * scales to whatever it is really capturing — a box drawn at 1080p is
@@ -231,6 +239,12 @@ export default function TriggerZones({
           Drag on the picture to add a zone — one per tee. Drag a box to
           move it, its corner to resize. A golfer in <b>any</b> zone
           triggers; the ground between them does not.
+          {" "}The camera finds the person anywhere in frame and then asks
+          whether <b>the middle of their body</b> — roughly chest height,
+          not their feet — falls in a zone. So cover where a golfer
+          <i>stands</i>, not just the turf: a box hugging the ground can
+          sit entirely below them and never fire. Overlapping zones are
+          fine.
         </span>
         {boxes.map((b, i) => (
           <button
