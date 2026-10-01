@@ -96,12 +96,32 @@ export function applyTheme(theme) {
   root.setAttribute("data-direction", t.direction);
   // The browser chrome around the page (phone status bar, tab strip)
   // should match the ground the page paints, not stay emerald forever.
+  //
+  // READ THE BODY'S RESOLVED BACKGROUND, not the --bg token. A custom
+  // property hands back its DECLARED value, and in dark mode that is a
+  // color-mix() expression — which is a perfectly good CSS value and a
+  // meaningless theme-color, so the tag ended up holding the literal
+  // text "color-mix(in srgb, #3aa8f0 4%, #070b10)". The computed
+  // background of an element resolves it to an rgb() the browser can use.
+  // Then normalise it through a canvas, which hands back a plain
+  // #rrggbb. Chrome resolves a color-mix() to CSS Color 4 syntax —
+  // color(srgb 0.03 0.06 0.09) — and a theme-color is read by phone
+  // browser chrome that may not parse that form.
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) {
-    meta.setAttribute(
-      "content",
-      getComputedStyle(root).getPropertyValue("--bg").trim() || "#0b1017",
-    );
+  if (meta && document.body) {
+    const painted = getComputedStyle(document.body).backgroundColor;
+    let hex = null;
+    try {
+      const ctx = document.createElement("canvas").getContext("2d");
+      ctx.fillStyle = "#000000";
+      ctx.fillStyle = painted;   // an unparseable value leaves the last one
+      hex = ctx.fillStyle;
+    } catch {
+      hex = null;                // no canvas (very old or locked-down)
+    }
+    if (typeof hex === "string" && hex.startsWith("#")) {
+      meta.setAttribute("content", hex);
+    }
   }
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify(t));

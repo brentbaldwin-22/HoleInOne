@@ -1437,8 +1437,12 @@ export default function AdminCameras() {
           const tokenVisible = !!revealedToken[cam.id];
           return (
             <div key={cam.id} className="card tight" style={{ margin: 0, padding: 12 }}>
-              <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-                <div className="small" style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "flex-start",
+                            gap: 12, flexWrap: "wrap" }}>
+                {/* minWidth earns its keep now that the live view sits in
+                    this column: below ~300px the picture is not worth
+                    looking at, so the controls wrap under it instead. */}
+                <div className="small" style={{ flex: 1, minWidth: 300 }}>
                   <b>#{cam.id}</b>{" "}
                   <span className={`pill small ${cam.enabled ? "ok" : "warn"}`}>
                     {cam.enabled ? "enabled" : "disabled"}
@@ -1611,6 +1615,69 @@ export default function AdminCameras() {
                       </button>
                     )}
                   </div>
+
+                  {/* THE LIVE VIEW LIVES IN THE CARD, not under it. The
+                      right-hand column is tall — pairing, lens, shutter —
+                      and the left column runs out of content well above
+                      its foot, so a full-width panel below the card was
+                      pushing the picture off screen past empty space.
+                      Here it fills that space and sits beside the very
+                      controls it exists to be watched against: nudge the
+                      zoom, see the zoom. */}
+                  {watchingCamId === cam.id && (
+                    <div
+                      className="card tight"
+                      style={{ margin: "10px 0 0", padding: 8, background: "#000" }}
+                    >
+                      <div
+                        className="inline"
+                        style={{ justifyContent: "space-between", marginBottom: 6 }}
+                      >
+                        <div className="small" style={{ color: "#bbb" }}>
+                          Live · #{cam.id}
+                          {cam.name && <> — {cam.name}</>}
+                          {" · "}hole {cam.assigned_hole} {cam.assigned_role}
+                        </div>
+                        <button type="button" className="ghost small" onClick={stopWatch}>
+                          Close
+                        </button>
+                      </div>
+                      <div
+                        style={{
+                          position: "relative",
+                          background: "#000",
+                          minHeight: 240,
+                        }}
+                      >
+                        {liveFrameSrc && (
+                          <img
+                            src={liveFrameSrc}
+                            alt=""
+                            style={{
+                              display: "block",
+                              width: "100%",
+                              height: "auto",
+                            }}
+                          />
+                        )}
+                        {!liveFrameSrc && (
+                          <div
+                            style={{
+                              position: "absolute",
+                              inset: 0,
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              color: "#bbb",
+                              fontSize: 13,
+                            }}
+                          >
+                            Waiting for live frame from Pi…
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div style={{
                   width: 230, flexShrink: 0,
@@ -1882,61 +1949,6 @@ export default function AdminCameras() {
                   </button>
                 </div>
               </div>
-
-              {watchingCamId === cam.id && (
-                <div
-                  className="card tight"
-                  style={{ margin: "10px 0 0", padding: 10, background: "#000" }}
-                >
-                  <div
-                    className="inline"
-                    style={{ justifyContent: "space-between", marginBottom: 6 }}
-                  >
-                    <div className="small" style={{ color: "#bbb" }}>
-                      Live · #{cam.id}
-                      {cam.name && <> — {cam.name}</>}
-                      {" · "}hole {cam.assigned_hole} {cam.assigned_role}
-                    </div>
-                    <button type="button" className="ghost small" onClick={stopWatch}>
-                      Close
-                    </button>
-                  </div>
-                  <div
-                    style={{
-                      position: "relative",
-                      background: "#000",
-                      minHeight: 240,
-                    }}
-                  >
-                    {liveFrameSrc && (
-                      <img
-                        src={liveFrameSrc}
-                        alt=""
-                        style={{
-                          display: "block",
-                          width: "100%",
-                          height: "auto",
-                        }}
-                      />
-                    )}
-                    {!liveFrameSrc && (
-                      <div
-                        style={{
-                          position: "absolute",
-                          inset: 0,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          color: "#bbb",
-                          fontSize: 13,
-                        }}
-                      >
-                        Waiting for live frame from Pi…
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
 
               {movingCam === cam.id && (
                 <div
