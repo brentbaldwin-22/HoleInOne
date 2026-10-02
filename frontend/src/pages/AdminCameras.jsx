@@ -2156,6 +2156,44 @@ export default function AdminCameras() {
                   {cam.assigned_role === "tee" && cam.triggering_enabled === false && (
                     <span className="pill small warn">triggering paused</span>
                   )}{" "}
+                  {/* THE PI'S POWER VERDICT, shown whenever there is one —
+                      including "clean". The battery pill beside it only
+                      appears on a rig with an INA226 fitted, so its
+                      absence has always meant either "fine" or "no
+                      sensor" with no way to tell which; this one needs
+                      no hardware and so answers the question on every
+                      camera. `vcgencmd get_throttled`, which is also
+                      step 1 of the triage runbook — now without an SSH
+                      session on a link that will not hold one. */}
+                  {cam.power && (
+                    <span
+                      className={`pill small ${
+                        cam.power.level === "ok" ? "ok" : "warn"}`}
+                      style={
+                        cam.power.level === "bad"
+                          ? { background: "#dc2626", color: "#fff" }
+                          : cam.power.level === "warn"
+                            ? { background: "#f59e0b", color: "#1a1a1a" }
+                            : undefined
+                      }
+                      title={[
+                        `vcgencmd get_throttled = ${cam.power.raw}`,
+                        cam.power.flags.length
+                          ? cam.power.flags.join(", ")
+                          : "no flags set",
+                        cam.power.under_voltage_ever && !cam.power.under_voltage_now
+                          ? "It is not browning out now, but it did since "
+                            + "this Pi last booted — measure the converter "
+                            + "output under load, not at idle."
+                          : null,
+                        cam.power.updated_at
+                          ? `read ${tsRel(cam.power.updated_at)}`
+                          : null,
+                      ].filter(Boolean).join(" · ")}
+                    >
+                      ⚡ {cam.power.summary}
+                    </span>
+                  )}{" "}
                   {cam.battery && (
                     <span
                       className={`pill small ${

@@ -533,6 +533,39 @@ def battery_status(
     }
 
 
+def throttled_status(blob, updated_at=None) -> dict | None:
+    """The Pi's power verdict, for the card. None when it has not said.
+
+    THE DISTINCTION THAT MATTERS is between "clean" and "nothing
+    reported": the first is an answer and the second is a question, and
+    a card that shows neither cannot tell you which you have. So this
+    returns a shape whenever there is a reading, including a clean one,
+    and the card renders all of them.
+    """
+    if not isinstance(blob, dict):
+        return None
+    try:
+        value = int(blob.get("value") or 0)
+    except (TypeError, ValueError):
+        return None
+    now = bool(value & 1)
+    ever = bool(value & (1 << 16))
+    return {
+        "raw": blob.get("raw") or hex(value),
+        "under_voltage_now": now,
+        "under_voltage_ever": ever,
+        "flags": blob.get("flags") or [],
+        # What an operator should conclude, in one word.
+        "level": "bad" if now else "warn" if ever else "ok",
+        "summary": (
+            "under-voltage right now" if now
+            else "browned out since boot" if ever
+            else "power clean"
+        ),
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
 def stream_status(info, updated_at=None) -> dict | None:
     """What the camera is sending, and whether the numbers agree.
 
@@ -666,6 +699,7 @@ def heartbeat(
     camera_settings: str | None = Form(None),
     stream_info: str | None = Form(None),
     lens_info: str | None = Form(None),
+    throttled: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Cheap keepalive the Pi calls every ~60 s. Touches last_seen_at
@@ -745,6 +779,20 @@ def heartbeat(
         except (ValueError, TypeError) as exc:
             log.warning(
                 "cameras: camera %s sent unparseable settings: %s",
+                cam.id, exc,
+            )
+    # THE PI'S OWN VERDICT ON ITS POWER, which needs no extra hardware
+    # and so arrives from every rig rather than only the ones with an
+    # INA226 fitted.
+    if throttled:
+        try:
+            parsed = json.loads(throttled)
+            if isinstance(parsed, dict):
+                cam.throttled = parsed
+                cam.throttled_at = _utcnow_naive()
+        except (ValueError, TypeError) as exc:
+            log.warning(
+                "cameras: camera %s sent unparseable throttled: %s",
                 cam.id, exc,
             )
     # WHAT THE LENS SAID WHEN ASKED WHERE IT IS — which on this model is

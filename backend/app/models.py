@@ -524,6 +524,15 @@ class Camera(Base):
     # the lens's own hard stops, which an operator marks once. See
     # services/lens_zoom.py for the shape and for what it is not.
     lens_zoom: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # WHAT vcgencmd SAYS ABOUT THIS PI'S POWER. Needs no sensor, unlike
+    # the battery columns above — which is why it exists: a rig without
+    # an INA226 fitted reports no voltage at all, and "no telemetry" and
+    # "telemetry says fine" look identical from here. Bit 16 is the
+    # valuable one: a brownout that already happened and left no other
+    # trace. See read_throttled() in the agent.
+    throttled: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    throttled_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # Soft toggle distinct from `enabled`: when False the camera stays
     # online (heartbeats + live-watch still work) but the backend

@@ -269,11 +269,19 @@ not another part.
 
 ### Measuring it without a site visit
 
-The cheapest evidence needs no SSH at all. **`/admin/cameras` shows the
-tee's battery voltage and current**, reported on every heartbeat from
-the INA226 on its 12 V feed. Watch it while a clip uploads: a rail that
-reads fine at idle and sags under load is the brownout, seen from a
-laptop.
+The cheapest evidence needs no SSH at all. **`/admin/cameras` shows a
+⚡ pill per camera** carrying `vcgencmd get_throttled` off the
+heartbeat: *power clean*, *browned out since boot*, or *under-voltage
+right now*. The middle one is the find — a brownout that already
+happened and left no other trace — and it is Step 1 of this runbook
+answered from a laptop.
+
+A 🔋 pill appears beside it **only on a rig with an INA226 fitted** on
+the 12 V feed; where there is one, watch the voltage while a clip
+uploads, because a rail that reads fine at idle and sags under load is
+the brownout caught in the act. Where there is not, there is no pill —
+which is exactly why the ⚡ one exists, since a missing sensor and a
+healthy camera used to look identical from here.
 
 One SSH command settles whether the modem is really re-enumerating
 rather than the carrier dropping the bearer:

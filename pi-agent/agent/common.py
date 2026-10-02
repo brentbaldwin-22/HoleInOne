@@ -1694,6 +1694,62 @@ class ClipWriter:
 # Frame ring buffer
 # ---------------------------------------------------------------------
 
+# ── has this Pi browned out? ─────────────────────────────────────────
+# THE FIRST QUESTION IN THE TRIAGE RUNBOOK, and until now it needed an
+# SSH session to answer — on a link that, for the camera you most want
+# to ask it about, will not hold one. The battery telemetry that WOULD
+# have answered it from the app needs an INA226 on the 12V feed, and a
+# rig without that chip reports nothing at all, which is
+# indistinguishable from a rig that is fine.
+#
+# `vcgencmd` is on every Pi and needs no hardware. Bit 0 is
+# under-voltage right now; bit 16 is under-voltage at some point since
+# boot — and bit 16 alone is the interesting one, because it is the
+# brownout that already happened and left no other trace.
+_THROTTLED_BITS = {
+    0: "under-voltage now",
+    1: "arm frequency capped now",
+    2: "throttled now",
+    3: "soft temperature limit now",
+    16: "under-voltage since boot",
+    17: "arm frequency capped since boot",
+    18: "throttled since boot",
+    19: "soft temperature limit since boot",
+}
+
+
+def read_throttled(timeout: float = 3.0) -> dict | None:
+    """What `vcgencmd get_throttled` says, decoded. None off a Pi.
+
+    Best-effort and cheap — one tiny binary, once a heartbeat. A board
+    without vcgencmd (a dev box, a container) returns None and the
+    heartbeat goes without it, exactly as the battery reader does.
+    """
+    try:
+        out = subprocess.run(
+            ["vcgencmd", "get_throttled"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except Exception:  # noqa: BLE001 - not a Pi, or no vcgencmd
+        return None
+    text_out = (out.stdout or "").strip()
+    if "=" not in text_out:
+        return None
+    raw = text_out.split("=", 1)[1].strip()
+    try:
+        value = int(raw, 16)
+    except ValueError:
+        return None
+    return {
+        "raw": raw,
+        "value": value,
+        "flags": [name for bit, name in sorted(_THROTTLED_BITS.items())
+                  if value & (1 << bit)],
+        "under_voltage_now": bool(value & 1),
+        "under_voltage_ever": bool(value & (1 << 16)),
+    }
+
+
 def agent_build_id() -> str:
     """A short digest of the agent's own source, for the heartbeat.
 

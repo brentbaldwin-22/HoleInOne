@@ -70,6 +70,7 @@ from .cameras import _LIVE_FRAMES, _WATCHERS, _LIVE_LOCK, WATCH_TTL, FRAME_TTL
 from .cameras import STILL_MAX_AGE, still_path
 from .cameras import request_lens as _request_lens
 from .cameras import battery_status as _battery_status
+from .cameras import throttled_status as _throttled_status
 from .cameras import focus_status as _focus_status
 from .cameras import exposure_status as _exposure_status
 from .cameras import stream_status as _stream_status
@@ -14840,6 +14841,10 @@ def _camera_to_dict(
         "battery": _battery_status(
             c.battery_voltage, c.battery_current_a, c.battery_updated_at,
         ),
+        # Needs no sensor, so unlike `battery` this arrives from every
+        # rig — including the ones where a missing INA226 made "no
+        # telemetry" and "telemetry says fine" look the same.
+        "power": _throttled_status(c.throttled, c.throttled_at),
         "focus": _focus_status(
             c.focus_score, c.focus_brightness, c.focus_updated_at,
             best=c.focus_best,

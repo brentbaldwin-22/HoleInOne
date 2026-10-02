@@ -15,6 +15,7 @@ green just has to be recording when the ball lands."""
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -27,6 +28,7 @@ from .common import (
     agent_build_id,
     ClipWriter,
     DeliveryMeter,
+    read_throttled,
     reclock_fps,
     write_fps_for,
     stream_info_fields,
@@ -171,6 +173,10 @@ class GreenAgent:
             if (r := _batt.read_averaged()):
                 out["battery_voltage"] = r["voltage"]
                 out["battery_current_a"] = r["current_a"]
+            # Needs no sensor, unlike the above — which is the point, on
+            # a rig with no INA226 fitted. See read_throttled().
+            if (t := read_throttled()):
+                out["throttled"] = json.dumps(t)[:500]
             if (f := _focus.read()):
                 out.update(f)
             out.update(drain_camera_settings(self))
