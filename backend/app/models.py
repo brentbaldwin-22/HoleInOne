@@ -496,6 +496,15 @@ class Camera(Base):
     camera_settings: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     camera_settings_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True)
+    # WHAT THE CAMERA IS REALLY SENDING, reported on every heartbeat:
+    # the size and rate OpenCV opened the stream at, the rate frames are
+    # actually arriving at, and the rate our config believes. Those
+    # three disagreeing is not a detail — a camera delivering 30 while
+    # the config says 50 is what stamps a clip fast. The camera's own
+    # profile (a SUNAPI read) is merged in when an operator asks.
+    stream_info: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    stream_info_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # Soft toggle distinct from `enabled`: when False the camera stays
     # online (heartbeats + live-watch still work) but the backend

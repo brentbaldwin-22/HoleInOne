@@ -33,6 +33,8 @@ from .common import (
     handle_camera_command,
     open_camera,
     reclock_fps,
+    stream_info_fields,
+    DeliveryMeter,
 )
 from . import tee_roi
 from .focus_meter import FocusMeter
@@ -335,6 +337,14 @@ class TeeAgent:
         # already been through _apply_capture_mode and scaling it again
         # here would halve it twice.
         self._roi_raw = None
+        # WHAT THIS CAMERA IS REALLY SENDING, for the admin card. The
+        # config's fps is a belief on an RTSP camera — nothing here ever
+        # asks the camera for a rate — so the delivered rate is measured
+        # and the camera's own profile is fetched on request.
+        self._delivery = DeliveryMeter()
+        self._open_size = None
+        self._open_fps = None
+        self._stream_profile = None
         self.cam_cfg = cfg.get("camera", {})
         # Operator-requested capture, seconds, set from the
         # live-stream poll thread and consumed by the main loop.
@@ -604,6 +614,7 @@ class TeeAgent:
                     self._cap_worst = max(self._cap_worst, _cgap)
             self._cap_last = _cnow
             self._cap_frames += 1
+            self._delivery.tick()
             fcopy = frame.copy()
             # Drop exact-duplicate reads. The GoPro in USB-webcam mode
             # hands cv2 the same frame again ~once/second (the read loop
@@ -646,7 +657,9 @@ class TeeAgent:
             import cv2 as _cv2
             _fw = int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH) or 0)
             _fh = int(cap.get(_cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            self._open_fps = float(cap.get(_cv2.CAP_PROP_FPS) or 0) or None
             if _fw and _fh:
+                self._open_size = (_fw, _fh)
                 self._roi_frame = (_fw, _fh)
                 log.info("trigger zones will be scaled to %dx%d", _fw, _fh)
                 # Zones that arrived before the capture was open went in
@@ -705,6 +718,7 @@ class TeeAgent:
             # What the camera said about its own exposure, if anyone has
             # asked it since the last heartbeat.
             out.update(drain_camera_settings(self))
+            out.update(stream_info_fields(self))
             return out or None
 
         hb = HeartbeatThread(

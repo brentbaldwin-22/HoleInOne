@@ -25,7 +25,9 @@ import cv2
 
 from .common import (
     ClipWriter,
+    DeliveryMeter,
     reclock_fps,
+    stream_info_fields,
     BackendClient,
     BackgroundUploader,
     FrameBuffer,
@@ -98,12 +100,29 @@ class GreenAgent:
         self.buffer: Optional[FrameBuffer] = None
         self.frame_shape: Optional[tuple[int, int]] = None
         self.fps = float(self.cam_cfg.get("fps", 30))
+        # What this camera is really sending, for the admin card — the
+        # config's fps is a belief on an RTSP camera, never a request.
+        self._delivery = DeliveryMeter()
+        self._open_size = None
+        self._open_fps = None
+        self._stream_profile = None
 
     def stop(self) -> None:
         self.stopping.set()
 
     def run(self) -> None:
         cap = open_camera(self.cam_cfg)
+        # Asked of the capture, not taken from the config: the point of
+        # the readout is to show where the two disagree.
+        try:
+            import cv2 as _cv2
+            _w = int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            _h = int(cap.get(_cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            self._open_fps = float(cap.get(_cv2.CAP_PROP_FPS) or 0) or None
+            if _w and _h:
+                self._open_size = (_w, _h)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not read the stream geometry: %s", exc)
         self.buffer = FrameBuffer(self.buffer_seconds, self.fps)
         self._cap_frames = 0
         self._cap_gaps = 0
@@ -149,6 +168,7 @@ class GreenAgent:
             if (f := _focus.read()):
                 out.update(f)
             out.update(drain_camera_settings(self))
+            out.update(stream_info_fields(self))
             return out or None
 
         hb = HeartbeatThread(
@@ -285,6 +305,7 @@ class GreenAgent:
                     self._cap_worst = max(self._cap_worst, _cgap)
             self._cap_last = _cnow
             self._cap_frames += 1
+            self._delivery.tick()
             if self.frame_shape is None:
                 self.frame_shape = (frame.shape[0], frame.shape[1])
             self.buffer.push(time.time(), frame.copy())

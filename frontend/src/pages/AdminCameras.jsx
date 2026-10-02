@@ -120,6 +120,116 @@ const TONE_STYLE = {
 // firmware we have not met yet. A refusal is shown as a refusal -- a
 // shutter we believe we set but did not is worse than one we never
 // touched.
+// WHAT THIS CAMERA IS REALLY SENDING. Three numbers that should agree
+// and sometimes do not: the size/rate the stream OPENED at, the rate
+// frames are actually arriving at, and the rate the config believes —
+// which is what clips get stamped with. A camera delivering 30 while
+// the config says 50 is what made a 35-second capture play in 21.
+//
+// Nothing here is a setting. On an RTSP camera the agent never asks for
+// a frame rate (it cannot — the sensor belongs to the camera), so the
+// rate is changed in the camera's own profile, and this is how you find
+// out what it is.
+function StreamReadout({ stream, onRead, busy }) {
+  const s = stream || {};
+  const rows = [
+    ["Opened as", s.open_w && s.open_h
+      ? `${s.open_w}×${s.open_h}${s.open_fps ? ` @ ${s.open_fps.toFixed(1)}` : ""}`
+      : null],
+    ["Delivering", s.delivered_fps ? `${s.delivered_fps.toFixed(1)} fps` : null],
+    ["Clips stamped", s.config_fps ? `${s.config_fps.toFixed(0)} fps` : null],
+  ].filter(([, v]) => v);
+  const p = s.profile;
+  return (
+    <div style={{ width: "100%" }}>
+      <div className="tiny muted" style={{ marginBottom: 4 }}>
+        Stream — what the camera is sending, measured rather than
+        assumed. The rate is set in the camera&apos;s own profile; our
+        config only says what we believe it to be.
+      </div>
+      {rows.length > 0 ? (
+        <div className="tiny" style={{ display: "flex", flexWrap: "wrap",
+                                       gap: "2px 14px" }}>
+          {rows.map(([label, v]) => (
+            <span key={label}>
+              <span className="muted">{label}:</span> <b>{v}</b>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="tiny muted">
+          Nothing reported yet — the agent sends this with its heartbeat.
+        </div>
+      )}
+      {s.mismatch && (
+        <div className="tiny" style={{ color: "var(--warn)", marginTop: 3 }}>
+          ⚠ {s.mismatch}. Clips are stamped at the configured rate, so
+          this one plays fast unless the two are brought together —
+          change the camera&apos;s profile, or the agent&apos;s config.
+        </div>
+      )}
+      {p?.ok && p.values && (
+        <div className="tiny" style={{ marginTop: 3 }}>
+          <span className="muted">Camera says:</span>{" "}
+          {/* Units on the numbers: "30" and "2048" side by side say
+              nothing on their own. */}
+          {[["resolution", ""], ["fps", " fps"], ["codec", ""],
+            ["bitrate", " kbps"]]
+            .filter(([k]) => p.values[k])
+            .map(([k, unit], i) => (
+              <Fragment key={k}>
+                {i > 0 && <span className="muted"> · </span>}
+                <b>{p.values[k]}{unit}</b>
+              </Fragment>
+            ))}
+          {Object.keys(p.values).length === 0 && (
+            <span className="muted">
+              nothing we have a name for — open the raw list
+            </span>
+          )}
+        </div>
+      )}
+      {p && p.ok === false && (
+        <div className="tiny muted" style={{ marginTop: 3 }}>
+          The camera did not answer a profile read: {p.error}
+        </div>
+      )}
+      {/* Not .row — that stretches its children, and a Read button the
+          width of the card looks like the primary action here. */}
+      <div style={{ display: "flex", gap: 8, marginTop: 5,
+                    alignItems: "center", flexWrap: "wrap" }}>
+        <button type="button" className="ghost small"
+                style={{ width: "auto" }} disabled={busy}
+                title="Ask the camera what its video profile is set to — resolution, frame rate, codec"
+                onClick={onRead}>
+          Read profile
+        </button>
+        {s.updated_at && (
+          <span className="tiny muted">reported {tsRel(s.updated_at)}</span>
+        )}
+      </div>
+      {p?.raw && Object.keys(p.raw).length > 0 && (
+        <details className="tiny" style={{ marginTop: 4 }}>
+          <summary className="muted" style={{ cursor: "pointer" }}>
+            Everything the profile listed ({Object.keys(p.raw).length})
+            {p.source ? ` · ${p.source}` : ""}
+          </summary>
+          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr",
+                        gap: "0 10px", marginTop: 4,
+                        maxHeight: 200, overflowY: "auto" }}>
+            {Object.entries(p.raw).map(([k, v]) => (
+              <Fragment key={k}>
+                <span className="muted">{k}</span>
+                <span>{String(v)}</span>
+              </Fragment>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function ExposureReadout({ exp }) {
   if (!exp) {
     return (
@@ -1133,6 +1243,21 @@ export default function AdminCameras() {
     }
   }
 
+  async function readStreamProfile(cam) {
+    setError(null);
+    try {
+      const out = await api.readStreamProfile(adminPassword, cam.id);
+      setLensNote((m) => ({ ...m, [cam.id]: out.note || "asked" }));
+      // The agent pokes its heartbeat as soon as it has an answer.
+      setTimeout(() => { load(); }, 6000);
+      setTimeout(
+        () => setLensNote((m) => ({ ...m, [cam.id]: null })), 8000,
+      );
+    } catch (e) {
+      setError(e?.message || String(e));
+    }
+  }
+
   async function rotateToken(cam) {
     if (!window.confirm(
       "Rotate this camera's auth token? The Pi will stop authenticating with the old token immediately — you'll need to re-provision the SD card.",
@@ -1889,6 +2014,14 @@ export default function AdminCameras() {
                         background: "rgba(120,120,120,0.06)",
                       }}
                     >
+                      <StreamReadout
+                        stream={cam.stream}
+                        busy={isBusy}
+                        onRead={() => readStreamProfile(cam)}
+                      />
+                      <div style={{ width: "100%", borderTop:
+                                    "1px solid rgba(120,120,120,0.25)",
+                                    paddingTop: 6, marginTop: 2 }} />
                       <span className="tiny muted" style={{ width: "100%" }}>
                         Lens — watch the live view; these are nudges, the
                         camera cannot report its position. It accepts three

@@ -468,6 +468,41 @@ def battery_status(
     }
 
 
+def stream_status(info, updated_at=None) -> dict | None:
+    """What the camera is sending, and whether the three numbers agree.
+
+    THE DISAGREEMENT IS THE POINT. `config_fps` is what clips get
+    stamped at; `delivered_fps` is what the camera actually hands over.
+    A clip is stamped at the first and filled from the second, so when
+    they differ it plays fast — which is exactly the fault this readout
+    exists to make visible before it reaches a golfer's inbox.
+    """
+    if not isinstance(info, dict):
+        return None
+    cfg = info.get("config_fps")
+    got = info.get("delivered_fps")
+    mismatch = None
+    if cfg and got and cfg > 0:
+        off = abs(got - cfg) / cfg
+        if off >= 0.1:
+            mismatch = (
+                f"delivering {got:.1f} fps but configured for {cfg:.0f} — "
+                f"{'slower' if got < cfg else 'faster'} by "
+                f"{off * 100:.0f}%"
+            )
+    return {
+        "open_w": info.get("open_w"),
+        "open_h": info.get("open_h"),
+        "open_fps": info.get("open_fps"),
+        "config_fps": cfg,
+        "delivered_fps": got,
+        "mismatch": mismatch,
+        # The camera's own answer, when somebody has asked it.
+        "profile": info.get("profile"),
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
 def exposure_status(settings_blob, updated_at=None) -> dict | None:
     """The camera's own exposure reading, for the dashboard. None until
     something has asked it.
@@ -556,6 +591,7 @@ def heartbeat(
     focus_score: float | None = Form(None),
     focus_brightness: float | None = Form(None),
     camera_settings: str | None = Form(None),
+    stream_info: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Cheap keepalive the Pi calls every ~60 s. Touches last_seen_at
@@ -635,6 +671,26 @@ def heartbeat(
         except (ValueError, TypeError) as exc:
             log.warning(
                 "cameras: camera %s sent unparseable settings: %s",
+                cam.id, exc,
+            )
+    if stream_info:
+        try:
+            parsed = json.loads(stream_info)
+            if isinstance(parsed, dict):
+                # MERGED, not replaced. The cheap fields ride every
+                # heartbeat; the camera's own profile arrives once when
+                # an operator asks for it and should survive the next
+                # heartbeat that does not carry one.
+                merged = dict(cam.stream_info or {})
+                merged.update({k: v for k, v in parsed.items()
+                               if v is not None or k != "profile"})
+                if parsed.get("profile"):
+                    merged["profile"] = parsed["profile"]
+                cam.stream_info = merged
+                cam.stream_info_at = _utcnow_naive()
+        except (ValueError, TypeError) as exc:
+            log.warning(
+                "cameras: camera %s sent unparseable stream info: %s",
                 cam.id, exc,
             )
     db.commit()

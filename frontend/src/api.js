@@ -426,6 +426,13 @@ export const api = {
       body: fd,
     });
   },
+  // Ask the camera what its video stream is set to. The answer lands on
+  // the agent's next heartbeat, so reload the list a few seconds later.
+  readStreamProfile: (key, cameraId) =>
+    request(`/api/admin/cameras/${cameraId}/stream-profile`, {
+      method: "POST",
+      adminPassword: key,
+    }),
   // The boxes a person must stand in for a tee camera to trigger. One
   // per tee; the agent picks them up on its next status poll.
   getTeeZones: (key, cameraId) =>

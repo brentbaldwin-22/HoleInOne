@@ -71,6 +71,7 @@ from .cameras import request_lens as _request_lens
 from .cameras import battery_status as _battery_status
 from .cameras import focus_status as _focus_status
 from .cameras import exposure_status as _exposure_status
+from .cameras import stream_status as _stream_status
 from .cameras import _focus_remaining as _cam_focus_remaining
 from ..models import (
     AuditLog,
@@ -14832,6 +14833,7 @@ def _camera_to_dict(
         "exposure": _exposure_status(
             c.camera_settings, c.camera_settings_at,
         ),
+        "stream": _stream_status(c.stream_info, c.stream_info_at),
         "enabled": bool(c.enabled),
         "triggering_enabled": bool(c.triggering_enabled),
         "note": c.note,
@@ -15734,6 +15736,33 @@ def control_camera_exposure(
         "ok": True, "preset": _p, "sent": params, "queued": depth,
         "note": "queued — the camera applies it on its next poll and "
                 "reports back what it then reads",
+    }
+
+
+@router.post("/cameras/{camera_id}/stream-profile")
+def read_camera_stream_profile(camera_id: int, db: Session = Depends(get_db)):
+    """Ask the camera what its video stream is set to.
+
+    The size and rate the agent OPENED the stream at, and the rate
+    frames are really arriving at, already ride every heartbeat — they
+    cost nothing. This is the other half: the camera's own profile,
+    which is an HTTP call to the camera on the course LAN, so it
+    happens when an operator asks rather than every minute.
+
+    Queued like every other camera command; the answer arrives on the
+    agent's next heartbeat, which it pokes as soon as it has one.
+    """
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    if (cam.kind or "pi") != "ip":
+        raise HTTPException(
+            409, "only an IP camera has a stream profile to read")
+    depth = _request_lens(camera_id, "stream_profile_view", 0)
+    return {
+        "ok": True, "queued": depth,
+        "note": "asked — the camera's answer arrives with its next "
+                "heartbeat",
     }
 
 

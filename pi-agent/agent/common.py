@@ -1670,6 +1670,70 @@ class ClipWriter:
 # Frame ring buffer
 # ---------------------------------------------------------------------
 
+class DeliveryMeter:
+    """How many frames a second this camera is ACTUALLY handing over.
+
+    Measured on a rolling window off the capture thread, so it is a
+    current answer rather than one that only exists after a recording.
+    It is the number the config's `fps` claims and never verifies: on an
+    RTSP camera the agent cannot ask for a rate, so the config is a
+    belief about what the camera was set to in its own UI, and this is
+    the fact to check it against.
+    """
+
+    def __init__(self, window_sec: float = 5.0):
+        self.window = max(1.0, float(window_sec))
+        self._n = 0
+        self._t0 = None
+        self._fps = None
+        self._at = None
+
+    def tick(self) -> None:
+        now = time.time()
+        if self._t0 is None:
+            self._t0 = now
+            return
+        self._n += 1
+        span = now - self._t0
+        if span >= self.window:
+            self._fps = self._n / span
+            self._at = now
+            self._n = 0
+            self._t0 = now
+
+    def read(self):
+        """(fps, measured_at) or (None, None) before the first window."""
+        return self._fps, self._at
+
+
+def stream_info_fields(runner) -> dict:
+    """Heartbeat fields describing what this camera is really sending.
+
+    Cheap — everything here is already in memory — so it rides along on
+    every heartbeat rather than being asked for. The camera's own
+    profile (a SUNAPI call) is NOT cheap and is merged in only when an
+    operator asks for it; it stays attached afterwards.
+    """
+    fps, at = (runner._delivery.read()
+               if getattr(runner, "_delivery", None) else (None, None))
+    size = getattr(runner, "_open_size", None)
+    out = {
+        # What OpenCV reported when it opened the stream.
+        "open_w": size[0] if size else None,
+        "open_h": size[1] if size else None,
+        "open_fps": getattr(runner, "_open_fps", None),
+        # What the config believes, and what clips get stamped at.
+        "config_fps": float(getattr(runner, "fps", 0) or 0) or None,
+        # What is actually arriving, now.
+        "delivered_fps": round(fps, 2) if fps else None,
+        "delivered_at": at,
+        "profile": getattr(runner, "_stream_profile", None),
+    }
+    if not any(v is not None for v in out.values()):
+        return {}
+    return {"stream_info": json.dumps(out)[:4000]}
+
+
 # ── is this clip's header lying about how long it is? ────────────────
 
 # Below this the file is honest enough to leave alone: a frame or two of
@@ -1780,7 +1844,8 @@ _LENS_PARAM = {
 
 
 def _sunapi(cam_cfg: dict, submenu: str, action: str,
-            params: dict | None = None, timeout: float = 8.0):
+            params: dict | None = None, timeout: float = 8.0,
+            cgi: str = "image.cgi"):
     """One SUNAPI call against the RTSP camera this agent is watching.
 
     Returns (ok, body) — body is the camera's raw text, which is either
@@ -1812,7 +1877,7 @@ def _sunapi(cam_cfg: dict, submenu: str, action: str,
 
     query = {"msubmenu": submenu, "action": action}
     query.update(params or {})
-    url = f"http://{u.hostname}/stw-cgi/image.cgi?{urlencode(query)}"
+    url = f"http://{u.hostname}/stw-cgi/{cgi}?{urlencode(query)}"
     try:
         r = requests.get(
             url, timeout=timeout,
@@ -1900,6 +1965,12 @@ def handle_camera_command(runner, op: str, amount: int = 0,
     camera's own words rather than the command we sent.
     """
     try:
+        if op == "stream_profile_view":
+            runner._stream_profile = stream_profile_view(runner.cam_cfg)
+            hb = getattr(runner, "_hb", None)
+            if hb is not None:
+                hb.report_soon()
+            return
         if op in ("exposure_set", "exposure_view"):
             if op == "exposure_view":
                 result = exposure_view(runner.cam_cfg)
@@ -1997,6 +2068,66 @@ def exposure_view(cam_cfg: dict, timeout: float = 8.0) -> dict:
         # Everything the camera listed, so a setting we have no name for
         # yet is still visible to whoever is looking at the card.
         "raw": view,
+    }
+
+
+# WHICH CGI HOLDS THE STREAM PROFILES IS A GUESS, so it is a LIST of
+# guesses and the first one that answers wins. SUNAPI's media submenus
+# are less uniform across firmware than image.cgi's, and a wrong name
+# returns NG rather than anything useful — so ask, do not assume, and
+# report what came back either way.
+_PROFILE_PROBES = (
+    ("media.cgi", "videoprofile"),
+    ("media.cgi", "videoprofilepolicy"),
+    ("media.cgi", "streamprofile"),
+    ("video.cgi", "videoprofile"),
+)
+# The keys worth pulling to the front of the card, by what they mean.
+_PROFILE_FIELDS = {
+    "resolution": ("Resolution", "VideoResolution", "Size"),
+    "fps": ("FrameRate", "MaxFPS", "FrameRateLimit", "Framerate"),
+    "codec": ("EncodingType", "CodecType", "Codec"),
+    "bitrate": ("Bitrate", "TargetBitrate", "BitrateLimit"),
+    "profile": ("Profile", "ProfileName", "Name"),
+}
+
+
+def stream_profile_view(cam_cfg: dict, timeout: float = 8.0) -> dict:
+    """What the camera says its video stream is: size, rate, codec.
+
+    This is the camera's CLAIM, which is exactly why it is worth
+    showing: the agent never asks an RTSP camera for a frame rate (it
+    cannot — open_camera returns before the v4l2 tuning because the
+    sensor belongs to the camera), so the rate in our config is only a
+    belief about this. Seeing the two side by side is the whole point.
+    """
+    tried = []
+    for cgi, submenu in _PROFILE_PROBES:
+        ok, body = _sunapi(cam_cfg, submenu, "view", timeout=timeout, cgi=cgi)
+        tried.append(f"{cgi}?msubmenu={submenu}")
+        if not ok:
+            continue
+        view = _parse_sunapi_view(body)
+        if not view:
+            continue
+        picked = {}
+        for name, candidates in _PROFILE_FIELDS.items():
+            key = _first_present(view, candidates)
+            if key:
+                picked[name] = view[key]
+        return {
+            "ok": True,
+            "source": f"{cgi}?msubmenu={submenu}",
+            "values": picked,
+            # The whole dump: a firmware that names things differently
+            # is still readable by whoever is looking at the card, and
+            # that is how the right key gets added above.
+            "raw": view,
+        }
+    return {
+        "ok": False,
+        "error": "no video-profile submenu answered on this camera",
+        "tried": tried,
     }
 
 
