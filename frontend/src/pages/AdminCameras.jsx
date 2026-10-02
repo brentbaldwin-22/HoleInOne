@@ -1022,6 +1022,195 @@ function CameraStill({ cam, adminPassword, onWatch, disabled }) {
   );
 }
 
+/**
+ * THE LENS, UNDER THE PICTURE IT MOVES.
+ *
+ * These controls used to live in the right-hand column, a screen away
+ * from the only feedback they have. The lens cannot be asked where it
+ * is — the camera declares no absolute position — so driving it is a
+ * matter of watching the view change, and a control you operate by
+ * watching something else belongs next to that something else.
+ *
+ * THE SLIDER IS A COUNT, NOT A READING. The backend adds up every step
+ * it has sent and the ends of the travel are marked by hand, once, by
+ * whoever drove the lens into them. That is enough to put a position on
+ * a scale and to label it in the magnification the lens is built for —
+ * and it drifts, which is why marking an end is also the repair.
+ *
+ * Shown only while the live view is open, because every one of these is
+ * a nudge judged by eye and nudging a picture you cannot see is how a
+ * camera ends up pointed at a tree.
+ */
+function LensBar({ cam, onLens, onZoom, onMarkEnd, note, busy }) {
+  const z = cam.zoom || {};
+  const [local, setLocal] = useState(z.fraction ?? 0);
+  const [marking, setMarking] = useState(false);
+  const dragging = useRef(false);
+
+  // Follow the server's count when it changes under us (a nudge, a
+  // mark, another operator) — but never while a thumb is on the slider.
+  useEffect(() => {
+    if (!dragging.current && z.fraction != null) setLocal(z.fraction);
+  }, [z.fraction]);
+
+  // If the camera ever reports its own position, that beats the count.
+  // It is not expected to on this model — which is the whole reason the
+  // count exists — but the agent asks after every move, so the day a
+  // firmware grows the endpoint this starts showing the truth with
+  // nobody having to change anything.
+  const said = z.reported?.values?.zoom;
+  const label = said != null
+    ? `camera says ${said}`
+    : !z.calibrated
+      ? "no scale yet"
+      : z.x != null
+        ? `about ${z.x}x`
+        : `${Math.round((z.fraction ?? 0) * 100)}% of travel`;
+
+  function commit() {
+    dragging.current = false;
+    if (!z.calibrated) return;
+    if (Math.abs(local - (z.fraction ?? 0)) < 0.001) return;
+    onZoom(local);
+  }
+
+  const stepBtn = (op, amt, text, why) => (
+    <button
+      key={`${op}${amt}`} type="button" className="secondary small"
+      style={{ width: "auto", minWidth: 40, fontFamily: "monospace" }}
+      disabled={busy} title={why}
+      onClick={() => onLens(op, amt)}
+    >{text}</button>
+  );
+
+  return (
+    <div style={{ padding: "8px 2px 2px", display: "flex",
+                  flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", gap: 6, alignItems: "center",
+                    flexWrap: "wrap" }}>
+        <span className="tiny" style={{ width: 40, textAlign: "right",
+                                        opacity: 0.8, color: "#ddd" }}>
+          Zoom
+        </span>
+        {stepBtn("zoom", -100, "−··", "wider, coarse")}
+        {stepBtn("zoom", -10, "−·", "wider, fine")}
+        <input
+          type="range" min={0} max={1} step={0.005}
+          value={local}
+          disabled={busy || !z.calibrated}
+          onPointerDown={() => { dragging.current = true; }}
+          onChange={(e) => setLocal(parseFloat(e.target.value))}
+          onPointerUp={commit}
+          onKeyUp={commit}
+          onBlur={commit}
+          title={z.calibrated
+            ? "Drag to a position along the lens's travel. The move is "
+              + "worked out from the count, not read from the camera."
+            : "Mark the two ends first — without them there is no scale "
+              + "to slide along."}
+          style={{ flex: 1, minWidth: 90, accentColor: "#38bdf8" }}
+        />
+        {stepBtn("zoom", 10, "+·", "tighter, fine")}
+        {stepBtn("zoom", 100, "+··", "tighter, coarse")}
+        <span className="tiny" style={{ minWidth: 62, color: "#e8e8e8",
+                                        fontFamily: "monospace" }}>
+          {label}
+        </span>
+      </div>
+
+      <div style={{ display: "flex", gap: 6, alignItems: "center",
+                    flexWrap: "wrap" }}>
+        <span className="tiny" style={{ width: 40, textAlign: "right",
+                                        opacity: 0.8, color: "#ddd" }}>
+          Focus
+        </span>
+        {stepBtn("focus", -100, "−··", "nearer, coarse")}
+        {stepBtn("focus", -10, "−·", "nearer, fine")}
+        {stepBtn("focus", 10, "+·", "further, fine")}
+        {stepBtn("focus", 100, "+··", "further, coarse")}
+        <button type="button" className="small" style={{ width: "auto" }}
+          disabled={busy}
+          title="One-shot autofocus. Set the zoom FIRST, then press this — the camera focuses once and holds."
+          onClick={() => onLens("simple_focus", 0)}>
+          Auto
+        </button>
+        <button type="button" className="ghost small" style={{ width: "auto" }}
+          disabled={busy} title="Return focus to its default position"
+          onClick={() => onLens("reset_focus", 0)}>
+          Reset
+        </button>
+        {cam.focus?.score != null && (
+          <span className="tiny" style={{ marginLeft: "auto",
+                                          fontFamily: "monospace" }}>
+            <span style={{ color: "#e8e8e8" }}>{cam.focus.score}</span>
+            {cam.focus.best != null && (
+              <span style={{ color: "#999" }}> / best {cam.focus.best}</span>
+            )}
+            {cam.focus.focus_seconds ? (
+              <span style={{ color: "#8fd3a6" }}> ●</span>
+            ) : null}
+          </span>
+        )}
+      </div>
+
+      <div className="tiny" style={{ color: "#999" }}>
+        Nudges, judged by the picture: the camera cannot report where its
+        lens is. Touching focus starts the sharpness meter — the number
+        above, live while the dot is green — so go until it peaks.
+        {" "}
+        {z.calibrated ? (
+          <>
+            The slider counts the steps sent since the ends were marked
+            ({z.travel} of travel), so it drifts; re-mark an end to put it
+            right.
+          </>
+        ) : (
+          <>
+            <b>The slider needs the ends.</b> Drive to the widest the lens
+            goes, press Wide; drive to the tightest, press Tele. That is
+            the only position this lens can be sure of.
+          </>
+        )}
+        {" "}
+        <button type="button" className="ghost small"
+          style={{ width: "auto", padding: "0 4px" }}
+          onClick={() => setMarking((m) => !m)}>
+          {marking ? "hide" : "mark ends"}
+        </button>
+      </div>
+
+      {(marking || !z.calibrated) && (
+        <div style={{ display: "flex", gap: 6, alignItems: "center",
+                      flexWrap: "wrap" }}>
+          <button type="button" className="secondary small"
+            style={{ width: "auto" }} disabled={busy}
+            title="The lens is against its wide stop right now. Starts a fresh scale."
+            onClick={() => onMarkEnd("wide")}>
+            Wide end is here
+          </button>
+          <button type="button" className="secondary small"
+            style={{ width: "auto" }} disabled={busy || !z.wide_at}
+            title={z.wide_at
+              ? "The lens is against its tele stop right now. Closes the scale."
+              : "Mark the wide end first — the travel is measured from it."}
+            onClick={() => onMarkEnd("tele")}>
+            Tele end is here
+          </button>
+          {z.calibrated && (
+            <span className="tiny" style={{ color: "#999" }}>
+              marked {tsRel(z.tele_at)}
+            </span>
+          )}
+        </div>
+      )}
+
+      {note && (
+        <span className="tiny" style={{ color: "#8fd3a6" }}>{note}</span>
+      )}
+    </div>
+  );
+}
+
 export default function AdminCameras() {
   const adminPassword =
     localStorage.getItem(ADMIN_PW_STORAGE) ||
@@ -1353,11 +1542,47 @@ export default function AdminCameras() {
   async function lens(cam, op, amount) {
     setError(null);
     try {
-      await api.cameraLens(adminPassword, cam.id, op, amount);
+      const out = await api.cameraLens(adminPassword, cam.id, op, amount);
       setLensNote((m) => ({ ...m, [cam.id]: "sent — applies on the next poll" }));
       setTimeout(
         () => setLensNote((m) => ({ ...m, [cam.id]: null })), 4000,
       );
+      // A zoom step moves the counted position, so the slider has to be
+      // told. (The lens itself still cannot be asked — see lens_zoom.py.)
+      if (out?.op === "zoom") load();
+    } catch (e) {
+      setError(e?.message || String(e));
+    }
+  }
+
+  // THE SLIDER. Not "go to 0.4" -- the lens has no absolute mode -- but
+  // "from where you are counted to be, move this far", planned by the
+  // backend into the three step sizes the lens accepts.
+  async function zoomTo(cam, fraction) {
+    setError(null);
+    try {
+      const out = await api.cameraZoom(adminPassword, cam.id, fraction);
+      setLensNote((m) => ({ ...m, [cam.id]: out.note || "sent" }));
+      setTimeout(
+        () => setLensNote((m) => ({ ...m, [cam.id]: null })), 5000,
+      );
+      load();
+    } catch (e) {
+      setError(e?.message || String(e));
+    }
+  }
+
+  // "The lens is against that stop right now." The origin for the count
+  // above, and the repair when it has drifted.
+  async function markZoomEnd(cam, end) {
+    setError(null);
+    try {
+      const out = await api.cameraZoomEnd(adminPassword, cam.id, end);
+      setLensNote((m) => ({ ...m, [cam.id]: out.note || "marked" }));
+      setTimeout(
+        () => setLensNote((m) => ({ ...m, [cam.id]: null })), 6000,
+      );
+      load();
     } catch (e) {
       setError(e?.message || String(e));
     }
@@ -1978,6 +2203,20 @@ export default function AdminCameras() {
                           )}
                         </div>
 
+                        {/* THE LENS, at the bottom of the watch area,
+                            because the picture above is the only thing
+                            that can tell you what a nudge did. */}
+                        {cam.kind === "ip" && (
+                          <LensBar
+                            cam={cam}
+                            busy={isBusy}
+                            note={lensNote[cam.id]}
+                            onLens={(op, amt) => lens(cam, op, amt)}
+                            onZoom={(f) => zoomTo(cam, f)}
+                            onMarkEnd={(end) => markZoomEnd(cam, end)}
+                          />
+                        )}
+
                         {zoningCamId === cam.id && (
                           <TriggerZones
                             cam={cam}
@@ -2198,98 +2437,26 @@ export default function AdminCameras() {
                       <div style={{ width: "100%", borderTop:
                                     "1px solid rgba(120,120,120,0.25)",
                                     paddingTop: 6, marginTop: 2 }} />
+                      {/* THE LENS CONTROLS ARE ON THE PICTURE NOW, not
+                          here. They are nudges with no read-back, so the
+                          live view is the entire feedback loop; a column
+                          of them beside a black box was a control panel
+                          for something you could not see. */}
                       <span className="tiny muted" style={{ width: "100%" }}>
-                        Lens — watch the live view; these are nudges, the
-                        camera cannot report its position. It accepts three
-                        step sizes only, so <b>·</b> is fine and <b>··</b> is
-                        coarse. Touching <b>focus</b> starts the sharpness
-                        meter below, which then reports every few seconds
-                        for a few minutes: nudge until the number peaks,
-                        and <b>best</b> tells you when you have gone past.
-                      </span>
-                      {[
-                        { op: "zoom", label: "Zoom",
-                          minus: "wider (shorter focal length)",
-                          plus: "tighter (longer focal length)" },
-                        { op: "focus", label: "Focus",
-                          minus: "nearer", plus: "further" },
-                      ].map((axis) => (
-                        <div key={axis.op} style={{
-                          display: "flex", gap: 4, alignItems: "center",
-                          width: "100%",
-                        }}>
-                          <span className="tiny" style={{
-                            width: 46, textAlign: "right", opacity: 0.8,
-                          }}>{axis.label}</span>
-                          {[
-                            { amt: -100, text: "−··", why: axis.minus + ", coarse" },
-                            { amt: -10, text: "−·", why: axis.minus + ", fine" },
-                            { amt: 10, text: "+·", why: axis.plus + ", fine" },
-                            { amt: 100, text: "+··", why: axis.plus + ", coarse" },
-                          ].map((b) => (
-                            <button
-                              key={b.amt} type="button"
-                              className="secondary small"
-                              style={{ width: "auto", minWidth: 44,
-                                       fontFamily: "monospace" }}
-                              disabled={isBusy}
-                              title={`${axis.label} ${b.why}`}
-                              onClick={() => lens(cam, axis.op, b.amt)}
-                            >{b.text}</button>
-                          ))}
-                        </div>
-                      ))}
-                      <button type="button" className="small"
-                        style={{ width: "auto" }} disabled={isBusy}
-                        title="One-shot autofocus. Set the zoom FIRST, then press this — the camera focuses once and holds."
-                        onClick={() => lens(cam, "simple_focus", 0)}>
-                        Auto focus
-                      </button>
-                      <button type="button" className="ghost small"
-                        style={{ width: "auto" }} disabled={isBusy}
-                        title="Return focus to its default position"
-                        onClick={() => lens(cam, "reset_focus", 0)}>
-                        Reset
-                      </button>
-                      {/* THE ANSWER TO "DID THAT HELP?", beside the
-                          buttons that ask it. The camera cannot report
-                          where its focus ring is, so this number is the
-                          only feedback there is — and it belongs here
-                          rather than only in the card's header, where it
-                          is a health reading nobody is watching while
-                          their hand is on the nudges. */}
-                      <div className="tiny" style={{ width: "100%",
-                                                     marginTop: 2 }}>
-                        {cam.focus?.score != null ? (
-                          <>
-                            Sharpness <b>{cam.focus.score}</b>
-                            {cam.focus.best != null && (
-                              <> · best this session <b>{cam.focus.best}</b></>
-                            )}
-                            {" · "}
-                            {cam.focus.focus_seconds ? (
-                              <span style={{ color: "#8fd3a6" }}>
-                                measuring every few seconds
-                                {" "}({cam.focus.focus_seconds}s)
-                              </span>
-                            ) : (
-                              <span className="muted">
-                                updated {tsRel(cam.focus.updated_at)}
-                              </span>
-                            )}
+                        Lens — zoom and focus are on the live picture.
+                        {" "}
+                        {cam.zoom?.calibrated ? (
+                          <>Counted at{" "}
+                            <b>{cam.zoom.x != null
+                                  ? `about ${cam.zoom.x}x`
+                                  : `${Math.round(cam.zoom.fraction * 100)}% of travel`}</b>.
                           </>
                         ) : (
-                          <span className="muted">
-                            No sharpness reading yet — it arrives with the
-                            camera's next heartbeat.
-                          </span>
+                          <>No zoom scale yet — mark the lens's two ends
+                            from the live view and the slider can show a
+                            position.</>
                         )}
-                      </div>
-                      {lensNote[cam.id] && (
-                        <span className="tiny" style={{ color: "#2f6b45" }}>
-                          {lensNote[cam.id]}
-                        </span>
-                      )}
+                      </span>
 
                       <div style={{ width: "100%", borderTop:
                                     "1px solid rgba(120,120,120,0.25)",

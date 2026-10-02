@@ -646,6 +646,7 @@ def heartbeat(
     focus_brightness: float | None = Form(None),
     camera_settings: str | None = Form(None),
     stream_info: str | None = Form(None),
+    lens_info: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Cheap keepalive the Pi calls every ~60 s. Touches last_seen_at
@@ -727,6 +728,24 @@ def heartbeat(
                 "cameras: camera %s sent unparseable settings: %s",
                 cam.id, exc,
             )
+    # WHAT THE LENS SAID WHEN ASKED WHERE IT IS — which on this model is
+    # expected to be nothing, since it declares no absolute position.
+    # Merged BESIDE the counted position rather than over it: the count
+    # is the backend's and the reading is the camera's, and the card
+    # prefers the reading only when there actually is one.
+    if lens_info:
+        try:
+            parsed = json.loads(lens_info)
+            if isinstance(parsed, dict):
+                merged = dict(cam.lens_zoom or {})
+                parsed["at"] = _utcnow_naive().isoformat()
+                merged["reported"] = parsed
+                cam.lens_zoom = merged
+        except (ValueError, TypeError) as exc:
+            log.warning(
+                "cameras: camera %s sent unparseable lens info: %s",
+                cam.id, exc,
+            )
     if stream_info:
         try:
             parsed = json.loads(stream_info)
@@ -797,13 +816,19 @@ LENS_QUEUE_MAX = 24
 
 
 def request_lens(camera_id: int, op: str, amount: int = 0,
-                 params: dict | None = None) -> int:
+                 params: dict | None = None, repeat: int = 1) -> int:
     """Queue one camera command. Returns the queue depth after adding.
 
     `amount` is the step size for a zoom or focus nudge. `params`
     carries the commands that are not a nudge — an exposure change has
     named values ("manual", "1/500") rather than a step — and rides the
     same queue so ordering still holds across both kinds.
+
+    `repeat` is how many times to apply that same step. The lens accepts
+    three magnitudes and nothing between them, so a move of any size is
+    a run of identical nudges; sending the run as one queued command
+    rather than thirty keeps the queue (and the poll that drains it)
+    about the operator's gestures instead of about the lens's gearing.
     """
     with _LENS_LOCK:
         q = _LENS_QUEUES.setdefault(int(camera_id), [])
@@ -812,6 +837,8 @@ def request_lens(camera_id: int, op: str, amount: int = 0,
             # less than the one just clicked.
             del q[0]
         cmd = {"op": op, "amount": int(amount)}
+        if repeat and int(repeat) > 1:
+            cmd["repeat"] = int(repeat)
         if params:
             cmd["params"] = {str(k): str(v) for k, v in params.items()}
         q.append(cmd)

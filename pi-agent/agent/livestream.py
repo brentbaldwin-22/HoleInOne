@@ -211,9 +211,17 @@ class LiveStreamer:
                         # nudge — exposure, which has named values
                         # rather than a step size. An older backend
                         # sends none and the handler sees {}.
+                        # `repeat` is how many times to apply this
+                        # same step. The lens has three magnitudes and
+                        # nothing between them, so a drag to a position
+                        # arrives as one command with a count rather
+                        # than as thirty identical ones. Absent on every
+                        # command but a planned move, and on every
+                        # command from an older backend.
                         self.on_lens_command(
                             str(c.get("op") or ""), int(c.get("amount") or 0),
                             dict(c.get("params") or {}),
+                            int(c.get("repeat") or 1),
                         )
                     except Exception as exc:  # noqa: BLE001
                         log.error("lens command handler failed: %s", exc)

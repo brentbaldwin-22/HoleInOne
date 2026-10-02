@@ -517,6 +517,13 @@ class Camera(Base):
     # a missing file means "nothing yet", never "lost".
     still_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True)
+    # WHERE THE ZOOM IS, counted rather than read. This lens takes
+    # relative nudges and has no endpoint that reports its position
+    # (attributes.cgi: ZoomAdjust True, Absolute/Query False), so the
+    # backend keeps a running total of what it has sent and ties it to
+    # the lens's own hard stops, which an operator marks once. See
+    # services/lens_zoom.py for the shape and for what it is not.
+    lens_zoom: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # Soft toggle distinct from `enabled`: when False the camera stays
     # online (heartbeats + live-watch still work) but the backend

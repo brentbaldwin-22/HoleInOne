@@ -1835,6 +1835,12 @@ class FrameBuffer:
 # Everything lives under one submenu, which is not obvious: zoom is not
 # under ptz.cgi (that 404s on this model, RealPTZ=False) but alongside
 # focus in image.cgi.
+# A run longer than this is clipped. The backend plans moves that are a
+# handful of steps; a thousand means something upstream is wrong, and a
+# capture agent should not spend a quarter of an hour in SUNAPI calls
+# finding that out.
+_LENS_MAX_REPEAT = 60
+
 _LENS_PARAM = {
     "zoom":         lambda a: ("Zoom", str(int(a))),
     "focus":        lambda a: ("Focus", str(max(-1, min(1, int(a) or 1)))),
@@ -1891,26 +1897,93 @@ def _sunapi(cam_cfg: dict, submenu: str, action: str,
 
 
 def lens_control(cam_cfg: dict, op: str, amount: int = 0,
-                 timeout: float = 8.0) -> bool:
-    """Apply one lens nudge to the RTSP camera this agent is watching."""
+                 timeout: float = 8.0, repeat: int = 1) -> int:
+    """Apply a lens nudge `repeat` times. Returns how many took.
+
+    REPEATED RATHER THAN SCALED, because the lens accepts three
+    magnitudes and nothing between them: a move of 320 is three coarse
+    steps and two fine ones, not one step of 320 (which comes back "NG
+    Error Code: 604 Invalid Input Value(s)" and moves nothing). The
+    backend plans the run and sends it as one command; the loop is here
+    so the run costs one poll instead of one poll per step.
+
+    It stops at the first refusal. A lens that has just said no to a
+    step is either at its stop or not listening, and neither gets better
+    by asking twenty more times.
+    """
     build = _LENS_PARAM.get((op or "").lower())
     if build is None:
         log.warning("lens: unknown op %r", op)
-        return False
+        return 0
     param, value = build(amount)
-    ok, body = _sunapi(
-        cam_cfg, "focus", "control", {param: value}, timeout=timeout,
-    )
-    # The camera answers a bare "OK", or an "NG" block with a numbered
-    # code. 604 means the value was out of range -- worth logging as
-    # itself rather than as a generic failure, because it is the one an
-    # operator can act on by nudging less.
-    if ok:
-        log.info("lens: %s %s=%s -> ok", op, param, value)
-        return True
-    log.warning("lens: %s %s=%s -> %s", op, param, value,
-                body.replace("\n", " ")[:120])
-    return False
+    times = max(1, min(_LENS_MAX_REPEAT, int(repeat or 1)))
+    done = 0
+    for _ in range(times):
+        ok, body = _sunapi(
+            cam_cfg, "focus", "control", {param: value}, timeout=timeout,
+        )
+        # The camera answers a bare "OK", or an "NG" block with a
+        # numbered code. 604 means the value was out of range -- worth
+        # logging as itself rather than as a generic failure, because it
+        # is the one an operator can act on by nudging less.
+        if not ok:
+            log.warning("lens: %s %s=%s -> %s (%d of %d applied)",
+                        op, param, value,
+                        body.replace("\n", " ")[:120], done, times)
+            return done
+        done += 1
+    log.info("lens: %s %s=%s x%d -> ok", op, param, value, done)
+    return done
+
+
+# ── asking the lens where it is (it will probably not say) ────────────
+# THE ANSWER IS EXPECTED TO BE "NO". This camera's attributes.cgi
+# declares Absolute and Query False, which is the camera saying it has
+# no notion of an absolute position to report -- which is why the
+# backend counts the nudges it sends instead.
+#
+# Asked anyway, for two reasons. A declaration is not a read: firmware
+# has grown endpoints before, and a model that does report a position
+# should not have its answer ignored because a note in this file says it
+# cannot. And when the answer is no, "the camera was asked on <date> and
+# said nothing" is a better thing for an operator to see on the card
+# than silence, because it closes the question rather than leaving it
+# looking unimplemented.
+_ZOOM_POSITION_KEYS = ("ZoomPosition", "Zoom", "ZoomRatio", "ZoomStep",
+                       "ZoomLevel", "ZoomMagnification")
+_FOCUS_POSITION_KEYS = ("FocusPosition", "Focus", "FocusStep", "FocusLevel")
+
+
+def lens_view(cam_cfg: dict, timeout: float = 8.0) -> dict:
+    """Whatever the camera will say about where its lens is sitting.
+
+    Zoom and focus live under image.cgi's focus submenu on this model --
+    not under ptz.cgi, which 404s here (RealPTZ=False). A value that
+    comes back is the camera's own and beats any count we are keeping;
+    nothing coming back is itself the answer, and is recorded as one.
+    """
+    ok, body = _sunapi(cam_cfg, "focus", "view", timeout=timeout)
+    if not ok:
+        return {"ok": False, "error": body.replace("\n", " ")[:200],
+                "source": "image.cgi?msubmenu=focus"}
+    view = _parse_sunapi_view(body)
+    zoom_key = _first_present(view, _ZOOM_POSITION_KEYS)
+    focus_key = _first_present(view, _FOCUS_POSITION_KEYS)
+    values = {}
+    if zoom_key:
+        values["zoom"] = view[zoom_key]
+    if focus_key:
+        values["focus"] = view[focus_key]
+    return {
+        "ok": True,
+        "source": "image.cgi?msubmenu=focus",
+        "keys": {k: v for k, v in
+                 (("zoom", zoom_key), ("focus", focus_key)) if v},
+        "values": values,
+        # Everything it listed. A position under a name nobody has
+        # guessed yet is still visible to whoever is reading the card.
+        "raw": view,
+    }
 
 
 # ── exposure ──────────────────────────────────────────────────────────
@@ -1948,7 +2021,8 @@ _WDR_KEYS = ("WDR", "WideDynamicRange", "SSDR")
 
 
 def handle_camera_command(runner, op: str, amount: int = 0,
-                          params: dict | None = None) -> None:
+                          params: dict | None = None,
+                          repeat: int = 1) -> None:
     """Apply one operator command to the camera a role runner watches.
 
     Shared by the tee and the green because the command channel is the
@@ -1991,7 +2065,18 @@ def handle_camera_command(runner, op: str, amount: int = 0,
             if hb is not None:
                 hb.report_soon()
             return
-        lens_control(runner.cam_cfg, op, amount)
+        lens_control(runner.cam_cfg, op, amount, repeat=repeat)
+        # ASK WHERE IT ENDED UP. The expected answer on this model is
+        # nothing -- it declares no absolute position, which is why the
+        # backend counts the steps it sends -- but a declaration is not
+        # a read, and the one moment the question is worth a round trip
+        # is just after the lens moved. If a camera ever does answer,
+        # the card prefers its word over the count without anybody
+        # having to notice that it started doing so.
+        runner._lens_info = lens_view(runner.cam_cfg)
+        hb = getattr(runner, "_hb", None)
+        if hb is not None:
+            hb.report_soon()
     except Exception as exc:  # noqa: BLE001
         log.warning("camera command %s failed: %s", op, exc)
 
@@ -2004,11 +2089,16 @@ def drain_camera_settings(runner) -> dict:
     re-sending it would keep refreshing a timestamp that ought to go
     stale while nobody is asking.
     """
+    out = {}
     result = getattr(runner, "_camera_settings", None)
-    if result is None:
-        return {}
-    runner._camera_settings = None
-    return {"camera_settings": json.dumps(result)[:4000]}
+    if result is not None:
+        runner._camera_settings = None
+        out["camera_settings"] = json.dumps(result)[:4000]
+    lens = getattr(runner, "_lens_info", None)
+    if lens is not None:
+        runner._lens_info = None
+        out["lens_info"] = json.dumps(lens)[:4000]
+    return out
 
 
 def _parse_sunapi_view(body: str) -> dict:

@@ -417,6 +417,31 @@ export const api = {
       body: fd,
     });
   },
+  // Drive the zoom to a position along its travel, 0 wide, 1 tele. The
+  // lens has no absolute mode: the backend works out the move from the
+  // position it has been COUNTING and plans it into legal steps. Needs
+  // both ends marked first, or it 409s.
+  cameraZoom: (key, cameraId, fraction) => {
+    const fd = new FormData();   // Form(...) endpoint — see cameraLens
+    fd.append("fraction", String(fraction));
+    return request(`/api/admin/cameras/${cameraId}/zoom`, {
+      method: "POST",
+      adminPassword: key,
+      body: fd,
+    });
+  },
+  // "The lens is against its wide (or tele) stop right now." The only
+  // unambiguous position on a lens that cannot report one, so it is
+  // both the calibration and the repair when the count has drifted.
+  cameraZoomEnd: (key, cameraId, end) => {
+    const fd = new FormData();   // Form(...) endpoint — see cameraLens
+    fd.append("end", end);
+    return request(`/api/admin/cameras/${cameraId}/zoom-end`, {
+      method: "POST",
+      adminPassword: key,
+      body: fd,
+    });
+  },
   // Shutter on an IP camera. Same queue as the lens, same reason: the
   // backend cannot reach the camera. `preset: "read"` changes nothing
   // and just asks the camera what it has.

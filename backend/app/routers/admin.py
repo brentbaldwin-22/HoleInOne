@@ -98,7 +98,7 @@ from ..schemas import (
     HIOReviewAction,
 )
 from ..services import notifications, storage, thanks, tracer_examples
-from ..services import site_theme, tee_roi, workload
+from ..services import lens_zoom, site_theme, tee_roi, workload
 from ..services.matcher import match_clip
 from ..services.qr import generate_qr_png
 from ..services.auth import hash_password
@@ -14840,6 +14840,10 @@ def _camera_to_dict(
         # changes and not on a timer, so a page left open all afternoon
         # costs one image per camera per snapshot instead of one a minute.
         "still_at": c.still_at.isoformat() if c.still_at else None,
+        # WHERE THE ZOOM IS, counted from the nudges we have sent and
+        # tied to the lens's own stops. See services/lens_zoom.py for
+        # why it is a count and not a reading.
+        "zoom": lens_zoom.describe(c.lens_zoom, c.stream_model),
         "enabled": bool(c.enabled),
         "triggering_enabled": bool(c.triggering_enabled),
         "note": c.note,
@@ -15845,6 +15849,11 @@ def control_camera_lens(
     # that help?" -- and at the heartbeat's once a minute it is not an
     # answer you can work against. Arming it here makes the press and the
     # readout one action instead of two.
+    if _op == "zoom":
+        # KEEP THE COUNT. This is the only record of where the lens is
+        # -- it cannot be asked -- so every step that leaves here is
+        # added, including the ones a hand pressed one at a time.
+        cam.lens_zoom = lens_zoom.nudged(cam.lens_zoom, amt)
     focusing = _op in _FOCUS_OPS
     if focusing:
         from .cameras import extend_focus_mode
@@ -15891,6 +15900,109 @@ def get_camera_live_frame(camera_id: int, db: Session = Depends(get_db)):
         media_type="image/jpeg",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.post("/cameras/{camera_id}/zoom")
+def set_camera_zoom(
+    camera_id: int,
+    fraction: float = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Drive the zoom to a position along its travel, 0 wide, 1 tele.
+
+    THE LENS HAS NO ABSOLUTE MODE, so this is not "go to 0.4" — it is
+    "you are counted at 0.7, go back 0.3 of the travel", planned into
+    the three step sizes the lens does accept and queued as one command
+    with a repeat. If the count is wrong the lens ends up somewhere
+    else; marking an end is what puts it right, and is why the ends are
+    there.
+    """
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    if (cam.kind or "pi") != "ip":
+        raise HTTPException(409, "only an IP camera has a motorised lens")
+    if not lens_zoom.calibrated(cam.lens_zoom):
+        raise HTTPException(
+            409,
+            "this lens has no scale yet — drive it to each end and mark "
+            "them, and the slider can work in positions after that",
+        )
+    st = lens_zoom.state(cam.lens_zoom)
+    frac = min(1.0, max(0.0, float(fraction)))
+    target = int(round(frac * st["travel"]))
+    steps = lens_zoom.plan(target - st["pos"])
+    if not steps:
+        return {"ok": True, "moved": 0, "pos": st["pos"],
+                "note": "already there"}
+    if len(steps) > lens_zoom.MAX_PLAN_COMMANDS:
+        raise HTTPException(409, "that move needs more steps than the "
+                                 "lens should be asked for at once")
+    for amount, repeat in steps:
+        _request_lens(camera_id, "zoom", amount, repeat=repeat)
+    cam.lens_zoom = lens_zoom.nudged(cam.lens_zoom, target - st["pos"])
+    db.add(AuditLog(
+        actor="admin", action="camera_zoom",
+        target=f"camera:{camera_id}",
+        detail=f"{st['pos']}->{target} of {st['travel']}",
+    ))
+    db.commit()
+    out = lens_zoom.describe(cam.lens_zoom, cam.stream_model)
+    return {
+        "ok": True,
+        "moved": target - st["pos"],
+        "commands": len(steps),
+        "zoom": out,
+        "note": ("queued — the camera's recorder drives it on its next "
+                 "poll" + (f", to about {out['x']}x" if out.get("x") else "")),
+    }
+
+
+@router.post("/cameras/{camera_id}/zoom-end")
+def mark_camera_zoom_end(
+    camera_id: int,
+    end: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Record that the lens is sitting against one of its hard stops.
+
+    THE ONLY UNAMBIGUOUS THING ON THIS LENS. It cannot say where it is,
+    so a count of nudges is all there is — and a count needs an origin.
+    Drive to the wide end by eye on the live picture, press wide; drive
+    to the tele end, press tele; the span between is the travel and
+    every position after that is on a real scale.
+
+    It is also the repair. The count drifts — a nudge the camera never
+    applied, somebody at the pole using its own web UI — and marking an
+    end re-zeroes it against the lens itself.
+    """
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    if (cam.kind or "pi") != "ip":
+        raise HTTPException(409, "only an IP camera has a motorised lens")
+    try:
+        cam.lens_zoom = lens_zoom.mark_end(
+            cam.lens_zoom, end, datetime.utcnow().isoformat(),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    db.add(AuditLog(
+        actor="admin", action="camera_zoom_end",
+        target=f"camera:{camera_id}", detail=str(end),
+    ))
+    db.commit()
+    out = lens_zoom.describe(cam.lens_zoom, cam.stream_model)
+    return {
+        "ok": True,
+        "zoom": out,
+        "note": (
+            "wide end marked — now drive to the tele end and mark that"
+            if not out["calibrated"] else
+            f"both ends marked — {out['travel']} steps of travel"
+            + (f", about 1.0x to {out['range_x']}x" if out["range_x"] else "")
+        ),
+    }
 
 
 @router.get("/cameras/{camera_id}/still")

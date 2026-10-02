@@ -259,12 +259,13 @@ class GreenAgent:
     # -----------------------------------------------------------------
 
     def _on_lens_command(self, op: str, amount: int,
-                         params: dict | None = None) -> None:
+                         params: dict | None = None,
+                         repeat: int = 1) -> None:
         """Zoom/focus nudge or an exposure change. See
         common.handle_camera_command — shared with the tee runner so the
         two cannot drift. A green camera watches the ball come DOWN, so
         it wants the same short shutter the tee does."""
-        handle_camera_command(self, op, amount, params)
+        handle_camera_command(self, op, amount, params, repeat)
 
     def _on_focus_mode(self, seconds: float) -> None:
         """Backend says focus mode is armed for `seconds` (0 = off).

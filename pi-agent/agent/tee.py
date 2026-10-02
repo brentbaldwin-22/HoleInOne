@@ -479,11 +479,12 @@ class TeeAgent:
         return MotionFallbackDetector(detect_width=det_width)
 
     def _on_lens_command(self, op: str, amount: int,
-                         params: dict | None = None) -> None:
+                         params: dict | None = None,
+                         repeat: int = 1) -> None:
         """Zoom/focus nudge or an exposure change. See
         common.handle_camera_command — shared with the green runner so
         the two cannot drift."""
-        handle_camera_command(self, op, amount, params)
+        handle_camera_command(self, op, amount, params, repeat)
 
     def apply_tee_zones(self, payload) -> None:
         """Adopt the backend's trigger zones, scaled to OUR frames.
