@@ -99,8 +99,18 @@ SHRINK_AFTER_PASSES = 6
 # the pipeline's ceiling, so a mode is only usable if the encoder can
 # keep up with it. 720p is ~2.25x cheaper per frame, which is what
 # makes 50 fps viable without new hardware.
+#
+# ON AN IP CAMERA A MODE IS A BELIEF, NOT A REQUEST. open_camera returns
+# before the v4l2 tuning for an rtsp:// device, because the sensor
+# belongs to the camera and is set in its own web UI. So on the Hanwhas
+# a mode does not make the camera do anything — it tells the agent what
+# to expect, and everything sized from that (the ring buffer, the clip's
+# stamped rate, the "camera stalled" threshold) is right or wrong
+# accordingly. Match it to the camera's own profile, which the Cameras
+# card reads out under "Camera says".
 CAPTURE_MODES = {
     "1080p30": {"width": 1920, "height": 1080, "fps": 30},   # default; fits the budget
+    "720p30": {"width": 1280, "height": 720, "fps": 30},     # the Hanwhas' own profile
     "720p50": {"width": 1280, "height": 720, "fps": 50},     # 50fps that the encoder can actually sustain
     "1080p50": {"width": 1920, "height": 1080, "fps": 50},   # needs a COOL, unthrottled Pi
     "990p120": {"width": 1280, "height": 960, "fps": 120},   # cropped high-speed experiment
@@ -123,6 +133,20 @@ def _apply_capture_mode(cfg: dict) -> None:
         mode = _MODE_ALIASES.get(mode_raw, mode_raw)
         preset = CAPTURE_MODES.get(mode)
         if preset:
+            # SAY SO WHEN THE MODE OVERRULES AN EXPLICIT SETTING. "mode
+            # wins" is one line of docstring and a trap in practice:
+            # somebody told to fix a wrong frame rate edits `fps:`,
+            # restarts, sees no change, and concludes the diagnosis was
+            # wrong. The setting that is actually in charge should name
+            # itself in the log.
+            for _k in ("width", "height", "fps"):
+                _had = cam.get(_k)
+                if _had is not None and _had != preset[_k]:
+                    log.warning(
+                        "capture mode %r overrides camera.%s=%s with %s "
+                        "— change the MODE, not %s",
+                        mode, _k, _had, preset[_k], _k,
+                    )
             cam.update(preset)
             log.info(
                 "capture mode %r -> %dx%d@%d",

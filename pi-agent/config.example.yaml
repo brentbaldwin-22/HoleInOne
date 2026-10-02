@@ -29,6 +29,13 @@ camera:
   # pre-roll buffer (5s of 1080p50 ~= 1.6GB, 990p120 ~= 2.4GB — fine
   # on an 8GB Pi 5). The tee ROI is auto-scaled to the new geometry.
   #   1080p30  — 1920x1080@30, the long-standing default
+  #   720p30   — 1280x720@30, what the Hanwha XNV-6080R's own profile
+  #              is set to. ON AN IP CAMERA THE MODE REQUESTS NOTHING:
+  #              the sensor is set in the camera's web UI and this only
+  #              tells the agent what to expect. Set it to whatever the
+  #              Cameras card reads back under "Camera says", or the
+  #              ring buffer, the clip's stamped rate and the stall
+  #              threshold are all sized for a camera that is not there.
   #   720p50   — 1280x720@50, the 50fps mode the encoder can sustain
   #   1080p50  — 1920x1080@50, only on a COOL (unthrottled) Pi: the
   #              software encoder tops out near 31 fps at 1080p when
