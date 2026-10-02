@@ -38,6 +38,71 @@ Two traps worth knowing:
 
 ---
 
+## Step 0 — You cannot SSH in at all
+
+Every step below starts "SSH into the affected Pi", so when that is the
+thing that is broken the runbook has nothing to say. It does now.
+
+**Do not start with the network. Start with the card**, because the Pi
+answers a question SSH cannot: each camera's `last seen` on
+`/admin/cameras` is bumped by any successful call, and the agent polls
+`watch-status` every second. So it is current to within a second or two,
+and it splits the problem in half for free:
+
+| `last seen` says | What is true | Where the fault is |
+|---|---|---|
+| **live** (under 150s) | The Pi is running, its modem is up, it is reaching the backend right now | NOT the Pi and NOT the link. Something between you and it: the tailnet, sshd, the address you used |
+| **late** (150s–15min) | It was there recently | Probably a flapping link — try again, and read the modem notes below |
+| **down** / never | The agent is not reaching the internet | The Pi, its power, or its modem. Nothing can be fixed remotely; this is a drive |
+
+Each Pi's only uplink is its own LTE USB modem, so when the modem is
+gone, SSH and the heartbeat are gone together. **A camera that is still
+heartbeating while SSH times out is therefore a tailnet problem, not a
+camera problem** — which is also the most common one, because:
+
+> The tee's uplink is a USB cellular modem that reboots itself every
+> ~30 seconds under load: alive ~23s at ~125 KB/s, then gone ~8s while
+> it re-enumerates.
+
+That is from the comment on the resumable-upload code, which exists
+*because* of it. Short bursts (a heartbeat, a status poll) cross it
+fine. A held TCP connection does not, and `ssh` is a held TCP
+connection. Expect to retry, and expect a session to die mid-command.
+
+**If the card says live and SSH still times out:**
+
+```bash
+tailscale status | grep -i golfreelz   # from any machine on the tailnet
+```
+
+The address may simply have moved — a node that re-registers can come
+back on a different 100.x. Use the name rather than the number:
+
+```bash
+ssh pi@golfreelz-tee        # MagicDNS, survives an address change
+```
+
+If the node shows as offline in `tailscale status` while the camera is
+heartbeating, Tailscale on the Pi has lost its connection while the
+modem kept working. There is no remote fix — the agent's command
+channel carries lens and exposure commands, not a shell — so it is a
+site visit, or a reboot by whatever out-of-band means the mount has.
+
+**Working over the modem once you are in.** Keep commands short and
+expect to reconnect. `update.sh` already fetches `pi-agent/` as a sparse,
+blob-filtered checkout for exactly this reason: a plain clone pulls
+~100 MB, which over this link once took ten minutes and had to be
+abandoned. Run long jobs under `tmux` or `screen` so a dropped session
+does not kill them halfway:
+
+```bash
+tmux new -s update
+sudo /opt/golfreelz-agent/update.sh
+# detach with ctrl-b d; reattach after a drop with: tmux attach -t update
+```
+
+---
+
 ## Step 1 — Is it power? (2 minutes)
 
 SSH into the affected Pi and run:
