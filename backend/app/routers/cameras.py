@@ -534,18 +534,25 @@ def battery_status(
 
 
 def stream_status(info, updated_at=None) -> dict | None:
-    """What the camera is sending, and whether the three numbers agree.
+    """What the camera is sending, and whether the numbers agree.
 
-    THE DISAGREEMENT IS THE POINT. `config_fps` is what clips get
-    stamped at; `delivered_fps` is what the camera actually hands over.
-    A clip is stamped at the first and filled from the second, so when
-    they differ it plays fast — which is exactly the fault this readout
-    exists to make visible before it reaches a golfer's inbox.
+    THE DISAGREEMENT IS THE POINT, but it is no longer the one it used
+    to be. Clips were stamped at `config_fps` and filled from
+    `delivered_fps`, so the two differing made the footage itself wrong
+    — jumpy, and running fast. The agent now measures the camera's
+    cadence per recording and stamps that, which is `stamped_fps`.
+
+    So a config that disagrees with delivery is no longer a playback
+    fault. It is a SIZING fault: the ring buffer, the "the camera
+    stalled" threshold and this readout are all built from a number
+    describing a camera that is not there. Worth fixing, worth saying
+    plainly, and no longer worth alarm.
     """
     if not isinstance(info, dict):
         return None
     cfg = info.get("config_fps")
     got = info.get("delivered_fps")
+    stamped = info.get("stamped_fps")
     mismatch = None
     if cfg and got and cfg > 0:
         off = abs(got - cfg) / cfg
@@ -561,6 +568,7 @@ def stream_status(info, updated_at=None) -> dict | None:
         "open_fps": info.get("open_fps"),
         "config_fps": cfg,
         "delivered_fps": got,
+        "stamped_fps": stamped,
         "mismatch": mismatch,
         # The camera's own answer, when somebody has asked it.
         "profile": info.get("profile"),

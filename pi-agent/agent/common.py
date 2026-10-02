@@ -1746,8 +1746,14 @@ def stream_info_fields(runner) -> dict:
         "open_w": size[0] if size else None,
         "open_h": size[1] if size else None,
         "open_fps": getattr(runner, "_open_fps", None),
-        # What the config believes, and what clips get stamped at.
+        # What the config believes. NOT what clips get stamped at —
+        # that is measured per recording now, and reported beside it.
         "config_fps": float(getattr(runner, "fps", 0) or 0) or None,
+        # What the LAST clip was really stamped at: the camera's own
+        # cadence, measured off the pre-roll. None until this agent has
+        # recorded something since it started.
+        "stamped_fps": (lambda v: round(float(v), 2) if v else None)(
+            getattr(runner, "_last_write_fps", None)),
         # What is actually arriving, now.
         "delivered_fps": round(fps, 2) if fps else None,
         "delivered_at": at,

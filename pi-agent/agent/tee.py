@@ -966,6 +966,9 @@ class TeeAgent:
         # band around nominal is what stamped this camera's clips at 50
         # while it delivered 29.9, and every one of them was jumpy.
         write_fps, _measured, _why = write_fps_for(snapshot, fps)
+        # Kept for the heartbeat: the card should report the rate clips
+        # are REALLY stamped at, not the one the config hoped for.
+        self._last_write_fps = write_fps
         log.info(
             "record: nominal_fps=%.1f measured_fps=%s write_fps=%.2f "
             "preroll_frames=%d (%s)",

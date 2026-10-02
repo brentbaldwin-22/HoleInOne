@@ -137,7 +137,12 @@ function StreamReadout({ stream, onRead, busy }) {
       ? `${s.open_w}×${s.open_h}${s.open_fps ? ` @ ${s.open_fps.toFixed(1)}` : ""}`
       : null],
     ["Delivering", s.delivered_fps ? `${s.delivered_fps.toFixed(1)} fps` : null],
-    ["Clips stamped", s.config_fps ? `${s.config_fps.toFixed(0)} fps` : null],
+    // THE RATE CLIPS ARE REALLY STAMPED AT, measured per recording off
+    // the camera's own cadence. This used to read config_fps, which was
+    // true until the agent started measuring and then quietly was not —
+    // a card reporting "stamped 50" for clips being written at 29.9.
+    ["Clips stamped", s.stamped_fps ? `${s.stamped_fps.toFixed(1)} fps` : null],
+    ["Config says", s.config_fps ? `${s.config_fps.toFixed(0)} fps` : null],
   ].filter(([, v]) => v);
   const p = s.profile;
   return (
@@ -164,10 +169,15 @@ function StreamReadout({ stream, onRead, busy }) {
       {/* THE WARNING STAYS. It is a finding, not an explanation: this
           camera's clips really do play fast. The why is in the tooltip
           so the card carries the fault and not the lecture. */}
+      {/* NO LONGER A PLAYBACK FAULT. Clips are stamped at the measured
+          cadence now, so a wrong config does not make the footage wrong
+          — it makes everything SIZED from it wrong: the ring buffer,
+          the stall threshold, this readout. Still worth fixing, so it
+          is still called out; no longer worth the warning colour. */}
       {s.mismatch && (
-        <div className="tiny" style={{ color: "var(--warn)", marginTop: 3 }}
-             title="Clips are stamped at the configured rate, so they play fast until the two are brought together — change the camera's profile, or the agent's config.">
-          ⚠ {s.mismatch}
+        <div className="tiny muted" style={{ marginTop: 3 }}
+             title="Clips are stamped at the rate the camera really delivers, so this no longer affects playback. It does mean the agent's ring buffer and its stall detection are sized for a camera that is not there — fix camera.mode in the Pi's config.yaml.">
+          {s.mismatch} · sized wrong, plays right
         </div>
       )}
       {p?.ok && p.values && (

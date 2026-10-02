@@ -354,13 +354,18 @@ class GreenAgent:
         # the wrong rate would be spliced against a tee stamped at the
         # right one.
         write_fps, _measured, _why = write_fps_for(snapshot, self.fps)
-        if _measured is None or abs(write_fps - self.fps) > 0.05:
-            log.info(
-                "record: nominal_fps=%.1f measured_fps=%s write_fps=%.2f "
-                "preroll_frames=%d (%s)",
-                self.fps, f"{_measured:.2f}" if _measured else "—",
-                write_fps, len(snapshot), _why,
-            )
+        # Kept for the heartbeat: the card should report the rate clips
+        # are REALLY stamped at, not the one the config hoped for.
+        self._last_write_fps = write_fps
+        # One line per recording, as the tee logs — this is the number
+        # that decides whether a clip is smooth, and it should not take
+        # a disagreement to make it visible.
+        log.info(
+            "record: nominal_fps=%.1f measured_fps=%s write_fps=%.2f "
+            "preroll_frames=%d (%s)",
+            self.fps, f"{_measured:.2f}" if _measured else "—",
+            write_fps, len(snapshot), _why,
+        )
         clip_path = self.work_dir / f"{session_id}.mp4"
         clip_writer = ClipWriter(clip_path, write_fps, (width, height))
         if not clip_writer.ok:
