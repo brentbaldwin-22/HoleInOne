@@ -60,7 +60,7 @@ ssh pi@raspberrypi.local
 sudo mkdir -p /opt/golfreelz-agent
 sudo chown -R "$USER:$USER" /opt/golfreelz-agent
 cd /opt/golfreelz-agent
-git clone --depth 1 https://github.com/baldbrent-lang/HoleInOne tmp
+git clone --depth 1 https://github.com/brentbaldwin-22/HoleInOne tmp
 mv tmp/pi-agent/* tmp/pi-agent/.* . 2>/dev/null || true
 rm -rf tmp
 
@@ -215,7 +215,7 @@ existed), one-time bootstrap:
 
 ```bash
 sudo curl -fsSL -o /opt/golfreelz-agent/update.sh \
-  https://raw.githubusercontent.com/baldbrent-lang/HoleInOne/main/pi-agent/update.sh
+  https://raw.githubusercontent.com/brentbaldwin-22/HoleInOne/main/pi-agent/update.sh
 sudo chmod +x /opt/golfreelz-agent/update.sh
 sudo chown golfreelz:golfreelz /opt/golfreelz-agent/update.sh
 ```

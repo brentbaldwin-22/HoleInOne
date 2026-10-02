@@ -19,15 +19,16 @@ BRANCH="${1:-main}"
 INSTALL_DIR="/opt/golfreelz-agent"
 SERVICE_USER="golfreelz"
 SERVICE_NAME="golfreelz-agent"
-# Overridable, because the repo the Pis pull from and the repo the work
-# is pushed to have not always been the same account. When they differ,
-# update.sh succeeds, reports the branch it pulled, and installs code
-# that does not contain the change you came to deploy — which looks
-# exactly like the change not working.
+# The repo the Pis pull from. It pointed at a different account than
+# the one the work is pushed to until 2 Oct, and that failure mode is
+# worth remembering: update.sh succeeds, reports the branch it pulled,
+# and installs code without the change it was run to deploy — which on
+# the device is indistinguishable from the change not working. Hence
+# the repo being printed below, and the override for testing a fork:
 #
 #   sudo REPO_URL=https://github.com/<owner>/HoleInOne.git \
 #        /opt/golfreelz-agent/update.sh
-REPO_URL="${REPO_URL:-https://github.com/baldbrent-lang/HoleInOne.git}"
+REPO_URL="${REPO_URL:-https://github.com/brentbaldwin-22/HoleInOne.git}"
 
 if [[ "$EUID" -ne 0 ]]; then
   echo "must be run as root (use sudo)" >&2
