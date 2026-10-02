@@ -115,6 +115,13 @@ sudo setsid bash -c '/opt/golfreelz-agent/update.sh' \
   >/tmp/update.log 2>&1 </dev/null &
 ```
 
+**Which capture mode?** Read it off the card, do not assume: the STREAM
+block's "Opened as" is the geometry OpenCV really got, and `camera.mode`
+in `config.yaml` should name the preset that matches it — `1080p30` for
+1920x1080@30, `720p30` for 1280x720@30. Getting this wrong is harmless
+to the footage (the clip is stamped at the measured rate either way) and
+wrong for everything sized from it.
+
 Then let it drop. Reconnect whenever and read the result:
 
 ```bash

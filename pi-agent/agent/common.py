@@ -1921,24 +1921,46 @@ def measured_fps(snapshot) -> float | None:
     return fps
 
 
-def write_fps_for(snapshot, nominal: float) -> tuple[float, float | None, str]:
+def write_fps_for(snapshot, nominal: float,
+                  delivered: float | None = None) -> tuple[float, float | None, str]:
     """(rate to stamp the clip at, what was measured, why).
 
     Shared by both runners so a tee and the green it is spliced with
     cannot end up on different rules. The green's config has always
     matched its camera, so this changes nothing there in practice — but
     it stops that being luck.
+
+    TWO SOURCES, BECAUSE THE FIRST ONE CAN FAIL QUIETLY. The pre-roll
+    median is specific to the frames in this clip, which is what you
+    want — but it is a median of INTERVALS, and an RTSP stream does not
+    arrive on a metronome. OpenCV hands over whatever its buffer holds,
+    so frames can come in pairs microseconds apart and then nothing for
+    60 ms. Average that and you get the truth; take the median interval
+    and you can get an absurd rate that this rejects, falling back to
+    the configured one — which is the very number the measurement exists
+    to escape.
+
+    `delivered` is the DeliveryMeter's rolling count-over-span, the same
+    figure the Cameras card shows. It is immune to burstiness in a way a
+    median is not, and it is the better answer whenever the first one
+    has nothing to say.
     """
     measured = measured_fps(snapshot)
+    source = "measured"
+    if measured is None and delivered:
+        d = float(delivered)
+        if MIN_BELIEVABLE_FPS <= d <= MAX_BELIEVABLE_FPS:
+            measured = d
+            source = "delivery meter"
     if measured is None:
         return (float(nominal), None,
                 "no usable measurement — using the configured rate")
     if nominal > 0 and abs(measured - nominal) / nominal > FPS_CONFIG_DRIFT:
         return (measured, measured,
-                f"camera delivers {measured:.1f} fps but the config says "
-                f"{nominal:.1f} — using the camera's rate, and the config "
-                f"is worth correcting")
-    return (measured, measured, "measured")
+                f"camera delivers {measured:.1f} fps ({source}) but the "
+                f"config says {nominal:.1f} — using the camera's rate, and "
+                f"the config is worth correcting")
+    return (measured, measured, source)
 
 
 def reclock_fps(n_written: int, real_span: float, stamped_fps: float):

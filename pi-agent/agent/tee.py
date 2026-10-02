@@ -976,7 +976,12 @@ class TeeAgent:
         # absolute bounds rather than against the configured rate — the
         # band around nominal is what stamped this camera's clips at 50
         # while it delivered 29.9, and every one of them was jumpy.
-        write_fps, _measured, _why = write_fps_for(snapshot, fps)
+        # The delivery meter is handed in as the second opinion — see
+        # write_fps_for. Without it, a bursty RTSP stream can defeat the
+        # pre-roll median and silently fall back to the config.
+        write_fps, _measured, _why = write_fps_for(
+            snapshot, fps, delivered=self._delivery.read()[0],
+        )
         # Kept for the heartbeat: the card should report the rate clips
         # are REALLY stamped at, not the one the config hoped for.
         self._last_write_fps = write_fps
