@@ -15596,6 +15596,15 @@ _LENS_OPS = {
     "reset_focus":  ("Mode", False),
 }
 
+# The ops that move FOCUS, as opposed to zoom. Pressing one of these is
+# the only reason anybody wants the fast sharpness readout, so they arm
+# it themselves rather than making the operator ask for it first and
+# then wonder why the number is a minute old. Short, because it exists
+# to show the result of the press that armed it; each further press
+# tops it up, and it lapses by itself when the hands stop.
+_FOCUS_OPS = {"focus", "simple_focus", "reset_focus"}
+_FOCUS_WINDOW_AFTER_LENS = 180
+
 
 # The only magnitudes the lens accepts, per the camera's own schema.
 _LENS_STEPS = (1, 10, 100)
@@ -15831,6 +15840,22 @@ def control_camera_lens(
     _sign = -1 if _amt < 0 else 1
     amt = _sign * min(_LENS_STEPS, key=lambda st: abs(st - abs(_amt)))
     depth = _request_lens(camera_id, _op, amt)
+    # MOVING FOCUS TURNS THE METER ON. The camera cannot report where its
+    # focus ring is, so the sharpness score is the only answer to "did
+    # that help?" -- and at the heartbeat's once a minute it is not an
+    # answer you can work against. Arming it here makes the press and the
+    # readout one action instead of two.
+    focusing = _op in _FOCUS_OPS
+    if focusing:
+        from .cameras import extend_focus_mode
+
+        if extend_focus_mode(camera_id, _FOCUS_WINDOW_AFTER_LENS):
+            # Cold start: a new focus session, so the peak starts honest.
+            # Not on every nudge -- the peak is what tells you that you
+            # have gone past the best, and resetting it per press would
+            # wipe exactly that.
+            cam.focus_best = None
+            cam.focus_best_at = None
     db.add(AuditLog(
         actor="admin", action="camera_lens",
         target=f"camera:{camera_id}", detail=f"op={_op} amount={amt}",
@@ -15840,7 +15865,11 @@ def control_camera_lens(
         "ok": True, "op": _op, "amount": amt, "queued": depth,
         # The agent polls every few seconds, so tell the operator when
         # to expect the lens to move rather than leaving them clicking.
-        "note": "queued — the camera's recorder applies it on its next poll",
+        "note": (
+            "queued — the camera's recorder applies it on its next poll"
+            + (", and is reporting sharpness fast while you work"
+               if focusing else "")
+        ),
     }
 
 

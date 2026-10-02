@@ -96,7 +96,7 @@ CLIPS_DIR.mkdir(parents=True, exist_ok=True)
 # THE STILL: one JPEG per camera, overwritten, taken whether or not
 # anybody is watching. The Cameras page shows the camera's view the
 # moment it loads instead of an empty box with a Watch button, and the
-# cost is one frame every STILL_MAX_AGE rather than ten a second.
+# cost is one frame every ten minutes rather than ten a second.
 #
 # On the instance's own disk, not object storage: it is a 60-100 KB file
 # with a lifetime of minutes, and losing it on a redeploy costs nothing
@@ -105,11 +105,11 @@ STILLS_DIR = CLIPS_DIR.parent / "stills"
 STILLS_DIR.mkdir(parents=True, exist_ok=True)
 
 # How old a still may be before the agent is asked for a fresh one.
-# Fifteen minutes is ~100 frames a day per camera — a rounding error
-# against a single uploaded clip — and the view of a tee box does not
-# change faster than that except while somebody is standing at it,
-# which is what the live view is for.
-STILL_MAX_AGE = timedelta(minutes=15)
+# Ten minutes is ~90 frames a day per camera over a dawn-to-dusk season
+# — a rounding error against a single uploaded clip — and the view of a
+# tee box does not change faster than that except while somebody is
+# standing at it, which is what the live view is for.
+STILL_MAX_AGE = timedelta(minutes=10)
 
 # A still is one full-resolution frame, encoded at a higher quality than
 # the live stream, so it gets more room than the 500 KB live cap.
@@ -834,6 +834,32 @@ def request_focus_mode(camera_id: int, seconds: int) -> None:
     """
     with _FOCUS_LOCK:
         _FOCUS_UNTIL[int(camera_id)] = time.time() + max(1, int(seconds))
+
+
+def extend_focus_mode(camera_id: int, seconds: int) -> bool:
+    """Keep focus mode armed for at least `seconds` more, and say whether
+    it had been off.
+
+    For the lens controls, which arm it as a side effect: pressing a
+    focus nudge is the whole reason anyone wants the fast readout, so
+    asking for it separately was a step that only ever got skipped.
+
+    NEVER SHORTENS. A short top-up after a nudge must not cut a window
+    somebody armed deliberately, so the later of the two deadlines wins.
+
+    The return value exists for the session peak. The peak is reset when
+    a focus session STARTS and not on every nudge inside one -- resetting
+    it per press would wipe the number that tells you that you have
+    already gone past the best.
+    """
+    now = time.time()
+    until = now + max(1, int(seconds))
+    with _FOCUS_LOCK:
+        current = _FOCUS_UNTIL.get(int(camera_id), 0.0)
+        was_off = current <= now
+        if until > current:
+            _FOCUS_UNTIL[int(camera_id)] = until
+    return was_off
 
 
 def _focus_remaining(camera_id: int) -> int:

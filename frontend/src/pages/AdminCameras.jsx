@@ -899,7 +899,7 @@ function CameraEventsPanel({ adminPassword }) {
  * put a Pi into 10 fps JPEG streaming over a cellular modem to answer a
  * question that is almost always "is it still pointed at the tee" — a
  * question one frame answers. So the agent leaves a snapshot with the
- * backend every quarter hour whether anyone is looking or not, and this
+ * backend every ten minutes whether anyone is looking or not, and this
  * is what the card shows: the view, immediately, on every camera, with
  * no traffic on the device at all.
  *
@@ -911,7 +911,7 @@ function CameraEventsPanel({ adminPassword }) {
  * clock time and the age both show, and the age goes amber once the
  * snapshot is older than the camera should have let it get.
  */
-const STILL_STALE_SEC = 45 * 60;   // 3x the backend's snapshot interval
+const STILL_STALE_SEC = 30 * 60;   // 3x the backend's snapshot interval
 
 function stillClock(iso) {
   if (!iso) return null;
@@ -2046,8 +2046,16 @@ export default function AdminCameras() {
                       thinking about pictures at all. */}
                   {/* No Watch button here any more: it is on the
                       picture, where what it does is visible. A control
-                      for "show me that" belongs on the that. */}
-                  <div className="tiny upper muted" style={{ marginTop: 2 }}>Live</div>
+                      for "show me that" belongs on the that.
+
+                      The heading only appears when something is under
+                      it: an IP green camera has neither Capture (a green
+                      records when its tee says so) nor Focus mode (its
+                      lens arms that itself), and a heading over nothing
+                      reads as a control that failed to load. */}
+                  {(cam.assigned_role === "tee" || cam.kind !== "ip") && (
+                    <div className="tiny upper muted" style={{ marginTop: 2 }}>Live</div>
+                  )}
                   {cam.assigned_role === "tee" && (
                     <button
                       type="button" className="small"
@@ -2058,21 +2066,34 @@ export default function AdminCameras() {
                       Capture
                     </button>
                   )}
-                  <button
-                    type="button"
-                    className={cam.focus?.focus_seconds ? "small" : "secondary small"}
-                    onClick={() => focusMode(cam)}
-                    disabled={isBusy || !cam.enabled}
-                    title={
-                      cam.focus?.focus_seconds
-                        ? `Focus mode on — ${cam.focus.focus_seconds}s left. The score updates every few seconds; turn the ring until it peaks. Press again to stop it now.`
-                        : "Report the focus score every few seconds for 10 minutes, so you can turn the lens ring against a live number. Resets the session best."
-                    }
-                  >
-                    {cam.focus?.focus_seconds
-                      ? `Stop focusing (${cam.focus.focus_seconds}s)`
-                      : "Focus mode"}
-                  </button>
+                  {/* FOCUS MODE IS A BUTTON ONLY WHERE NOTHING ELSE CAN
+                      ARM IT. All it does is raise the rate the sharpness
+                      score is reported at, from the heartbeat's once a
+                      minute to every few seconds — it does not touch the
+                      lens. On an IP camera the focus nudges below arm it
+                      themselves, because pressing one is the entire
+                      reason to want the fast number; asking for it
+                      separately first was a step that only ever got
+                      skipped. A Pi's lens is a ring somebody turns by
+                      hand, with no command to ride along on, so there it
+                      stays a button. */}
+                  {cam.kind !== "ip" && (
+                    <button
+                      type="button"
+                      className={cam.focus?.focus_seconds ? "small" : "secondary small"}
+                      onClick={() => focusMode(cam)}
+                      disabled={isBusy || !cam.enabled}
+                      title={
+                        cam.focus?.focus_seconds
+                          ? `Focus mode on — ${cam.focus.focus_seconds}s left. The score updates every few seconds; turn the ring until it peaks. Press again to stop it now.`
+                          : "Report the focus score every few seconds for 10 minutes, so you can turn the lens ring against a live number. Resets the session best."
+                      }
+                    >
+                      {cam.focus?.focus_seconds
+                        ? `Stop focusing (${cam.focus.focus_seconds}s)`
+                        : "Focus mode"}
+                    </button>
+                  )}
 
                   {/* SETUP: everything that describes where this camera
                       is pointed. Two of these need a partner, because
@@ -2181,7 +2202,10 @@ export default function AdminCameras() {
                         Lens — watch the live view; these are nudges, the
                         camera cannot report its position. It accepts three
                         step sizes only, so <b>·</b> is fine and <b>··</b> is
-                        coarse.
+                        coarse. Touching <b>focus</b> starts the sharpness
+                        meter below, which then reports every few seconds
+                        for a few minutes: nudge until the number peaks,
+                        and <b>best</b> tells you when you have gone past.
                       </span>
                       {[
                         { op: "zoom", label: "Zoom",
@@ -2227,6 +2251,40 @@ export default function AdminCameras() {
                         onClick={() => lens(cam, "reset_focus", 0)}>
                         Reset
                       </button>
+                      {/* THE ANSWER TO "DID THAT HELP?", beside the
+                          buttons that ask it. The camera cannot report
+                          where its focus ring is, so this number is the
+                          only feedback there is — and it belongs here
+                          rather than only in the card's header, where it
+                          is a health reading nobody is watching while
+                          their hand is on the nudges. */}
+                      <div className="tiny" style={{ width: "100%",
+                                                     marginTop: 2 }}>
+                        {cam.focus?.score != null ? (
+                          <>
+                            Sharpness <b>{cam.focus.score}</b>
+                            {cam.focus.best != null && (
+                              <> · best this session <b>{cam.focus.best}</b></>
+                            )}
+                            {" · "}
+                            {cam.focus.focus_seconds ? (
+                              <span style={{ color: "#8fd3a6" }}>
+                                measuring every few seconds
+                                {" "}({cam.focus.focus_seconds}s)
+                              </span>
+                            ) : (
+                              <span className="muted">
+                                updated {tsRel(cam.focus.updated_at)}
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <span className="muted">
+                            No sharpness reading yet — it arrives with the
+                            camera's next heartbeat.
+                          </span>
+                        )}
+                      </div>
                       {lensNote[cam.id] && (
                         <span className="tiny" style={{ color: "#2f6b45" }}>
                           {lensNote[cam.id]}
