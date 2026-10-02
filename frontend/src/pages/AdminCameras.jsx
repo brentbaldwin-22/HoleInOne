@@ -689,15 +689,36 @@ function CameraEventsPanel({ adminPassword }) {
   // time.
   const [inFlight, setInFlight] = useState({});
 
+  // A POLL THAT IS STILL RUNNING DOES NOT GET ANOTHER ONE.
+  //
+  // setInterval does not care whether the last call came back. This
+  // request walks fifty events and reads the clip files behind them, so
+  // when the server is busy it takes longer than the ten seconds
+  // between ticks — and then every tick adds another, each holding a
+  // database connection, until the pool is dry and every camera's
+  // heartbeat starts failing. That is not a hypothetical: it is what
+  // this page did to the backend on the morning of 2 Oct, twenty
+  // requests deep.
+  //
+  // The server-side fixes (a probe cache, a cap on concurrent probes,
+  // the connection handed back before the files are read) are the real
+  // repair. This is the other half of it: a client should not be able
+  // to queue work faster than the server finishes it, whatever the
+  // server does with it.
   useEffect(() => {
     if (!adminPassword) return undefined;
     let cancelled = false;
+    let running = false;
     async function load() {
+      if (running) return;
+      running = true;
       try {
         const rows = await api.listCameraEvents(adminPassword, 50, 0);
         if (!cancelled) { setEvents(rows || []); setErr(null); }
       } catch (e) {
         if (!cancelled) setErr(e.message || "could not load camera events");
+      } finally {
+        running = false;
       }
     }
     load();

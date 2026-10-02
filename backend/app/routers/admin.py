@@ -5926,6 +5926,20 @@ def list_camera_events(
             "missing": False,
         }
 
+    # THE DATABASE IS DONE WITH; GIVE THE CONNECTION BACK BEFORE PROBING.
+    #
+    # Everything below reads files, not rows. The session would hold a
+    # pooled connection through all of it anyway, because Depends keeps
+    # it for the life of the request — and the life of this request is
+    # however long ffprobe takes, which on a cold cache is seconds. The
+    # page polls every ten seconds, so requests stack; twenty of them
+    # holding twenty of the pool's thirty connections is what made every
+    # heartbeat, watch-status and poll-trigger 500 with QueuePool
+    # timeouts on the morning of 2 Oct.
+    #
+    # expire_on_commit=False, so the rows above stay readable after this.
+    db.commit()
+
     out = []
     for r in rows:
         tee_meta = _meta(r.tee_clip_filename)

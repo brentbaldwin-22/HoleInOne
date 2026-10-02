@@ -17,6 +17,8 @@ import re
 import secrets
 import shutil
 import subprocess
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
@@ -808,13 +810,53 @@ def probe_source_device(path: Path) -> str | None:
     return None
 
 
-def probe_video_info(path: Path) -> dict:
+# AN ANSWER THAT CANNOT CHANGE IS WORTH KEEPING.
+#
+# A finished clip is immutable: its duration, frame count and size are
+# the same on the thousandth read as the first. ffprobe is a process
+# spawn and ~100 ms of a core, and the camera-events list probes two
+# files per row, fifty rows a page, every time an operator's browser
+# polls it. That is a hundred processes for an answer we already had,
+# ten seconds later, over and over -- which is what took the site down
+# on the morning of 2 Oct: twenty of those requests in flight at once,
+# thirty-three of forty threadpool workers inside ffprobe, the database
+# pool dry behind them, and /health unanswerable for nine seconds.
+#
+# Keyed on (path, size, mtime) rather than path alone, so a file that
+# is genuinely rewritten -- a re-encode landing on the same name -- is
+# probed again rather than answered from a stale entry.
+_PROBE_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
+_PROBE_CACHE_MAX = 2048
+_PROBE_CACHE_LOCK = threading.Lock()
+
+# NO MORE THAN THIS MANY ffprobes AT ONCE, across the whole process.
+# The box is one core. Twenty concurrent probes do not finish twenty
+# times sooner; they finish at the same total speed having spent the
+# interval making the web server unanswerable. Two leaves the core
+# mostly free and is still faster than one for an IO-bound probe.
+_PROBE_SLOTS = threading.Semaphore(2)
+
+
+def _probe_key(path: Path) -> tuple | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (str(path), st.st_size, int(st.st_mtime))
+
+
+def probe_video_info(path: Path, use_cache: bool = True) -> dict:
     """Return a small dict of video diagnostics: codec, fps, nb_frames,
     duration, width, height. Missing fields are None. Used to verify
     the output of the tracer encode pipeline — cv2's mp4v writer can
     produce files whose container duration looks right but whose
     timestamps are bunched up, so we need to see the actual codec +
     frame count to spot it.
+
+    MEMOISED on the file's identity, and capped at a couple of probes
+    at a time — see the comment on _PROBE_CACHE for what the unbounded
+    version did to a one-core box. `use_cache=False` for the caller who
+    has just rewritten a file and means it.
     """
     info: dict = {
         "codec": None, "fps": None, "nb_frames": None, "duration": None,
@@ -822,18 +864,30 @@ def probe_video_info(path: Path) -> dict:
     }
     if not have_ffmpeg():
         return info
+    # NOT `key`: the parse loop below rebinds that to "width"/"height",
+    # which silently filed every entry under a string and turned the
+    # cache into a miss on every call.
+    cache_key = _probe_key(path) if use_cache else None
+    if cache_key is not None:
+        with _PROBE_CACHE_LOCK:
+            hit = _PROBE_CACHE.get(cache_key)
+            if hit is not None:
+                _PROBE_CACHE.move_to_end(cache_key)
+                return dict(hit)
     try:
-        out = subprocess.check_output(
-            [
-                "ffprobe", "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries",
-                "stream=codec_name,r_frame_rate,nb_frames,width,height:format=duration",
-                "-of", "json", str(path),
-            ],
-            stderr=subprocess.STDOUT,
-            timeout=20,
-        )
+        with _PROBE_SLOTS:
+            out = subprocess.check_output(
+                [
+                    "ffprobe", "-v", "error",
+                    "-select_streams", "v:0",
+                    "-show_entries",
+                    "stream=codec_name,r_frame_rate,nb_frames,width,height:"
+                    "format=duration",
+                    "-of", "json", str(path),
+                ],
+                stderr=subprocess.STDOUT,
+                timeout=20,
+            )
         data = json.loads(out)
         stream = (data.get("streams") or [{}])[0]
         info["codec"] = stream.get("codec_name")
@@ -863,6 +917,16 @@ def probe_video_info(path: Path) -> dict:
             info["duration"] = None
     except Exception as exc:  # pragma: no cover
         log.warning("ffprobe video-info failed for %s: %s", path, exc)
+        # A failure is NOT cached: a probe that failed because the file
+        # was still being written answers differently a minute later,
+        # and a permanent failure costs one spawn per poll rather than
+        # a permanently wrong row.
+        return info
+    if cache_key is not None:
+        with _PROBE_CACHE_LOCK:
+            _PROBE_CACHE[cache_key] = dict(info)
+            while len(_PROBE_CACHE) > _PROBE_CACHE_MAX:
+                _PROBE_CACHE.popitem(last=False)
     return info
 
 
