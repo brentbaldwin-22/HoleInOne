@@ -96,7 +96,7 @@ CLIPS_DIR.mkdir(parents=True, exist_ok=True)
 # THE STILL: one JPEG per camera, overwritten, taken whether or not
 # anybody is watching. The Cameras page shows the camera's view the
 # moment it loads instead of an empty box with a Watch button, and the
-# cost is one frame every half hour rather than ten a second.
+# cost is one frame every ten minutes rather than ten a second.
 #
 # On the instance's own disk, not object storage: it is a 60-100 KB file
 # with a lifetime of minutes, and losing it on a redeploy costs nothing
@@ -106,20 +106,21 @@ STILLS_DIR.mkdir(parents=True, exist_ok=True)
 
 # How old a still may be before the agent is asked for a fresh one.
 #
-# THIRTY MINUTES WHILE THE HEALTH CHECKS ARE UNDER SUSPICION. The
-# instance started failing /health roughly every ten minutes on the
-# morning the snapshot shipped at a ten-minute interval, and a
-# coincidence that exact is worth testing rather than arguing about.
-# Thirty makes the same fault three times rarer, which is what tells us
-# whether it is this at all.
+# BACK TO TEN MINUTES, the snapshot having been acquitted. It went to
+# thirty on 2 Oct because the instance was failing /health at almost
+# exactly this interval and a coincidence that exact was worth testing
+# rather than arguing about. The stall watchdog then named the real
+# culprit — the camera-events list spawning a hundred ffprobes per poll
+# and holding a database connection through all of them — and the
+# spacing turned out to mean nothing.
 #
-# The cost either way is one frame: ~30 a day per camera over a
-# dawn-to-dusk season, against a single uploaded clip of several
-# megabytes. The view of a tee box does not change faster than this
+# Ten minutes is ~90 frames a day per camera over a dawn-to-dusk
+# season, a rounding error against a single uploaded clip of several
+# megabytes. The view of a tee box does not change faster than that
 # except while somebody is standing at it, which is what the live view
 # is for — and the agent still sends one unasked after a zoom nudge or
 # when the live view closes, which covers the times it would matter.
-STILL_MAX_AGE = timedelta(minutes=30)
+STILL_MAX_AGE = timedelta(minutes=10)
 
 # A still is one full-resolution frame, encoded at a higher quality than
 # the live stream, so it gets more room than the 500 KB live cap.
@@ -1077,7 +1078,7 @@ async def post_still(token: str, request: Request):
     if declared > MAX_STILL_BYTES:
         raise HTTPException(413, "still too large (max 2MB)")
     # Longer than a live frame's: this one is worth waiting out a modem
-    # reboot for, since the next attempt is half an hour away.
+    # reboot for, since the next attempt is ten minutes away.
     body = await _read_body(request, STILL_BODY_TIMEOUT)
     if not body:
         raise HTTPException(400, "empty frame")
