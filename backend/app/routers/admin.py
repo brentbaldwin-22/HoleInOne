@@ -15637,6 +15637,19 @@ _EXPOSURE_PRESETS = {
                  "label": "Pinned at 1/500"},
 }
 
+# THE SHUTTER AS A LADDER, for the slider on the live view. The presets
+# above are three points on it with weather names; this is the same
+# thing with the rungs in between, because "a bit shorter than overcast"
+# is a real thing to want on a bright-but-hazy afternoon and there was
+# no way to ask for it.
+#
+# Every rung but the first is a CAP on auto-exposure, not a fixed
+# shutter: the camera stays free to expose for the light and is only
+# forbidden the long smear. Ordered slowest-to-fastest, which is also
+# dimmest-to-sharpest, so the slider runs one way the whole time.
+_SHUTTER_LADDER = ("auto", "1/125", "1/250", "1/500",
+                   "1/1000", "1/2000", "1/4000")
+
 
 @router.get("/cameras/{camera_id}/tee-zones")
 def get_tee_zones(camera_id: int, db: Session = Depends(get_db)):
@@ -15742,14 +15755,22 @@ def control_camera_exposure(
             "note": "asked — the camera's answer arrives with its next "
                     "heartbeat",
         }
-    spec = _EXPOSURE_PRESETS.get(_p)
-    if spec is None:
-        raise HTTPException(
-            400, f"preset must be one of {sorted(_EXPOSURE_PRESETS)} or read",
-        )
-    params = {"mode": spec["mode"]}
-    if spec["speed"]:
-        params["speed"] = spec["speed"]
+    # A rung of the ladder, from the slider. Named presets still work --
+    # they are three rungs with weather on them -- but the slider sends
+    # the speed itself, because the point of it is the rungs between.
+    if _p in _SHUTTER_LADDER and _p != "auto":
+        params = {"mode": "auto", "speed": _p}
+    else:
+        spec = _EXPOSURE_PRESETS.get(_p)
+        if spec is None:
+            raise HTTPException(
+                400,
+                f"preset must be a shutter from {list(_SHUTTER_LADDER)}, "
+                f"one of {sorted(_EXPOSURE_PRESETS)}, or read",
+            )
+        params = {"mode": spec["mode"]}
+        if spec["speed"]:
+            params["speed"] = spec["speed"]
     if wdr is not None and str(wdr).strip() != "":
         params["wdr"] = "1" if str(wdr).lower() in ("1", "true", "on") else "0"
     depth = _request_lens(camera_id, "exposure_set", 0, params)

@@ -142,10 +142,12 @@ function StreamReadout({ stream, onRead, busy }) {
   const p = s.profile;
   return (
     <div style={{ width: "100%" }}>
-      <div className="tiny muted" style={{ marginBottom: 4 }}>
-        Stream — what the camera is sending, measured rather than
-        assumed. The rate is set in the camera&apos;s own profile; our
-        config only says what we believe it to be.
+      {/* NO PARAGRAPH. What this panel is for lives in the labels and
+          in the tooltips; a card an operator reads every day does not
+          need the rationale printed on it every time. */}
+      <div className="tiny upper muted" style={{ marginBottom: 3 }}
+           title="What the camera is really sending, measured rather than assumed. The rate is set in the camera's own profile; our config only says what we believe it to be.">
+        Stream
       </div>
       {rows.length > 0 ? (
         <div className="tiny" style={{ display: "flex", flexWrap: "wrap",
@@ -157,15 +159,15 @@ function StreamReadout({ stream, onRead, busy }) {
           ))}
         </div>
       ) : (
-        <div className="tiny muted">
-          Nothing reported yet — the agent sends this with its heartbeat.
-        </div>
+        <div className="tiny muted">nothing reported yet</div>
       )}
+      {/* THE WARNING STAYS. It is a finding, not an explanation: this
+          camera's clips really do play fast. The why is in the tooltip
+          so the card carries the fault and not the lecture. */}
       {s.mismatch && (
-        <div className="tiny" style={{ color: "var(--warn)", marginTop: 3 }}>
-          ⚠ {s.mismatch}. Clips are stamped at the configured rate, so
-          this one plays fast unless the two are brought together —
-          change the camera&apos;s profile, or the agent&apos;s config.
+        <div className="tiny" style={{ color: "var(--warn)", marginTop: 3 }}
+             title="Clips are stamped at the configured rate, so they play fast until the two are brought together — change the camera's profile, or the agent's config.">
+          ⚠ {s.mismatch}
         </div>
       )}
       {p?.ok && p.values && (
@@ -191,7 +193,7 @@ function StreamReadout({ stream, onRead, busy }) {
       )}
       {p && p.ok === false && (
         <div className="tiny muted" style={{ marginTop: 3 }}>
-          The camera did not answer a profile read: {p.error}
+          profile read refused: {p.error}
         </div>
       )}
       {/* Not .row — that stretches its children, and a Read button the
@@ -231,13 +233,7 @@ function StreamReadout({ stream, onRead, busy }) {
 }
 
 function ExposureReadout({ exp }) {
-  if (!exp) {
-    return (
-      <span className="tiny muted" style={{ width: "100%" }}>
-        Nothing read from this camera yet — press “Read from camera”.
-      </span>
-    );
-  }
+  if (!exp) return null;
   const rows = [
     ["Mode", exp.mode],
     ["Shutter", exp.speed],
@@ -261,10 +257,7 @@ function ExposureReadout({ exp }) {
           ))}
         </div>
       ) : (
-        <div className="tiny muted">
-          The camera reported no shutter key we have a name for — open
-          the raw list below and tell us what it calls one.
-        </div>
+        <div className="tiny muted">no shutter key we have a name for</div>
       )}
       <div className="tiny muted" style={{ marginTop: 2 }}>
         read {tsRel(exp.updated_at)}
@@ -1041,11 +1034,47 @@ function CameraStill({ cam, adminPassword, onWatch, disabled }) {
  * a nudge judged by eye and nudging a picture you cannot see is how a
  * camera ends up pointed at a tree.
  */
-function LensBar({ cam, onLens, onZoom, onMarkEnd, note, busy }) {
+// THE SHUTTER, AS A LADDER. Mirrors _SHUTTER_LADDER in routers/admin.py
+// -- keep the two together. Every rung but the first caps auto-exposure
+// rather than pinning it, so the camera still exposes for the light and
+// is only forbidden the long smear. Slowest first, which is also
+// dimmest-but-brightest to sharpest-but-darkest.
+const SHUTTER_LADDER = ["auto", "1/125", "1/250", "1/500",
+                        "1/1000", "1/2000", "1/4000"];
+const SHUTTER_WHY = {
+  "auto": "No cap — the camera decides, and on a dull day it will pick a "
+    + "long exposure that smears the ball",
+  "1/125": "Dusk, last tee times",
+  "1/250": "Low light",
+  "1/500": "Flat light — the setting that matters most for the tracer",
+  "1/1000": "Full sun",
+  "1/2000": "Hard sun on white sky",
+  "1/4000": "As short as this sensor goes; dark unless it is very bright",
+};
+
+// Which rung the camera is actually on, as an index, or null when it is
+// not saying anything we recognise. The CAP is what these set, so that
+// is what is matched -- the live shutter floats below it.
+function shutterIndex(exp) {
+  const v = exp?.slow_limit || exp?.speed;
+  if (!v) return null;
+  const i = SHUTTER_LADDER.indexOf(String(v).trim());
+  if (i >= 0) return i;
+  return /auto/i.test(exp?.mode || "") ? 0 : null;
+}
+
+function LensBar({ cam, onLens, onZoom, onMarkEnd, onShutter, note, busy }) {
   const z = cam.zoom || {};
   const [local, setLocal] = useState(z.fraction ?? 0);
   const [marking, setMarking] = useState(false);
   const dragging = useRef(false);
+  // The shutter rung, held locally while a thumb is on it so the label
+  // moves with the drag rather than waiting on a camera two polls away.
+  const camShutter = shutterIndex(cam.exposure);
+  const [shut, setShut] = useState(camShutter ?? 3);
+  useEffect(() => {
+    if (camShutter != null) setShut(camShutter);
+  }, [camShutter]);
 
   // Follow the server's count when it changes under us (a nudge, a
   // mark, another operator) — but never while a thumb is on the slider.
@@ -1153,23 +1182,69 @@ function LensBar({ cam, onLens, onZoom, onMarkEnd, note, busy }) {
         )}
       </div>
 
+      {/* THE SHUTTER, with the lens, because it is the third thing you
+          set standing at a camera and the picture above is how you
+          judge it: too short and the frame goes dark, too long and the
+          ball smears. The old three weather buttons were three rungs of
+          this ladder with no way to ask for the step between. */}
+      <div style={{ display: "flex", gap: 6, alignItems: "center",
+                    flexWrap: "wrap" }}>
+        <span className="tiny" style={{ width: 40, textAlign: "right",
+                                        opacity: 0.8, color: "#ddd" }}>
+          Shutter
+        </span>
+        <input
+          type="range" min={0} max={SHUTTER_LADDER.length - 1} step={1}
+          value={shut}
+          disabled={busy}
+          list={`shutter-${cam.id}`}
+          onChange={(e) => setShut(parseInt(e.target.value, 10))}
+          onPointerUp={() => onShutter(SHUTTER_LADDER[shut])}
+          onKeyUp={() => onShutter(SHUTTER_LADDER[shut])}
+          title={SHUTTER_WHY[SHUTTER_LADDER[shut]]}
+          style={{ flex: 1, minWidth: 120, accentColor: "#38bdf8" }}
+        />
+        <datalist id={`shutter-${cam.id}`}>
+          {SHUTTER_LADDER.map((_, i) => <option key={i} value={i} />)}
+        </datalist>
+        <span className="tiny" style={{ minWidth: 62, color: "#e8e8e8",
+                                        fontFamily: "monospace" }}>
+          {SHUTTER_LADDER[shut] === "auto" ? "auto" : `≤ ${SHUTTER_LADDER[shut]}`}
+        </span>
+        {/* WHAT THE CAMERA SAYS, not what was sent -- which firmware
+            exposes which key varies, and a set that landed on the wrong
+            one has to be visible rather than assumed. */}
+        <span className="tiny" style={{ color: camShutter == null
+                                          ? "#999" : "#8fd3a6" }}>
+          {cam.exposure
+            ? (camShutter == null
+                ? "camera: not saying"
+                : `camera: ${cam.exposure.mode || "?"}`
+                  + (cam.exposure.slow_limit ? ` ≤ ${cam.exposure.slow_limit}` : ""))
+            : ""}
+        </span>
+        <button type="button" className="ghost small"
+          style={{ width: "auto", padding: "0 6px" }} disabled={busy}
+          title="Ask the camera what it currently has, and change nothing"
+          onClick={() => onShutter("read")}>
+          read
+        </button>
+      </div>
+
+      {/* ONE LINE. Everything these controls need explaining lives in
+          their tooltips now; the card is used standing at a camera, and
+          a paragraph read for the fiftieth time is in the way. */}
       <div className="tiny" style={{ color: "#999" }}>
-        Nudges, judged by the picture: the camera cannot report where its
-        lens is. Touching focus starts the sharpness meter — the number
-        above, live while the dot is green — so go until it peaks.
-        {" "}
         {z.calibrated ? (
-          <>
-            The slider counts the steps sent since the ends were marked
-            ({z.travel} of travel), so it drifts; re-mark an end to put it
-            right.
-          </>
+          <span title={`Counted from the ${z.travel} steps of travel `
+            + `between the marked ends, not read from the camera, so it `
+            + `drifts — re-mark an end to put it right.`}>
+            Zoom is counted, not read — re-mark an end if it drifts.
+          </span>
         ) : (
-          <>
-            <b>The slider needs the ends.</b> Drive to the widest the lens
-            goes, press Wide; drive to the tightest, press Tele. That is
-            the only position this lens can be sure of.
-          </>
+          <b title="Drive to the widest the lens goes and press Wide; drive to the tightest and press Tele. The stops are the only position this lens can be sure of.">
+            The zoom slider needs its two ends marked.
+          </b>
         )}
         {" "}
         <button type="button" className="ghost small"
@@ -2214,6 +2289,7 @@ export default function AdminCameras() {
                             onLens={(op, amt) => lens(cam, op, amt)}
                             onZoom={(f) => zoomTo(cam, f)}
                             onMarkEnd={(end) => markZoomEnd(cam, end)}
+                            onShutter={(v) => exposure(cam, v)}
                           />
                         )}
 
@@ -2434,69 +2510,25 @@ export default function AdminCameras() {
                         busy={isBusy}
                         onRead={() => readStreamProfile(cam)}
                       />
+                      {/* EVERY CONTROL IS ON THE PICTURE NOW — zoom,
+                          focus and shutter alike. What is left here is
+                          the diagnostics: what the camera says it is
+                          sending and what it says its exposure is,
+                          which are readings to check rather than
+                          controls to reach for. No prose: the labels
+                          and the tooltips carry it. */}
                       <div style={{ width: "100%", borderTop:
                                     "1px solid rgba(120,120,120,0.25)",
                                     paddingTop: 6, marginTop: 2 }} />
-                      {/* THE LENS CONTROLS ARE ON THE PICTURE NOW, not
-                          here. They are nudges with no read-back, so the
-                          live view is the entire feedback loop; a column
-                          of them beside a black box was a control panel
-                          for something you could not see. */}
-                      <span className="tiny muted" style={{ width: "100%" }}>
-                        Lens — zoom and focus are on the live picture.
-                        {" "}
-                        {cam.zoom?.calibrated ? (
-                          <>Counted at{" "}
-                            <b>{cam.zoom.x != null
-                                  ? `about ${cam.zoom.x}x`
-                                  : `${Math.round(cam.zoom.fraction * 100)}% of travel`}</b>.
-                          </>
-                        ) : (
-                          <>No zoom scale yet — mark the lens's two ends
-                            from the live view and the slider can show a
-                            position.</>
-                        )}
-                      </span>
-
-                      <div style={{ width: "100%", borderTop:
-                                    "1px solid rgba(120,120,120,0.25)",
-                                    paddingTop: 6, marginTop: 2 }}>
-                        <span className="tiny muted">
-                          Shutter — a struck ball crosses this frame at
-                          about 1100&nbsp;px/s and is ~4&nbsp;px across, so
-                          at 1/60 it smears over ~18&nbsp;px and the tracer
-                          can lose it against a pale sky. These cap how
-                          long the camera may expose; shorter costs
-                          brightness, so pick for the light.
-                        </span>
-                      </div>
-                      {[
-                        { key: "bright", text: "Bright 1/1000",
-                          why: "Full sun — the shortest useful exposure" },
-                        { key: "overcast", text: "Overcast 1/500",
-                          why: "Flat light — the setting that matters most "
-                               + "for the tracer" },
-                        { key: "dusk", text: "Dusk 1/250",
-                          why: "Last tee times — as short as the light "
-                               + "allows" },
-                        { key: "auto", text: "Auto",
-                          why: "Hand it back to the camera" },
-                      ].map((b) => (
-                        <button
-                          key={b.key} type="button"
-                          className="secondary small"
-                          style={{ width: "auto" }}
-                          disabled={isBusy}
-                          title={b.why}
-                          onClick={() => exposure(cam, b.key)}
-                        >{b.text}</button>
-                      ))}
-                      <button
-                        type="button" className="ghost small"
-                        style={{ width: "auto" }} disabled={isBusy}
-                        title="Ask the camera what it currently has, and change nothing"
-                        onClick={() => exposure(cam, "read")}
-                      >Read from camera</button>
+                      {/* The heading only when there is a reading
+                          under it — a label over nothing reads as a
+                          panel that failed to load. */}
+                      {cam.exposure && (
+                        <div className="tiny upper muted"
+                             title="What the camera reports its exposure to be — its own words, not the preset that was sent. Set it from the slider on the live picture.">
+                          Shutter
+                        </div>
+                      )}
                       <ExposureReadout exp={cam.exposure} />
                     </div>
                   )}
