@@ -33,6 +33,7 @@ from .common import (
     handle_camera_command,
     open_camera,
     reclock_fps,
+    write_fps_for,
     stream_info_fields,
     DeliveryMeter,
 )
@@ -610,7 +611,16 @@ class TeeAgent:
             _cnow = time.time()
             if self._cap_last is not None:
                 _cgap = _cnow - self._cap_last
-                if _cgap > 1.8 / max(1.0, self.fps):
+                # AGAINST WHAT THE CAMERA IS DELIVERING, not what the
+                # config believes. This counter is the one that says
+                # "the camera stalled" as opposed to "our pipeline fell
+                # behind" — and on a camera configured for 50 while
+                # delivering 30, it called every ordinary 33 ms interval
+                # a stall, because the threshold it was using was 36 ms.
+                # A diagnostic that cries camera fault on a healthy
+                # camera is worse than no diagnostic.
+                _dfps, _ = self._delivery.read()
+                if _cgap > 1.8 / max(1.0, _dfps or self.fps):
                     self._cap_gaps += 1
                     self._cap_worst = max(self._cap_worst, _cgap)
             self._cap_last = _cnow
@@ -950,43 +960,17 @@ class TeeAgent:
         first_frame_ts = snapshot[0][0]
 
         # Write at the camera's REAL delivered rate, measured from the
-        # (already de-duplicated) pre-roll timestamps, instead of the
-        # nominal config fps. The GoPro webcam delivers ~29 unique fps,
-        # so stamping a fixed 30 plays the clip slightly fast and — when
-        # combined with the now-removed duplicates — was the source of
-        # the periodic hitch. Measured rate => smooth, correct-duration
-        # playback. Clamped to sane bounds; falls back to nominal when
-        # the pre-roll is too short to measure.
-        #
-        # Guard against a bogus measurement: the first capture after boot
-        # (or after a long idle) can have a pre-roll of frames the camera
-        # delivered slowly during warmup — e.g. 151 frames spanning 150 s
-        # reads as 1 fps. Stamping the whole clip at that rate plays the
-        # real ~30 fps action in slow motion (and reports an 8-minute
-        # duration). Only trust the measured rate when it's within a sane
-        # band of nominal (±40%); otherwise keep nominal.
-        # Use the MEDIAN inter-frame interval, not the mean: a single
-        # stall inside the pre-roll drags the mean down and would stamp
-        # the whole clip slow. The median is the camera's true cadence.
-        write_fps = fps
-        if len(snapshot) >= 5:
-            _iv = sorted(
-                snapshot[i][0] - snapshot[i - 1][0]
-                for i in range(1, len(snapshot))
-            )
-            _med = _iv[len(_iv) // 2]
-            if _med > 1e-4:
-                measured = 1.0 / _med
-                if 0.6 * fps <= measured <= 1.4 * fps:
-                    write_fps = max(1.0, min(120.0, measured))
-                else:
-                    log.warning(
-                        "record: ignoring implausible measured_fps=%.2f "
-                        "(nominal=%.1f) — using nominal", measured, fps,
-                    )
+        # (already de-duplicated) pre-roll timestamps. See write_fps_for
+        # in common.py for why the measurement is trusted against
+        # absolute bounds rather than against the configured rate — the
+        # band around nominal is what stamped this camera's clips at 50
+        # while it delivered 29.9, and every one of them was jumpy.
+        write_fps, _measured, _why = write_fps_for(snapshot, fps)
         log.info(
-            "record: nominal_fps=%.1f measured_fps=%.2f preroll_frames=%d",
-            fps, write_fps, len(snapshot),
+            "record: nominal_fps=%.1f measured_fps=%s write_fps=%.2f "
+            "preroll_frames=%d (%s)",
+            fps, f"{_measured:.2f}" if _measured else "—",
+            write_fps, len(snapshot), _why,
         )
 
         clip_path = self.work_dir / f"{session_id}.mp4"

@@ -1744,6 +1744,87 @@ RECLOCK_TOLERANCE = 0.05
 RECLOCK_MIN_SPAN = 2.0
 
 
+# ── what rate to stamp a clip at ──────────────────────────────────────
+# WRITE AT THE RATE THE CAMERA IS ACTUALLY DELIVERING. Everything that
+# makes a clip smooth hangs off this one number:
+#
+#   * ClipWriter's gap test fires at 1.8x the frame period, so a clock
+#     set too fast makes ordinary network jitter look like a gap and
+#     inserts a duplicate frame to "fill" it. At 50 fps the threshold is
+#     36 ms against a camera delivering every 33 ms — 2.6 ms of slack,
+#     which an RTSP stream exceeds constantly. The clip fills up with
+#     duplicates at irregular intervals, which is exactly what stutter
+#     is.
+#   * What the filler does not catch, reclock_fps corrects on upload by
+#     averaging the shortfall across the whole clip — which fixes the
+#     duration and smears any real stall over footage that was fine.
+#
+# Both are repairs for a clock that was wrong to begin with.
+#
+# THE BOUNDS ARE ABSOLUTE, NOT A BAND AROUND THE CONFIG. They used to be
+# "within +/-40% of nominal", which on an IP camera anchors the honest
+# measurement to a number the config itself calls a belief: a tee camera
+# configured for 50 and delivering 29.9 had its correct measurement
+# rejected for being 0.1 fps under the 30.0 floor, and every clip it
+# recorded was stamped 50. A measurement is worth distrusting when it is
+# absurd — the first capture after boot can span a 150 s warmup and read
+# as 1 fps — not when it disagrees with a guess.
+MIN_BELIEVABLE_FPS = 4.0
+MAX_BELIEVABLE_FPS = 120.0
+# Below this many frames the median is not a cadence, it is a coin toss.
+MIN_FPS_SAMPLE = 5
+# How far measured may sit from the configured rate before it is worth
+# a line in the log. Not an error — the measurement still wins — but a
+# config that disagrees with the camera by this much is one to fix,
+# because every OTHER thing sized from it (ring buffer, gap counters)
+# is sized wrong too.
+FPS_CONFIG_DRIFT = 0.15
+
+
+def measured_fps(snapshot) -> float | None:
+    """The camera's true cadence, from the pre-roll's own timestamps.
+
+    THE MEDIAN INTERVAL, not the mean: one stall inside the pre-roll
+    drags the mean down and would stamp the whole clip slow, while the
+    median is what the camera does when it is working.
+
+    None when there is not enough to go on, or when the answer is
+    absurd on its face.
+    """
+    if not snapshot or len(snapshot) < MIN_FPS_SAMPLE:
+        return None
+    gaps = sorted(
+        snapshot[i][0] - snapshot[i - 1][0] for i in range(1, len(snapshot))
+    )
+    median = gaps[len(gaps) // 2]
+    if median <= 1e-4:
+        return None
+    fps = 1.0 / median
+    if not (MIN_BELIEVABLE_FPS <= fps <= MAX_BELIEVABLE_FPS):
+        return None
+    return fps
+
+
+def write_fps_for(snapshot, nominal: float) -> tuple[float, float | None, str]:
+    """(rate to stamp the clip at, what was measured, why).
+
+    Shared by both runners so a tee and the green it is spliced with
+    cannot end up on different rules. The green's config has always
+    matched its camera, so this changes nothing there in practice — but
+    it stops that being luck.
+    """
+    measured = measured_fps(snapshot)
+    if measured is None:
+        return (float(nominal), None,
+                "no usable measurement — using the configured rate")
+    if nominal > 0 and abs(measured - nominal) / nominal > FPS_CONFIG_DRIFT:
+        return (measured, measured,
+                f"camera delivers {measured:.1f} fps but the config says "
+                f"{nominal:.1f} — using the camera's rate, and the config "
+                f"is worth correcting")
+    return (measured, measured, "measured")
+
+
 def reclock_fps(n_written: int, real_span: float, stamped_fps: float):
     """The rate this clip should have been stamped at, or None.
 

@@ -27,6 +27,7 @@ from .common import (
     ClipWriter,
     DeliveryMeter,
     reclock_fps,
+    write_fps_for,
     stream_info_fields,
     BackendClient,
     BackgroundUploader,
@@ -301,7 +302,16 @@ class GreenAgent:
             _cnow = time.time()
             if self._cap_last is not None:
                 _cgap = _cnow - self._cap_last
-                if _cgap > 1.8 / max(1.0, self.fps):
+                # AGAINST WHAT THE CAMERA IS DELIVERING, not what the
+                # config believes. This counter is the one that says
+                # "the camera stalled" as opposed to "our pipeline fell
+                # behind" — and on a camera configured for 50 while
+                # delivering 30, it called every ordinary 33 ms interval
+                # a stall, because the threshold it was using was 36 ms.
+                # A diagnostic that cries camera fault on a healthy
+                # camera is worse than no diagnostic.
+                _dfps, _ = self._delivery.read()
+                if _cgap > 1.8 / max(1.0, _dfps or self.fps):
                     self._cap_gaps += 1
                     self._cap_worst = max(self._cap_worst, _cgap)
             self._cap_last = _cnow
@@ -338,8 +348,21 @@ class GreenAgent:
         # First-frame wall-clock time (start of the committed pre-roll).
         # Reported on upload for dual-camera cut alignment.
         first_frame_ts = snapshot[0][0]
+        # SAME RULE AS THE TEE, from the same place. This camera's
+        # config has always matched what it delivers, which is why its
+        # clips look right — but that was luck, and a green stamped at
+        # the wrong rate would be spliced against a tee stamped at the
+        # right one.
+        write_fps, _measured, _why = write_fps_for(snapshot, self.fps)
+        if _measured is None or abs(write_fps - self.fps) > 0.05:
+            log.info(
+                "record: nominal_fps=%.1f measured_fps=%s write_fps=%.2f "
+                "preroll_frames=%d (%s)",
+                self.fps, f"{_measured:.2f}" if _measured else "—",
+                write_fps, len(snapshot), _why,
+            )
         clip_path = self.work_dir / f"{session_id}.mp4"
-        clip_writer = ClipWriter(clip_path, self.fps, (width, height))
+        clip_writer = ClipWriter(clip_path, write_fps, (width, height))
         if not clip_writer.ok:
             log.error("VideoWriter failed for %s", clip_path)
             return
@@ -433,18 +456,20 @@ class GreenAgent:
         # question instead: are there fewer frames in this file than its
         # own header needs for the time it covers? When gap filling did
         # its job there are not, and this is None.
-        # The green writer is clocked at the NOMINAL rate — unlike the
-        # tee it does no pre-roll measurement — so the stamp it has to
-        # be checked against is self.fps.
-        real_fps = reclock_fps(frames_written, real_span, self.fps)
+        # Checked against what the clip was actually STAMPED at, which
+        # is write_fps and not the config — those were the same number
+        # here for as long as the config happened to be right, and the
+        # day it is not, checking against the config would compare a
+        # file to a header it does not have.
+        real_fps = reclock_fps(frames_written, real_span, write_fps)
         if real_fps:
             log.warning(
                 "clip is short for its length: %d frames over %.2fs is "
                 "%.2f fps, but it is stamped %.2f — re-clocking on upload "
                 "so it plays in real time and stays length-matched to the "
                 "tee (%.2fs instead of %.2fs)",
-                frames_written, real_span, real_fps, self.fps,
-                real_span, frames_written / self.fps,
+                frames_written, real_span, real_fps, write_fps,
+                real_span, frames_written / write_fps,
             )
         _captured = frames_written - clip_writer.n_filled
         log.info(
