@@ -24,6 +24,7 @@ from typing import Optional
 import cv2
 
 from .common import (
+    agent_build_id,
     ClipWriter,
     DeliveryMeter,
     reclock_fps,
@@ -43,7 +44,11 @@ from .focus_meter import FocusMeter
 from .livestream import LiveStreamer
 
 log = logging.getLogger("golfreelz_agent.green")
-FIRMWARE = "green-0.1.0"
+# The build id is a hash of the installed agent source, so this
+# changes on every update and is identical on two Pis running the
+# same code — which is the whole question when one camera's clips
+# look wrong and the other's do not. See agent_build_id().
+FIRMWARE = f"green-0.1.0+{agent_build_id()}"
 
 
 class GreenAgent:

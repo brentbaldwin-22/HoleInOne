@@ -1694,6 +1694,36 @@ class ClipWriter:
 # Frame ring buffer
 # ---------------------------------------------------------------------
 
+def agent_build_id() -> str:
+    """A short digest of the agent's own source, for the heartbeat.
+
+    THE VERSION STRING NEVER CHANGED. It was a literal — "tee-0.1.0" —
+    so the Cameras card reported the same thing before and after every
+    update, and "did the new code land on this Pi?" had no answer short
+    of reading journalctl on the device. Worse, "are the tee and the
+    green running the same code?" had none at all.
+
+    A hash of the installed agent/*.py answers both. It changes whenever
+    the code does, with nothing to remember to bump, and two Pis in sync
+    print the same seven characters because they hash the same files —
+    tee.py and green.py are installed on both.
+
+    Best-effort: a digest nobody can compute is not worth failing a
+    startup over.
+    """
+    try:
+        import hashlib
+        import pathlib
+
+        h = hashlib.sha256()
+        for f in sorted(pathlib.Path(__file__).resolve().parent.glob("*.py")):
+            h.update(f.name.encode())
+            h.update(f.read_bytes())
+        return h.hexdigest()[:7]
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
 class DeliveryMeter:
     """How many frames a second this camera is ACTUALLY handing over.
 

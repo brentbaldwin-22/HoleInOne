@@ -22,6 +22,7 @@ import cv2
 import numpy as np
 
 from .common import (
+    agent_build_id,
     BackendClient,
     BackgroundUploader,
     ClipWriter,
@@ -107,7 +108,11 @@ def _take_force_trigger() -> bool:
     except OSError:
         pass                # not ours to delete; mtime already guards us
     return True
-FIRMWARE = "tee-0.1.0"
+# The build id is a hash of the installed agent source, so this
+# changes on every update and is identical on two Pis running the
+# same code — which is the whole question when one camera's clips
+# look wrong and the other's do not. See agent_build_id().
+FIRMWARE = f"tee-0.1.0+{agent_build_id()}"
 
 try:
     import mediapipe as mp  # type: ignore
