@@ -1091,10 +1091,10 @@ function LensBar({ cam, onLens, onZoom, onMarkEnd, onShutter, note, busy }) {
   const label = said != null
     ? `camera says ${said}`
     : !z.calibrated
-      ? "no scale yet"
+      ? "uncalibrated"
       : z.x != null
-        ? `about ${z.x}x`
-        : `${Math.round((z.fraction ?? 0) * 100)}% of travel`;
+        ? `${z.x}x`
+        : `${Math.round((z.fraction ?? 0) * 100)}%`;
 
   function commit() {
     dragging.current = false;
@@ -1106,22 +1106,40 @@ function LensBar({ cam, onLens, onZoom, onMarkEnd, onShutter, note, busy }) {
   const stepBtn = (op, amt, text, why) => (
     <button
       key={`${op}${amt}`} type="button" className="secondary small"
-      style={{ width: "auto", minWidth: 40, fontFamily: "monospace" }}
+      style={{ width: "auto", minWidth: 36, padding: "2px 6px",
+               fontFamily: "monospace" }}
       disabled={busy} title={why}
       onClick={() => onLens(op, amt)}
     >{text}</button>
   );
 
+  // Each control keeps its own buttons next to its own slider, but the
+  // three sit on ONE line. Every pixel this row takes is a pixel off the
+  // picture above it, which is the thing all three are judged by.
+  const group = { display: "flex", alignItems: "center", gap: 4 };
+  const name = { opacity: 0.8, color: "#ddd", flexShrink: 0 };
+  const value = { minWidth: 48, color: "#e8e8e8", fontFamily: "monospace",
+                  flexShrink: 0, textAlign: "right" };
+
   return (
-    <div style={{ padding: "8px 2px 2px", display: "flex",
-                  flexDirection: "column", gap: 6 }}>
-      <div style={{ display: "flex", gap: 6, alignItems: "center",
-                    flexWrap: "wrap" }}>
-        <span className="tiny" style={{ width: 40, textAlign: "right",
-                                        opacity: 0.8, color: "#ddd" }}>
+    <div style={{ padding: "6px 2px 2px", display: "flex",
+                  flexWrap: "wrap", alignItems: "center", gap: "6px 14px" }}>
+      {/* ZOOM. The coarse steps are only here while the slider is dead:
+          once the ends are marked the slider does any large move in one
+          gesture, and two buttons that duplicate it are two buttons in
+          the way. Uncalibrated they are the ONLY way to reach a stop,
+          which is what marking one requires. */}
+      <div style={{ ...group, flex: "1 1 240px", minWidth: 190 }}>
+        <span className="tiny" style={name}
+              title={z.calibrated
+                ? `Counted from the ${z.travel} steps between the marked `
+                  + `ends, not read from the camera — it drifts, so re-mark `
+                  + `an end to put it right.`
+                : "This lens cannot report its position. Drive it to each "
+                  + "stop and mark them, and the slider can show one."}>
           Zoom
         </span>
-        {stepBtn("zoom", -100, "−··", "wider, coarse")}
+        {!z.calibrated && stepBtn("zoom", -100, "−··", "wider, coarse")}
         {stepBtn("zoom", -10, "−·", "wider, fine")}
         <input
           type="range" min={0} max={1} step={0.005}
@@ -1137,60 +1155,74 @@ function LensBar({ cam, onLens, onZoom, onMarkEnd, onShutter, note, busy }) {
               + "worked out from the count, not read from the camera."
             : "Mark the two ends first — without them there is no scale "
               + "to slide along."}
-          style={{ flex: 1, minWidth: 90, accentColor: "#38bdf8" }}
+          style={{ flex: "1 1 60px", minWidth: 50, accentColor: "#38bdf8" }}
         />
         {stepBtn("zoom", 10, "+·", "tighter, fine")}
-        {stepBtn("zoom", 100, "+··", "tighter, coarse")}
-        <span className="tiny" style={{ minWidth: 62, color: "#e8e8e8",
-                                        fontFamily: "monospace" }}>
+        {!z.calibrated && stepBtn("zoom", 100, "+··", "tighter, coarse")}
+        <span className="tiny" style={value}
+              title={z.calibrated && z.range_x
+                ? `About, on a ${z.range_x}x lens — step count is linear in `
+                  + `motor steps, not in focal length, so it is exact at the `
+                  + `ends and approximate between them.`
+                : undefined}>
           {label}
         </span>
+        <button type="button" className="ghost small"
+          style={{ width: "auto", padding: "0 4px" }}
+          title="Tell the lens where its stops are — the calibration, and the repair when the count has drifted"
+          onClick={() => setMarking((m) => !m)}>
+          {marking ? "×" : "ends"}
+        </button>
       </div>
 
-      <div style={{ display: "flex", gap: 6, alignItems: "center",
-                    flexWrap: "wrap" }}>
-        <span className="tiny" style={{ width: 40, textAlign: "right",
-                                        opacity: 0.8, color: "#ddd" }}>
+      {/* FOCUS has no slider because it has no scale: unlike zoom there
+          is no pair of stops worth marking, and Auto is the usual
+          answer anyway. The score beside it is the feedback. */}
+      <div style={{ ...group, flexShrink: 0 }}>
+        <span className="tiny" style={name}
+              title="Nudges, judged by the picture. Touching any of these starts the sharpness meter: go until the number peaks.">
           Focus
         </span>
         {stepBtn("focus", -100, "−··", "nearer, coarse")}
         {stepBtn("focus", -10, "−·", "nearer, fine")}
         {stepBtn("focus", 10, "+·", "further, fine")}
         {stepBtn("focus", 100, "+··", "further, coarse")}
-        <button type="button" className="small" style={{ width: "auto" }}
-          disabled={busy}
+        <button type="button" className="small"
+          style={{ width: "auto", padding: "2px 8px" }} disabled={busy}
           title="One-shot autofocus. Set the zoom FIRST, then press this — the camera focuses once and holds."
           onClick={() => onLens("simple_focus", 0)}>
           Auto
         </button>
-        <button type="button" className="ghost small" style={{ width: "auto" }}
-          disabled={busy} title="Return focus to its default position"
+        <button type="button" className="ghost small"
+          style={{ width: "auto", padding: "0 4px" }} disabled={busy}
+          title="Return focus to its default position"
           onClick={() => onLens("reset_focus", 0)}>
-          Reset
+          ⟲
         </button>
         {cam.focus?.score != null && (
-          <span className="tiny" style={{ marginLeft: "auto",
-                                          fontFamily: "monospace" }}>
-            <span style={{ color: "#e8e8e8" }}>{cam.focus.score}</span>
-            {cam.focus.best != null && (
-              <span style={{ color: "#999" }}> / best {cam.focus.best}</span>
-            )}
-            {cam.focus.focus_seconds ? (
-              <span style={{ color: "#8fd3a6" }}> ●</span>
-            ) : null}
+          <span className="tiny" style={{ ...value, minWidth: 56 }}
+                title={`Sharpness — higher is sharper, and the number only `
+                  + `means anything against itself.`
+                  + (cam.focus.best != null
+                      ? ` Best this session ${cam.focus.best}.` : "")
+                  + (cam.focus.focus_seconds
+                      ? ` Reporting fast for ${cam.focus.focus_seconds}s.`
+                      : "")}>
+            {cam.focus.score}
+            {cam.focus.focus_seconds
+              ? <span style={{ color: "#8fd3a6" }}> ●</span>
+              : null}
           </span>
         )}
       </div>
 
-      {/* THE SHUTTER, with the lens, because it is the third thing you
-          set standing at a camera and the picture above is how you
-          judge it: too short and the frame goes dark, too long and the
-          ball smears. The old three weather buttons were three rungs of
-          this ladder with no way to ask for the step between. */}
-      <div style={{ display: "flex", gap: 6, alignItems: "center",
-                    flexWrap: "wrap" }}>
-        <span className="tiny" style={{ width: 40, textAlign: "right",
-                                        opacity: 0.8, color: "#ddd" }}>
+      {/* SHUTTER, with the lens, because it is the third thing you set
+          standing at a camera and the picture above is how you judge
+          it: too short and the frame goes dark, too long and the ball
+          smears. */}
+      <div style={{ ...group, flex: "1 1 190px", minWidth: 165 }}>
+        <span className="tiny" style={name}
+              title="A cap on how long the camera may expose, not a fixed shutter — it still exposes for the light, it just cannot take the long smear a struck ball leaves. Shorter costs brightness.">
           Shutter
         </span>
         <input
@@ -1202,66 +1234,47 @@ function LensBar({ cam, onLens, onZoom, onMarkEnd, onShutter, note, busy }) {
           onPointerUp={() => onShutter(SHUTTER_LADDER[shut])}
           onKeyUp={() => onShutter(SHUTTER_LADDER[shut])}
           title={SHUTTER_WHY[SHUTTER_LADDER[shut]]}
-          style={{ flex: 1, minWidth: 120, accentColor: "#38bdf8" }}
+          style={{ flex: "1 1 60px", minWidth: 50, accentColor: "#38bdf8" }}
         />
         <datalist id={`shutter-${cam.id}`}>
           {SHUTTER_LADDER.map((_, i) => <option key={i} value={i} />)}
         </datalist>
-        <span className="tiny" style={{ minWidth: 62, color: "#e8e8e8",
-                                        fontFamily: "monospace" }}>
-          {SHUTTER_LADDER[shut] === "auto" ? "auto" : `≤ ${SHUTTER_LADDER[shut]}`}
-        </span>
-        {/* WHAT THE CAMERA SAYS, not what was sent -- which firmware
-            exposes which key varies, and a set that landed on the wrong
-            one has to be visible rather than assumed. */}
-        <span className="tiny" style={{ color: camShutter == null
-                                          ? "#999" : "#8fd3a6" }}>
-          {cam.exposure
-            ? (camShutter == null
-                ? "camera: not saying"
-                : `camera: ${cam.exposure.mode || "?"}`
-                  + (cam.exposure.slow_limit ? ` ≤ ${cam.exposure.slow_limit}` : ""))
-            : ""}
+        {/* WHAT THE CAMERA SAYS decides the colour: green when its own
+            read-back matches the rung shown, grey when it has not said.
+            Which keys a firmware exposes varies, and a set that landed
+            on the wrong one has to be visible rather than assumed. */}
+        <span className="tiny"
+              style={{ ...value,
+                       color: camShutter == null ? "#999"
+                         : camShutter === shut ? "#8fd3a6" : "#f0c05a" }}
+              title={cam.exposure
+                ? `Camera reports: ${cam.exposure.mode || "?"}`
+                  + (cam.exposure.slow_limit
+                      ? `, slowest ${cam.exposure.slow_limit}` : "")
+                : "The camera has not been asked yet — press read."}>
+          {SHUTTER_LADDER[shut] === "auto" ? "auto" : `≤${SHUTTER_LADDER[shut]}`}
         </span>
         <button type="button" className="ghost small"
-          style={{ width: "auto", padding: "0 6px" }} disabled={busy}
+          style={{ width: "auto", padding: "0 4px" }} disabled={busy}
           title="Ask the camera what it currently has, and change nothing"
           onClick={() => onShutter("read")}>
           read
         </button>
       </div>
 
-      {/* ONE LINE. Everything these controls need explaining lives in
-          their tooltips now; the card is used standing at a camera, and
-          a paragraph read for the fiftieth time is in the way. */}
-      <div className="tiny" style={{ color: "#999" }}>
-        {z.calibrated ? (
-          <span title={`Counted from the ${z.travel} steps of travel `
-            + `between the marked ends, not read from the camera, so it `
-            + `drifts — re-mark an end to put it right.`}>
-            Zoom is counted, not read — re-mark an end if it drifts.
-          </span>
-        ) : (
-          <b title="Drive to the widest the lens goes and press Wide; drive to the tightest and press Tele. The stops are the only position this lens can be sure of.">
-            The zoom slider needs its two ends marked.
-          </b>
-        )}
-        {" "}
-        <button type="button" className="ghost small"
-          style={{ width: "auto", padding: "0 4px" }}
-          onClick={() => setMarking((m) => !m)}>
-          {marking ? "hide" : "mark ends"}
-        </button>
-      </div>
-
+      {/* The one thing that genuinely needs a second line, and only
+          while somebody is doing it. */}
       {(marking || !z.calibrated) && (
         <div style={{ display: "flex", gap: 6, alignItems: "center",
-                      flexWrap: "wrap" }}>
+                      flexWrap: "wrap", width: "100%" }}>
+          <span className="tiny" style={{ color: "#999" }}>
+            Drive the lens to a stop, then say which one it is against:
+          </span>
           <button type="button" className="secondary small"
             style={{ width: "auto" }} disabled={busy}
             title="The lens is against its wide stop right now. Starts a fresh scale."
             onClick={() => onMarkEnd("wide")}>
-            Wide end is here
+            Wide end
           </button>
           <button type="button" className="secondary small"
             style={{ width: "auto" }} disabled={busy || !z.wide_at}
@@ -1269,7 +1282,7 @@ function LensBar({ cam, onLens, onZoom, onMarkEnd, onShutter, note, busy }) {
               ? "The lens is against its tele stop right now. Closes the scale."
               : "Mark the wide end first — the travel is measured from it."}
             onClick={() => onMarkEnd("tele")}>
-            Tele end is here
+            Tele end
           </button>
           {z.calibrated && (
             <span className="tiny" style={{ color: "#999" }}>
@@ -1285,6 +1298,7 @@ function LensBar({ cam, onLens, onZoom, onMarkEnd, onShutter, note, busy }) {
     </div>
   );
 }
+
 
 export default function AdminCameras() {
   const adminPassword =
@@ -1339,6 +1353,29 @@ export default function AdminCameras() {
   // lands, the picture grows.
   const [expanded, setExpanded] = useState(false);
   const panelRef = useRef(null);
+  // EVERYTHING IN THE PANEL THAT IS NOT THE PICTURE, measured rather
+  // than assumed. The picture's height is the screen minus this, and
+  // the first version of it guessed — which is how the line under the
+  // sliders ended up cut off the bottom. The bar's height is not a
+  // constant: it wraps on a narrow screen, grows a row while the lens
+  // ends are being marked, and disappears entirely on a Pi camera.
+  const [chromeTopEl, setChromeTopEl] = useState(null);
+  const [chromeBotEl, setChromeBotEl] = useState(null);
+  const [chromeH, setChromeH] = useState(170);
+  useEffect(() => {
+    if (!expanded) return undefined;
+    const els = [chromeTopEl, chromeBotEl].filter(Boolean);
+    if (!els.length) return undefined;
+    // The panel's own padding and the gaps between its rows, which no
+    // child reports.
+    const PANEL_CHROME = 28;
+    const measure = () => setChromeH(
+      els.reduce((n, el) => n + el.offsetHeight, 0) + PANEL_CHROME);
+    const ro = new ResizeObserver(measure);
+    els.forEach((el) => ro.observe(el));
+    measure();
+    return () => ro.disconnect();
+  }, [expanded, chromeTopEl, chromeBotEl]);
 
   // Leaving fullscreen by any route the button does not own — Escape,
   // the browser's own control, a tab switch — has to put the panel back
@@ -2287,6 +2324,7 @@ export default function AdminCameras() {
                     {watchingCamId === cam.id ? (
                       <>
                         <div
+                          ref={setChromeTopEl}
                           className="inline"
                           style={{ justifyContent: "space-between",
                                    marginBottom: 6, gap: 8, width: "100%" }}
@@ -2340,17 +2378,14 @@ export default function AdminCameras() {
                               // browser; a definite width with the
                               // ratio is arithmetic.
                               //
-                              // What is subtracted is what else is in
-                              // the column, counted rather than guessed
-                              // at once: the title row always, the lens
-                              // rows on an IP camera, the zone editor's
-                              // strip while it is open. Guessing it was
-                              // how the help line under the sliders got
-                              // cut off the bottom of the screen.
-                              width: `min(100%, calc((100vh - ${
-                                74 + (cam.kind === "ip" ? 152 : 0)
-                                   + (zoningCamId === cam.id ? 150 : 0)
-                              }px) * ${
+                              // What is subtracted is everything else
+                              // in the column, MEASURED (see chromeH) --
+                              // the title, the lens row however it has
+                              // wrapped, the zone editor's strip while
+                              // it is open. Guessing it was how the line
+                              // under the sliders got cut off the bottom
+                              // of the screen.
+                              width: `min(100%, calc((100vh - ${chromeH}px) * ${
                                 (liveNatural?.w || 16) / (liveNatural?.h || 9)
                               }))`,
                               aspectRatio: `${liveNatural?.w || 16} / ${
@@ -2397,30 +2432,35 @@ export default function AdminCameras() {
 
                         {/* THE LENS, at the bottom of the watch area,
                             because the picture above is the only thing
-                            that can tell you what a nudge did. */}
-                        {cam.kind === "ip" && (
-                          <LensBar
-                            cam={cam}
-                            busy={isBusy}
-                            note={lensNote[cam.id]}
-                            onLens={(op, amt) => lens(cam, op, amt)}
-                            onZoom={(f) => zoomTo(cam, f)}
-                            onMarkEnd={(end) => markZoomEnd(cam, end)}
-                            onShutter={(v) => exposure(cam, v)}
-                          />
-                        )}
+                            that can tell you what a nudge did. Wrapped
+                            with the zone editor's strip so the two are
+                            measured as one block — that measurement is
+                            what the picture's height is taken from. */}
+                        <div ref={setChromeBotEl} style={{ flexShrink: 0 }}>
+                          {cam.kind === "ip" && (
+                            <LensBar
+                              cam={cam}
+                              busy={isBusy}
+                              note={lensNote[cam.id]}
+                              onLens={(op, amt) => lens(cam, op, amt)}
+                              onZoom={(f) => zoomTo(cam, f)}
+                              onMarkEnd={(end) => markZoomEnd(cam, end)}
+                              onShutter={(v) => exposure(cam, v)}
+                            />
+                          )}
 
-                        {zoningCamId === cam.id && (
-                          <TriggerZones
-                            cam={cam}
-                            adminPassword={adminPassword}
-                            frameW={liveNatural?.w}
-                            frameH={liveNatural?.h}
-                            portalTarget={pictureEl}
-                            onSaved={() => load()}
-                            onClose={() => setZoningCamId(null)}
-                          />
-                        )}
+                          {zoningCamId === cam.id && (
+                            <TriggerZones
+                              cam={cam}
+                              adminPassword={adminPassword}
+                              frameW={liveNatural?.w}
+                              frameH={liveNatural?.h}
+                              portalTarget={pictureEl}
+                              onSaved={() => load()}
+                              onClose={() => setZoningCamId(null)}
+                            />
+                          )}
+                        </div>
                       </>
                     ) : (
                       <CameraStill
