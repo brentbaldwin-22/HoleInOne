@@ -232,6 +232,64 @@ tee build is wrong.
 
 ---
 
+## Step 5 — Swap the MODEMS (when the symptom is load-correlated)
+
+Step 4 swaps the power chain. This swaps the radio, and the two
+together separate every remaining candidate.
+
+**Reach for this when the fault tracks LOAD rather than time:** short
+bursts cross fine (heartbeats, status polls, the live view) and
+anything sustained dies within half a minute. That is the tee's
+signature, in SSH and in clip upload alike — the same fault wearing two
+hats, not two problems.
+
+Why those three candidates are not independent:
+
+```
+weak signal (LOCATION)
+      ↓  modem transmits at higher power
+higher current draw (MODEM)
+      ↓  5V rail sags under sustained TX
+USB bus resets, modem re-enumerates (PI)
+      ↓
+"Connection reset", then ~8s of nothing, then fine again
+```
+
+A location problem *presents* as a power problem. So test the two ends,
+not the middle:
+
+| Swap | Fault follows the hardware | Fault stays at the tee |
+|---|---|---|
+| Modem (tee ↔ green) | That modem unit is bad | The spot, or the harness |
+| Harness (Step 4) | The tee harness is bad | Not power |
+
+Both staying at the tee, with the green flawless on identical kit,
+means **the location** — and the fix is an antenna or a mount position,
+not another part.
+
+### Measuring it without a site visit
+
+The cheapest evidence needs no SSH at all. **`/admin/cameras` shows the
+tee's battery voltage and current**, reported on every heartbeat from
+the INA226 on its 12 V feed. Watch it while a clip uploads: a rail that
+reads fine at idle and sags under load is the brownout, seen from a
+laptop.
+
+One SSH command settles whether the modem is really re-enumerating
+rather than the carrier dropping the bearer:
+
+```bash
+dmesg -T | grep -iE "usb (disconnect|reset)|new (high|super)-speed" | tail -30
+vcgencmd get_throttled     # 0x0 here while dmesg shows USB resets
+                           # => NOT the Pi's power. Look at the modem.
+```
+
+And on site, the LM1200's own admin page (usually `192.168.5.1`) reports
+RSRP / RSRQ / SINR. Compare the tee mount against the green mount: that
+is the location question answered in two minutes with a phone.
+
+---
+
 ## Decision tree
 
 ```
