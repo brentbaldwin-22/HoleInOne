@@ -88,18 +88,50 @@ modem kept working. There is no remote fix — the agent's command
 channel carries lens and exposure commands, not a shell — so it is a
 site visit, or a reboot by whatever out-of-band means the mount has.
 
-**Working over the modem once you are in.** Keep commands short and
-expect to reconnect. `update.sh` already fetches `pi-agent/` as a sparse,
-blob-filtered checkout for exactly this reason: a plain clone pulls
-~100 MB, which over this link once took ten minutes and had to be
-abandoned. Run long jobs under `tmux` or `screen` so a dropped session
-does not kill them halfway:
+**Working over the modem once you are in.** Do not try to hold a session
+open for the length of a job. What the link looks like in practice:
+
+```
+$ ssh pi@golfreelz-tee
+pi@golfreelz-tee:~ $ client_loop: send disconnect: Connection reset
+$ ssh pi@golfreelz-tee
+ssh: connect to host ... port 22: Connection timed out      # re-enumerating
+$ ssh pi@golfreelz-tee                                       # back
+```
+
+So **launch the work detached and let the session die.** `setsid` is in
+coreutils and is on every Pi; `tmux` and `screen` are not installed, and
+apt-getting one over this link is the problem you are trying to avoid.
+`sudo -v` first so the password prompt happens while you are still
+attached — a backgrounded sudo cannot ask.
 
 ```bash
-tmux new -s update
-sudo /opt/golfreelz-agent/update.sh
-# detach with ctrl-b d; reattach after a drop with: tmux attach -t update
+sudo -v                                   # password once, ~2 seconds
+sudo setsid bash -c '/opt/golfreelz-agent/update.sh' \
+  >/tmp/update.log 2>&1 </dev/null &
 ```
+
+Then let it drop. Reconnect whenever and read the result:
+
+```bash
+tail -40 /tmp/update.log
+systemctl is-active golfreelz-agent
+```
+
+Two flags worth putting in front of every `ssh` to this host. The
+default connect timeout is about two minutes, which makes retrying
+hopeless; ten seconds makes it a reflex. The keepalives hold the flow
+open in the modem's NAT table across a re-enumeration instead of
+letting it be forgotten:
+
+```bash
+ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=24 \
+    pi@golfreelz-tee
+```
+
+`update.sh` already fetches `pi-agent/` as a sparse, blob-filtered
+checkout for the same reason: a plain clone pulls ~100 MB, which over
+this link once took ten minutes and had to be abandoned.
 
 ---
 
