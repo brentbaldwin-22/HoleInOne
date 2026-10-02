@@ -424,8 +424,10 @@ function ClipChip({ label, filename, sizeMb, durationSec, missing, url,
 // right anywhere except at a single distance. Four marked points define
 // a homography onto the plane of the green, which is right everywhere.
 //
-// This screen is the blocking piece for closest-to-the-pin AND for
-// finishing the tee-side tracer where the ball actually landed.
+// This screen is the blocking piece for closest-to-the-pin and for the
+// distance stamped on a clip. It is NOT what finishes the tracer any
+// more -- that is the green→tee map, which goes straight between the two
+// pictures and needs no feet at all.
 
 const DEFAULT_MARKS = [
   { label: "Front edge — centre", hint: "nearest point of the putting surface" },
@@ -1928,22 +1930,36 @@ export default function AdminCameras() {
                   >
                     {cam.enabled ? "Disable" : "Enable"}
                   </button>
-                  {(cam.assigned_role === "green"
-                    || cam.assigned_role === "tee") && (
+                  {/* GREEN ONLY, and named for its job. There are two
+                      calibrations on this page and they were both called
+                      "Calibrate", which is how an operator ends up doing
+                      the wrong one:
+
+                        this button  — green pixels to FEET, which is the
+                                       only thing that can measure a
+                                       yardage. Closest-to-the-pin and the
+                                       distance plate come from it.
+                        green→tee    — green pixels to TEE pixels, which is
+                                       the only thing that aims the end of
+                                       the tracer.
+
+                      It used to be offered on tee cameras too, aiming the
+                      tracer the long way round — green pixels to feet to
+                      tee pixels, which needs the tee camera calibrated
+                      against a tape measure. The green→tee map replaced
+                      that with four clicks and no measuring, and produce
+                      now reads ONLY the map: _landing_in_tee_view returns
+                      "no green→tee mapping yet" rather than falling back,
+                      and green_to_image — the feet-to-tee-pixels half of
+                      the old route — has no callers left. A tee
+                      calibration was work that nothing read. */}
+                  {cam.assigned_role === "green" && (
                     <button
                       type="button" className="secondary small"
                       onClick={() => setCalibratingCam(cam)}
-                      title={cam.assigned_role === "tee"
-                        ? "Map the GREEN's surface onto this tee camera's "
-                          + "image. Click the same four green features you "
-                          + "used on the green camera. This is what lets a "
-                          + "landing marked on the green be drawn in the tee "
-                          + "view, so the tracer finishes where the ball did."
-                        : "Map this camera's pixels onto the green in feet — "
-                          + "needed for closest-to-the-pin and for finishing "
-                          + "the tracer at the landing spot"}
+                      title="Map this camera's pixels onto the green in feet, by marking four edges of the putting surface. This is what measures closest-to-the-pin and stamps the distance on a clip. Aiming the tracer is the separate green→tee button."
                     >
-                      {cam.green_homography ? "Calibration ✓" : "Calibrate"}
+                      {cam.green_homography ? "Distances ✓" : "Calibrate distances"}
                     </button>
                   )}
                   {cam.assigned_role === "tee" && (

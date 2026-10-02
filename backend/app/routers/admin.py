@@ -15104,16 +15104,24 @@ def calibrate_green_camera(
     the back. The operator picks the origin; marking the pin makes
     distances readable without moving it.
 
-    BOTH ROLES, for different jobs. On the GREEN camera this MEASURES --
-    closest-to-the-pin -- so it is held to MAX_RMS_FT. On the TEE camera
-    it AIMS: a landing marked on the green becomes feet on the green
-    becomes a pixel in the tee frame, which is where the tracer has to
-    finish. The tee's view of the green is small and far, so the same
-    four clicks carry more world error -- but a few feet there is a few
-    pixels on screen, and holding it to the measuring tolerance would
-    reject a fit that is entirely good enough for the only job it has.
-    Hence the looser limit, and `purpose` recorded so nothing downstream
-    can mistake an aiming fit for a measuring one.
+    THE GREEN CAMERA IS THE ONE THAT NEEDS THIS. It MEASURES --
+    closest-to-the-pin, and the distance stamped on a clip -- so a green
+    fit is held to MAX_RMS_FT.
+
+    A TEE fit is still accepted, and still recorded with the looser limit
+    and `purpose: "aim"` so nothing downstream can mistake it for a
+    measuring one, but NOTHING READS IT ANY MORE and the Cameras page no
+    longer offers it. It aimed the tracer the long way round -- green
+    pixels to feet to tee pixels -- which needed this camera calibrated
+    against a tape measure. Course.view_maps replaced that with four
+    clicks in two pictures and no measuring at all:
+    _landing_in_tee_view reads the map and returns "no green→tee mapping
+    yet" rather than falling back here, and green_to_image -- the
+    feet-to-tee-pixels half of the old route -- has no callers left.
+
+    Left accepting a tee fit rather than 409-ing one, because refusing
+    would break any caller we have not thought of for no gain; the fit is
+    simply stored and ignored.
     """
     from ..services import green_calibration as gc
 
