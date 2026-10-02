@@ -129,6 +129,33 @@ tail -40 /tmp/update.log
 systemctl is-active golfreelz-agent
 ```
 
+**Get a key on first.** A password prompt is the one part of this that
+needs a human inside the 20-second window, and it is why a retry loop
+does not work. Pushing a key is a single short command — exactly the
+shape that does get through:
+
+```powershell
+type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh pi@<ip> "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+```
+
+(no key yet: `ssh-keygen -t ed25519` once, then the above.)
+
+After that the whole update is one unattended command, and a loop can
+keep firing it until one lands:
+
+```powershell
+for ($i=1; $i -le 40; $i++) {
+  ssh -o ConnectTimeout=8 -o BatchMode=yes pi@<ip> `
+    "sudo bash -c 'setsid /opt/golfreelz-agent/update.sh >/tmp/update.log 2>&1 </dev/null & disown; echo launched'"
+  if ($LASTEXITCODE -eq 0) { "landed on attempt $i"; break }
+  Start-Sleep 5
+}
+```
+
+`sudo` will still want a password unless the service account has a
+NOPASSWD rule for that one script — worth adding on a rig whose link
+cannot hold a session long enough to type one.
+
 Two flags worth putting in front of every `ssh` to this host. The
 default connect timeout is about two minutes, which makes retrying
 hopeless; ten seconds makes it a reflex. The keepalives hold the flow
