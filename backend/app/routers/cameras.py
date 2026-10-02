@@ -96,7 +96,7 @@ CLIPS_DIR.mkdir(parents=True, exist_ok=True)
 # THE STILL: one JPEG per camera, overwritten, taken whether or not
 # anybody is watching. The Cameras page shows the camera's view the
 # moment it loads instead of an empty box with a Watch button, and the
-# cost is one frame every ten minutes rather than ten a second.
+# cost is one frame every half hour rather than ten a second.
 #
 # On the instance's own disk, not object storage: it is a 60-100 KB file
 # with a lifetime of minutes, and losing it on a redeploy costs nothing
@@ -105,11 +105,21 @@ STILLS_DIR = CLIPS_DIR.parent / "stills"
 STILLS_DIR.mkdir(parents=True, exist_ok=True)
 
 # How old a still may be before the agent is asked for a fresh one.
-# Ten minutes is ~90 frames a day per camera over a dawn-to-dusk season
-# — a rounding error against a single uploaded clip — and the view of a
-# tee box does not change faster than that except while somebody is
-# standing at it, which is what the live view is for.
-STILL_MAX_AGE = timedelta(minutes=10)
+#
+# THIRTY MINUTES WHILE THE HEALTH CHECKS ARE UNDER SUSPICION. The
+# instance started failing /health roughly every ten minutes on the
+# morning the snapshot shipped at a ten-minute interval, and a
+# coincidence that exact is worth testing rather than arguing about.
+# Thirty makes the same fault three times rarer, which is what tells us
+# whether it is this at all.
+#
+# The cost either way is one frame: ~30 a day per camera over a
+# dawn-to-dusk season, against a single uploaded clip of several
+# megabytes. The view of a tee box does not change faster than this
+# except while somebody is standing at it, which is what the live view
+# is for — and the agent still sends one unasked after a zoom nudge or
+# when the live view closes, which covers the times it would matter.
+STILL_MAX_AGE = timedelta(minutes=30)
 
 # A still is one full-resolution frame, encoded at a higher quality than
 # the live stream, so it gets more room than the 500 KB live cap.
@@ -1005,10 +1015,38 @@ def _camera_id_for_body(token: str) -> int:
         db.close()
 
 
+# HOW LONG THE SERVER WILL WAIT FOR A FRAME THAT HAS STOPPED ARRIVING.
+#
+# The tee's uplink is a USB cellular modem that reboots itself under
+# load: alive for ~23s at ~125 KB/s, then gone for ~8s while it
+# re-enumerates. That is already designed for on the clip path, which is
+# why uploads are resumable. A frame push is not resumable and does not
+# need to be — it is one small body and the next one is along shortly —
+# but it does need to be ABANDONED when the modem goes, because a
+# half-sent body with no client behind it any more is a request this
+# process holds open with nothing to finish it.
+#
+# Without this, `await request.body()` waits for a peer that is not
+# coming back until TCP works out the connection is dead, which is
+# minutes. Each of those was, until this week, also holding a pooled
+# database connection for the duration.
+FRAME_BODY_TIMEOUT = 20.0
+STILL_BODY_TIMEOUT = 60.0
+
+
+async def _read_body(request: Request, seconds: float) -> bytes:
+    try:
+        return await asyncio.wait_for(request.body(), timeout=seconds)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            408, f"the frame stopped arriving (gave it {seconds:.0f}s)",
+        ) from None
+
+
 @router.post("/{token}/live-frame")
 async def post_live_frame(token: str, request: Request):
     """Pi POSTs JPEG bytes as the request body."""
-    body = await request.body()
+    body = await _read_body(request, FRAME_BODY_TIMEOUT)
     if not body:
         raise HTTPException(400, "empty frame")
     if len(body) > 500_000:
@@ -1038,7 +1076,9 @@ async def post_still(token: str, request: Request):
         declared = 0
     if declared > MAX_STILL_BYTES:
         raise HTTPException(413, "still too large (max 2MB)")
-    body = await request.body()
+    # Longer than a live frame's: this one is worth waiting out a modem
+    # reboot for, since the next attempt is half an hour away.
+    body = await _read_body(request, STILL_BODY_TIMEOUT)
     if not body:
         raise HTTPException(400, "empty frame")
     if len(body) > MAX_STILL_BYTES:

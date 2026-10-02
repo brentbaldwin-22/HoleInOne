@@ -87,7 +87,7 @@ class LiveStreamer:
         self.frame_interval = 1.0 / max(1, fps)
         self.jpeg_quality = max(20, min(95, jpeg_quality))
         # The still is looked AT rather than through, one frame every
-        # ten minutes, so it is worth more bytes than a live frame is.
+        # half hour, so it is worth more bytes than a live frame is.
         self.still_quality = max(40, min(95, still_quality))
         # A floor between snapshot pushes. Not the interval -- the
         # backend sets that -- just a guard so a push that keeps failing,
@@ -160,7 +160,7 @@ class LiveStreamer:
 
             # The snapshot, whether or not anyone is watching -- being
             # watched is not a reason to let the stored picture go stale,
-            # and one extra frame every ten minutes costs nothing next to
+            # and one extra frame every half hour costs nothing next to
             # the ten a second already going out. The clock is advanced
             # on the ATTEMPT, so a camera whose pushes are failing retries
             # on the floor rather than every loop.
@@ -183,7 +183,7 @@ class LiveStreamer:
                 # usual reason to look is that you are about to change
                 # something. Refresh the still as the view closes so the
                 # card shows what was left behind, not what was there
-                # ten minutes before anyone touched it.
+                # half an hour before anyone touched it.
                 if not new_state:
                     self._still_forced = True
             self._watching = new_state

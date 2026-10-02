@@ -892,7 +892,7 @@ function CameraEventsPanel({ adminPassword }) {
  * put a Pi into 10 fps JPEG streaming over a cellular modem to answer a
  * question that is almost always "is it still pointed at the tee" — a
  * question one frame answers. So the agent leaves a snapshot with the
- * backend every ten minutes whether anyone is looking or not, and this
+ * backend every half hour whether anyone is looking or not, and this
  * is what the card shows: the view, immediately, on every camera, with
  * no traffic on the device at all.
  *
@@ -904,7 +904,7 @@ function CameraEventsPanel({ adminPassword }) {
  * clock time and the age both show, and the age goes amber once the
  * snapshot is older than the camera should have let it get.
  */
-const STILL_STALE_SEC = 30 * 60;   // 3x the backend's snapshot interval
+const STILL_STALE_SEC = 90 * 60;   // 3x the backend's snapshot interval
 
 function stillClock(iso) {
   if (!iso) return null;
