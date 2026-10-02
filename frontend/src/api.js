@@ -435,8 +435,6 @@ export const api = {
     }),
   // The boxes a person must stand in for a tee camera to trigger. One
   // per tee; the agent picks them up on its next status poll.
-  getTeeZones: (key, cameraId) =>
-    request(`/api/admin/cameras/${cameraId}/tee-zones`, { adminPassword: key }),
   setTeeZones: (key, cameraId, boxes, frameW, frameH) => {
     const fd = new FormData();   // Form(...) endpoint — see cameraLens
     fd.append("boxes", JSON.stringify(boxes));
@@ -528,9 +526,12 @@ export const api = {
     if (patch.triggeringEnabled !== undefined)
       fd.append("triggering_enabled", patch.triggeringEnabled ? "true" : "false");
     if (patch.note !== undefined) fd.append("note", patch.note || "");
-    if (patch.teeBoxRoi !== undefined) {
-      fd.append("tee_box_roi", JSON.stringify(patch.teeBoxRoi));
-    }
+    // NO teeBoxRoi HERE. The camera patch endpoint still accepts one
+    // for manual use, but it takes a bare {x,y,w,h} — which would
+    // overwrite the trigger zones and the frame size they were drawn
+    // against with a single box. Zones have their own endpoint, which
+    // validates them; this door had no callers and only led somewhere
+    // bad.
     if (patch.courseId !== undefined)
       fd.append("course_id", String(patch.courseId));
     if (patch.assignedHole !== undefined)

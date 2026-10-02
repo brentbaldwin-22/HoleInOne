@@ -1114,11 +1114,20 @@ export default function AdminCameras() {
     }
   }
 
+  // A TOGGLE, because ten minutes is a long time to have pressed the
+  // wrong button. Focus mode makes the agent report its sharpness every
+  // few seconds instead of every minute; it expires on its own, but an
+  // operator who armed it by accident had no way to say so and the
+  // /focus-mode/stop endpoint sat here unused.
   async function focusMode(cam) {
     setBusy((b) => ({ ...b, [cam.id]: true }));
     setError(null);
     try {
-      await api.focusMode(adminPassword, cam.id, 600);
+      if (cam.focus?.focus_seconds) {
+        await api.stopFocusMode(adminPassword, cam.id);
+      } else {
+        await api.focusMode(adminPassword, cam.id, 600);
+      }
       await load();
     } catch (e) {
       setError(e.message || String(e));
@@ -1860,39 +1869,6 @@ export default function AdminCameras() {
                       >
                         Unpair
                       </button>
-                      {/* CALIBRATED ONCE, HERE. It is a homography
-                          between two bolted-down viewpoints, so it is a
-                          property of this pair and not of any one clip
-                          -- which is what it looked like from a
-                          Production card, and is how a hole ends up
-                          calibrated a dozen times from a dozen clips,
-                          each fit overwriting the last. */}
-                      <button
-                        type="button" className="ghost small"
-                        style={{ marginTop: 4, width: "100%" }}
-                        onClick={() => openCalibrator(cam)}
-                        disabled={isBusy}
-                        title="Map the green camera's view onto the tee camera's by clicking the same ground features in both. Done once for this pair — every swing they record afterwards is aimed by it."
-                      >
-                        ⊹ Calibrate green→tee
-                      </button>
-                      {/* AND THE TWO THINGS THAT CHANGE EVERY MORNING.
-                          The calibration above is a property of where
-                          the cameras are bolted; the pin is cut to a
-                          new spot each day and the tee markers are
-                          walked forward or back. Same pair of pictures,
-                          opposite lifetime -- so a separate button,
-                          rather than a step inside a calibration
-                          nobody should be redoing daily. */}
-                      <button
-                        type="button" className="ghost small"
-                        style={{ marginTop: 4, width: "100%" }}
-                        onClick={() => setDailyCam(cam)}
-                        disabled={isBusy}
-                        title="Today's flag stick on the green view, and today's tee box on the tee view. Both move overnight; the calibration does not."
-                      >
-                        ⛳ Today&apos;s flag &amp; tee box
-                      </button>
                     </span>
                   ) : candidates.length > 0 ? (
                     <select
@@ -1915,6 +1891,13 @@ export default function AdminCameras() {
                   ) : (
                     <span className="tiny muted">no eligible partner</span>
                   )}
+                  {/* THREE GROUPS, because twelve controls in one stack
+                      is a list to read rather than a thing to use. They
+                      are sorted by WHEN you reach for them: Live while
+                      standing at the camera, Setup when something has
+                      been bolted or moved, Device when you are not
+                      thinking about pictures at all. */}
+                  <div className="tiny upper muted" style={{ marginTop: 2 }}>Live</div>
                   <button
                     type="button"
                     className={watchingCamId === cam.id ? "small" : "secondary small"}
@@ -1924,56 +1907,6 @@ export default function AdminCameras() {
                   >
                     {watchingCamId === cam.id ? "Stop watching" : "Watch"}
                   </button>
-                  <button
-                    type="button" className="secondary small"
-                    onClick={() => toggleEnabled(cam)} disabled={isBusy}
-                  >
-                    {cam.enabled ? "Disable" : "Enable"}
-                  </button>
-                  {/* GREEN ONLY, and named for its job. There are two
-                      calibrations on this page and they were both called
-                      "Calibrate", which is how an operator ends up doing
-                      the wrong one:
-
-                        this button  — green pixels to FEET, which is the
-                                       only thing that can measure a
-                                       yardage. Closest-to-the-pin and the
-                                       distance plate come from it.
-                        green→tee    — green pixels to TEE pixels, which is
-                                       the only thing that aims the end of
-                                       the tracer.
-
-                      It used to be offered on tee cameras too, aiming the
-                      tracer the long way round — green pixels to feet to
-                      tee pixels, which needs the tee camera calibrated
-                      against a tape measure. The green→tee map replaced
-                      that with four clicks and no measuring, and produce
-                      now reads ONLY the map: _landing_in_tee_view returns
-                      "no green→tee mapping yet" rather than falling back,
-                      and green_to_image — the feet-to-tee-pixels half of
-                      the old route — has no callers left. A tee
-                      calibration was work that nothing read. */}
-                  {cam.assigned_role === "green" && (
-                    <button
-                      type="button" className="secondary small"
-                      onClick={() => setCalibratingCam(cam)}
-                      title="Map this camera's pixels onto the green in feet, by marking four edges of the putting surface. This is what measures closest-to-the-pin and stamps the distance on a clip. Aiming the tracer is the separate green→tee button."
-                    >
-                      {cam.green_homography ? "Distances ✓" : "Calibrate distances"}
-                    </button>
-                  )}
-                  {cam.assigned_role === "tee" && (
-                    <button
-                      type="button" className="secondary small"
-                      onClick={() => toggleTriggering(cam)} disabled={isBusy}
-                      title="Pause/resume motion triggering. Paused = camera stays online but won't record events (use when it's powered on indoors)."
-                    >
-                      {cam.triggering_enabled === false
-                        ? "Resume triggering"
-                        : "Pause triggering"}
-                    </button>
-                  )}
-
                   {cam.assigned_role === "tee" && (
                     <button
                       type="button" className="small"
@@ -1984,6 +1917,27 @@ export default function AdminCameras() {
                       Capture
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className={cam.focus?.focus_seconds ? "small" : "secondary small"}
+                    onClick={() => focusMode(cam)}
+                    disabled={isBusy || !cam.enabled}
+                    title={
+                      cam.focus?.focus_seconds
+                        ? `Focus mode on — ${cam.focus.focus_seconds}s left. The score updates every few seconds; turn the ring until it peaks. Press again to stop it now.`
+                        : "Report the focus score every few seconds for 10 minutes, so you can turn the lens ring against a live number. Resets the session best."
+                    }
+                  >
+                    {cam.focus?.focus_seconds
+                      ? `Stop focusing (${cam.focus.focus_seconds}s)`
+                      : "Focus mode"}
+                  </button>
+
+                  {/* SETUP: everything that describes where this camera
+                      is pointed. Two of these need a partner, because
+                      they describe a PAIR of viewpoints rather than one
+                      camera. */}
+                  <div className="tiny upper muted" style={{ marginTop: 8 }}>Setup</div>
                   {cam.assigned_role === "tee" && (
                     <button
                       type="button"
@@ -2006,20 +1960,64 @@ export default function AdminCameras() {
                               ? ` (${cam.tee_zones.boxes.length})` : " — none"}`}
                     </button>
                   )}
-                  <button
-                    type="button" className="secondary small"
-                    onClick={() => focusMode(cam)}
-                    disabled={isBusy || !cam.enabled}
-                    title={
-                      cam.focus?.focus_seconds
-                        ? `Focus mode on — ${cam.focus.focus_seconds}s left. The score updates every few seconds; turn the ring until it peaks.`
-                        : "Report the focus score every few seconds for 10 minutes, so you can turn the lens ring against a live number. Resets the session best."
-                    }
-                  >
-                    {cam.focus?.focus_seconds
-                      ? `Focusing ${cam.focus.focus_seconds}s`
-                      : "Focus mode"}
-                  </button>
+                  {/* GREEN PIXELS TO TEE PIXELS — the only thing that
+                      aims the end of the tracer. A homography between
+                      two bolted-down viewpoints, so it belongs to the
+                      pair and is fitted once; from a Production card it
+                      looked like a property of the clip, which is how a
+                      hole ends up calibrated a dozen times from a dozen
+                      clips, each fit overwriting the last. */}
+                  {partner && (
+                    <button
+                      type="button" className="secondary small"
+                      onClick={() => openCalibrator(cam)}
+                      disabled={isBusy}
+                      title="Map the green camera's view onto the tee camera's by clicking the same ground features in both. Done once for this pair — every swing they record afterwards is aimed by it."
+                    >
+                      ⊹ Aim: calibrate green→tee
+                    </button>
+                  )}
+                  {/* GREEN PIXELS TO FEET — the only thing that can
+                      measure a yardage. Closest-to-the-pin and the
+                      distance plate come from it, and nothing else does.
+                      It was offered on tee cameras too until it turned
+                      out nothing read that fit: aiming goes through the
+                      green→tee map above, and green_to_image, the
+                      feet-to-tee-pixels half of the old route, has no
+                      callers left. */}
+                  {cam.assigned_role === "green" && (
+                    <button
+                      type="button" className="secondary small"
+                      onClick={() => setCalibratingCam(cam)}
+                      disabled={isBusy}
+                      title="Map this camera's pixels onto the green in feet, by marking four edges of the putting surface. This is what measures closest-to-the-pin and stamps the distance on a clip. Aiming the tracer is the separate green→tee button."
+                    >
+                      {cam.green_homography
+                        ? "Measure: distances ✓"
+                        : "Measure: calibrate distances"}
+                    </button>
+                  )}
+                  {/* THE TWO MARKS THAT CHANGE EVERY MORNING. The
+                      calibrations above describe where the cameras are
+                      bolted; the pin is cut to a new spot each day and
+                      the tee markers are walked forward or back. Same
+                      pair of pictures, opposite lifetime.
+
+                      Named for what each mark DOES, because the tee one
+                      is a rectangle drawn on the tee view and so is the
+                      trigger zone above it — and they feed completely
+                      different things. This one bounds the BALL SEARCH;
+                      the zones decide whether a person is on the tee. */}
+                  {partner && (
+                    <button
+                      type="button" className="secondary small"
+                      onClick={() => setDailyCam(cam)}
+                      disabled={isBusy}
+                      title="Today, on this hole: the flagstick on the green view, and the patch of turf the ball search is confined to on the tee view. Both move overnight; the calibrations do not. Not the same as trigger zones, which decide when to record."
+                    >
+                      ⛳ Today&apos;s pin &amp; ball area
+                    </button>
+                  )}
                   {cam.kind === "ip" && (
                     <div
                       style={{
@@ -2136,6 +2134,27 @@ export default function AdminCameras() {
                       <ExposureReadout exp={cam.exposure} />
                     </div>
                   )}
+                  {/* DEVICE: nothing here is about the picture. Kept
+                      last and together so Delete is nowhere near the
+                      buttons used every day. */}
+                  <div className="tiny upper muted" style={{ marginTop: 8 }}>Device</div>
+                  {cam.assigned_role === "tee" && (
+                    <button
+                      type="button" className="secondary small"
+                      onClick={() => toggleTriggering(cam)} disabled={isBusy}
+                      title="Pause/resume motion triggering. Paused = camera stays online but won't record events (use when it's powered on indoors)."
+                    >
+                      {cam.triggering_enabled === false
+                        ? "Resume triggering"
+                        : "Pause triggering"}
+                    </button>
+                  )}
+                  <button
+                    type="button" className="secondary small"
+                    onClick={() => toggleEnabled(cam)} disabled={isBusy}
+                  >
+                    {cam.enabled ? "Disable" : "Enable"}
+                  </button>
                   <button
                     type="button" className="secondary small"
                     onClick={() => openMove(cam)} disabled={isBusy}

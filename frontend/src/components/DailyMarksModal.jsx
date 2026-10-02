@@ -1,6 +1,12 @@
 /**
  * THE TWO THINGS THAT CHANGE EVERY MORNING, set from the Cameras page.
  *
+ * NEITHER OF THEM IS THE TRIGGER ZONE. The tee tab here draws a box on
+ * the tee picture and so does the zone editor, which is exactly why
+ * both are named for their job rather than for their shape: this one
+ * bounds where the BALL is searched for once a clip exists, the zones
+ * decide whether a person on the tee makes a clip at all.
+ *
  * The green->tee calibration is a fact about two bolted-down viewpoints
  * and is done once. These are the opposite: the pin is cut to a new
  * spot each morning and the tee markers are walked forward or back, so
@@ -114,11 +120,11 @@ export function DailyMarksModal({ adminPassword, cam, onClose }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="row" style={{ alignItems: "baseline", gap: 10 }}>
-          <b>Today&apos;s flag &amp; tee box</b>
+          <b>Today&apos;s pin &amp; ball area</b>
           {scope && <span className="small">{scope}</span>}
           <span className="row" style={{ gap: 6, marginLeft: 12 }}>
-            {tabBtn("green", "⛳ Green view — flag stick")}
-            {tabBtn("tee", "▭ Tee view — tee box")}
+            {tabBtn("green", "⛳ Green view — flagstick")}
+            {tabBtn("tee", "▭ Tee view — ball search area")}
           </span>
           <button
             type="button"
