@@ -19,7 +19,15 @@ BRANCH="${1:-main}"
 INSTALL_DIR="/opt/golfreelz-agent"
 SERVICE_USER="golfreelz"
 SERVICE_NAME="golfreelz-agent"
-REPO_URL="https://github.com/baldbrent-lang/HoleInOne.git"
+# Overridable, because the repo the Pis pull from and the repo the work
+# is pushed to have not always been the same account. When they differ,
+# update.sh succeeds, reports the branch it pulled, and installs code
+# that does not contain the change you came to deploy — which looks
+# exactly like the change not working.
+#
+#   sudo REPO_URL=https://github.com/<owner>/HoleInOne.git \
+#        /opt/golfreelz-agent/update.sh
+REPO_URL="${REPO_URL:-https://github.com/baldbrent-lang/HoleInOne.git}"
 
 if [[ "$EUID" -ne 0 ]]; then
   echo "must be run as root (use sudo)" >&2
@@ -31,6 +39,7 @@ fi
 TMP_DIR="$(mktemp -d -t golfreelz-update-XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+echo "==> repo:   $REPO_URL"
 echo "==> branch: $BRANCH"
 
 # ONLY pi-agent/, AND ONLY THE FILES WE INSTALL. A plain --depth 1
