@@ -892,6 +892,136 @@ function CameraEventsPanel({ adminPassword }) {
   );
 }
 
+/**
+ * THE CAMERA'S VIEW, FOR FREE.
+ *
+ * The picture box used to be empty until somebody pressed Watch, which
+ * put a Pi into 10 fps JPEG streaming over a cellular modem to answer a
+ * question that is almost always "is it still pointed at the tee" — a
+ * question one frame answers. So the agent leaves a snapshot with the
+ * backend every quarter hour whether anyone is looking or not, and this
+ * is what the card shows: the view, immediately, on every camera, with
+ * no traffic on the device at all.
+ *
+ * Live is still a click away, from the button on the picture itself.
+ *
+ * THE TIME IS PRINTED ON IT because a still with no timestamp is a lie
+ * waiting to happen: the picture of a sunlit tee is indistinguishable
+ * from the picture of a sunlit tee taken before the camera died. The
+ * clock time and the age both show, and the age goes amber once the
+ * snapshot is older than the camera should have let it get.
+ */
+const STILL_STALE_SEC = 45 * 60;   // 3x the backend's snapshot interval
+
+function stillClock(iso) {
+  if (!iso) return null;
+  const utcIso = /[Zz]$|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + "Z";
+  const d = new Date(utcIso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function CameraStill({ cam, adminPassword, onWatch, disabled }) {
+  const [src, setSrc] = useState(null);
+  const [takenAt, setTakenAt] = useState(null);
+  const [missing, setMissing] = useState(false);
+  const urlRef = useRef(null);
+
+  // Refetched when the snapshot CHANGES, not on a clock: still_at comes
+  // down with the camera list (which refreshes anyway), so a page left
+  // open costs one image per camera per snapshot rather than one a
+  // minute per camera. cam.still_at in the dependency list is the whole
+  // mechanism.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(api.cameraStillUrl(cam.id), {
+          headers: { "X-Admin-Password": adminPassword },
+          cache: "no-store",
+        });
+        if (cancelled) return;
+        if (res.status !== 200) { setMissing(true); return; }
+        // The capture time travels with the bytes so the two cannot
+        // disagree. Cross-origin dev servers can hide the header even
+        // when the backend sends it, so the column is the fallback.
+        const hdr = res.headers.get("X-Captured-At");
+        const blob = await res.blob();
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+        urlRef.current = url;
+        setTakenAt(hdr || cam.still_at || null);
+        setSrc(url);
+        setMissing(false);
+      } catch {
+        if (!cancelled) setMissing(true);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cam.id, cam.still_at, adminPassword]);
+
+  useEffect(() => () => {
+    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+  }, []);
+
+  const age = secsAgo(takenAt);
+  const stale = age != null && age > STILL_STALE_SEC;
+  const clock = stillClock(takenAt);
+
+  return (
+    <div style={{ position: "relative", background: "#000", minHeight: 160 }}>
+      {src ? (
+        <img src={src} alt="" style={{ display: "block", width: "100%",
+                                       height: "auto" }} />
+      ) : (
+        <div style={{ minHeight: 160, display: "flex", alignItems: "center",
+                      justifyContent: "center", color: "#bbb", fontSize: 13,
+                      textAlign: "center", padding: 12 }}>
+          {missing
+            ? "No picture yet — the camera sends one as soon as it calls in."
+            : "Loading the camera's last picture…"}
+        </div>
+      )}
+      {/* The bar sits ON the picture rather than under it: the time
+          belongs to the image, and Watch live wants to read as the play
+          control of the thing above it. */}
+      <div
+        className="inline"
+        style={{
+          position: "absolute", left: 0, right: 0, bottom: 0,
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          gap: 8, padding: "6px 8px", width: "100%", boxSizing: "border-box",
+          background: "linear-gradient(to top, rgba(0,0,0,.72), rgba(0,0,0,0))",
+        }}
+      >
+        <span
+          className="tiny"
+          style={{
+            fontFamily: "monospace", minWidth: 0,
+            color: stale ? "#f0c05a" : "#e8e8e8",
+            textShadow: "0 1px 2px rgba(0,0,0,.9)",
+          }}
+          title={takenAt ? `Snapshot taken ${takenAt}` : "No snapshot stored"}
+        >
+          {clock ? <>{clock} · {tsRel(takenAt)}</> : "no snapshot"}
+          {stale && " · not refreshing"}
+        </span>
+        <button
+          type="button" className="small"
+          style={{ width: "auto", flexShrink: 0 }}
+          onClick={onWatch}
+          disabled={disabled}
+          title="Open the live picture from this camera (~10 fps). The camera only streams while this is open."
+        >
+          ▶ Watch live
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminCameras() {
   const adminPassword =
     localStorage.getItem(ADMIN_PW_STORAGE) ||
@@ -1763,95 +1893,112 @@ export default function AdminCameras() {
                     )}
                   </div>
 
-                  {/* THE LIVE VIEW LIVES IN THE CARD, not under it. The
+                  {/* THE PICTURE LIVES IN THE CARD, not under it. The
                       right-hand column is tall — pairing, lens, shutter —
                       and the left column runs out of content well above
                       its foot, so a full-width panel below the card was
                       pushing the picture off screen past empty space.
                       Here it fills that space and sits beside the very
                       controls it exists to be watched against: nudge the
-                      zoom, see the zoom. */}
-                  {watchingCamId === cam.id && (
-                    <div
-                      className="card tight"
-                      style={{ margin: "10px 0 0", padding: 8, background: "#000" }}
-                    >
-                      <div
-                        className="inline"
-                        style={{ justifyContent: "space-between",
-                                 marginBottom: 6, gap: 8, width: "100%" }}
-                      >
-                        {/* The title wraps in this narrower column, so it
-                            takes the slack and Close keeps its corner. */}
-                        <div className="small" style={{ color: "#bbb",
-                                                        flex: 1, minWidth: 0 }}>
-                          Live · #{cam.id}
-                          {cam.name && <> — {cam.name}</>}
-                          {" · "}hole {cam.assigned_hole} {cam.assigned_role}
+                      zoom, see the zoom.
+
+                      AND IT IS ALWAYS THERE. It used to be an empty gap
+                      until somebody pressed Watch, which asked a Pi on a
+                      cellular modem for ten frames a second to answer
+                      "is it still pointed at the tee" — one frame's
+                      question. The snapshot answers it on page load, for
+                      every camera, with no traffic on the device; live
+                      is a click away on the picture itself. */}
+                  <div
+                    className="card tight"
+                    style={{ margin: "10px 0 0", padding: 8, background: "#000" }}
+                  >
+                    {watchingCamId === cam.id ? (
+                      <>
+                        <div
+                          className="inline"
+                          style={{ justifyContent: "space-between",
+                                   marginBottom: 6, gap: 8, width: "100%" }}
+                        >
+                          {/* The title wraps in this narrower column, so it
+                              takes the slack and Close keeps its corner. */}
+                          <div className="small" style={{ color: "#bbb",
+                                                          flex: 1, minWidth: 0 }}>
+                            Live · #{cam.id}
+                            {cam.name && <> — {cam.name}</>}
+                            {" · "}hole {cam.assigned_hole} {cam.assigned_role}
+                          </div>
+                          <button type="button" className="ghost small"
+                                  style={{ width: "auto", flexShrink: 0 }}
+                                  onClick={stopWatch}>
+                            Close
+                          </button>
                         </div>
-                        <button type="button" className="ghost small"
-                                style={{ width: "auto", flexShrink: 0 }}
-                                onClick={stopWatch}>
-                          Close
-                        </button>
-                      </div>
-                      <div
-                        ref={setPictureEl}
-                        style={{
-                          position: "relative",
-                          background: "#000",
-                          minHeight: 240,
-                        }}
-                      >
-                        {liveFrameSrc && (
-                          <img
-                            src={liveFrameSrc}
-                            alt=""
-                            onLoad={(e) => {
-                              const { naturalWidth: w, naturalHeight: h } = e.target;
-                              if (w && h && (liveNatural?.w !== w
-                                             || liveNatural?.h !== h)) {
-                                setLiveNatural({ w, h });
-                              }
-                            }}
-                            style={{
-                              display: "block",
-                              width: "100%",
-                              height: "auto",
-                            }}
+                        <div
+                          ref={setPictureEl}
+                          style={{
+                            position: "relative",
+                            background: "#000",
+                            minHeight: 240,
+                          }}
+                        >
+                          {liveFrameSrc && (
+                            <img
+                              src={liveFrameSrc}
+                              alt=""
+                              onLoad={(e) => {
+                                const { naturalWidth: w, naturalHeight: h } = e.target;
+                                if (w && h && (liveNatural?.w !== w
+                                               || liveNatural?.h !== h)) {
+                                  setLiveNatural({ w, h });
+                                }
+                              }}
+                              style={{
+                                display: "block",
+                                width: "100%",
+                                height: "auto",
+                              }}
+                            />
+                          )}
+
+                          {!liveFrameSrc && (
+                            <div
+                              style={{
+                                position: "absolute",
+                                inset: 0,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                color: "#bbb",
+                                fontSize: 13,
+                              }}
+                            >
+                              Waiting for live frame from Pi…
+                            </div>
+                          )}
+                        </div>
+
+                        {zoningCamId === cam.id && (
+                          <TriggerZones
+                            cam={cam}
+                            adminPassword={adminPassword}
+                            frameW={liveNatural?.w}
+                            frameH={liveNatural?.h}
+                            portalTarget={pictureEl}
+                            onSaved={() => load()}
+                            onClose={() => setZoningCamId(null)}
                           />
                         )}
-
-                        {!liveFrameSrc && (
-                          <div
-                            style={{
-                              position: "absolute",
-                              inset: 0,
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              color: "#bbb",
-                              fontSize: 13,
-                            }}
-                          >
-                            Waiting for live frame from Pi…
-                          </div>
-                        )}
-                      </div>
-
-                      {zoningCamId === cam.id && (
-                        <TriggerZones
-                          cam={cam}
-                          adminPassword={adminPassword}
-                          frameW={liveNatural?.w}
-                          frameH={liveNatural?.h}
-                          portalTarget={pictureEl}
-                          onSaved={() => load()}
-                          onClose={() => setZoningCamId(null)}
-                        />
-                      )}
-                    </div>
-                  )}
+                      </>
+                    ) : (
+                      <CameraStill
+                        cam={cam}
+                        adminPassword={adminPassword}
+                        disabled={isBusy}
+                        onWatch={() => startWatch(cam)}
+                      />
+                    )}
+                  </div>
                 </div>
                 <div style={{
                   width: 230, flexShrink: 0,
@@ -1897,16 +2044,10 @@ export default function AdminCameras() {
                       standing at the camera, Setup when something has
                       been bolted or moved, Device when you are not
                       thinking about pictures at all. */}
+                  {/* No Watch button here any more: it is on the
+                      picture, where what it does is visible. A control
+                      for "show me that" belongs on the that. */}
                   <div className="tiny upper muted" style={{ marginTop: 2 }}>Live</div>
-                  <button
-                    type="button"
-                    className={watchingCamId === cam.id ? "small" : "secondary small"}
-                    onClick={() => (watchingCamId === cam.id ? stopWatch() : startWatch(cam))}
-                    disabled={isBusy}
-                    title="Open a live JPEG view from this camera (~10 fps)"
-                  >
-                    {watchingCamId === cam.id ? "Stop watching" : "Watch"}
-                  </button>
                   {cam.assigned_role === "tee" && (
                     <button
                       type="button" className="small"

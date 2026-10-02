@@ -93,6 +93,60 @@ FRAME_TTL = timedelta(seconds=5)
 CLIPS_DIR = Path(__file__).resolve().parents[2] / settings.upload_dir / "clips"
 CLIPS_DIR.mkdir(parents=True, exist_ok=True)
 
+# THE STILL: one JPEG per camera, overwritten, taken whether or not
+# anybody is watching. The Cameras page shows the camera's view the
+# moment it loads instead of an empty box with a Watch button, and the
+# cost is one frame every STILL_MAX_AGE rather than ten a second.
+#
+# On the instance's own disk, not object storage: it is a 60-100 KB file
+# with a lifetime of minutes, and losing it on a redeploy costs nothing
+# because the agent is asked for a new one as soon as it polls.
+STILLS_DIR = CLIPS_DIR.parent / "stills"
+STILLS_DIR.mkdir(parents=True, exist_ok=True)
+
+# How old a still may be before the agent is asked for a fresh one.
+# Fifteen minutes is ~100 frames a day per camera — a rounding error
+# against a single uploaded clip — and the view of a tee box does not
+# change faster than that except while somebody is standing at it,
+# which is what the live view is for.
+STILL_MAX_AGE = timedelta(minutes=15)
+
+# A still is one full-resolution frame, encoded at a higher quality than
+# the live stream, so it gets more room than the 500 KB live cap.
+MAX_STILL_BYTES = 2_000_000
+
+
+def still_path(camera_id: int) -> Path:
+    return STILLS_DIR / f"camera-{int(camera_id)}.jpg"
+
+
+def still_wanted(cam: Camera) -> bool:
+    """Should the agent send a snapshot on this poll?
+
+    THE SERVER DECIDES, not the Pi's own timer, because the file and the
+    timer live on different machines with different lifetimes: the
+    instance restarts and the disk comes back empty while a Pi that has
+    been up for a week still believes it pushed one ten minutes ago. So
+    the question asked on every poll is about the file that actually
+    exists — which also means the interval is tunable here, with nothing
+    to re-provision in the field.
+    """
+    try:
+        st = still_path(cam.id).stat()
+    except OSError:
+        return True
+    age = time.time() - st.st_mtime
+    return age >= STILL_MAX_AGE.total_seconds()
+
+
+def _write_still(camera_id: int, body: bytes) -> None:
+    """Write-then-rename, so a reader mid-refresh never gets half a JPEG."""
+    final = still_path(camera_id)
+    tmp = final.with_name(final.name + ".part")
+    tmp.write_bytes(body)
+    tmp.replace(final)
+
+
 # Per-camera wake-up queues. The tee Pi's /event-trigger writes into
 # the paired green's queue; the green Pi's /poll-trigger awaits it.
 _pending_triggers: dict[int, asyncio.Queue] = {}
@@ -854,6 +908,11 @@ def watch_status(token: str, db: Session = Depends(get_db)):
         # the agent stays in, not a one-shot, and it has to survive every
         # poll until it expires.
         "focus_seconds": _focus_remaining(cam.id),
+        # THE SNAPSHOT ASK. True when the picture the Cameras page would
+        # show is missing or stale; the agent answers with one frame to
+        # /still and goes back to sleep. Not consumed on read — it stays
+        # true until a frame actually lands, so a failed push retries.
+        "still_wanted": still_wanted(cam),
     }
 
 
@@ -873,6 +932,40 @@ async def post_live_frame(
     with _LIVE_LOCK:
         _LIVE_FRAMES[cam.id] = (body, _utcnow_naive())
     return {"ok": True}
+
+
+@router.post("/{token}/still")
+async def post_still(
+    token: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """The periodic snapshot: JPEG bytes in the body, kept on disk.
+
+    Separate from /live-frame because they have opposite lifetimes. A
+    live frame is worth five seconds and is never written down; this one
+    is the camera's view until the next one replaces it, and has to
+    survive the operator closing the page.
+
+    The write and the commit are handed to a thread: this runs on the
+    event loop, and a blocking write to a disk that is busy ingesting a
+    clip upload is exactly what makes the health check time out.
+    """
+    cam = _get_camera_by_token(token, db)
+    body = await request.body()
+    if not body:
+        raise HTTPException(400, "empty frame")
+    if len(body) > MAX_STILL_BYTES:
+        raise HTTPException(413, "still too large (max 2MB)")
+
+    def _store() -> None:
+        _write_still(cam.id, body)
+        cam.still_at = _utcnow_naive()
+        db.commit()
+
+    await asyncio.to_thread(_store)
+    log.info("cameras: still stored for camera %s (%d bytes)", cam.id, len(body))
+    return {"ok": True, "bytes": len(body)}
 
 
 @router.post("/{token}/event-trigger")

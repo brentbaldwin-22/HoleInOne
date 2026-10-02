@@ -67,6 +67,7 @@ from ..config import settings
 from ..database import SessionLocal, get_db
 from ..deps import require_admin
 from .cameras import _LIVE_FRAMES, _WATCHERS, _LIVE_LOCK, WATCH_TTL, FRAME_TTL
+from .cameras import STILL_MAX_AGE, still_path
 from .cameras import request_lens as _request_lens
 from .cameras import battery_status as _battery_status
 from .cameras import focus_status as _focus_status
@@ -14834,6 +14835,11 @@ def _camera_to_dict(
             c.camera_settings, c.camera_settings_at,
         ),
         "stream": _stream_status(c.stream_info, c.stream_info_at),
+        # When the stored snapshot was taken. The card uses it as the
+        # cache key for the picture: it refetches the JPEG when this
+        # changes and not on a timer, so a page left open all afternoon
+        # costs one image per camera per snapshot instead of one a minute.
+        "still_at": c.still_at.isoformat() if c.still_at else None,
         "enabled": bool(c.enabled),
         "triggering_enabled": bool(c.triggering_enabled),
         "note": c.note,
@@ -15855,6 +15861,42 @@ def get_camera_live_frame(camera_id: int, db: Session = Depends(get_db)):
         content=frame_bytes,
         media_type="image/jpeg",
         headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/cameras/{camera_id}/still")
+def get_camera_still(camera_id: int, db: Session = Depends(get_db)):
+    """The camera's most recent snapshot. 204 when there isn't one yet.
+
+    DELIBERATELY DOES NOT MARK THE CAMERA WATCHED, unlike the live frame
+    above. The whole point of the still is that showing a camera's view
+    costs nothing on the device — renewing the watch TTL here would make
+    every open Cameras page put every Pi into 10 fps streaming, which is
+    the thing this replaces.
+    """
+    if not db.get(Camera, camera_id):
+        raise HTTPException(404, "camera not found")
+    path = still_path(camera_id)
+    try:
+        data = path.read_bytes()
+        taken = datetime.utcfromtimestamp(path.stat().st_mtime)
+    except OSError:
+        return Response(status_code=204)
+    if not data:
+        return Response(status_code=204)
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={
+            # The timestamp travels with the bytes, because the picture
+            # is shown with the time printed on it and the two must not
+            # be able to disagree: the card reads both from this one
+            # response rather than pairing an image with a column it
+            # fetched separately.
+            "X-Captured-At": taken.isoformat() + "Z",
+            "X-Stale-After": str(int(STILL_MAX_AGE.total_seconds())),
+            "Cache-Control": "no-store",
+        },
     )
 
 

@@ -111,6 +111,10 @@ export const api = {
       adminPassword: key,
     }),
   cameraLiveFrameUrl: (id) => `${API_BASE}/api/admin/cameras/${id}/live-frame`,
+  // The snapshot, as opposed to the live frame above. Fetching it does
+  // NOT put the camera into streaming mode, which is the whole point:
+  // the card can show every camera's view for free.
+  cameraStillUrl: (id) => `${API_BASE}/api/admin/cameras/${id}/still`,
   listPublicCourses: () => request(`/api/public/courses`),
   stripeConfig: () => request(`/api/public/stripe-config`, { auth: false }),
   inviteInfo: (token) =>

@@ -50,6 +50,12 @@ app.add_middleware(
     allow_origins=["*"],  # tighten for prod
     allow_methods=["*"],
     allow_headers=["*"],
+    # A browser cannot read a custom RESPONSE header unless it is named
+    # here, whatever allow_headers says — that one is about the request.
+    # The camera snapshot carries its capture time this way, and in dev
+    # (Vite on another origin) the picture would otherwise arrive with no
+    # idea when it was taken.
+    expose_headers=["X-Captured-At", "X-Stale-After"],
 )
 
 

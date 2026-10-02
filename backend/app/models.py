@@ -505,6 +505,18 @@ class Camera(Base):
     stream_info: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     stream_info_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True)
+    # THE STILL. A camera that is not being watched still has a view,
+    # and an operator opening the Cameras page wants to see it — "is it
+    # pointed at the tee, is the lens wet, is it night" — without making
+    # a Pi push 10 fps to answer. So the agent sends ONE frame every so
+    # often whether anyone is looking or not, the newest is kept on disk
+    # (one file per camera, overwritten), and this is when it was taken.
+    #
+    # The bytes live on the instance's own disk and do not survive a
+    # redeploy; the next snapshot replaces them within the interval, so
+    # a missing file means "nothing yet", never "lost".
+    still_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # Soft toggle distinct from `enabled`: when False the camera stays
     # online (heartbeats + live-watch still work) but the backend
