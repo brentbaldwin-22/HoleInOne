@@ -86,6 +86,18 @@ def deprioritize(delta: int = NICE_DELTA) -> int | None:
     return new
 
 
+# WHAT IS RUNNING, in words. The stall watchdog prints stacks when the
+# event loop goes missing, and stacks take reading; this one line says
+# "produce, upload 412" at the top of the report. Written under the lock
+# it describes, so it can only ever name the job that actually holds it.
+_current: list[str] = []
+
+
+def current_heavy() -> str | None:
+    """The heavy job holding the gate, or None."""
+    return _current[-1] if _current else None
+
+
 @contextmanager
 def heavy(label: str):
     """Hold the gate for a stretch of CPU-heavy media work.
@@ -99,4 +111,11 @@ def heavy(label: str):
         waited = time.monotonic() - t0
         if waited > 1.0:
             log.info("workload: %s waited %.1fs for the gate", label, waited)
-        yield
+        _current.append(label)
+        try:
+            yield
+        finally:
+            try:
+                _current.remove(label)
+            except ValueError:
+                pass

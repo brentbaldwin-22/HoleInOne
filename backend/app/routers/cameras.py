@@ -969,30 +969,58 @@ def watch_status(token: str, db: Session = Depends(get_db)):
     }
 
 
+# THE TWO FRAME ENDPOINTS DO THEIR DATABASE WORK IN A THREAD.
+#
+# An `async def` runs ON the event loop, and every line of it that is
+# not awaited runs there too -- including a SQLAlchemy query, which is a
+# network round trip to Postgres with a pre-ping in front of it. While
+# that is in flight nothing else in the process gets served, /health
+# included, and Render kills an instance that cannot answer /health in
+# five seconds.
+#
+# One round trip is a millisecond and harmless. These two are the ones
+# that repeat: the live view pushes TEN FRAMES A SECOND while an
+# operator watches, each one previously taking a trip to the database on
+# the loop before it would accept the bytes. A connection pool that goes
+# briefly dry (produce holds sessions for minutes) turns each of those
+# into a ten-second `pool_timeout` wait -- on the event loop, with the
+# health check behind it.
+#
+# So the session is opened inside the thread rather than injected by
+# Depends: the dependency would hold a pooled connection for the whole
+# request, body upload included, which on a cellular modem that dies
+# every thirty seconds is a connection held for as long as the modem
+# takes to come back.
+
+
+def _camera_id_for_body(token: str) -> int:
+    """Resolve the token and note the camera was heard from. Thread-only."""
+    db = SessionLocal()
+    try:
+        cam = _get_camera_by_token(token, db)
+        cam_id = cam.id
+        db.commit()
+        return cam_id
+    finally:
+        db.close()
+
+
 @router.post("/{token}/live-frame")
-async def post_live_frame(
-    token: str,
-    request: Request,
-    db: Session = Depends(get_db),
-):
+async def post_live_frame(token: str, request: Request):
     """Pi POSTs JPEG bytes as the request body."""
-    cam = _get_camera_by_token(token, db)
     body = await request.body()
     if not body:
         raise HTTPException(400, "empty frame")
     if len(body) > 500_000:
         raise HTTPException(413, "frame too large (max 500KB)")
+    cam_id = await asyncio.to_thread(_camera_id_for_body, token)
     with _LIVE_LOCK:
-        _LIVE_FRAMES[cam.id] = (body, _utcnow_naive())
+        _LIVE_FRAMES[cam_id] = (body, _utcnow_naive())
     return {"ok": True}
 
 
 @router.post("/{token}/still")
-async def post_still(
-    token: str,
-    request: Request,
-    db: Session = Depends(get_db),
-):
+async def post_still(token: str, request: Request):
     """The periodic snapshot: JPEG bytes in the body, kept on disk.
 
     Separate from /live-frame because they have opposite lifetimes. A
@@ -1000,24 +1028,35 @@ async def post_still(
     is the camera's view until the next one replaces it, and has to
     survive the operator closing the page.
 
-    The write and the commit are handed to a thread: this runs on the
-    event loop, and a blocking write to a disk that is busy ingesting a
-    clip upload is exactly what makes the health check time out.
+    The size is checked against the declared length before a byte is
+    read, so a camera that has gone wrong cannot make the process hold
+    two megabytes before being told no.
     """
-    cam = _get_camera_by_token(token, db)
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except (TypeError, ValueError):
+        declared = 0
+    if declared > MAX_STILL_BYTES:
+        raise HTTPException(413, "still too large (max 2MB)")
     body = await request.body()
     if not body:
         raise HTTPException(400, "empty frame")
     if len(body) > MAX_STILL_BYTES:
         raise HTTPException(413, "still too large (max 2MB)")
 
-    def _store() -> None:
-        _write_still(cam.id, body)
-        cam.still_at = _utcnow_naive()
-        db.commit()
+    def _store() -> int:
+        db = SessionLocal()
+        try:
+            cam = _get_camera_by_token(token, db)
+            _write_still(cam.id, body)
+            cam.still_at = _utcnow_naive()
+            db.commit()
+            return cam.id
+        finally:
+            db.close()
 
-    await asyncio.to_thread(_store)
-    log.info("cameras: still stored for camera %s (%d bytes)", cam.id, len(body))
+    cam_id = await asyncio.to_thread(_store)
+    log.info("cameras: still stored for camera %s (%d bytes)", cam_id, len(body))
     return {"ok": True, "bytes": len(body)}
 
 

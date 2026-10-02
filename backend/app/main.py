@@ -419,6 +419,14 @@ def _startup() -> None:
         tune_opencv()
     except Exception as exc:  # noqa: BLE001
         _glog.warning("startup: could not tune opencv threads: %s", exc)
+    # FIRST, so it is watching while the rest of startup runs. A
+    # migration that takes eight seconds is a health check Render will
+    # have already failed, and this is the only thing that would say so.
+    try:
+        from .services import stallwatch
+        stallwatch.start()
+    except Exception as exc:  # noqa: BLE001
+        _glog.warning("startup: stall watchdog did not start: %s", exc)
     Base.metadata.create_all(bind=engine)
     _migrate()
     _heal_media_urls()
