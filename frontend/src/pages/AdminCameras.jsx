@@ -1328,6 +1328,64 @@ export default function AdminCameras() {
   // element is enough.
   const [pictureEl, setPictureEl] = useState(null);
   const watchingCamIdRef = useRef(null);
+  // AS BIG AS THE SCREEN ALLOWS. Judging focus, or where a trigger zone
+  // actually falls, on a picture a third of a column wide is guesswork
+  // — so the panel can take the whole viewport, and asks the browser
+  // for true fullscreen on top of that. Two mechanisms because they
+  // fail differently: the fixed overlay always works and stops at the
+  // browser's chrome, native fullscreen gets the last inch of screen
+  // and can be refused outright (an iframe without the permission, a
+  // call the browser does not accept as user-initiated). Whichever
+  // lands, the picture grows.
+  const [expanded, setExpanded] = useState(false);
+  const panelRef = useRef(null);
+
+  // Leaving fullscreen by any route the button does not own — Escape,
+  // the browser's own control, a tab switch — has to put the panel back
+  // too, or the page is left in a state nothing on screen explains.
+  useEffect(() => {
+    function onFsChange() {
+      if (!document.fullscreenElement) setExpanded(false);
+    }
+    function onKey(e) {
+      // Escape collapses it whatever happened underneath: the browser
+      // may have taken fullscreen, may have refused it, or may not
+      // treat Escape as its own exit at all. Doing both is harmless --
+      // the second one is a no-op -- and leaving the overlay up because
+      // we assumed the browser would handle it is not.
+      if (e.key !== "Escape") return;
+      setExpanded(false);
+      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    }
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, []);
+
+  function toggleExpanded() {
+    if (expanded) {
+      setExpanded(false);
+      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+      return;
+    }
+    setExpanded(true);
+    // Best effort: a refusal leaves the overlay, which is already most
+    // of the win, so there is nothing to tell the operator about.
+    panelRef.current?.requestFullscreen?.().catch(() => {});
+  }
+
+  // Closing the live view while expanded must not leave the page in a
+  // fullscreen panel of nothing.
+  useEffect(() => {
+    if (watchingCamId == null && expanded) {
+      setExpanded(false);
+      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchingCamId]);
 
   // New-camera form state
   const [newCourseId, setNewCourseId] = useState("");
@@ -2210,8 +2268,21 @@ export default function AdminCameras() {
                       every camera, with no traffic on the device; live
                       is a click away on the picture itself. */}
                   <div
+                    ref={watchingCamId === cam.id ? panelRef : undefined}
                     className="card tight"
-                    style={{ margin: "10px 0 0", padding: 8, background: "#000" }}
+                    style={{
+                      margin: "10px 0 0", padding: 8, background: "#000",
+                      // EXPANDED IS A LAYOUT, not just a bigger box. The
+                      // panel covers the viewport and becomes a column:
+                      // the header and the lens keep their natural
+                      // height and the picture takes everything left,
+                      // which is the whole point of pressing it.
+                      ...(expanded && watchingCamId === cam.id ? {
+                        position: "fixed", inset: 0, zIndex: 9000,
+                        margin: 0, borderRadius: 0, overflow: "auto",
+                        display: "flex", flexDirection: "column", gap: 6,
+                      } : null),
+                    }}
                   >
                     {watchingCamId === cam.id ? (
                       <>
@@ -2230,16 +2301,62 @@ export default function AdminCameras() {
                           </div>
                           <button type="button" className="ghost small"
                                   style={{ width: "auto", flexShrink: 0 }}
+                                  onClick={toggleExpanded}
+                                  title={expanded
+                                    ? "Back to the card (Escape does this too)"
+                                    : "Fill the screen — the picture is how "
+                                      + "focus and trigger zones are judged, "
+                                      + "and a third of a column is not "
+                                      + "enough of it"}>
+                            {expanded ? "⤡ Shrink" : "⤢ Expand"}
+                          </button>
+                          <button type="button" className="ghost small"
+                                  style={{ width: "auto", flexShrink: 0 }}
                                   onClick={stopWatch}>
                             Close
                           </button>
                         </div>
+                        {/* THE BOX IS THE PICTURE'S BOUNDS, exactly, in
+                            both layouts — the zone editor portals its
+                            drawing surface into this element and pins it
+                            to the edges, so a box even slightly larger
+                            than the image puts every rectangle somewhere
+                            the camera is not looking. Normally that is
+                            free: a block image at width 100% makes its
+                            own parent's height. Expanded it has to be
+                            asked for, with the frame's own ratio and a
+                            cap on both axes, so the box letterboxes
+                            along with the picture inside it. */}
                         <div
                           ref={setPictureEl}
                           style={{
                             position: "relative",
                             background: "#000",
-                            minHeight: 240,
+                            ...(expanded ? {
+                              // Width first, height derived. A box given
+                              // only a ratio and two maximums has no
+                              // basis to size from in a flex column and
+                              // collapses or overflows depending on the
+                              // browser; a definite width with the
+                              // ratio is arithmetic.
+                              //
+                              // What is subtracted is what else is in
+                              // the column, counted rather than guessed
+                              // at once: the title row always, the lens
+                              // rows on an IP camera, the zone editor's
+                              // strip while it is open. Guessing it was
+                              // how the help line under the sliders got
+                              // cut off the bottom of the screen.
+                              width: `min(100%, calc((100vh - ${
+                                74 + (cam.kind === "ip" ? 152 : 0)
+                                   + (zoningCamId === cam.id ? 150 : 0)
+                              }px) * ${
+                                (liveNatural?.w || 16) / (liveNatural?.h || 9)
+                              }))`,
+                              aspectRatio: `${liveNatural?.w || 16} / ${
+                                liveNatural?.h || 9}`,
+                              margin: "auto",
+                            } : { minHeight: 240 }),
                           }}
                         >
                           {liveFrameSrc && (
