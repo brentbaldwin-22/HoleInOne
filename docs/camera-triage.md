@@ -76,10 +76,14 @@ tailscale status | grep -i golfreelz   # from any machine on the tailnet
 ```
 
 The address may simply have moved — a node that re-registers can come
-back on a different 100.x. Use the name rather than the number:
+back on a different 100.x, and `tailscale status` prints the current
+one. The hostname only works if MagicDNS is enabled on the tailnet AND
+the machine you are sitting at is using Tailscale's resolver, which on
+Windows it often is not:
 
 ```bash
-ssh pi@golfreelz-tee        # MagicDNS, survives an address change
+ssh pi@golfreelz-tee        # "Could not resolve hostname" => use the IP
+ssh pi@100.81.62.127        # always works
 ```
 
 If the node shows as offline in `tailscale status` while the camera is
