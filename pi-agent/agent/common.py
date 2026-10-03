@@ -1020,7 +1020,8 @@ class BackgroundUploader(threading.Thread):
     # ---- spool ------------------------------------------------------
 
     def _spool(self, session_id: str, clip_path: Path,
-               ts: Optional[float], tries: int) -> bool:
+               ts: Optional[float], tries: int,
+               compressed: bool = True) -> bool:
         """Park a failed clip for a later attempt. True if it was kept."""
         if self.spool_dir is None or not clip_path.exists():
             return False
@@ -1034,9 +1035,14 @@ class BackgroundUploader(threading.Thread):
                 # What it is currently encoded at, so repeated failures
                 # can step it down instead of retrying the same bytes.
                 "kbps": int(self._kbps_now or 0),
-                # Already compressed — re-encoding it on every retry would
-                # cost the Pi an ffmpeg pass and degrade it each time.
-                "compressed": True,
+                # Already carrying the encode we mean to send — whether
+                # this uploader made it or the camera did. Re-encoding on
+                # every retry would cost an ffmpeg pass and degrade it
+                # each time. RECORDED, not assumed: a stream-copied clip
+                # spooled without an attempt has had nothing done to it,
+                # and writing True here would have been a lie the retry
+                # ladder then acted on.
+                "compressed": bool(compressed),
             }))
             log.warning(
                 "uploader: kept %s (%.1f MB) for a later attempt — %d clip(s) "
@@ -1398,8 +1404,12 @@ class BackgroundUploader(threading.Thread):
                 # THE POINT OF THE BACKOFF. Attempting here is what kept
                 # the link permanently busy; spool it and stay off the
                 # wire. Compress first, so the retry has nothing left to
-                # do but send.
-                if self._kbps_now > 0:
+                # do but send — unless the clip IS already what we mean
+                # to send. This path is how a stream-copied clip got
+                # re-encoded to 720p despite precompressed=True: the
+                # flag guarded _send, and a clip spooled during a
+                # capture never reaches _send.
+                if self._kbps_now > 0 and not _precompressed:
                     compress_for_upload(
                         clip_path, target_kbps=self._kbps_now,
                         scale_height=(int(self.scale_height)
@@ -1414,7 +1424,8 @@ class BackgroundUploader(threading.Thread):
                      else "backing off"),
                     clip_path.name, _quiet,
                 )
-                self._spool(session_id, clip_path, ts, tries=0)
+                self._spool(session_id, clip_path, ts, tries=0,
+                            compressed=not _precompressed)
                 try:
                     clip_path.unlink(missing_ok=True)
                 except Exception:
@@ -1447,7 +1458,8 @@ class BackgroundUploader(threading.Thread):
                                   progressed_bytes=self._last_progress)
             # Spooling an orphan would park a clip nothing can ever accept.
             if not ok and not self._last_orphaned:
-                self._spool(session_id, clip_path, ts, tries=_tries)
+                self._spool(session_id, clip_path, ts, tries=_tries,
+                            compressed=not _precompressed)
             try:
                 clip_path.unlink(missing_ok=True)
             except Exception:
@@ -1629,10 +1641,12 @@ class BackgroundUploader(threading.Thread):
         n = 0
         while True:
             try:
-                session_id, clip_path, ts, _fps = self._q.get_nowait()
+                (session_id, clip_path, ts, _fps,
+                 _pre) = self._q.get_nowait()
             except queue.Empty:
                 break
-            if self._spool(session_id, clip_path, ts, tries=0):
+            if self._spool(session_id, clip_path, ts, tries=0,
+                           compressed=not _pre):
                 n += 1
             try:
                 clip_path.unlink(missing_ok=True)

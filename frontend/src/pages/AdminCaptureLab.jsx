@@ -213,6 +213,13 @@ export default function AdminCaptureLab() {
                       cut from {last.segments} segments in{" "}
                       <b>{last.took}s</b> · ended on {last.reason} ·{" "}
                       {relEpoch(last.at)}
+                      {last.missing_seconds > 0 && (
+                        <div className="warn tiny" style={{ marginTop: 2 }}>
+                          {last.missing_seconds}s missing from a{" "}
+                          {last.span_seconds}s window — the ring was not
+                          recording for part of it. Check ring restarts.
+                        </div>
+                      )}
                       <div className="tiny muted" style={{ marginTop: 2 }}>
                         A decode-engine clip of this length takes roughly
                         twenty times that long to produce, and is a third

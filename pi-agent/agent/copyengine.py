@@ -281,13 +281,18 @@ class CopyEngine:
             "ok": True, "at": time.time(),
             "seconds": res["seconds"], "bytes": res["bytes"],
             "took": res["took"], "segments": res["segments"],
+            "missing_seconds": res.get("missing_seconds", 0),
+            "span_seconds": res.get("span_seconds"),
             "reason": reason,
         }
         log.info(
-            "copy: session=%s cut %.1fs (%.1f MB) from %d segments in %.2fs "
-            "— asked for %.1fs, rounded out to segment edges (%s)",
+            "copy: session=%s cut %.1fs of video (%.1f MB) from %d segments "
+            "in %.2fs — asked for %.1fs%s (%s)",
             session_id, res["seconds"], res["bytes"] / 1e6, res["segments"],
-            res["took"], (t_end - t_start), reason,
+            res["took"], (t_end - t_start),
+            (f", {res['missing_seconds']}s MISSING from the span"
+             if res.get("missing_seconds") else ""),
+            reason,
         )
 
         if up is not None:

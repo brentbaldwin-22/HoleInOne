@@ -385,11 +385,22 @@ class SegmentRing:
             parts: list[Path] = []
             for i, p in enumerate(chosen):
                 dst = staging / f"{i:04d}.ts"
+                # A HARD LINK, NOT A COPY. The sweeper is unlinking from
+                # under us on another thread, and a link pins the inode
+                # just as well while costing nothing -- the first
+                # version copied the bytes, which on a long clip meant
+                # moving 200MB through an SD card twice and turned a
+                # 0.4s extract into 17s. Falls back to copying if the
+                # staging directory ever lands on another filesystem.
                 try:
-                    shutil.copy2(p, dst)
-                except OSError as exc:
-                    log.debug("copycap: segment vanished mid-extract (%s)", exc)
-                    continue
+                    os.link(p, dst)
+                except OSError:
+                    try:
+                        shutil.copy2(p, dst)
+                    except OSError as exc:
+                        log.debug("copycap: segment vanished mid-extract (%s)",
+                                  exc)
+                        continue
                 parts.append(dst)
             if not parts:
                 return {"ok": False, "why": "segments vanished before copy"}
@@ -413,6 +424,24 @@ class SegmentRing:
                     "ok": False,
                     "why": (r.stderr or b"").decode("utf-8", "replace")[:300],
                 }
+            # THE SPAN IS NOT THE DURATION when the ring dropped
+            # segments. A restart leaves a hole, and reporting the
+            # wall-clock distance between the first and last segment
+            # claimed 156s for a clip that held 144s of video -- the
+            # 12 missing seconds being exactly what two ring restarts
+            # had cost. Count what is actually there and say when some
+            # of it is missing, because a clip with holes in it is a
+            # thing an operator needs told, not left to discover.
+            span = actual_end - actual_start
+            expected = max(1, int(round(span / self.segment_seconds)))
+            missing = max(0, expected - len(parts))
+            if missing:
+                log.warning(
+                    "copycap: %d of %d second(s) are missing from this clip "
+                    "-- the ring was not recording for part of the span "
+                    "(restarts so far: %d)",
+                    missing, expected, self._restarts,
+                )
             return {
                 "ok": True,
                 "path": str(out_path),
@@ -420,7 +449,12 @@ class SegmentRing:
                 "segments": len(parts),
                 "start": actual_start,
                 "end": actual_end,
-                "seconds": round(actual_end - actual_start, 3),
+                # What the clip actually holds.
+                "seconds": round(len(parts) * self.segment_seconds, 3),
+                # The wall-clock window it was cut from, and the gap
+                # between the two.
+                "span_seconds": round(span, 3),
+                "missing_seconds": missing,
                 # What the caller asked for, so a log can show the slop.
                 "requested_start": start_ts,
                 "requested_end": end_ts,

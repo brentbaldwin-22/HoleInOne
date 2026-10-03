@@ -102,6 +102,37 @@ def main() -> int:
         check(f"{runner}.py still has the decode path intact",
               "def _record_and_upload(" in src, True)
 
+    # ---- the bugs a real 156s clip off the green camera exposed ----
+    src = (ROOT / "pi-agent" / "agent" / "common.py").read_text()
+
+    # A clip spooled WITHOUT an attempt (the link was busy) took a
+    # different route to disk than _send, and that route re-encoded the
+    # camera's 1080p H.264 down to 720p despite precompressed=True.
+    import re
+    pre_spool = re.search(
+        r"if self\._kbps_now > 0 and not _precompressed:", src)
+    check("the pre-spool compression honours precompressed",
+          bool(pre_spool), True)
+
+    # Every uploader-queue unpack must take the full tuple. The drain
+    # path only runs while shutting down with clips still queued, so a
+    # stale unpack there throws exactly where footage is being saved.
+    unpacks = re.findall(r"self\._q\.get(?:_nowait)?\(", src)
+    check("every uploader queue read was found", len(unpacks) >= 2, True)
+    check("no 4-field unpack of the uploader queue survives",
+          bool(re.search(r"\w+, \w+, \w+, \w+ = self\._q\.get", src)), False)
+
+    # And the spool must record what is true, not what used to be.
+    check("spool records the real compression state",
+          '"compressed": bool(compressed)' in src, True)
+
+    cap = (ROOT / "pi-agent" / "agent" / "copycap.py").read_text()
+    check("staging links rather than copies", "os.link(p, dst)" in cap, True)
+    check("extract reports what the clip HOLDS, not the span it covers",
+          '"seconds": round(len(parts) * self.segment_seconds, 3)' in cap,
+          True)
+    check("extract reports the gap", '"missing_seconds": missing' in cap, True)
+
     print()
     if FAIL:
         print(f"{len(FAIL)} FAILED: {', '.join(FAIL)}")
