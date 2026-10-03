@@ -191,7 +191,50 @@ for ($i=1; $i -le 40; $i++) {
 
 `sudo` will still want a password unless the service account has a
 NOPASSWD rule for that one script — worth adding on a rig whose link
-cannot hold a session long enough to type one.
+cannot hold a session long enough to type one. One narrow rule, and
+`visudo -c` before you close the session that made it, because a
+malformed sudoers file locks sudo out entirely and that one is a drive:
+
+```bash
+echo 'pi ALL=(ALL) NOPASSWD: /opt/golfreelz-agent/update.sh' \
+  | sudo tee /etc/sudoers.d/golfreelz-update > /dev/null
+sudo chmod 440 /etc/sudoers.d/golfreelz-update
+sudo visudo -c          # must say "parsed OK"; if not, rm the file NOW
+```
+
+Check it from the laptop without running anything: `-n` never prompts,
+`-l` only asks whether it would be allowed.
+
+```powershell
+ssh -o BatchMode=yes pi@<ip> "sudo -n -l /opt/golfreelz-agent/update.sh"
+```
+
+It echoes the script path back when the rule is live, and says a
+password is required when it is not.
+
+> **Done on the tee (hole 8) on 3 Oct 2026** — key plus NOPASSWD rule.
+> That rig no longer needs a session you can hold; see the one-shot
+> check below.
+
+**ONE SHOT BEATS A SESSION on a link like this.** Everything worth
+knowing can be asked in a single non-interactive command, which either
+crosses or does not — no window to keep alive, nothing half-finished:
+
+```powershell
+ssh -o BatchMode=yes pi@<ip> "free -h; echo ---; uptime; dmesg -T | grep -icE 'usb (disconnect|reset)'; echo ---; ls /var/lib/golfreelz-agent/spool/*.mp4 2>/dev/null | wc -l; df -h /var/lib/golfreelz-agent | tail -1"
+```
+
+That answers, in order: whether the Pi has the RAM for its configured
+pre-roll (1080p60 x 5s wants ~1.9GB), how often the modem has fallen
+off the USB bus against how long the Pi has been up, how many clips are
+still waiting on the link, and whether the card has room for them.
+
+**WATCH WHICH WINDOW YOU ARE IN.** Two black terminals side by side and
+the commands look alike. Anything starting `ssh` or `Get-Content` is
+the laptop's PowerShell; anything with `sudo` or `~/.ssh` is the Pi.
+Running `ssh-keygen` in the Pi window makes a key on the WRONG MACHINE,
+and testing the key from the Pi window has it log in to itself and
+refuse — which looks exactly like the key having failed.
 
 Two flags worth putting in front of every `ssh` to this host. The
 default connect timeout is about two minutes, which makes retrying
