@@ -36,8 +36,23 @@ def main(argv: list[str]) -> int:
     if not cfg_path.exists():
         print(f"config not found at {cfg_path}; see config.example.yaml", file=sys.stderr)
         return 2
+    # LOGGING FIRST, because loading the config is itself something
+    # that logs — and what it logs is exactly what an operator reads to
+    # confirm a config edit took effect: which capture mode won, a
+    # warning when `mode` overrules an explicit fps, and the pre-roll
+    # buffer's RAM appetite. With the order reversed those went out
+    # under the root logger's default level, which drops INFO, so the
+    # one check that answers "did my edit land" printed nothing at all
+    # and the WARNING half arrived without the lines giving it context.
+    #
+    # log_level lives in the file we have not read yet, so configure at
+    # the default and re-level once we have it. basicConfig is a no-op
+    # the second time (the root logger already has a handler), which is
+    # why this sets the level directly rather than calling it again.
+    setup_logging()
     cfg = load_config(cfg_path)
-    setup_logging(cfg.get("log_level", "INFO"))
+    _level = str(cfg.get("log_level", "INFO")).upper()
+    logging.getLogger().setLevel(getattr(logging, _level, logging.INFO))
     log = logging.getLogger("golfreelz_agent")
 
     # BEFORE THE FIRST REQUEST. On a cellular link that loses DNS
