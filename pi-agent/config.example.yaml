@@ -348,6 +348,18 @@ curfew:
   sleep: "21:00"
   wake: "06:00"
   boot_grace_seconds: 600
+  # How long the rig may stay past its bedtime to finish uploading.
+  # A clip spooled at 20:55 survives the halt — the spool is on the SD
+  # card for exactly that reason — but nobody sees it until the Pi
+  # wakes at 06:00, and a hole-in-one delivered the next morning has
+  # missed the moment it was recorded for.
+  #
+  # Capped, because this rig runs on a battery and the curfew is what
+  # makes it last a fortnight instead of five days. The tee's link has
+  # gone whole afternoons without finishing an upload; left uncapped
+  # that would hold the Pi awake all night and flatten it, and a dead
+  # camera tomorrow is worse than a clip that arrives at dawn.
+  upload_defer_minutes: 45
   # dry_run: true         # log what would happen, never power off
 
 # ---------------------------------------------------------------------

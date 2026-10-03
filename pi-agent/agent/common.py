@@ -887,6 +887,9 @@ class BackgroundUploader(threading.Thread):
         self.spool_max_bytes = int(spool_max_mb) * 1024 * 1024
         self.spool_max_age = float(spool_max_age_hours) * 3600.0
         self._next_spool_sweep = 0.0
+        # True while a clip is actually on the wire, so pending_count()
+        # does not read zero in the gap between dequeue and send.
+        self._sending = False
         # Fresh clip with others waiting / fresh clip alone / spool retry.
         self.fresh_timeout = int(fresh_timeout)
         self.idle_timeout = int(idle_timeout)
@@ -961,6 +964,23 @@ class BackgroundUploader(threading.Thread):
                             "dropped as before", exc)
                 self.spool_dir = None
         self._load_kbps()
+
+    def pending_count(self) -> int:
+        """Clips still owed to the backend: queued, in flight, or spooled.
+
+        FOR THE CURFEW, which must not power the rig off mid-upload. A
+        clip spooled at 20:55 survives the halt — the spool is on the SD
+        card precisely so it does — but it does not reach anybody until
+        the Pi wakes at 06:00, and a hole-in-one that arrives the next
+        morning has missed the moment it was recorded for.
+        """
+        n = self._q.qsize() + (1 if self._sending else 0)
+        if self.spool_dir is not None:
+            try:
+                n += len(list(self.spool_dir.glob("*.mp4")))
+            except OSError:
+                pass
+        return n
 
     def enqueue(self, session_id: str, clip_path: Path,
                 recording_started_at: Optional[float],
@@ -1329,8 +1349,10 @@ class BackgroundUploader(threading.Thread):
             try:
                 session_id, clip_path, ts, real_fps = self._q.get(timeout=0.5)
             except queue.Empty:
+                self._sending = False
                 self._maybe_sweep_spool()
                 continue
+            self._sending = True
             # HEAD-OF-LINE. Five attempts x a 180s timeout is 15 minutes
             # per clip. With eight queued that is over two hours, and the
             # 3 MB clips that WOULD have made it die behind a 40 MB one
@@ -1383,8 +1405,16 @@ class BackgroundUploader(threading.Thread):
                          "of %ds then spool, so they are not blocked",
                          _depth, _tries, _to)
             _t_send = time.time()
-            ok = self._send(session_id, clip_path, ts, real_fps,
-                            compress=True, retries=_tries, timeout=_to)
+            try:
+                ok = self._send(session_id, clip_path, ts, real_fps,
+                                compress=True, retries=_tries, timeout=_to)
+            finally:
+                # Cleared the moment the wire is free, not on the next
+                # idle poll: the curfew asks this to decide whether it
+                # may power the rig off, and half a second of "still
+                # sending" when nothing is would be half a second in
+                # which that answer is wrong.
+                self._sending = False
             # An orphaned clip says nothing about the link, so it must
             # not widen the backoff or feed the bitrate adaptation.
             if not self._last_orphaned:

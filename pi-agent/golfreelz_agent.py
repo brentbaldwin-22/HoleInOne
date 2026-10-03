@@ -95,7 +95,16 @@ def main(argv: list[str]) -> int:
     # Curfew sleep/wake (battery deployments): halts the Pi at night
     # and lets the RTC wake it at dawn. Off unless config enables it.
     from agent.curfew import CurfewThread
-    curfew = CurfewThread(cfg.get("curfew"))
+    # The curfew asks the running agent what it still owes the backend,
+    # so a rig does not power off on top of today's last swing. The
+    # The agent grows its `uploader` when it starts running; before
+    # that there is nothing queued anyway, so a missing attribute reads
+    # as nothing pending rather than blocking a halt.
+    def _uploads_outstanding() -> int:
+        up = getattr(agent, "uploader", None)
+        return up.pending_count() if up is not None else 0
+
+    curfew = CurfewThread(cfg.get("curfew"), work_pending=_uploads_outstanding)
     curfew.start()
 
     # Graceful Ctrl-C / systemd stop.
