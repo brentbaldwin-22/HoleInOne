@@ -173,6 +173,44 @@ this link once took ten minutes and had to be abandoned.
 
 ---
 
+## Step 0b — You cannot reach the other rig from this one
+
+Each rig is its own island. The Pi, its camera and a little router live
+on one network, and **every kit ships that router defaulting to the same
+private range** — so the green camera at `192.168.50.10` and the tee
+camera at `192.168.50.11` are not neighbours. They are `.10` behind the
+green rig's `192.168.50.1` and `.11` behind the tee rig's, with no route
+between them. The Cameras card shows each Pi's view of its own camera,
+which cannot distinguish that from one shared LAN.
+
+Tested 3 Oct, from the green Pi:
+
+```
+$ ping -c2 192.168.50.11
+From 192.168.50.1 icmp_seq=1 Destination Host Unreachable
+```
+
+That reply is the GREEN rig's own router saying nothing by that address
+exists on its segment. Which settles it in one line — if you ever wonder
+again, this is the test, and a reply from `.1` rather than from `.11` is
+the answer.
+
+**So a camera is only reachable through its own Pi.** Which also means
+the tunnel below is worth knowing, because the camera's web UI is not
+reachable any other way: it is HTTP on a private address while
+GolfReelz is HTTPS, and browsers refuse to mix the two.
+
+```powershell
+ssh -L 8080:192.168.50.10:80 pi@<that rig's Pi>     # its own camera
+```
+
+→ `http://localhost:8080`. Use a different local port per rig if you
+have two open. Reaching a Pi therefore unlocks both halves of the job
+at once: `config.yaml` and the agent on the Pi itself, and the camera's
+own settings through it.
+
+---
+
 ## Step 1 — Is it power? (2 minutes)
 
 SSH into the affected Pi and run:
