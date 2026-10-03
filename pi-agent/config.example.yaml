@@ -23,6 +23,16 @@ camera:
   # "auto" tries /dev/video0..3 and picks the first that opens. Or
   # specify a device path like "/dev/video0" or an integer index "0".
   device: "auto"
+  # THE CAMERA'S SMALL PROFILE, for the stream-copy capture path. An
+  # IP camera emits several profiles at once, and detection does not
+  # need the big one: YOLO downscales to 320px wide regardless, so
+  # decoding 1080p to find a golfer is work thrown away. Point this at
+  # a low-resolution profile and the full-size stream is never decoded
+  # at all -- it is copied to disk and copied out again.
+  #
+  # Unused by the current (decode-and-re-encode) path; read by
+  # copycap_probe.py and by the copy engine when it is switched on.
+  # substream_device: "rtsp://admin:{password}@192.168.50.10/profile3/media.smp"
   # OPTIONAL capture-mode preset (Pi HQ Cam / IMX477). Overrides
   # width/height/fps below. Higher fps = ~2x tracer points and less
   # motion blur on the ball; costs bigger uploads + more RAM for the
