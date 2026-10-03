@@ -113,11 +113,22 @@ CAPTURE_MODES = {
     "720p30": {"width": 1280, "height": 720, "fps": 30},     # the Hanwhas' own profile
     "720p50": {"width": 1280, "height": 720, "fps": 50},     # 50fps that the encoder can actually sustain
     "1080p50": {"width": 1920, "height": 1080, "fps": 50},   # needs a COOL, unthrottled Pi
+    # What the Hanwhas can be set to send, and what the shutter
+    # settings for freezing a ball assume. READ THE TWO CEILINGS
+    # BELOW BEFORE USING IT: the software encoder tops out near 31 fps
+    # at 1080p once the Pi is throttled, so the frames past that are
+    # captured and then lost; and the pre-roll ring buffer wants
+    # ~1.9GB of RAM at the default 5s, which is comfortable on an 8GB
+    # Pi and not on a 4GB one. Clips are no longer WRONG when the
+    # encoder cannot keep up -- the write rate is measured and stamped
+    # per recording -- but you are paying for frames you do not get.
+    "1080p60": {"width": 1920, "height": 1080, "fps": 60},   # camera's rate; see the two ceilings
     "990p120": {"width": 1280, "height": 960, "fps": 120},   # cropped high-speed experiment
 }
 _MODE_ALIASES = {
     "default": "1080p30", "30": "1080p30", "30fps": "1080p30",
     "50": "720p50", "50fps": "720p50",
+    "60": "1080p60", "60fps": "1080p60",
     "120": "990p120", "120fps": "990p120",
 }
 
@@ -183,9 +194,9 @@ def _apply_capture_mode(cfg: dict) -> None:
                 mode_raw, ", ".join(sorted(CAPTURE_MODES)),
             )
     # RAM appetite of the raw-frame pre-roll ring buffer. 5s of
-    # 1080p30 ~= 930MB; 1080p50 ~= 1.6GB; 990p120 ~= 2.4GB. A Pi 5
-    # 8GB survives all three, but log it loudly so nobody 120fps's a
-    # 4GB Pi into the OOM killer.
+    # 1080p30 ~= 930MB; 1080p50 ~= 1.6GB; 1080p60 ~= 1.9GB;
+    # 990p120 ~= 2.4GB. A Pi 5 8GB survives all of them, but log it
+    # loudly so nobody 120fps's a 4GB Pi into the OOM killer.
     try:
         _w = int(cam.get("width", 1920))
         _h = int(cam.get("height", 1080))

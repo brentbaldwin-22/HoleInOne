@@ -40,6 +40,14 @@ camera:
   #   1080p50  — 1920x1080@50, only on a COOL (unthrottled) Pi: the
   #              software encoder tops out near 31 fps at 1080p when
   #              throttled, and frames past that are lost
+  #   1080p60  — 1920x1080@60, what the Hanwha XNV-6080R can be set to
+  #              send and what a ball-freezing shutter (1/1000+)
+  #              assumes. Same encoder ceiling as 1080p50, and the
+  #              pre-roll buffer wants ~1.9GB at buffer_seconds: 5 —
+  #              fine on an 8GB Pi, not on a 4GB one. Compressing a
+  #              clip also costs roughly twice what it does at 30fps,
+  #              so on a rig whose uploads already lag, this is how
+  #              the queue stops draining.
   #   990p120  — 1280x960@120, cropped, for high-speed experiments
   # At 50fps consider raising upload_bitrate_kbps (tee: ~5000) so
   # per-frame quality doesn't drop.
@@ -47,6 +55,15 @@ camera:
   # Capture resolution. GoPro Hero 13 USB-webcam mode is 1080p30.
   # Pi HQ Cam supports up to 4056x3040 but a Pi 5 will struggle at
   # full res; 1080p30 is the sweet spot for either camera.
+  # ON AN RTSP CAMERA THESE ARE A BELIEF, NOT A SETTING. open_camera()
+  # returns early for an rtsp:// device — resolution, frame rate and
+  # shutter all live in the camera's own web UI, and nothing here is
+  # sent to it. What this block still decides is how the agent SIZES
+  # itself: the pre-roll ring buffer holds `buffer_seconds * fps`
+  # FRAMES, so a config that says 30 against a camera sending 60 keeps
+  # half the pre-roll it promises — and the pre-roll is what catches
+  # the backswing before the trigger fires. Change the camera, change
+  # this to match.
   width: 1920
   height: 1080
   fps: 30
