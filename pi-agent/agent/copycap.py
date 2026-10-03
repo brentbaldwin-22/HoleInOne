@@ -79,6 +79,11 @@ _STALL_FACTOR = 4.0
 _STALL_FLOOR = 6.0
 
 
+def _scrub(text: str) -> str:
+    """Any rtsp://user:secret@host in this text, with the secret gone."""
+    return re.sub(r"(rtsp[s]?://[^:/@\s]+):[^@/\s]*@", r"\1:***@", text)
+
+
 def _seg_start(path: Path) -> Optional[float]:
     """Epoch seconds this segment began, from its own name."""
     m = _NAME_RE.match(path.name)
@@ -163,16 +168,17 @@ class SegmentRing:
         if self._input_args is not None:
             inp = list(self._input_args)
         else:
-            inp = [
-                "-rtsp_transport", self.rtsp_transport,
-                # A STALLED READ SHOULD FAIL, NOT HANG. Without this a
-                # camera that stops sending leaves ffmpeg blocked
-                # forever and the only evidence is the watchdog noticing
-                # no new segments — which cannot say whether the stream
-                # died or the disk did. 10s in microseconds.
-                "-rw_timeout", "10000000",
-                "-i", self.source,
-            ]
+            # NO SOCKET-TIMEOUT FLAG HERE, deliberately. -rw_timeout was
+            # added to make a stalled read fail loudly; the tee's ffmpeg
+            # rejects it outright ("Option rw_timeout not found", rc=8)
+            # while the green's accepts it, and the alternatives
+            # (-timeout, -stimeout) have been renamed between versions
+            # and mean different things in seconds and microseconds
+            # depending on build. A flag that silently bricks the ring on
+            # some rigs is worse than no flag: the watchdog below already
+            # notices a stream that stops producing segments, which was
+            # the whole point.
+            inp = ["-rtsp_transport", self.rtsp_transport, "-i", self.source]
         return [
             self.ffmpeg, "-nostdin", "-loglevel", "error", "-y",
             *inp,
@@ -244,7 +250,12 @@ class SegmentRing:
                 except Exception:  # noqa: BLE001
                     pass
                 rc = p.returncode if p is not None else None
-                msg = err.decode("utf-8", "replace").strip()[:300]
+                # SCRUB THE PASSWORD. ffmpeg echoes the URL it failed to
+                # open, credentials and all, so an ordinary error put the
+                # camera's password into the journal in clear text -- a
+                # file that gets tailed, pasted into chats and attached to
+                # bug reports.
+                msg = _scrub(err.decode("utf-8", "replace").strip())[:300]
                 # EXIT CODE WHEN THERE IS NO MESSAGE. -loglevel error
                 # means a clean exit says nothing at all, so "no
                 # message" on its own cannot distinguish our own SIGINT

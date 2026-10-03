@@ -177,6 +177,41 @@ def main() -> int:
 
         check_true("ring stops cleanly", not ring.healthy(), "still healthy")
 
+    # ---- what the tee's ffmpeg taught us -------------------------
+    from agent.copycap import _scrub
+
+    # ASSERT ON THE ARGV, not on the source text — the first version of
+    # this check searched the file and matched the comment EXPLAINING
+    # why the flag is gone, so it failed against the fix.
+    #
+    # A flag one ffmpeg build rejects outright ("Option rw_timeout not
+    # found", rc=8) bricks the ring on that rig while working on the
+    # next one, and the watchdog already covers what it was for.
+    argv = SegmentRing("rtsp://cam/profile2", "/tmp/x")._cmd()
+    for flag in ("-rw_timeout", "-stimeout", "-timeout"):
+        check(f"{flag} is not passed to ffmpeg", flag in argv, False)
+    check("the stream is still copied, not decoded",
+          "-c:v" in argv and argv[argv.index("-c:v") + 1] == "copy", True)
+    check("and still over TCP", "-rtsp_transport" in argv, True)
+
+    # ffmpeg echoes the URL it could not open, credentials included, so
+    # an ordinary failure wrote the camera password into the journal.
+    leak = ("Error opening input file "
+            "rtsp://admin:hunter2@192.168.50.11/profile2/media.smp.")
+    check("the password is scrubbed from ffmpeg's error text",
+          "hunter2" in _scrub(leak), False)
+    check("and the rest of the message survives",
+          "192.168.50.11/profile2/media.smp" in _scrub(leak), True)
+    check("a URL with no credentials is left alone",
+          _scrub("rtsp://192.168.50.11/profile2"),
+          "rtsp://192.168.50.11/profile2")
+    # AND THAT IT IS ACTUALLY CALLED. The three checks above test the
+    # function; they pass just as happily when nothing uses it, which is
+    # how the password would get into the journal anyway.
+    src = (ROOT / "pi-agent" / "agent" / "copycap.py").read_text()
+    check("the error path runs stderr through it",
+          "_scrub(err.decode(" in src, True)
+
     print()
     if FAIL:
         print(f"{len(FAIL)} FAILED: {', '.join(FAIL)}")
