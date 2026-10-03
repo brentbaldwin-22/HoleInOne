@@ -2194,6 +2194,51 @@ export default function AdminCameras() {
                       ⚡ {cam.power.summary}
                     </span>
                   )}{" "}
+                  {/* CLIPS RECORDED BUT NOT YET HANDED OVER. The
+                      question this answers is "is the uplink clear
+                      yet", which until now could only be answered by
+                      SSHing into the Pi — over the very link that was
+                      too congested to allow it. Absent when the camera
+                      owes nothing, so a quiet course shows no pills.
+                      The colour tracks the age of the OLDEST one, not
+                      the count: a pile of clips from the last ten
+                      minutes is a busy morning, while two from six
+                      hours ago is a link that has stopped moving. */}
+                  {cam.owed && (
+                    <span
+                      className={`pill small ${
+                        cam.owed.level === "ok" ? "" : "warn"}`}
+                      style={
+                        cam.owed.level === "bad"
+                          ? { background: "#dc2626", color: "#fff" }
+                          : cam.owed.level === "warn"
+                            ? { background: "#f59e0b", color: "#1a1a1a" }
+                            : undefined
+                      }
+                      title={[
+                        "Clips this camera triggered that have not "
+                          + "arrived yet. Counted on the server from the "
+                          + "events table, so it works on an agent too "
+                          + "old to report its own queue.",
+                        cam.owed.oldest_at
+                          ? `oldest triggered ${tsRel(cam.owed.oldest_at)}`
+                          : null,
+                        cam.owed.level === "bad"
+                          ? "Older than this and the Pi's own spool "
+                            + "starts deleting rather than retrying "
+                            + "(upload_spool_max_age_hours, 24h) — these "
+                            + "may not be coming."
+                          : null,
+                        "A number that falls is uploads landing. A "
+                          + "number that sits still is worth "
+                          + "investigating: the clip may have died with "
+                          + "a power cut or been evicted from a full "
+                          + "spool, which leaves the same row behind.",
+                      ].filter(Boolean).join(" · ")}
+                    >
+                      ⇡ {cam.owed.summary}
+                    </span>
+                  )}{" "}
                   {cam.battery && (
                     <span
                       className={`pill small ${

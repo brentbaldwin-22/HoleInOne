@@ -14793,10 +14793,137 @@ def _rtsp_url_for(c: Camera, sub: bool = False) -> str | None:
     return f"rtsp://{user}:PASSWORD@{hostpart}{path}"
 
 
+# ── clips a camera has recorded but not handed over yet ──────────────
+#
+# WHY THIS LIVES ON THE SERVER. The Pi knows its own queue depth, and
+# saying so is one heartbeat field — but a field only the new agent
+# sends is useless on the camera you most need it for. The rig whose
+# link is too congested to upload is the same rig that is too congested
+# to SSH into, which is the same rig you therefore cannot update to the
+# build that would report it. So this is derived from rows the events
+# table already has: one is written when the tee triggers, and the
+# filename is filled in when the clip lands. The gap between those two
+# IS the backlog, and it is visible for any agent old enough to trigger
+# at all.
+#
+# "Owed" means: triggered, past the settle window below, still no clip.
+# It does NOT prove the clip is in flight. A Pi that lost power
+# mid-recording, or whose spool hit upload_spool_max_mb and evicted the
+# file to make room, leaves an identical row behind. Read a count that
+# FALLS as uploads landing, and a count that SITS STILL as something to
+# go and look at.
+
+# Below this a clip is probably still being made rather than stuck: the
+# tee holds ~10s before rolling (record_delay_seconds), records up to
+# max_clip_seconds (120 by default), then compresses for upload — which
+# on a Pi that is also capturing at 30 fps is not instant. Counting
+# those would make a perfectly healthy camera look permanently behind.
+_OWED_SETTLE_SECONDS = 300
+
+# Past this the Pi has given up on its own: upload_spool_max_age_hours
+# defaults to 24, after which the spool sweep deletes the file instead
+# of retrying it forever. An event older than that with no clip is not
+# owed, it is lost — and counting it would mean a number that can never
+# come down. The horizon doubles as the bound on the query below.
+_OWED_HORIZON_HOURS = 24
+
+
+def _owed_age(seconds: float) -> str:
+    """Compact age for the pill. Minutes until an hour, then hours."""
+    if seconds < 3600:
+        return f"{max(1, int(seconds // 60))}m"
+    return f"{int(round(seconds / 3600.0))}h"
+
+
+def _owed_status(count: int, oldest: datetime | None, now: datetime) -> dict | None:
+    """Shape one camera's backlog for the card. None when it owes
+    nothing, so an idle camera shows no pill at all."""
+    if count <= 0:
+        return None
+    age = (now - oldest).total_seconds() if oldest else 0.0
+    # SEVERITY COMES FROM THE AGE, not the count. Twenty clips that all
+    # arrived in the last ten minutes is a busy morning; two clips from
+    # six hours ago is a link that is not moving, and only one of those
+    # is worth walking out to the hole for.
+    level = "ok" if age < 1800 else "warn" if age < 4 * 3600 else "bad"
+    return {
+        "count": int(count),
+        "oldest_at": oldest.isoformat() if oldest else None,
+        "oldest_age_seconds": int(age),
+        "level": level,
+        "summary": (
+            f"{count} clip{'' if count == 1 else 's'} owed"
+            + (f", oldest {_owed_age(age)}" if oldest else "")
+        ),
+    }
+
+
+def _owed_clips(db, cams) -> dict[int, dict]:
+    """Per-camera upload backlog, in ONE pair of grouped queries.
+
+    Batched for the same reason `course_name` is: the cameras list is
+    the page an operator leaves open, and this endpoint has already
+    once taken the server down by doing per-camera work in a loop.
+    """
+    ids = [c.id for c in cams if c.id]
+    if not ids:
+        return {}
+    now = datetime.utcnow()
+    floor = now - timedelta(hours=_OWED_HORIZON_HOURS)
+    ceiling = now - timedelta(seconds=_OWED_SETTLE_SECONDS)
+
+    acc: dict[int, dict] = {}
+    # BOTH SIDES, SUMMED. A camera owes whichever side it played in the
+    # event, and re-pairing or re-roling a card changes which side that
+    # is for events already on the books — so this counts where it
+    # appears rather than trusting its current assigned_role.
+    for cam_col, clip_col in (
+        (CameraEvent.tee_camera_id, CameraEvent.tee_clip_filename),
+        (CameraEvent.green_camera_id, CameraEvent.green_clip_filename),
+    ):
+        rows = (
+            db.query(
+                cam_col,
+                func.count(CameraEvent.id),
+                func.min(CameraEvent.triggered_at),
+            )
+            .filter(
+                cam_col.in_(ids),
+                clip_col.is_(None),
+                CameraEvent.triggered_at >= floor,
+                CameraEvent.triggered_at <= ceiling,
+            )
+            .group_by(cam_col)
+            .all()
+        )
+        for cam_id, n, oldest in rows:
+            if not cam_id or not n:
+                continue
+            cur = acc.setdefault(cam_id, {"count": 0, "oldest": None})
+            cur["count"] += int(n)
+            if oldest and (cur["oldest"] is None or oldest < cur["oldest"]):
+                cur["oldest"] = oldest
+
+    out: dict[int, dict] = {}
+    for cam_id, v in acc.items():
+        shaped = _owed_status(v["count"], v["oldest"], now)
+        if shaped:
+            out[cam_id] = shaped
+    return out
+
+
+def _owed_for(db, cam: Camera) -> dict | None:
+    """Single-camera backlog, for the endpoints that return one row.
+    Without it the pill vanishes the moment you edit or pair a camera,
+    until the next full list refresh."""
+    return _owed_clips(db, [cam]).get(cam.id)
+
+
 def _camera_to_dict(
     c: Camera,
     last_event: CameraEvent | None = None,
     course_name: str | None = None,
+    owed: dict | None = None,
 ) -> dict:
     """Shape a Camera row for the admin UI. Includes the auth_token
     because operators need it to provision the Pi's SD card.
@@ -14854,6 +14981,12 @@ def _camera_to_dict(
             c.camera_settings, c.camera_settings_at,
         ),
         "stream": _stream_status(c.stream_info, c.stream_info_at),
+        # CLIPS RECORDED BUT NOT YET HANDED OVER. Derived from the
+        # events table rather than reported by the Pi, so it works on
+        # an agent too old — or a link too congested — to tell us
+        # itself. See _owed_clips for what the number does and does
+        # not prove. None when the camera owes nothing.
+        "owed": owed,
         # When the stored snapshot was taken. The card uses it as the
         # cache key for the picture: it refetches the JPEG when this
         # changes and not on a timer, so a page left open all afternoon
@@ -14897,6 +15030,8 @@ def list_cameras(db: Session = Depends(get_db)):
         .filter(Course.id.in_({c.course_id for c in cams}))
         .all()
     } if cams else {}
+    # One pair of grouped queries for every camera, not one per card.
+    owed = _owed_clips(db, cams)
     out: list[dict] = []
     for c in cams:
         last_evt = (
@@ -14908,7 +15043,9 @@ def list_cameras(db: Session = Depends(get_db)):
             .order_by(CameraEvent.triggered_at.desc())
             .first()
         )
-        out.append(_camera_to_dict(c, last_evt, course_names.get(c.course_id)))
+        out.append(_camera_to_dict(
+            c, last_evt, course_names.get(c.course_id), owed.get(c.id),
+        ))
     return out
 
 
@@ -16143,7 +16280,9 @@ def create_camera(
     )
     db.commit()
     db.refresh(cam)
-    return _camera_to_dict(cam, None, _course_name_for(db, cam))
+    return _camera_to_dict(
+        cam, None, _course_name_for(db, cam), _owed_for(db, cam),
+    )
 
 
 @router.post("/cameras/{camera_id}/pair")
@@ -16179,8 +16318,13 @@ def pair_camera(
     )
     db.commit()
     return {"ok": True, "cameras": [
-        _camera_to_dict(cam, None, _course_name_for(db, cam)),
-        _camera_to_dict(partner, None, _course_name_for(db, partner)),
+        _camera_to_dict(
+            cam, None, _course_name_for(db, cam), _owed_for(db, cam),
+        ),
+        _camera_to_dict(
+            partner, None, _course_name_for(db, partner),
+            _owed_for(db, partner),
+        ),
     ]}
 
 
@@ -16375,7 +16519,9 @@ def update_camera(
         )
     db.commit()
     db.refresh(cam)
-    result = _camera_to_dict(cam, None, _course_name_for(db, cam))
+    result = _camera_to_dict(
+        cam, None, _course_name_for(db, cam), _owed_for(db, cam),
+    )
     result["auto_unpaired"] = auto_unpaired
     return result
 

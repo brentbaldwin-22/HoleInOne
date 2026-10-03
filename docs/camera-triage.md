@@ -69,6 +69,43 @@ That is from the comment on the resumable-upload code, which exists
 fine. A held TCP connection does not, and `ssh` is a held TCP
 connection. Expect to retry, and expect a session to die mid-command.
 
+**Is the link busy, or is it broken?** Both look like a timeout from
+your end, and the difference decides whether you wait or drive out. The
+camera card answers it without an SSH session: a **`⇡ N clips owed`**
+pill appears whenever a camera has triggered clips the server has not
+received. The server derives it from the events table — a row is
+written when the tee triggers, the filename is filled in when the clip
+lands — so it works on any agent old enough to trigger at all,
+including the ones too far behind to report their own queue depth.
+
+Read the trend, not the number:
+
+| The pill | What it means | What to do |
+|---|---|---|
+| absent | Nothing outstanding | A timeout here is not congestion. Look at the tailnet |
+| present and **falling** | Uploads are landing; the uplink is just full | Wait. It will clear on its own, and `ssh` will start holding |
+| present and **stuck** | Clips are not moving at all | The agent, the modem, or the power — not a busy link |
+| **red** (oldest >4h) | Near `upload_spool_max_age_hours` (24h) | These may never arrive; the spool deletes rather than retries past that |
+
+A stuck count does not always mean a clip is still in flight: a Pi that
+lost power mid-recording, or whose spool hit `upload_spool_max_mb` and
+evicted the file to make room, leaves exactly the same row behind. So a
+number that will not come down is a reason to go and look, not a reason
+to keep waiting.
+
+**Shrinking the trigger zone is the brake that works on an old agent.**
+Pausing a camera from the app stops the server writing event rows, but
+only an agent carrying the `triggering_disabled` fix stops *recording
+and uploading* for it — on anything older the Pi keeps filling the
+uplink and you lose the swings for nothing. Triggering is gated
+entirely by the zone (`_in_roi` → dwell → trigger), and the zone is
+re-sent on the Pi's one-second status poll, so dragging the box into a
+dead corner of the frame stops new clips within about a second on every
+build. It costs the swings either way; the difference is that this one
+actually frees the link so the backlog can drain. Drag it back when you
+are done, and do not press **Capture** — that is exempt from the zone
+by design.
+
 **If the card says live and SSH still times out:**
 
 ```bash
