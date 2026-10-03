@@ -221,6 +221,18 @@ class CopyEngine:
         t_end = time.time()
         t_start = max(0.0, t_trigger - preroll)
 
+        # A LENGTH CAP IS A FAILURE TO HEAR THE END, not an ending. The
+        # clip is as long as the rig is willing to make it, which on a
+        # green is 150s and 200MB of cellular upload, so whatever the
+        # stop policy was doing for all that time is worth one line.
+        if reason == "length_cap":
+            log.warning(
+                "copy: session=%s ran to its length cap (%.0fs) — the stop "
+                "signal never arrived. Stop policy: %s",
+                session_id, t_end - t_trigger,
+                getattr(should_stop, "stats", "no diagnostics"),
+            )
+
         # WAIT FOR THE LAST SEGMENT TO CLOSE. The newest file is the one
         # ffmpeg is writing into, and the ring deliberately will not hand
         # it over mid-write — so the final second of a swing only becomes

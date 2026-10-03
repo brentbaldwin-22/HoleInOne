@@ -348,19 +348,40 @@ class GreenAgent:
         and the same forgiving failure handling as the decode loop: a
         flaky link should make us over-record by a second, never stop
         a clip early."""
-        state = {"next_check": 0.0}
+        # COUNTED, because the failure mode is silent. A poll that
+        # throws every time and a poll that answers "not yet" every
+        # time produce exactly the same thing -- a clip that runs to
+        # its length cap -- and at debug level neither leaves a trace.
+        # A green that records 150s instead of 15s is 200MB on a
+        # cellular link, so which of the two it was has to be
+        # answerable afterwards.
+        state = {"next_check": 0.0, "polls": 0, "failures": 0,
+                 "last_error": None, "warned": False}
 
         def _stop(now: float):
             if now < state["next_check"]:
                 return None
             state["next_check"] = now + self.stop_poll_interval
+            state["polls"] += 1
             try:
                 status = self.client.event_status(session_id)
             except Exception as exc:  # noqa: BLE001
+                state["failures"] += 1
+                state["last_error"] = str(exc)[:200]
                 log.debug("event_status poll failed: %s", exc)
+                # Say it ONCE, out loud, when it is clearly not a blip.
+                if state["failures"] >= 10 and not state["warned"]:
+                    state["warned"] = True
+                    log.warning(
+                        "event_status has failed %d times for session=%s "
+                        "(%s) — this green cannot hear the tee's stop "
+                        "signal and will record until its length cap",
+                        state["failures"], session_id, state["last_error"],
+                    )
                 return None
             return "stop_signal" if status.get("stop_signal") else None
 
+        _stop.stats = state
         return _stop
 
     def _record_and_upload(

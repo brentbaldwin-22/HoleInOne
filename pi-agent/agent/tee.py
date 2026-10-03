@@ -997,14 +997,17 @@ class TeeAgent:
         it is in the decode loop — the engine ticks faster than that so
         it can notice the agent shutting down promptly.
         """
-        state = {"last_seen": time.time(), "next_detect": 0.0}
+        state = {"last_seen": time.time(), "next_detect": 0.0,
+                 "polls": 0, "in_roi": 0, "no_frames": 0}
 
         def _stop(now: float):
             if now < state["next_detect"]:
                 return None
             state["next_detect"] = now + det_period
+            state["polls"] += 1
             snap = self.buffer.snapshot()
             if not snap:
+                state["no_frames"] += 1
                 # No frames is not "nobody is there" — it is a camera
                 # problem, and ending the clip early would hide it.
                 return None
@@ -1012,12 +1015,14 @@ class TeeAgent:
             with self._roi_lock:
                 _roi = self.roi
             if centroid is not None and _in_roi(centroid, _roi):
+                state["in_roi"] += 1
                 state["last_seen"] = now
                 return None
             if now - state["last_seen"] >= no_person_timeout:
                 return "no_person"
             return None
 
+        _stop.stats = state
         return _stop
 
     def _record_and_upload(
