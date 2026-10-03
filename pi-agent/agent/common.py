@@ -995,12 +995,24 @@ class BackgroundUploader(threading.Thread):
 
     def enqueue(self, session_id: str, clip_path: Path,
                 recording_started_at: Optional[float],
-                real_fps: Optional[float] = None) -> None:
+                real_fps: Optional[float] = None,
+                precompressed: bool = False) -> None:
         """Hand a finished clip to the worker and return at once.
 
         `real_fps` (measured delivered rate) re-clocks the clip during
-        compression so a frame-dropping capture still plays in real time."""
-        self._q.put((session_id, clip_path, recording_started_at, real_fps))
+        compression so a frame-dropping capture still plays in real time.
+
+        `precompressed` says the clip is ALREADY what we want to send —
+        the stream-copy engine hands over the camera's own H.264 at the
+        camera's own bitrate, and putting that through compress_for_upload
+        would spend an ffmpeg pass to produce a second-generation copy of
+        a first-generation file. The spool's existing retry ladder still
+        applies: a clip that keeps failing is re-encoded smaller, because
+        at that point losing quality beats losing the clip."""
+        self._q.put(
+            (session_id, clip_path, recording_started_at, real_fps,
+             bool(precompressed)),
+        )
         depth = self._q.qsize()
         if depth > 1:
             log.info("uploader: %d clip(s) queued", depth)
@@ -1358,7 +1370,8 @@ class BackgroundUploader(threading.Thread):
     def run(self) -> None:
         while not self._stop.is_set():
             try:
-                session_id, clip_path, ts, real_fps = self._q.get(timeout=0.5)
+                (session_id, clip_path, ts, real_fps,
+                 _precompressed) = self._q.get(timeout=0.5)
             except queue.Empty:
                 self._sending = False
                 self._maybe_sweep_spool()
@@ -1418,7 +1431,8 @@ class BackgroundUploader(threading.Thread):
             _t_send = time.time()
             try:
                 ok = self._send(session_id, clip_path, ts, real_fps,
-                                compress=True, retries=_tries, timeout=_to)
+                                compress=not _precompressed,
+                                retries=_tries, timeout=_to)
             finally:
                 # Cleared the moment the wire is free, not on the next
                 # idle poll: the curfew asks this to decide whether it
@@ -1886,6 +1900,18 @@ def stream_info_fields(runner) -> dict:
         "delivered_at": at,
         "profile": getattr(runner, "_stream_profile", None),
     }
+    # WHICH ENGINE IS ACTUALLY RUNNING, and how its ring is doing. Two
+    # capture paths now exist and the only honest way to know which one
+    # a rig is on is to have the rig say so -- a config file read from
+    # a laptop is a belief about a Pi that may not have restarted since
+    # it was edited.
+    _copy = getattr(runner, "_copy", None)
+    out["engine"] = "copy" if _copy is not None else "decode"
+    if _copy is not None:
+        try:
+            out["ring"] = _copy.status()
+        except Exception:  # noqa: BLE001
+            out["ring"] = {"healthy": False, "why": "status failed"}
     if not any(v is not None for v in out.values()):
         return {}
     return {"stream_info": json.dumps(out)[:4000]}

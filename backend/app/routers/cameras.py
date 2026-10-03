@@ -605,6 +605,12 @@ def stream_status(info, updated_at=None) -> dict | None:
         "mismatch": mismatch,
         # The camera's own answer, when somebody has asked it.
         "profile": info.get("profile"),
+        # WHICH CAPTURE ENGINE THE PI IS RUNNING, in the Pi's own words.
+        # Absent on an agent old enough to predate the second engine,
+        # which reads as "decode" — correct, since that is all it has.
+        "engine": info.get("engine") or "decode",
+        # Ring health, only ever present on the copy engine.
+        "ring": info.get("ring"),
         "updated_at": updated_at.isoformat() if updated_at else None,
     }
 

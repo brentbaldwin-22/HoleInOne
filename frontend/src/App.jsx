@@ -11,6 +11,7 @@ import AdminClips from "./pages/AdminClips.jsx";
 import AdminClipsAi from "./pages/AdminClipsAi.jsx";
 import AdminBroadcastClips from "./pages/AdminBroadcastClips.jsx";
 import AdminCameras from "./pages/AdminCameras.jsx";
+import AdminCaptureLab from "./pages/AdminCaptureLab.jsx";
 import AdminUploadVideos from "./pages/AdminUploadVideos.jsx";
 import AdminProduction from "./pages/AdminProduction.jsx";
 import AdminProducedClips from "./pages/AdminProducedClips.jsx";
@@ -83,6 +84,7 @@ export default function App() {
         <Route path="/admin/clips/ai" element={<AdminClipsAi />} />
         <Route path="/admin/broadcast-clips" element={<AdminBroadcastClips />} />
         <Route path="/admin/cameras" element={<AdminCameras />} />
+        <Route path="/admin/capture-lab" element={<AdminCaptureLab />} />
         <Route path="/admin/upload-videos" element={<AdminUploadVideos />} />
         <Route path="/admin/production" element={<AdminProduction />} />
         <Route path="/admin/produced-clips" element={<AdminProducedClips />} />

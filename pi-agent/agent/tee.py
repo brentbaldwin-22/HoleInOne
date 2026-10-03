@@ -43,6 +43,7 @@ from .common import (
 from . import tee_roi
 from .focus_meter import FocusMeter
 from .livestream import LiveStreamer
+from .copyengine import CopyEngine
 
 log = logging.getLogger("golfreelz_agent.tee")
 
@@ -781,6 +782,12 @@ class TeeAgent:
             chunk_kb=int(self.cfg.get("upload_chunk_kb", 512)),
         )
         self.uploader.start()
+        # THE OTHER ENGINE, when config asks for it. None leaves every
+        # line below untouched and the agent on the path it has always
+        # used; see copyengine.py for why both live here at once.
+        self._copy = CopyEngine.from_config(self.cfg, self.work_dir)
+        if self._copy is not None:
+            self._copy.start()
 
         # Start draining the camera into the buffer before we begin
         # detecting, so the pre-roll is already populated at trigger.
@@ -899,11 +906,32 @@ class TeeAgent:
                                 )
                             if self.stopping.is_set():
                                 break
-                        _why = self._record_and_upload(
-                            detector, no_person_timeout, det_period,
-                            fps, session_id, fixed_seconds=pending_secs,
-                            not_before=_not_before,
-                        )
+                        # WHICH ENGINE RECORDS THIS SWING. The copy
+                        # engine is asked whether it is ready BEFORE the
+                        # clip is committed to it: an unhealthy ring
+                        # sends this one swing down the decode path
+                        # rather than losing it, and says so once.
+                        _copy = getattr(self, "_copy", None)
+                        if _copy is not None and _copy.ready():
+                            _why = _copy.record_and_upload(
+                                self, session_id,
+                                self._copy_stop_policy(
+                                    detector, no_person_timeout, det_period),
+                                fixed_seconds=pending_secs,
+                                not_before=_not_before,
+                            )
+                        else:
+                            if _copy is not None:
+                                log.warning(
+                                    "copy engine is not ready (%s) — "
+                                    "recording session=%s the old way",
+                                    _copy.status(), session_id,
+                                )
+                            _why = self._record_and_upload(
+                                detector, no_person_timeout, det_period,
+                                fps, session_id, fixed_seconds=pending_secs,
+                                not_before=_not_before,
+                            )
                         if _why == "length_cap" and _splits >= self.max_splits:
                             # RUNAWAY GUARD. A split means "the person is
                             # still there", and with a loose ROI that is
@@ -951,8 +979,46 @@ class TeeAgent:
             hb.stop()
             self.uploader.stop(drain_timeout=10.0)
             streamer.stop()
+            if getattr(self, "_copy", None) is not None:
+                self._copy.stop()
 
     # -----------------------------------------------------------------
+
+    def _copy_stop_policy(self, detector, no_person_timeout: float,
+                          det_period: float):
+        """When should a copy-engine clip end? The same answer the
+        decode loop gives: once nobody has been in a trigger zone for
+        `no_person_timeout`.
+
+        Handed to the engine rather than built into it, because the
+        green's reason for stopping is completely different (it waits
+        to be told) and neither runner should have to know about the
+        other's. Detection is rate-limited to `det_period` here just as
+        it is in the decode loop — the engine ticks faster than that so
+        it can notice the agent shutting down promptly.
+        """
+        state = {"last_seen": time.time(), "next_detect": 0.0}
+
+        def _stop(now: float):
+            if now < state["next_detect"]:
+                return None
+            state["next_detect"] = now + det_period
+            snap = self.buffer.snapshot()
+            if not snap:
+                # No frames is not "nobody is there" — it is a camera
+                # problem, and ending the clip early would hide it.
+                return None
+            centroid = detector.detect(snap[-1][1])
+            with self._roi_lock:
+                _roi = self.roi
+            if centroid is not None and _in_roi(centroid, _roi):
+                state["last_seen"] = now
+                return None
+            if now - state["last_seen"] >= no_person_timeout:
+                return "no_person"
+            return None
+
+        return _stop
 
     def _record_and_upload(
         self, detector, no_person_timeout: float, det_period: float,

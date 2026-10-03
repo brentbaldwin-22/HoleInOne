@@ -19,6 +19,35 @@ auth_token: "cam_REPLACE_ME"
 # Camera source
 # ---------------------------------------------------------------------
 
+# WHICH CAPTURE ENGINE RECORDS A CLIP. Two live in the tree at once.
+#
+#   decode  (default, and what every rig has always run)
+#           Decode the camera's H.264 to raw frames, re-encode with
+#           mp4v, re-encode again for upload. Three generations, all of
+#           them on the Pi, and the software encoder tops out near
+#           31 fps at 1080p -- which is why a camera set to 60 gives
+#           you about half of it.
+#
+#   copy    Keep a rolling window of the camera's OWN encoded video on
+#           disk and cut the swing out of it. No decode, no encode.
+#           Measured on 22.2s of real 1080p60 footage: 0.42s against
+#           9.14s, and first-generation rather than third.
+#
+#           Needs an rtsp:// camera; falls back to decode with a warning
+#           on anything else. The clip is whatever bitrate the camera is
+#           sending, so the camera's profile bitrate becomes the upload
+#           bitrate -- set it to what the link can carry rather than to
+#           its maximum. Clips cut on segment edges, so expect up to one
+#           extra second at each end.
+#
+# Detection is unaffected either way: without a substream there is still
+# only one stream worth decoding, and the trigger logic is untouched.
+# capture_engine: "copy"
+#
+# Only read when capture_engine is "copy".
+# copy_segment_seconds: 1.0     # cut granularity; match the camera's GOV
+# copy_window_seconds: 0        # 0 = buffer_seconds + max_clip_seconds + 30
+
 camera:
   # "auto" tries /dev/video0..3 and picks the first that opens. Or
   # specify a device path like "/dev/video0" or an integer index "0".

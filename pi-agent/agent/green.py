@@ -44,6 +44,7 @@ from .common import (
 )
 from .focus_meter import FocusMeter
 from .livestream import LiveStreamer
+from .copyengine import CopyEngine
 
 log = logging.getLogger("golfreelz_agent.green")
 # The build id is a hash of the installed agent source, so this
@@ -220,6 +221,13 @@ class GreenAgent:
             chunk_kb=int(self.cfg.get("upload_chunk_kb", 512)),
         )
         self.uploader.start()
+        # The stream-copy engine, when config asks for it. None leaves
+        # the green exactly as it was. A green is the right place to try
+        # it: its clip window is decided by the tee, so the only thing
+        # under test here is the recording itself.
+        self._copy = CopyEngine.from_config(self.cfg, self.work_dir)
+        if self._copy is not None:
+            self._copy.start()
 
         log.info(
             "green agent running: buffer=%.1fs max=%.0fs poll=%ds",
@@ -268,6 +276,8 @@ class GreenAgent:
             self.uploader.stop(drain_timeout=10.0)
             self.streamer.stop()
 
+            if getattr(self, '_copy', None) is not None:
+                self._copy.stop()
     # -----------------------------------------------------------------
 
     def _on_lens_command(self, op: str, amount: int,
@@ -333,9 +343,44 @@ class GreenAgent:
             self.buffer.push(time.time(), frame.copy())
             self.streamer.update_frame(frame)
 
+    def _copy_stop_policy(self, session_id: str):
+        """A green stops when the tee tells it to. Same poll interval
+        and the same forgiving failure handling as the decode loop: a
+        flaky link should make us over-record by a second, never stop
+        a clip early."""
+        state = {"next_check": 0.0}
+
+        def _stop(now: float):
+            if now < state["next_check"]:
+                return None
+            state["next_check"] = now + self.stop_poll_interval
+            try:
+                status = self.client.event_status(session_id)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("event_status poll failed: %s", exc)
+                return None
+            return "stop_signal" if status.get("stop_signal") else None
+
+        return _stop
+
     def _record_and_upload(
         self, session_id: str, not_before: float | None = None,
     ) -> None:
+        # WHICH ENGINE RECORDS THIS CLIP. Asked before anything is
+        # committed, so an unhealthy ring falls through to the code
+        # below rather than losing the clip. The stop rule is the
+        # green's own: keep going until the tee says stop, or the
+        # runaway cap fires.
+        _copy = getattr(self, "_copy", None)
+        if _copy is not None and _copy.ready():
+            _copy.record_and_upload(
+                self, session_id, self._copy_stop_policy(session_id),
+                not_before=not_before,
+            )
+            return
+        if _copy is not None:
+            log.warning("copy engine is not ready (%s) — recording "
+                        "session=%s the old way", _copy.status(), session_id)
         """Commit the current ring buffer to an MP4 and keep writing
         new frames from the buffer until the tee Pi signals stop
         (via /event-stop, observed by polling /event-status) or the
