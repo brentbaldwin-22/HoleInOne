@@ -852,10 +852,30 @@ class TeeAgent:
                         if pending_secs is not None
                         else (" (MANUAL)" if forced else ""),
                     )
+                    _ack = None
                     try:
-                        self.client.event_trigger(session_id)
+                        _ack = self.client.event_trigger(session_id) or {}
                     except Exception as exc:
                         log.error("event_trigger failed (%s) — skipping", exc)
+                    if _ack is None:
+                        pass        # the trigger never registered
+                    # PAUSED MEANS PAUSED, INCLUDING THE UPLOAD.
+                    #
+                    # The backend has always answered a trigger from a
+                    # paused camera with `triggering_disabled`, and its
+                    # own comment says the point is "so the Pi doesn't
+                    # bother recording / uploading". Nothing out here
+                    # ever read it. So pausing stopped events reaching
+                    # Production and did not stop this Pi spending the
+                    # next minute pushing a 6 MB clip up a 125 KB/s
+                    # modem — which is the link an operator is usually
+                    # trying to pause it in order to GET.
+                    elif _ack.get("triggering_disabled"):
+                        log.info(
+                            "trigger: session=%s ignored — triggering is "
+                            "paused for this camera, so nothing is recorded "
+                            "and nothing is uploaded", session_id,
+                        )
                     else:
                         # LET THEM GET SET. The event is armed (the green
                         # is already recording off the same trigger); the

@@ -277,6 +277,38 @@ anything sustained dies within half a minute. That is the tee's
 signature, in SSH and in clip upload alike — the same fault wearing two
 hats, not two problems.
 
+### First, rule out the boring one: the link is just full
+
+**Observed 2 Oct: the tee became reachable the moment its uploads
+finished.** That is the cheapest explanation and it needs no fault at
+all — a 6.5 MB clip up a ~125 KB/s uplink is ~52 seconds of saturated
+wire, and a saturated cellular uplink buffers deeply. SSH packets queue
+behind megabytes of video, round-trip time goes from 50 ms to tens of
+seconds, and the session dies with exactly the "Connection reset" and
+"Connection timed out" you would get from a broken modem.
+
+An earlier version of this section went straight to a power→USB-reset
+chain. That may still be right, but **saturation explains the same
+symptoms with no hardware fault**, so test it first:
+
+```bash
+dmesg -T | grep -icE "usb (disconnect|reset)"
+```
+
+| Result | Meaning |
+|---|---|
+| **0**, or a count that does not grow across an upload | The modem never re-enumerated. It is bandwidth, not hardware — stop here and do not swap anything |
+| A count that climbs each upload | The modem really is resetting. Continue below |
+
+If it is bandwidth: the hardware is fine, the window for SSH is
+**between uploads**, and `/admin/cameras` already shows uploads in
+flight. Pausing triggering on the camera stops new clips at the source
+and drains the queue — on an agent new enough to honour it (the signal
+is `triggering_disabled`; agents before 3 Oct ignored it and kept
+uploading while "paused").
+
+### If the modem really is resetting
+
 Why those three candidates are not independent:
 
 ```
