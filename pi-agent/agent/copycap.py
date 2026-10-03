@@ -226,9 +226,24 @@ class SegmentRing:
                         err = p.stderr.read() or b""
                 except Exception:  # noqa: BLE001
                     pass
-                log.warning("copycap: ffmpeg exited (%s)",
-                            err.decode("utf-8", "replace").strip()[:300]
-                            or "no message")
+                rc = p.returncode if p is not None else None
+                msg = err.decode("utf-8", "replace").strip()[:300]
+                # EXIT CODE WHEN THERE IS NO MESSAGE. -loglevel error
+                # means a clean exit says nothing at all, so "no
+                # message" on its own cannot distinguish our own SIGINT
+                # from a camera that hung up — and those call for
+                # opposite responses. 255/-2 is ffmpeg taking an
+                # interrupt; anything else arrived from outside.
+                log.warning(
+                    "copycap: ffmpeg exited rc=%s after %.0fs holding %d "
+                    "segment(s)%s%s",
+                    rc, time.time() - self._started_at,
+                    len(self.segments(include_current=True)),
+                    f": {msg}" if msg else " with no message",
+                    ("" if self._stop.is_set() else
+                     " — if this repeats, the camera may not allow a second "
+                     "concurrent RTSP session (detection already holds one)"),
+                )
                 return
             self._sweep()
             if (self._last_seen_at
