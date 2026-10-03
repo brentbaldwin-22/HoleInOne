@@ -193,7 +193,18 @@ export default function AdminCaptureLab() {
                 </div>
               )}
 
-              {isCopy && last && (
+              {/* `last` is {} until a clip has actually been cut, and an
+                  empty object is TRUTHY in JS — which rendered "no clip
+                  yet" as a failure with undefined fields, next to a
+                  counter reading zero failures. Key off the timestamp,
+                  which only exists once something really happened. */}
+              {isCopy && !last?.at && (
+                <div className="small muted" style={{ marginTop: 10 }}>
+                  No clip cut yet. The ring is recording; it is waiting
+                  for a trigger.
+                </div>
+              )}
+              {isCopy && last?.at && (
                 <div className="small" style={{ marginTop: 10 }}>
                   <span className="tiny upper muted">Last clip</span>{" "}
                   {last.ok ? (
