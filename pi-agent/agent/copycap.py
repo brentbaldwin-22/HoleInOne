@@ -131,6 +131,13 @@ class SegmentRing:
         self._last_seen_at = 0.0
         self._restarts = 0
         self._started_at = 0.0
+        # WHEN THIS ffmpeg STARTED, which is not when the ring did. The
+        # ring restarts its child without restarting itself, so using
+        # the ring's own start time reported "ffmpeg exited after 619s"
+        # for a process that had run 353s — and how long a stream
+        # survives before dropping is the whole question when it keeps
+        # dropping.
+        self._child_started_at = 0.0
 
     # -------- lifecycle ------------------------------------------------
 
@@ -156,7 +163,16 @@ class SegmentRing:
         if self._input_args is not None:
             inp = list(self._input_args)
         else:
-            inp = ["-rtsp_transport", self.rtsp_transport, "-i", self.source]
+            inp = [
+                "-rtsp_transport", self.rtsp_transport,
+                # A STALLED READ SHOULD FAIL, NOT HANG. Without this a
+                # camera that stops sending leaves ffmpeg blocked
+                # forever and the only evidence is the watchdog noticing
+                # no new segments — which cannot say whether the stream
+                # died or the disk did. 10s in microseconds.
+                "-rw_timeout", "10000000",
+                "-i", self.source,
+            ]
         return [
             self.ffmpeg, "-nostdin", "-loglevel", "error", "-y",
             *inp,
@@ -201,6 +217,7 @@ class SegmentRing:
                 log.error("copycap: %s not found — ring cannot run",
                           self.ffmpeg)
                 return
+            self._child_started_at = time.time()
             log.info("copycap: ring started (%.0fs segments, %.0fs window)",
                      self.segment_seconds, self.window_seconds)
             self._watch_until_dead()
@@ -237,7 +254,8 @@ class SegmentRing:
                 log.warning(
                     "copycap: ffmpeg exited rc=%s after %.0fs holding %d "
                     "segment(s)%s%s",
-                    rc, time.time() - self._started_at,
+                    rc, time.time() - (self._child_started_at
+                                       or self._started_at),
                     len(self.segments(include_current=True)),
                     f": {msg}" if msg else " with no message",
                     ("" if self._stop.is_set() else
