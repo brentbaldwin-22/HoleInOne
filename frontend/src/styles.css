@@ -129,21 +129,23 @@
 }
 
 :root[data-direction="linen"] {
-  /* THE RAMP IS THE LOGO'S OWN BLUE. Sampled down its gradient rather
-     than chosen: #003ADB in the top band, #0191FD below it, #5CD1DE at
-     the horizon. Settled to weights that hold 4.5:1 on cream. */
-  --emerald-50:  #eef2f9;
-  --emerald-100: #dde5f2;
-  --emerald-200: #bccbe6;
-  --emerald-300: #8fa8d4;
-  --emerald-400: #4f74bb;
-  --emerald-500: #2a56a0;
-  --emerald-600: #17407f;
-  --emerald-700: #113567;
-  --emerald-800: #0e2b53;
-  --tint: #17407f;
-  --band-a: #003adb;
-  --band-b: #feb235;
+  /* THE RAMP IS THE LOGO'S OWN BLUE, UNCHANGED AT ITS WORKING WEIGHT.
+     #0047e7 is the top band of the mark, sampled not chosen, and it
+     measures 6.16:1 on this cream — so it is spent as-is rather than
+     darkened to make a number. The lighter steps are tints of it and
+     the darker ones are for hovers and pressed states. */
+  --emerald-50:  #eef2fe;
+  --emerald-100: #dce5fd;
+  --emerald-200: #b9cbfb;
+  --emerald-300: #8aa8f6;
+  --emerald-400: #3d78ef;
+  --emerald-500: #0047e7;
+  --emerald-600: #0047e7;
+  --emerald-700: #0b3fc0;
+  --emerald-800: #12379f;
+  --tint: #0047e7;
+  --band-a: #0047e7;
+  --band-b: #fe6610;
 
   /* WARM NEUTRALS. The only direction that moves these: the others are
      all cool greys on white, and linen is the whole point of this one.
@@ -165,17 +167,27 @@
   --slate-900: #23201c;
   --white:     #fcfaf6;
 
-  /* Amber is the logo's warmest note and the one thing on the page that
-     is allowed to shout. Dark ink on it, never white — #feb235 behind
-     white text is about 1.8:1. */
-  --accent: #feb235;
-  --on-accent: #23201c;
+  /* THE RED OFF THE WORDMARK — the colour "REELZ" is set in. It is a
+     3.31:1 on cream, which is a heading and a fill, NEVER body copy or
+     a small label.
 
-  /* NEAR-BLACK, NOT BROWN. The logo's glow was drawn to die into black;
-     over cream its half-transparent edge composites to grey
-     (#6f6d6a at alpha 140), so it gets the ground it was made for. */
-  --hero-bg: linear-gradient(150deg, #0b0c10 0%, #14161d 58%, #0b0c10 100%);
-  --glow: color-mix(in srgb, var(--accent) 22%, transparent);
+     --on-accent is darker than --ink on purpose. The page's own ink
+     over this red is 4.39:1 — near enough to look fine and under the
+     line, which is the worst place to be. A few steps down clears it
+     at 4.84:1 and nobody can see the difference between them. */
+  --accent: #f54304;
+  --on-accent: #1a1713;
+
+  /* THE HERO IS LIGHT HERE. The mark is drawn on nothing — its ground
+     and even the rules between its bands are transparent — so the cream
+     shows through them and it needs no dark plate to sit on. The slab
+     carries ink rather than white because of it. */
+  --hero-bg:
+    radial-gradient(circle at 88% 12%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 62%),
+    linear-gradient(152deg, #fdfbf7 0%, #f3ece0 56%, #f8f1e6 100%);
+  --hero-ink: #23201c;
+  --hero-ink-soft: #5e564b;
+  --glow: color-mix(in srgb, var(--accent) 16%, transparent);
 
   /* Editorial, not app-like: hairlines carry the structure, so the
      corners tighten and the shadows go away. */
@@ -311,7 +323,15 @@
   border-color: var(--border);
 }
 :root[data-direction="linen"] .hero {
-  border: 0;
+  /* A light slab on a light page needs a hairline to be a slab at all;
+     the other directions get their edge from being dark. */
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+:root[data-direction="linen"] .hero .eyebrow {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  color: #8a2503;
 }
 :root[data-direction="linen"] .nav {
   border-bottom-color: var(--border);

@@ -54,7 +54,7 @@ export const DIRECTIONS = [
     name: "Linen",
     logo: "/logos/linen.png",
     mark: "/logos/linen-mark.png",
-    bands: ["#003adb", "#feb235"],
+    bands: ["#0047e7", "#fe6610"],
     note:
       "Cream paper, the logo's own blue, amber for the one thing that "
       + "shouts. Hairlines instead of boxes — the only direction that "
