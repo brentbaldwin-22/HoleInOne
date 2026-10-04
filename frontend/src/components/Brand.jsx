@@ -7,7 +7,9 @@ import { logoUrl } from "../theme.js";
 // green/lime), and the site wears whichever an admin picked in /admin —
 // so the mark here follows the theme rather than being a fixed file.
 // Each PNG is the full lockup: golfer silhouette AND the GolfReelz
-// wordmark, so there is no separate text label beside it.
+// THE FULL LOCKUP, not the mark. The mark is the banded block on
+// its own and carries no name, so a header built on it said
+// nothing — this one has GOLFREELZ set under the block.
 
 export function Brand({ subtitle, hideAccount }) {
   const { user, logout } = useAuth();
@@ -19,9 +21,9 @@ export function Brand({ subtitle, hideAccount }) {
         style={{ display: "flex", alignItems: "center", gap: 14, textDecoration: "none", color: "inherit" }}
       >
         <img
-          src={logoUrl(theme.direction, "mark")}
+          src={logoUrl(theme.direction)}
           alt="GolfReelz"
-          style={{ height: 56, width: "auto", display: "block" }}
+          style={{ height: 62, width: "auto", display: "block" }}
         />
         {subtitle && <div className="tag">{subtitle}</div>}
       </Link>

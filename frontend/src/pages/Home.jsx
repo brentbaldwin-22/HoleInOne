@@ -3,8 +3,6 @@ import { Link } from "react-router-dom";
 import { Brand, Icon } from "../components/Brand.jsx";
 import { api } from "../api.js";
 import useAuth from "../hooks/useAuth.js";
-import { logoUrl } from "../theme.js";
-import useSiteTheme from "../hooks/useSiteTheme.js";
 
 // The four prize games, in the order they matter to a player standing on
 // the tee: the one you could win today, the one you could win with one
@@ -83,7 +81,6 @@ const STEPS = [
 
 export default function Home() {
   const { user } = useAuth();
-  const theme = useSiteTheme();
   const [showcase, setShowcase] = useState(null);
   const [courses, setCourses] = useState(null);
   const [stats, setStats] = useState(null);
@@ -140,9 +137,6 @@ export default function Home() {
               <Link to="/courses" className="btn">Pick a course — $20</Link>
               <Link to="/sample" className="btn secondary">See sample clips</Link>
             </div>
-          </div>
-          <div className="home-logo-plate">
-            <img src={logoUrl(theme.direction)} alt="GolfReelz" />
           </div>
         </div>
       </header>

@@ -296,7 +296,6 @@ code {
 .home-speclist li { padding: 11px 0; border-top: 1px solid var(--rule); }
 .home-courses { display: flex; flex-wrap: wrap; gap: 10px 26px; }
 .home-ticker { border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding: 13px 0; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.16em; color: var(--ink-mute); }
-.home-logo-plate, .logo-plate { display: inline-flex; align-items: center; }
 .logo, .brand img { display: block; height: auto; }
 
 /* ---- Masthead / nav --------------------------------------------- */
