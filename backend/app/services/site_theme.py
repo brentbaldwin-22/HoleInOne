@@ -21,9 +21,12 @@ SETTING_KEY = "site_theme"
 # Keep in step with the [data-direction] blocks in frontend/src/styles.css
 # and with DIRECTIONS in frontend/src/theme.js.
 DIRECTIONS = ("broadcast", "dusk", "turf", "linen")
-MODES = ("dark", "light")
+# LIGHT ONLY. The frontend pins the mode regardless of what is stored,
+# so a "dark" left in the database by an older admin would be ignored
+# rather than obeyed — this keeps the two ends saying the same thing.
+MODES = ("light",)
 
-DEFAULT_THEME = {"direction": "broadcast", "mode": "dark"}
+DEFAULT_THEME = {"direction": "linen", "mode": "light"}
 
 
 def get_theme(db: Session) -> dict:

@@ -1,7 +1,7 @@
 /* ============================================================
    THEME — two attributes on <html> carry the whole look:
 
-     data-mode="dark" | "light"       (set by theme.js)
+     data-mode="light"                (pinned by theme.js)
      data-direction="broadcast" | "dusk" | "turf" | "linen"
 
    An admin picks both in /admin; every page then follows, because
@@ -188,8 +188,15 @@
   --shadow-lg: 0 18px 40px -24px rgba(35, 32, 28, 0.38);
 }
 
-/* --- Dark, all directions. Only the neutrals and the semantic layer
-   are here; each direction's dark ramp follows. --- */
+/* --- Dark, all directions. NOTHING SELECTS THESE ANY MORE: theme.js
+   pins data-mode to "light", so every block below is inert. They are
+   kept, and kept correct, because the site ran on them until today and
+   restoring the choice should be putting MODES and the Ground picker
+   back rather than rebuilding a palette from memory. Delete them only
+   once nobody wants dark again.
+
+   Only the neutrals and the semantic layer are here; each direction's
+   dark ramp follows. --- */
 :root[data-mode="dark"] {
   color-scheme: dark;
 

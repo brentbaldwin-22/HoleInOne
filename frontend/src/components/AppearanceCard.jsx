@@ -13,7 +13,7 @@
 import { useEffect, useState } from "react";
 
 import { api } from "../api.js";
-import { DIRECTIONS, MODES, logoUrl } from "../theme.js";
+import { DIRECTIONS, logoUrl } from "../theme.js";
 import useSiteTheme, { setSiteTheme } from "../hooks/useSiteTheme.js";
 
 export default function AppearanceCard({ adminPassword, onToast }) {
@@ -79,35 +79,7 @@ export default function AppearanceCard({ adminPassword, onToast }) {
         ))}
       </div>
 
-      <div className="tiny upper muted" style={{ marginTop: 16 }}>Ground</div>
-      <div className="theme-choice-row">
-        {MODES.map((m) => (
-          <button
-            key={m.key}
-            type="button"
-            className="theme-choice"
-            aria-pressed={theme.mode === m.key}
-            disabled={saving !== null}
-            onClick={() => save({ mode: m.key })}
-            style={{
-              "--swatch-a": m.key === "dark" ? "#0b1119" : "#ffffff",
-              "--swatch-b": m.key === "dark" ? "#1c2836" : "#dae3ed",
-            }}
-          >
-            <span className="bands" aria-hidden="true" />
-            <span>
-              <span className="name">
-                {m.name}{saving === m.key ? " — saving…" : ""}
-              </span>
-              <span className="note" style={{ display: "block" }}>
-                {m.key === "dark"
-                  ? "The logo is drawn on black, so dark hides its edge."
-                  : "Puts the logo on a plate — lighter, more conventional."}
-              </span>
-            </span>
-          </button>
-        ))}
-      </div>
+
 
       <div className="inline" style={{ gap: 12, marginTop: 16 }}>
         <img

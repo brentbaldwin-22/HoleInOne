@@ -3,7 +3,7 @@
  *
  * Two attributes on <html> carry the whole thing:
  *
- *     data-mode="dark" | "light"
+ *     data-mode="light"   (pinned; see clean())
  *     data-direction="broadcast" | "dusk" | "turf" | "linen"
  *
  * styles.css defines a palette for each combination, so nothing here
@@ -20,7 +20,7 @@
  */
 const CACHE_KEY = "golfreelz.theme";
 
-export const DEFAULT_THEME = { direction: "broadcast", mode: "dark" };
+export const DEFAULT_THEME = { direction: "linen", mode: "light" };
 
 // Keep in step with the [data-direction] blocks in styles.css and with
 // DIRECTIONS in backend/app/services/site_theme.py.
@@ -62,8 +62,11 @@ export const DIRECTIONS = [
   },
 ];
 
+// LIGHT IS THE ONLY GROUND. The dark blocks are still in styles.css and
+// still correct; nothing selects them, because clean() below pins the
+// mode. Putting the choice back is this list plus the picker in
+// AppearanceCard — deliberately a small undo rather than a deletion.
 export const MODES = [
-  { key: "dark", name: "Dark" },
   { key: "light", name: "Light" },
 ];
 
@@ -84,7 +87,11 @@ function clean(theme) {
   return {
     direction: DIRECTION_KEYS.includes(t.direction)
       ? t.direction : DEFAULT_THEME.direction,
-    mode: t.mode === "light" ? "light" : "dark",
+    // PINNED, not defaulted. A theme stored back when dark was the
+    // default still lives in the database and in people's localStorage,
+    // and honouring it would put some visitors on a ground the site no
+    // longer has a logo for.
+    mode: "light",
   };
 }
 
