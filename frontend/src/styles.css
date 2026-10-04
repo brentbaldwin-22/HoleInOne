@@ -90,6 +90,17 @@
   --ok-soft: #e0efe6;
   --red-500: #d7382c;
 
+  /* THE BANDS AT 12%, so colour can carry a status instead of a rule
+     doing it alone. Mixed from the band itself over linen rather than
+     picked by eye, so a capsule is visibly the same colour as the
+     stripe it comes from. */
+  --band-1-soft: #e2eafd;
+  --band-2-soft: #e0f3fe;
+  --band-3-soft: #e8f6f4;
+  --band-4-soft: #fdf6dc;
+  --band-5-soft: #fdeedb;
+  --band-6-soft: #fde8db;
+
   /* FOUR NAMES SPENT IN AdminProduction.jsx THAT NOTHING HERE DEFINED.
      Each is written there as var(--name, <fallback>) and every fallback
      is a leftover from the dark sheet -- `--card-bg` fell back to
@@ -102,15 +113,24 @@
   --err: var(--danger);
   --focus-ring: color-mix(in srgb, var(--primary) 34%, transparent);
 
-  /* ---- Shape. Square, because the mark is. ---- */
-  --radius: 0;
-  --radius-xs: 0;
-  --radius-sm: 0;
-  --radius-lg: 0;
-  --radius-field: 2px;
-  --shadow-sm: none;
-  --shadow: none;
-  --shadow-lg: none;
+  /* ---- Shape. Curved. ----
+     This was 0 across the board, on the argument that the mark is a
+     hard-edged rectangle. On one logo that reads as discipline; on a
+     page of forty controls it reads as a wireframe, and the whole site
+     came out as beige paper with black boxes on it. Curves are back,
+     and they are graded: a control is softer than a card, a status
+     capsule is fully round. */
+  --radius: 8px;        /* buttons and controls */
+  --radius-xs: 5px;
+  --radius-sm: 6px;
+  --radius-lg: 14px;    /* cards, frames, media */
+  --radius-field: 8px;
+  --radius-pill: 999px; /* status capsules */
+  /* Barely there, and ink-tinted rather than grey, so a card lifts off
+     the linen without the page growing a drop-shadow habit. */
+  --shadow-sm: 0 1px 2px rgba(35, 32, 28, 0.05);
+  --shadow: 0 1px 2px rgba(35, 32, 28, 0.05), 0 6px 18px rgba(35, 32, 28, 0.06);
+  --shadow-lg: 0 2px 4px rgba(35, 32, 28, 0.06), 0 16px 40px rgba(35, 32, 28, 0.10);
 
   /* ---- Compatibility ramp. See the header. ---- */
   --emerald-50:  #f2f5fe;
@@ -213,19 +233,34 @@ code {
 .inline { display: inline-flex; align-items: center; gap: 7px; }
 .grid   { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
 .wide   { width: 100%; }
-.divider, .home-rule { height: 1px; background: var(--rule); border: 0; margin: 22px 0; }
+.divider { height: 1px; background: var(--rule); border: 0; margin: 22px 0; }
 
 /* ---- THE BAND DEVICE -------------------------------------------- */
 /* The logo is six bands with the ground showing between them. Every
    rule, still and marker on the site is that same idea resized. */
 
-.bands, .home-hero-bands, .strip {
+/* THE RULE BETWEEN SECTIONS IS THE BAND RULE. It was a 1px grey
+   hairline, which is the single biggest reason a page built out of a
+   six-colour mark read as beige: every division on it was drawn in
+   beige. This is the mark's own device at the size of a rule. */
+.home-rule {
+  height: 4px;
+  border: 0;
+  margin: 0 0 22px;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+
+.bands, .home-hero-bands, .strip, .home-rule {
   display: flex;
   gap: 3px;
   height: 7px;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
 }
+.home-rule { height: 4px; }
 .bands > *, .home-hero-bands > *, .strip > * { flex: 1; }
-.bands::before, .home-hero-bands::before, .strip::before {
+.bands::before, .home-hero-bands::before, .strip::before, .home-rule::before {
   /* Works with no children too: one element, six stops, gaps punched
      through with hard colour stops so the linen reads between them. */
   content: "";
@@ -260,7 +295,8 @@ code {
 .card {
   background: var(--surface);
   border: 1px solid var(--rule);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
   padding: 22px;
   margin-bottom: 16px;
 }
@@ -270,6 +306,7 @@ code {
 .icon-bg, .card .icon {
   flex-shrink: 0;
   width: 40px; height: 40px;
+  border-radius: var(--radius-sm);
   background: var(--primary-soft);
   color: var(--emerald-700);
   display: grid; place-items: center;
@@ -384,19 +421,28 @@ code {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
+/* THE SECONDARY IS BLUE, NOT BLACK. An ink hairline round an ink label
+   is the most colourless thing a control can be, and most of this app's
+   buttons are secondaries -- which is how a site built out of a
+   six-colour mark ended up reading as beige and black. The band-1 blue
+   does the outlining and the lettering; the fill arrives on hover. */
 .btn.secondary, .secondary {
-  background: transparent;
-  color: var(--ink);
-  border-color: var(--rule-ink);
+  background: var(--paper);
+  color: var(--primary);
+  border-color: var(--primary);
 }
-.btn.secondary:hover, .secondary:hover { background: var(--ink); color: var(--paper); }
+.btn.secondary:hover, .secondary:hover {
+  background: var(--primary);
+  color: var(--on-primary);
+  border-color: var(--primary);
+}
 .btn.ghost, .ghost {
   background: transparent;
-  color: var(--ink);
+  color: var(--primary);
   border-color: transparent;
   padding-left: 0; padding-right: 0;
   letter-spacing: 0.04em;
-  box-shadow: inset 0 -1px 0 var(--rule-strong);
+  box-shadow: inset 0 -1px 0 var(--primary-soft);
 }
 .ghost:hover { background: transparent; color: var(--accent); box-shadow: inset 0 -1px 0 var(--accent); }
 .btn.danger, .danger { background: var(--danger); color: #fff; border-color: transparent; }
@@ -412,12 +458,14 @@ code {
    in the same column as the house ones. Nobody added a class as they
    went and nobody is going to; the element itself has to be dressed.
 
-   The element default is the SECONDARY treatment from the board: an ink
-   hairline, linen showing through, ink caps. It is the quiet one on
-   purpose -- a bare button is usually a secondary action, and the loud
-   fill stays something you opt into with .btn. Buttons that set their
-   own background or geometry inline (the dot and frame grids in
-   production) keep it: inline styles win over this block. */
+   The element default is the SECONDARY treatment: a band-1 hairline, a
+   band-1 label, paper behind it, and the fill only on hover. It is the
+   quiet one on purpose -- a bare button is usually a secondary action,
+   and the solid fill stays something you opt into with .btn -- but
+   quiet is not the same as colourless, which is what an ink outline
+   round an ink label was. Buttons that set their own background or
+   geometry inline (the dot and frame grids in production) keep it:
+   inline styles win over this block. */
 button {
   display: inline-flex;
   align-items: center;
@@ -425,10 +473,10 @@ button {
   gap: 7px;
   min-height: 38px;
   padding: 9px 19px;
-  border: 1px solid var(--rule-ink);
-  border-radius: 0;
-  background: transparent;
-  color: var(--ink);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--primary);
   font-family: var(--text);
   font-size: 0.78rem;
   font-weight: 600;
@@ -439,7 +487,7 @@ button {
   text-decoration: none;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
-button:hover { background: var(--ink); color: var(--paper); }
+button:hover { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
 /* ONE DISABLED LOOK, fill or outline. This used to be opacity 0.45,
    which leaves a disabled primary still reading as a blue button you
    could press -- it looked like a rendering glitch rather than a state.
@@ -475,6 +523,15 @@ button.tiny, .btn.tiny {
    it has to sit flush with the column edge; `button.small` sets padding
    with a shorthand and would otherwise push it in by 13px. */
 .btn.ghost, button.ghost, .ghost { padding-left: 0; padding-right: 0; }
+/* A destructive ghost keeps the red it had before everything went
+   blue, otherwise "Delete" sits in the same colour as "Edit". */
+.btn.ghost.danger, button.ghost.danger, .ghost.danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: transparent;
+  box-shadow: inset 0 -1px 0 var(--danger-soft);
+}
+.ghost.danger:hover { color: #8e1d17; box-shadow: inset 0 -1px 0 var(--danger); }
 
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
 .field label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.16em; font-weight: 600; color: var(--ink-mute); }
@@ -510,36 +567,60 @@ tr:last-child td { border-bottom: 0; }
 /* A status is a coloured rule, not a lozenge — the band device at its
    smallest. Colour never carries the meaning alone: the word is there. */
 
+/* A STATUS IS A COLOURED CAPSULE AGAIN.
+   These were bare words with a 3px rule on the left -- the band device
+   at its smallest, which is a nice idea and completely invisible in a
+   row of six of them. A camera header reading ENABLED · GREEN · POWER
+   CLEAN · IP CAMERA came out as four identical grey words. The tint
+   carries the state at a glance and the label still says it in words,
+   so colour is never the only thing doing the work. */
 .pill, .tag, .chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border-left: 3px solid var(--ink-faint);
-  padding: 3px 0 3px 9px;
-  font-size: 0.74rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-pill);
+  padding: 3px 11px;
+  font-size: 0.72rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--ink);
-  background: transparent;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+  background: var(--surface-alt);
 }
-.pill.ok,   .tag.ok,   .chip.ok   { border-left-color: var(--ok); }
-.pill.warn, .tag.warn, .chip.warn { border-left-color: var(--warn); }
-.pill.danger, .pill.err           { border-left-color: var(--danger); }
-.pill.live, .pill.open            { border-left-color: var(--band-1); }
-.pill.small { font-size: 0.68rem; }
+.pill.ok,   .tag.ok,   .chip.ok {
+  background: var(--ok-soft); border-color: #b6d7c4; color: #155c39;
+}
+.pill.warn, .tag.warn, .chip.warn {
+  background: var(--warn-soft); border-color: #f0ce93; color: #8a5a06;
+}
+.pill.danger, .pill.err, .tag.danger, .tag.err {
+  background: var(--danger-soft); border-color: #e7b3ae; color: #93201a;
+}
+.pill.live, .pill.open, .tag.live {
+  background: var(--band-1-soft); border-color: #b9ccfa; color: #11379f;
+}
+.pill.accent, .tag.accent {
+  background: var(--band-6-soft); border-color: #f5c2a8; color: #a33403;
+}
+.pill.small, .tag.small { font-size: 0.66rem; padding: 2px 9px; }
 .chip {
   cursor: pointer;
-  border: 1px solid var(--rule-strong);
-  border-left-width: 3px;
-  padding: 7px 12px 7px 10px;
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--ink);
+  padding: 7px 13px;
 }
 /* A chip is a choice, not an action: it keeps its ground on hover and
    just firms up its rule. Without this it inherits button:hover and
    flips to solid ink, which reads as "pressed" on something that is
    only being pointed at. */
-.chip:hover { background: var(--paper); color: var(--ink); border-color: var(--ink); }
-.chip.selected, .chip.active { border-color: var(--ink); border-left-color: var(--accent); background: var(--paper); }
+.chip:hover { background: var(--primary-soft); color: #11379f; border-color: var(--primary); }
+.chip.selected, .chip.active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: #11379f;
+}
 .chip-row, .chip-row.row { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-faint); display: inline-block; flex-shrink: 0; }
@@ -613,7 +694,7 @@ tr:last-child td { border-bottom: 0; }
 .clip, .home-clip-frame, .watch-frame, .camera-frame, .clip-player, .watch-video, .thumb, .gallery-hole, .selfie-preview {
   position: relative;
   background: var(--ink);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   overflow: hidden;
   display: block;
   width: 100%;

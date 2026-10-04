@@ -79,7 +79,7 @@ export default function AppearanceCard({ adminPassword }) {
           <span key={hex} className="inline tiny muted" title={label}>
             <span
               className="dot"
-              style={{ background: hex, borderRadius: 0,
+              style={{ background: hex, borderRadius: 4,
                        width: 14, height: 14 }}
             />
             <code>{hex}</code>
