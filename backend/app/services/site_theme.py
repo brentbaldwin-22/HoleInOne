@@ -20,7 +20,7 @@ SETTING_KEY = "site_theme"
 
 # Keep in step with the [data-direction] blocks in frontend/src/styles.css
 # and with DIRECTIONS in frontend/src/theme.js.
-DIRECTIONS = ("broadcast", "dusk", "turf")
+DIRECTIONS = ("broadcast", "dusk", "turf", "linen")
 MODES = ("dark", "light")
 
 DEFAULT_THEME = {"direction": "broadcast", "mode": "dark"}

@@ -2,7 +2,7 @@
    THEME — two attributes on <html> carry the whole look:
 
      data-mode="dark" | "light"       (set by theme.js)
-     data-direction="broadcast" | "dusk" | "turf"
+     data-direction="broadcast" | "dusk" | "turf" | "linen"
 
    An admin picks both in /admin; every page then follows, because
    nothing below this block names a colour directly — it spends
@@ -79,6 +79,13 @@
   --hero-ink-soft: rgba(255, 255, 255, 0.82);
   --glow: color-mix(in srgb, var(--primary) 26%, transparent);
 
+  /* The hero slab's ground. A token because it is the one surface a
+     direction cannot reach through the neutrals: linen's "navy" is a
+     warm brown, and a brown hero is not what anybody wants. */
+  --hero-bg:
+    radial-gradient(circle at 85% 15%, var(--glow), transparent 60%),
+    linear-gradient(135deg, var(--navy-900), var(--navy-700));
+
   --radius-xs: 6px;
   --radius-sm: 10px;
   --radius: 14px;
@@ -119,6 +126,66 @@
   --tint: #5cae45;
   --band-a: #0c7a3e;
   --band-b: #e6f5a3;
+}
+
+:root[data-direction="linen"] {
+  /* THE RAMP IS THE LOGO'S OWN BLUE. Sampled down its gradient rather
+     than chosen: #003ADB in the top band, #0191FD below it, #5CD1DE at
+     the horizon. Settled to weights that hold 4.5:1 on cream. */
+  --emerald-50:  #eef2f9;
+  --emerald-100: #dde5f2;
+  --emerald-200: #bccbe6;
+  --emerald-300: #8fa8d4;
+  --emerald-400: #4f74bb;
+  --emerald-500: #2a56a0;
+  --emerald-600: #17407f;
+  --emerald-700: #113567;
+  --emerald-800: #0e2b53;
+  --tint: #17407f;
+  --band-a: #003adb;
+  --band-b: #feb235;
+
+  /* WARM NEUTRALS. The only direction that moves these: the others are
+     all cool greys on white, and linen is the whole point of this one.
+     Overriding the ramp is enough — the semantic layer above reads
+     through var(), so --bg, --ink, --border and --surface all follow
+     without being named again here. */
+  --navy-900: #23201c;
+  --navy-800: #2e2a24;
+  --navy-700: #3d382f;
+  --navy-600: #5e564b;
+  --slate-50:  #f6f2ea;
+  --slate-100: #efe9dd;
+  --slate-200: #e2d9c9;
+  --slate-300: #c8bca8;
+  --slate-400: #9a8e7c;
+  --slate-500: #6d655a;
+  --slate-600: #5e564b;
+  --slate-700: #403a31;
+  --slate-900: #23201c;
+  --white:     #fcfaf6;
+
+  /* Amber is the logo's warmest note and the one thing on the page that
+     is allowed to shout. Dark ink on it, never white — #feb235 behind
+     white text is about 1.8:1. */
+  --accent: #feb235;
+  --on-accent: #23201c;
+
+  /* NEAR-BLACK, NOT BROWN. The logo's glow was drawn to die into black;
+     over cream its half-transparent edge composites to grey
+     (#6f6d6a at alpha 140), so it gets the ground it was made for. */
+  --hero-bg: linear-gradient(150deg, #0b0c10 0%, #14161d 58%, #0b0c10 100%);
+  --glow: color-mix(in srgb, var(--accent) 22%, transparent);
+
+  /* Editorial, not app-like: hairlines carry the structure, so the
+     corners tighten and the shadows go away. */
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius: 4px;
+  --radius-lg: 6px;
+  --shadow-sm: none;
+  --shadow: none;
+  --shadow-lg: 0 18px 40px -24px rgba(35, 32, 28, 0.38);
 }
 
 /* --- Dark, all directions. Only the neutrals and the semantic layer
@@ -201,6 +268,58 @@
   --emerald-700: #9ce07e;
   --emerald-800: #cdf0ae;
   --tint: #7ddc4e;
+}
+
+:root[data-mode="dark"][data-direction="linen"] {
+  --emerald-50:  #0a1222;
+  --emerald-100: #0f1a2e;
+  --emerald-200: #152442;
+  --emerald-300: #1d3360;
+  --emerald-400: #2d5496;
+  --emerald-500: #5a8ddd;
+  --emerald-600: #3f71c4;
+  --emerald-700: #93b6ef;
+  --emerald-800: #cfe0fb;
+  --tint: #3f71c4;
+
+  /* Dark linen is warm charcoal, not blue-black — the cream is gone but
+     the warmth is the direction's signature and survives the mode. */
+  --slate-50:  #16140f;
+  --white:     #1d1a15;
+  --accent: #feb235;
+  --on-accent: #23201c;
+  --hero-bg: linear-gradient(150deg, #0b0c10 0%, #14161d 58%, #0b0c10 100%);
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius: 4px;
+  --radius-lg: 6px;
+  --shadow-sm: none;
+  --shadow: none;
+}
+
+/* Linen's components: the hairline does the work a border-plus-shadow
+   box does in the other directions. Scoped to the direction so the
+   three that shipped are untouched. */
+:root[data-direction="linen"] .card {
+  border-color: var(--border);
+}
+:root[data-direction="linen"] .hero {
+  border: 0;
+}
+:root[data-direction="linen"] .nav {
+  border-bottom-color: var(--border);
+}
+:root[data-direction="linen"] .pill,
+:root[data-direction="linen"] .chip {
+  border-radius: 3px;
+}
+:root[data-direction="linen"] h1,
+:root[data-direction="linen"] h2 {
+  font-weight: 400;
+  letter-spacing: -0.025em;
+}
+:root[data-direction="linen"] .stat {
+  box-shadow: none;
 }
 
 * { box-sizing: border-box; }
@@ -290,9 +409,7 @@ code { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monos
   position: relative;
   border-radius: var(--radius-lg);
   overflow: hidden;
-  background:
-    radial-gradient(circle at 85% 15%, var(--glow), transparent 60%),
-    linear-gradient(135deg, var(--navy-900), var(--navy-700));
+  background: var(--hero-bg);
   color: var(--hero-ink);
   padding: 44px 32px;
   margin-bottom: 24px;

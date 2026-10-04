@@ -4,7 +4,7 @@
  * Two attributes on <html> carry the whole thing:
  *
  *     data-mode="dark" | "light"
- *     data-direction="broadcast" | "dusk" | "turf"
+ *     data-direction="broadcast" | "dusk" | "turf" | "linen"
  *
  * styles.css defines a palette for each combination, so nothing here
  * knows a hex value except the small swatches the admin picker draws.
@@ -48,6 +48,17 @@ export const DIRECTIONS = [
     mark: "/logos/turf-mark.png",
     bands: ["#0c7a3e", "#e6f5a3"],
     note: "Fairway green into lime. The most golf-course of the three.",
+  },
+  {
+    key: "linen",
+    name: "Linen",
+    logo: "/logos/linen.png",
+    mark: "/logos/linen-mark.png",
+    bands: ["#003adb", "#feb235"],
+    note:
+      "Cream paper, the logo's own blue, amber for the one thing that "
+      + "shouts. Hairlines instead of boxes — the only direction that "
+      + "warms the neutrals.",
   },
 ];
 
