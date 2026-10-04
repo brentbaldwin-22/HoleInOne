@@ -91,17 +91,22 @@
   /* Accent as TEXT on linen. The accent itself is 3.31:1 there. */
   --accent-text: #c83502;
 
-  /* DISABLED IS PALE BLUE, NOT BEIGE. Greying a control out meant
-     dropping it onto the linen in --ink-faint, so the one button on a
-     form that was not yet pressable was also the only beige thing on
-     the page -- it read as unfinished rather than as a state. It stays
-     in the family now: the blue at its palest, with a label at 3.38:1
-     on it, which is legible and obviously not the 6.87:1 of a live
-     one. The difference between "off" and "on" is saturation, which is
-     what it should have been. */
-  --disabled-bg: var(--primary-soft);
-  --disabled-ink: #5b7fc7;
-  --disabled-rule: var(--emerald-200);
+  /* DISABLED: THE FILL WASHED OUT, THE LABEL STILL WHITE.
+     Derived rather than picked -- the reference pair was measured
+     (#532097 -> #dad0e3: saturation x0.39, lightness 35.9% -> 85.3%)
+     and the same transform applied to --primary, so this is that look
+     in our blue rather than an approximation of it.
+
+     It is a deliberate trade and worth writing down: white on this
+     measures 1.49:1, the same as the reference's own 1.49:1. WCAG 1.4.3
+     exempts inactive controls from the contrast minimum, so it is not a
+     conformance failure -- but the label is decoration at this ratio,
+     not something anyone reads. That is the point: the shape still says
+     "button", its position still says which one, and nothing about it
+     says "press me". The capsule against the linen is 1.33:1, which is
+     a shade clearer than the reference's 1.21:1 against its own page. */
+  --disabled-bg: #cbd4e8;
+  --disabled-ink: #ffffff;
 
   --danger: #b3261e;
   --danger-soft: #f7e3e1;
@@ -538,19 +543,24 @@ button:disabled, button.disabled,
 button:disabled:hover, .btn:disabled:hover, .ghost:disabled:hover {
   background: var(--disabled-bg);
   color: var(--disabled-ink);
-  border-color: var(--disabled-rule);
+  border-color: var(--disabled-bg);
   box-shadow: none;
   opacity: 1;
   cursor: not-allowed;
 }
-/* A disabled GHOST has no box to tint, so it carries the pale blue as
-   its lettering and keeps its ground. */
+/* A GHOST BECOMES A CAPSULE WHEN IT IS OFF. Its label is white like
+   every other disabled one, and white on linen is nothing at all -- so
+   it needs the fill behind it, which means taking back the horizontal
+   padding the flush-left ghost rule removes. Listed at this specificity
+   and in this position for exactly that reason. */
 .btn.ghost:disabled, button.ghost:disabled, .ghost:disabled,
 .btn.ghost:disabled:hover, button.ghost:disabled:hover, .ghost:disabled:hover {
-  background: transparent;
+  background: var(--disabled-bg);
   color: var(--disabled-ink);
-  border-color: transparent;
-  box-shadow: inset 0 -1px 0 var(--disabled-rule);
+  border-color: var(--disabled-bg);
+  box-shadow: none;
+  padding-left: 13px;
+  padding-right: 13px;
 }
 /* `small` is a text-size class everywhere else, so it is only a size
    here when it is on a button. */
