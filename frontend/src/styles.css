@@ -537,31 +537,6 @@ button:hover { background: var(--accent-strong); color: #fff; border-color: var(
    Dropping the fill is unambiguous: nothing here is pressable. The
    .ghost selectors are listed so the rule can out-specify .btn.ghost's
    underline, which is the one thing that would otherwise survive. */
-button:disabled, button.disabled,
-.btn:disabled, .btn.disabled, a.btn.disabled,
-.btn.ghost:disabled, .ghost:disabled,
-button:disabled:hover, .btn:disabled:hover, .ghost:disabled:hover {
-  background: var(--disabled-bg);
-  color: var(--disabled-ink);
-  border-color: var(--disabled-bg);
-  box-shadow: none;
-  opacity: 1;
-  cursor: not-allowed;
-}
-/* A GHOST BECOMES A CAPSULE WHEN IT IS OFF. Its label is white like
-   every other disabled one, and white on linen is nothing at all -- so
-   it needs the fill behind it, which means taking back the horizontal
-   padding the flush-left ghost rule removes. Listed at this specificity
-   and in this position for exactly that reason. */
-.btn.ghost:disabled, button.ghost:disabled, .ghost:disabled,
-.btn.ghost:disabled:hover, button.ghost:disabled:hover, .ghost:disabled:hover {
-  background: var(--disabled-bg);
-  color: var(--disabled-ink);
-  border-color: var(--disabled-bg);
-  box-shadow: none;
-  padding-left: 13px;
-  padding-right: 13px;
-}
 /* `small` is a text-size class everywhere else, so it is only a size
    here when it is on a button. */
 button.small, .btn.small {
@@ -617,6 +592,50 @@ button.secondary, .btn.secondary {
 }
 button.secondary:hover, .btn.secondary:hover {
   background: var(--accent-strong); color: #fff; border-color: var(--accent-strong);
+}
+
+/* OFF, AND IT HAS TO BE SAID LAST.
+   This block used to sit above the variant rules, and it lost to them
+   on source order: `button.secondary` and `button:disabled` are both
+   (0,1,1), `.btn.secondary` and `.btn:disabled` are both (0,2,0), and a
+   tie goes to whichever is written later. So a disabled .secondary --
+   which is most of the Setup column on the cameras page -- kept its
+   live blue outline while actually being unpressable. It looked like a
+   button you could press and did nothing when you did.
+
+   Hence both halves of the fix: the block moved below every variant,
+   and each variant is named WITH :disabled so it out-ranks rather than
+   merely out-orders. The hover forms are listed too, because a pointer
+   over a dead control must not light it up.
+
+   A ghost becomes a capsule here. Its label is white like every other
+   disabled control and white on linen is nothing at all, so it needs
+   the fill behind it -- which means taking back the horizontal padding
+   that the flush-left ghost rule strips. */
+button:disabled, button.disabled, .btn:disabled, .btn.disabled,
+a.btn.disabled, .disabled,
+button.secondary:disabled, .btn.secondary:disabled, .secondary:disabled,
+button.accent:disabled,    .btn.accent:disabled,    .accent:disabled,
+button.danger:disabled,    .btn.danger:disabled,    .danger:disabled,
+button.ghost:disabled,     .btn.ghost:disabled,     .ghost:disabled,
+button.chip:disabled,      .chip:disabled,
+button:disabled:hover, .btn:disabled:hover,
+button.secondary:disabled:hover, .btn.secondary:disabled:hover, .secondary:disabled:hover,
+button.accent:disabled:hover,    .btn.accent:disabled:hover,    .accent:disabled:hover,
+button.danger:disabled:hover,    .btn.danger:disabled:hover,    .danger:disabled:hover,
+button.ghost:disabled:hover,     .btn.ghost:disabled:hover,     .ghost:disabled:hover,
+button.chip:disabled:hover,      .chip:disabled:hover {
+  background: var(--disabled-bg);
+  color: var(--disabled-ink);
+  border-color: var(--disabled-bg);
+  box-shadow: none;
+  opacity: 1;
+  cursor: not-allowed;
+}
+button.ghost:disabled, .btn.ghost:disabled, .ghost:disabled,
+button.ghost:disabled:hover, .btn.ghost:disabled:hover, .ghost:disabled:hover {
+  padding-left: 13px;
+  padding-right: 13px;
 }
 
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }

@@ -53,6 +53,41 @@ function heartbeatTone(sec) {
   return { color: "#b3261e", label: "down" };
 }
 
+// WHAT A DEAD AGENT TAKES WITH IT.
+//
+// The split is not "camera controls" vs "the rest" -- it is whether the
+// press has to reach the Pi RIGHT NOW. Capture, Watch live, Trigger
+// zones, Focus mode, Read profile and the green Measure all do: they
+// want a recording started, a frame pushed, or a question put to the
+// Hanwha. With the agent down, pressing one either does nothing visible
+// or, in the Measure case, opens a modal that retries for twelve
+// seconds and then says it could not get a frame. Both are the console
+// lying about what it can do.
+//
+// Everything the BACKEND owns stays live on purpose: enable, pause
+// triggering, pair, rename, rotate the token, delete. The Pi picks
+// those up on its next heartbeat, so setting one while it is away is
+// not a mistake -- it is the normal way to queue a change for when it
+// comes back.
+//
+// Two SETUP controls look like they belong in the first group and do
+// not: Aim (green->tee) and Today's pin & ball area both work off
+// frames from an already-uploaded clip, via cameraCalibrationSource.
+// They never touch the device, so they keep working with the rig off
+// the air -- which is exactly when you want to be doing that work.
+function agentIsDown(cam) {
+  const sec = secsAgo(cam.last_seen_at);
+  return sec == null || sec > HEARTBEAT_DOWN_SEC;
+}
+function offlineReason(cam) {
+  return cam.last_seen_at
+    ? `The agent last called in ${tsRel(cam.last_seen_at)} and is down, `
+      + "so nothing that has to reach the Pi can work. Get the link back "
+      + "first — this is not about the camera."
+    : "No agent has ever called in for this camera, so there is nothing "
+      + "here to reach yet.";
+}
+
 // Seconds after which an event that hasn't reached a terminal state is
 // treated as stuck. The tee-only fallback fires at 180s, so 300 gives it
 // a chance to work before we call anything wrong.
@@ -135,7 +170,7 @@ const TONE_CLASS = {
 // a frame rate (it cannot — the sensor belongs to the camera), so the
 // rate is changed in the camera's own profile, and this is how you find
 // out what it is.
-function StreamReadout({ stream, onRead, busy }) {
+function StreamReadout({ stream, onRead, busy, busyWhy }) {
   const s = stream || {};
   const rows = [
     ["Opened as", s.open_w && s.open_h
@@ -217,7 +252,8 @@ function StreamReadout({ stream, onRead, busy }) {
                     alignItems: "center", flexWrap: "wrap" }}>
         <button type="button" className="ghost small"
                 style={{ width: "auto" }} disabled={busy}
-                title="Ask the camera what its video profile is set to — resolution, frame rate, codec"
+                title={busyWhy
+                  || "Ask the camera what its video profile is set to — resolution, frame rate, codec"}
                 onClick={onRead}>
           Read profile
         </button>
@@ -937,7 +973,7 @@ function stillClock(iso) {
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-function CameraStill({ cam, adminPassword, onWatch, disabled }) {
+function CameraStill({ cam, adminPassword, onWatch, disabled, disabledWhy }) {
   const [src, setSrc] = useState(null);
   const [takenAt, setTakenAt] = useState(null);
   const [missing, setMissing] = useState(false);
@@ -1029,7 +1065,8 @@ function CameraStill({ cam, adminPassword, onWatch, disabled }) {
           style={{ width: "auto", flexShrink: 0 }}
           onClick={onWatch}
           disabled={disabled}
-          title="Open the live picture from this camera (~10 fps). The camera only streams while this is open."
+          title={disabledWhy
+            || "Open the live picture from this camera (~10 fps). The camera only streams while this is open."}
         >
           ▶ Watch live
         </button>
@@ -2129,6 +2166,8 @@ export default function AdminCameras() {
             ? findById(cam.paired_with_camera_id) : null;
           const candidates = pairCandidates(cam);
           const isBusy = !!busy[cam.id];
+          const offline = agentIsDown(cam);
+          const offlineWhy = offline ? offlineReason(cam) : null;
           const tokenVisible = !!revealedToken[cam.id];
           return (
             <div key={cam.id} className="card tight" style={{ margin: 0, padding: 12 }}>
@@ -2569,7 +2608,8 @@ export default function AdminCameras() {
                       <CameraStill
                         cam={cam}
                         adminPassword={adminPassword}
-                        disabled={isBusy}
+                        disabled={isBusy || offline}
+                        disabledWhy={offlineWhy}
                         onWatch={() => startWatch(cam)}
                       />
                     )}
@@ -2635,8 +2675,9 @@ export default function AdminCameras() {
                     <button
                       type="button" className="small"
                       onClick={() => captureNow(cam)}
-                      disabled={isBusy || !cam.enabled}
-                      title="Record 30s now on this camera and its paired green, and send it through produce"
+                      disabled={isBusy || !cam.enabled || offline}
+                      title={offlineWhy
+                        || "Record 30s now on this camera and its paired green, and send it through produce"}
                     >
                       Capture
                     </button>
@@ -2657,9 +2698,11 @@ export default function AdminCameras() {
                       type="button"
                       className={cam.focus?.focus_seconds ? "small" : "secondary small"}
                       onClick={() => focusMode(cam)}
-                      disabled={isBusy || !cam.enabled}
+                      disabled={isBusy || !cam.enabled || offline}
                       title={
-                        cam.focus?.focus_seconds
+                        offlineWhy
+                          ? offlineWhy
+                          : cam.focus?.focus_seconds
                           ? `Focus mode on — ${cam.focus.focus_seconds}s left. The score updates every few seconds; turn the ring until it peaks. Press again to stop it now.`
                           : "Report the focus score every few seconds for 10 minutes, so you can turn the lens ring against a live number. Resets the session best."
                       }
@@ -2679,9 +2722,11 @@ export default function AdminCameras() {
                     <button
                       type="button"
                       className={zoningCamId === cam.id ? "small" : "secondary small"}
-                      disabled={isBusy}
+                      disabled={isBusy || offline}
                       title={
-                        watchingCamId === cam.id
+                        offlineWhy
+                          ? offlineWhy
+                          : watchingCamId === cam.id
                           ? "Draw the boxes a golfer has to stand in for this camera to trigger — one per tee, so the path between them does not fire it"
                           : "Watch this camera first: the zones are drawn on its live picture, so you can see where the tees actually are"
                       }
@@ -2726,8 +2771,9 @@ export default function AdminCameras() {
                     <button
                       type="button" className="secondary small"
                       onClick={() => setCalibratingCam(cam)}
-                      disabled={isBusy}
-                      title="Map this camera's pixels onto the green in feet, by marking four edges of the putting surface. This is what measures closest-to-the-pin and stamps the distance on a clip. Aiming the tracer is the separate green→tee button."
+                      disabled={isBusy || offline}
+                      title={offlineWhy
+                        || "Map this camera's pixels onto the green in feet, by marking four edges of the putting surface. This is what measures closest-to-the-pin and stamps the distance on a clip. Aiming the tracer is the separate green→tee button."}
                     >
                       {cam.green_homography
                         ? "Measure: distances ✓"
@@ -2767,7 +2813,8 @@ export default function AdminCameras() {
                     >
                       <StreamReadout
                         stream={cam.stream}
-                        busy={isBusy}
+                        busy={isBusy || offline}
+                        busyWhy={offlineWhy}
                         onRead={() => readStreamProfile(cam)}
                       />
                       {/* EVERY CONTROL IS ON THE PICTURE NOW — zoom,
