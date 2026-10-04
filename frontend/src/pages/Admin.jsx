@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, API_BASE } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
+import useSiteTheme from "../hooks/useSiteTheme.js";
+import { logoUrl } from "../theme.js";
 import AppearanceCard from "../components/AppearanceCard.jsx";
 import { fmtDateTime } from "../time.js";
 
@@ -26,6 +28,7 @@ function today() {
 }
 
 export default function Admin() {
+  const theme = useSiteTheme();
   const [adminPassword, setAdminPassword] = useState(() => readStoredPassword());
   const [authed, setAuthed] = useState(false);
   const [courses, setCourses] = useState([]);
@@ -79,20 +82,16 @@ export default function Admin() {
     <div className="wrap wide">
       <div className="brand" style={{ justifyContent: "space-between", width: "100%" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div
-            style={{
-              height: 60,
-              overflow: "hidden",
-              display: "flex",
-              alignItems: "center",
-            }}
-          >
-            <img
-              src="/golfreelz-logo.png"
-              alt="GolfReelz"
-              style={{ height: 100, width: "auto", display: "block" }}
-            />
-          </div>
+          {/* Same lockup the public header wears, through the same
+              lookup — this used to hard-code /golfreelz-logo.png in a
+              60px box clipping a 100px image, which was a crop built
+              around the old banner's whitespace and would have cut the
+              top and bottom off the current mark. */}
+          <img
+            src={logoUrl(theme.direction)}
+            alt="GolfReelz"
+            style={{ height: 62, width: "auto", display: "block" }}
+          />
           <div className="tag">Operator Console</div>
         </div>
       </div>
