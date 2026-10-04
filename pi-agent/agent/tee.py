@@ -917,6 +917,17 @@ class TeeAgent:
                                 self, session_id,
                                 self._copy_stop_policy(
                                     detector, no_person_timeout, det_period),
+                                # THE GREEN IS WAITING ON THIS. The
+                                # decode path sends it from inside
+                                # _record_and_upload, which the copy
+                                # engine replaces — so without this the
+                                # partner is never told the swing ended
+                                # and records to its 150s cap, which on
+                                # the copy engine is a 269MB clip that
+                                # will never cross a cellular link.
+                                on_recording_ended=(
+                                    lambda: self._signal_event_stop(
+                                        session_id)),
                                 fixed_seconds=pending_secs,
                                 not_before=_not_before,
                             )
@@ -983,6 +994,17 @@ class TeeAgent:
                 self._copy.stop()
 
     # -----------------------------------------------------------------
+
+    def _signal_event_stop(self, session_id: str) -> None:
+        """Tell the backend this event is over, so the paired green
+        stops recording. Best-effort and loud about failing: the decode
+        path has always done this and the symptom when it does not
+        happen is silent and expensive — a green that keeps rolling to
+        its cap."""
+        try:
+            self.client.event_stop(session_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("event_stop failed for %s: %s", session_id, exc)
 
     def _copy_stop_policy(self, detector, no_person_timeout: float,
                           det_period: float):

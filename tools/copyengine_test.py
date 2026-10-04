@@ -133,6 +133,36 @@ def main() -> int:
           True)
     check("extract reports the gap", '"missing_seconds": missing' in cap, True)
 
+    # ---- the regression that cost green 269MB clips all day ------
+    # The decode path sends /event-stop from inside _record_and_upload.
+    # The copy engine REPLACES that method, so switching engines
+    # silently stopped the tee telling its partner the swing was over —
+    # and a green that is never told records to its 150s cap. Measured:
+    # 139 polls, 0 failures, length_cap. The polling was perfect; there
+    # was simply nothing to hear.
+    import re
+    tee_src = (ROOT / "pi-agent" / "agent" / "tee.py").read_text()
+    eng_src = (ROOT / "pi-agent" / "agent" / "copyengine.py").read_text()
+
+    check("the tee hands the engine a way to signal the end",
+          bool(re.search(r"on_recording_ended\s*=", tee_src)), True)
+    check("and that way calls event_stop",
+          "def _signal_event_stop" in tee_src
+          and "self.client.event_stop(session_id)" in tee_src, True)
+    check("the engine accepts it", "on_recording_ended" in eng_src, True)
+
+    # It must fire BEFORE the cut, not after: extraction takes 1-17s
+    # and the green keeps rolling for every one of them.
+    i_signal = eng_src.index("on_recording_ended()")
+    i_extract = eng_src.index("self.ring.extract(")
+    check("and fires before the clip is cut, not after",
+          i_signal < i_extract, True)
+
+    # A green must never send it — that is the tee's job alone.
+    green_src = (ROOT / "pi-agent" / "agent" / "green.py").read_text()
+    check("the green does not signal stop for itself",
+          "on_recording_ended" in green_src, False)
+
     print()
     if FAIL:
         print(f"{len(FAIL)} FAILED: {', '.join(FAIL)}")

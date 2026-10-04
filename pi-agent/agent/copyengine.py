@@ -154,6 +154,7 @@ class CopyEngine:
         session_id: str,
         should_stop: Callable[[float], Optional[str]],
         *,
+        on_recording_ended: Optional[Callable[[], None]] = None,
         fixed_seconds: Optional[float] = None,
         not_before: Optional[float] = None,
         tick: float = 0.2,
@@ -168,6 +169,14 @@ class CopyEngine:
 
         Returns the same kind of reason string the decode path returns,
         so a caller can treat the two identically.
+
+        `on_recording_ended` fires the moment the window closes, BEFORE
+        the clip is cut. On a tee that is where /event-stop goes: the
+        paired green is sitting in its own loop waiting to be told, and
+        until it is told it records until its length cap. Extraction
+        takes between one and seventeen seconds depending on the clip,
+        and every one of those is a second the green keeps rolling, so
+        this cannot wait until the end.
         """
         t_trigger = float(not_before or time.time())
         preroll = float(getattr(runner, "buffer_seconds", 5.0))
@@ -220,6 +229,18 @@ class CopyEngine:
 
         t_end = time.time()
         t_start = max(0.0, t_trigger - preroll)
+
+        # TELL THE PARTNER FIRST. Best-effort, exactly as the decode
+        # path treats it: a green that records a few seconds too much
+        # is a far smaller problem than one that stops too early, and a
+        # failed call here must not cost us the clip we just recorded.
+        if on_recording_ended is not None:
+            try:
+                on_recording_ended()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("copy: could not signal the end of session=%s "
+                            "(%s) — a paired green will record on until "
+                            "its length cap", session_id, exc)
 
         # A LENGTH CAP IS A FAILURE TO HEAR THE END, not an ending. The
         # clip is as long as the rig is willing to make it, which on a
