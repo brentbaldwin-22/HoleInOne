@@ -102,11 +102,16 @@ const EVENT_STATES = {
   failed: { label: "Failed", tone: "bad", ok: "See the error below." },
 };
 
-const TONE_STYLE = {
-  ok: { bg: "rgba(34,197,94,0.14)", br: "rgba(34,197,94,0.5)" },
-  info: { bg: "rgba(56,132,255,0.14)", br: "rgba(56,132,255,0.5)" },
-  warn: { bg: "rgba(234,179,8,0.16)", br: "rgba(234,179,8,0.55)" },
-  bad: { bg: "rgba(239,68,68,0.14)", br: "rgba(239,68,68,0.5)" },
+// TONE -> THE STYLESHEET'S PILL VARIANT, not a pair of rgba values.
+// This was a private colour table, so a status chip here was a different
+// green from a status chip anywhere else on the site and neither moved
+// when the palette did. The names on the right are classes in
+// styles.css, mixed from the logo's own bands.
+const TONE_CLASS = {
+  ok: "ok",
+  info: "live",
+  warn: "warn",
+  bad: "danger",
 };
 
 /** The stuck copy, chosen from WHICH clip is missing rather than from the
@@ -360,7 +365,7 @@ function ClipChip({ label, filename, sizeMb, durationSec, missing, url,
   const moving = coming && inFlight.stale_seconds < 30;
   const tone = coming ? (moving ? "ok" : "warn")
     : !arrived ? "bad" : missing ? "warn" : "ok";
-  const s = TONE_STYLE[tone];
+  const toneClass = TONE_CLASS[tone];
   const mb = (b) => (b / (1024 * 1024)).toFixed(1);
   const detail = coming
     ? [
@@ -383,14 +388,7 @@ function ClipChip({ label, filename, sizeMb, durationSec, missing, url,
           durationSec != null ? `${Number(durationSec).toFixed(1)}s` : null,
         ].filter(Boolean).join(" · ") || "arrived";
   const body = (
-    <span
-      className="small"
-      style={{
-        display: "inline-flex", alignItems: "center", gap: 6,
-        padding: "3px 10px", borderRadius: 999,
-        background: s.bg, border: `1px solid ${s.br}`,
-      }}
-    >
+    <span className={`pill small ${toneClass}`}>
       <b>{label}</b>
       <span className="muted">
         {coming ? "⟳" : arrived ? "✓" : "✗"} {detail}
@@ -822,19 +820,13 @@ function CameraEventsPanel({ adminPassword }) {
         const meta = EVENT_STATES[ev.status] || {
           label: ev.status || "unknown", tone: "info", ok: "",
         };
-        const s = TONE_STYLE[isStuck ? "bad" : meta.tone];
+        const toneClass = TONE_CLASS[isStuck ? "bad" : meta.tone];
         const busy = busyId === ev.id;
         return (
           <div key={ev.id} className="card" style={{ marginBottom: 10 }}>
             <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <b>#{ev.id}</b>
-              <span
-                className="small"
-                style={{
-                  padding: "3px 10px", borderRadius: 999,
-                  background: s.bg, border: `1px solid ${s.br}`, fontWeight: 600,
-                }}
-              >
+              <span className={`pill small ${toneClass}`}>
                 {meta.label}{isStuck ? " · STUCK" : ""}
               </span>
               <span className="small muted">
@@ -2322,11 +2314,8 @@ export default function AdminCameras() {
                     <span className="tiny muted"> · “{cam.name}”</span>
                   )}
                   {cam.kind === "ip" && (
-                    <span className="tiny" style={{
-                      marginLeft: 6, padding: "1px 7px", borderRadius: 999,
-                      border: "1px solid rgba(70,130,200,0.55)",
-                      background: "rgba(70,130,200,0.14)",
-                    }}>IP camera</span>
+                    <span className="pill tiny live"
+                          style={{ marginLeft: 6 }}>IP camera</span>
                   )}
                   <div className="tiny muted" style={{ marginTop: 2 }}>
                     {/* KEY OFF THE HEARTBEAT, NOT THE KIND. An IP camera

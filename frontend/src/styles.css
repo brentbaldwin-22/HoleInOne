@@ -81,6 +81,15 @@
   --accent: var(--mark-red);
   --accent-soft: #fde8e0;
   --on-accent: #1a1713;
+  /* THE HOVER FILL, and it is the accent one shade deeper on purpose.
+     White on #f54304 measures 3.69:1, which is under the line for a
+     12.5px bold label; #d53a03 is the same orange at 4.73:1 and still
+     reads as orange next to the crimson of --danger. #a82b02 is the
+     step after it, for hovering something that is already orange. */
+  --accent-strong: #d53a03;
+  --accent-deep: #a82b02;
+  /* Accent as TEXT on linen. The accent itself is 3.31:1 there. */
+  --accent-text: #c83502;
 
   --danger: #b3261e;
   --danger-soft: #f7e3e1;
@@ -416,7 +425,17 @@ code {
   text-decoration: none;
   transition: background 0.12s ease, color 0.12s ease;
 }
-.btn:hover { background: var(--primary-hover); color: var(--on-primary); text-decoration: none; }
+/* BLUE AT REST, ORANGE UNDER THE POINTER. Both of the mark's loudest
+   colours end up doing a job: band 1 is what a control looks like, and
+   the REELZ orange is what "you are about to press this" looks like.
+   Destructive buttons are the one exception below -- Delete turning
+   orange would read as a different action, not the same one hovered. */
+.btn:hover {
+  background: var(--accent-strong);
+  color: #fff;
+  border-color: var(--accent-strong);
+  text-decoration: none;
+}
 .btn:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
@@ -432,9 +451,9 @@ code {
   border-color: var(--primary);
 }
 .btn.secondary:hover, .secondary:hover {
-  background: var(--primary);
-  color: var(--on-primary);
-  border-color: var(--primary);
+  background: var(--accent-strong);
+  color: #fff;
+  border-color: var(--accent-strong);
 }
 .btn.ghost, .ghost {
   background: transparent;
@@ -444,11 +463,19 @@ code {
   letter-spacing: 0.04em;
   box-shadow: inset 0 -1px 0 var(--primary-soft);
 }
-.ghost:hover { background: transparent; color: var(--accent); box-shadow: inset 0 -1px 0 var(--accent); }
+.ghost:hover {
+  background: transparent;
+  color: var(--accent-text);
+  box-shadow: inset 0 -1px 0 var(--accent-text);
+}
 .btn.danger, .danger { background: var(--danger); color: #fff; border-color: transparent; }
-.btn.danger:hover, .danger:hover { background: #8e1d17; color: #fff; }
-.btn.accent, .accent { background: var(--accent); color: var(--on-accent); border-color: transparent; }
-.btn.accent:hover, .accent:hover { background: #d53a03; color: var(--on-accent); }
+.btn.danger:hover, .danger:hover { background: #8e1d17; color: #fff; border-color: transparent; }
+.btn.accent, .accent {
+  background: var(--accent-strong); color: #fff; border-color: transparent;
+}
+.btn.accent:hover, .accent:hover {
+  background: var(--accent-deep); color: #fff; border-color: transparent;
+}
 .btn.wide, .wide.btn { width: 100%; }
 
 /* EVERY BUTTON, NOT JUST .btn.
@@ -458,12 +485,11 @@ code {
    in the same column as the house ones. Nobody added a class as they
    went and nobody is going to; the element itself has to be dressed.
 
-   The element default is the SECONDARY treatment: a band-1 hairline, a
-   band-1 label, paper behind it, and the fill only on hover. It is the
-   quiet one on purpose -- a bare button is usually a secondary action,
-   and the solid fill stays something you opt into with .btn -- but
-   quiet is not the same as colourless, which is what an ink outline
-   round an ink label was. Buttons that set their own background or
+   The element default is the FILLED one: band-1 blue with a white
+   label, the same thing .btn is, because a button nobody classed is
+   still a button somebody is meant to press and an outline is not what
+   that looks like. .secondary is the outline now, and it is an opt-out
+   rather than the default. Buttons that set their own background or
    geometry inline (the dot and frame grids in production) keep it:
    inline styles win over this block. */
 button {
@@ -475,8 +501,8 @@ button {
   padding: 9px 19px;
   border: 1px solid var(--primary);
   border-radius: var(--radius);
-  background: var(--paper);
-  color: var(--primary);
+  background: var(--primary);
+  color: var(--on-primary);
   font-family: var(--text);
   font-size: 0.78rem;
   font-weight: 600;
@@ -487,7 +513,7 @@ button {
   text-decoration: none;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
-button:hover { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+button:hover { background: var(--accent-strong); color: #fff; border-color: var(--accent-strong); }
 /* ONE DISABLED LOOK, fill or outline. This used to be opacity 0.45,
    which leaves a disabled primary still reading as a blue button you
    could press -- it looked like a rendering glitch rather than a state.
@@ -532,6 +558,35 @@ button.tiny, .btn.tiny {
   box-shadow: inset 0 -1px 0 var(--danger-soft);
 }
 .ghost.danger:hover { color: #8e1d17; box-shadow: inset 0 -1px 0 var(--danger); }
+
+/* LATE ON PURPOSE. `button:hover` above is (0,1,1) and so are `.ghost:hover`
+   and `.danger:hover`, so without these the element rule would win on
+   source order and paint a bare <button class="ghost"> with the orange
+   fill meant for a solid control -- and a bare Delete would hover
+   orange instead of red. */
+button.ghost:hover, .btn.ghost:hover {
+  background: transparent;
+  color: var(--accent-text);
+  border-color: transparent;
+  box-shadow: inset 0 -1px 0 var(--accent-text);
+}
+button.ghost.danger:hover, .btn.ghost.danger:hover {
+  background: transparent;
+  color: #8e1d17;
+  box-shadow: inset 0 -1px 0 var(--danger);
+}
+button.danger:hover, .btn.danger:hover, .danger:hover {
+  background: #8e1d17; color: #fff; border-color: transparent;
+}
+button.accent:hover, .btn.accent:hover, .accent:hover {
+  background: var(--accent-deep); color: #fff; border-color: transparent;
+}
+button.secondary, .btn.secondary {
+  background: var(--paper); color: var(--primary); border-color: var(--primary);
+}
+button.secondary:hover, .btn.secondary:hover {
+  background: var(--accent-strong); color: #fff; border-color: var(--accent-strong);
+}
 
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
 .field label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.16em; font-weight: 600; color: var(--ink-mute); }
@@ -604,6 +659,7 @@ tr:last-child td { border-bottom: 0; }
   background: var(--band-6-soft); border-color: #f5c2a8; color: #a33403;
 }
 .pill.small, .tag.small { font-size: 0.66rem; padding: 2px 9px; }
+.pill.tiny, .tag.tiny { font-size: 0.6rem; padding: 1px 8px; letter-spacing: 0.06em; }
 .chip {
   cursor: pointer;
   border-radius: var(--radius);

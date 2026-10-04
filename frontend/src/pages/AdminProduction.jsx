@@ -10400,11 +10400,8 @@ function Debug3Modal({ state, onClose }) {
                     "). It was carried through anyway so stages 2 and 3 " +
                     "could judge it on the ball and the club fan."
                   }
-                  style={{
-                    marginLeft: 8, padding: "1px 6px", borderRadius: 999,
-                    background: "rgba(214,158,46,0.18)", color: "#8a6116",
-                    fontWeight: 600,
-                  }}
+                  className="pill tiny warn"
+                  style={{ marginLeft: 8 }}
                 >
                   rescued · stage 1 said {sw.pose_gate || "no"}
                 </span>
@@ -13507,46 +13504,18 @@ function FinalizeStep({
 }
 
 function eventStatusBadge(status) {
-  // Inline-pill styling that mirrors the long-upload card's status
-  // chip (Queued / Production in Progress / Produced) so the two
-  // sections look like one family.
+  // THE LABEL AND THE STYLESHEET'S PILL VARIANT. This used to return a
+  // pair of rgba() strings, which meant the "Processed" green here was
+  // a different green from the "Processed" green on the camera list and
+  // neither followed the palette. `tone` is a class in styles.css,
+  // mixed from the logo's own bands; "" is the neutral capsule.
   switch (status) {
-    case "processed":
-      return {
-        label: "Processed",
-        bg: "rgba(40, 168, 92, 0.15)",
-        border: "rgba(40, 168, 92, 0.5)",
-      };
-    case "failed":
-      return {
-        label: "Failed",
-        bg: "rgba(220, 53, 69, 0.15)",
-        border: "rgba(220, 53, 69, 0.5)",
-      };
-    case "paired_uploaded":
-      return {
-        label: "Ready",
-        bg: "rgba(120, 120, 120, 0.15)",
-        border: "rgba(120, 120, 120, 0.5)",
-      };
-    case "tee_uploaded":
-      return {
-        label: "Tee uploaded",
-        bg: "rgba(255, 176, 0, 0.15)",
-        border: "rgba(255, 176, 0, 0.5)",
-      };
-    case "triggered":
-      return {
-        label: "Triggered",
-        bg: "rgba(255, 176, 0, 0.15)",
-        border: "rgba(255, 176, 0, 0.5)",
-      };
-    default:
-      return {
-        label: status || "—",
-        bg: "rgba(120, 120, 120, 0.15)",
-        border: "rgba(120, 120, 120, 0.5)",
-      };
+    case "processed":      return { label: "Processed", tone: "ok" };
+    case "failed":         return { label: "Failed", tone: "danger" };
+    case "paired_uploaded":return { label: "Ready", tone: "" };
+    case "tee_uploaded":   return { label: "Tee uploaded", tone: "warn" };
+    case "triggered":      return { label: "Triggered", tone: "warn" };
+    default:               return { label: status || "—", tone: "" };
   }
 }
 
@@ -13563,11 +13532,7 @@ function CameraEventCard({
   // request completes and the list refetches -- about three seconds, during
   // which the row looked untouched and the button looked unpressed.
   const badge = busy
-    ? {
-        label: "Production in Progress",
-        bg: "rgba(214, 158, 46, 0.15)",
-        border: "rgba(214, 158, 46, 0.5)",
-      }
+    ? { label: "Production in progress", tone: "warn" }
     : eventStatusBadge(ev.status);
   const triggeredAt = ev.triggered_at;
   // WHEN EACH CAMERA'S FIRST FRAME IS. The Pi reports it per camera and
@@ -13682,16 +13647,8 @@ function CameraEventCard({
             flexShrink: 0,
           }}
         >
-          <span
-            className="small"
-            style={{
-              padding: "4px 10px",
-              borderRadius: 999,
-              background: badge.bg,
-              border: `1px solid ${badge.border}`,
-              textAlign: "center",
-            }}
-          >
+          <span className={`pill small ${badge.tone}`}
+                style={{ justifyContent: "center" }}>
             {badge.label}
           </span>
           <button
@@ -16330,13 +16287,7 @@ export default function AdminProduction() {
               </h4>
               {row.source?.kind === "camera" ? (
                 <span
-                  className="small"
-                  style={{
-                    padding: "2px 8px",
-                    borderRadius: 999,
-                    background: "rgba(56, 132, 255, 0.12)",
-                    border: "1px solid rgba(56, 132, 255, 0.4)",
-                  }}
+                  className="pill small live"
                   title={
                     row.source.triggered_at
                       ? `Triggered ${fmtDateTime(row.source.triggered_at)}`
@@ -16761,28 +16712,15 @@ export default function AdminProduction() {
                   {(row.produced_clips || []).map((c, i) => (
                     <span
                       key={c.id}
-                      className="small"
                       // A PRODUCED CLIP WITH NO NUMBER IS A FAILURE,
                       // not a neutral state. Produce measures on its own
                       // now, so reaching here means it could not -- and
                       // a grey pill let that sit unnoticed among the
                       // ones that worked. Red is the queue telling you
                       // which shots still need a person.
-                      style={{
-                        padding: "3px 10px",
-                        borderRadius: 999,
-                        border: "1px solid "
-                          + (c.distance_from_pin_feet != null
-                            ? "rgba(40,168,92,0.55)"
-                            : "rgba(214,69,69,0.6)"),
-                        background: c.distance_from_pin_feet != null
-                          ? "rgba(40,168,92,0.14)"
-                          : "rgba(214,69,69,0.12)",
-                        color: c.distance_from_pin_feet != null
-                          ? undefined : "#b3261e",
-                        fontWeight: c.distance_from_pin_feet != null
-                          ? undefined : 600,
-                      }}
+                      className={`pill small ${
+                        c.distance_from_pin_feet != null ? "ok" : "danger"
+                      }`}
                       title={c.distance_from_pin_feet != null
                         ? "Measured automatically when this clip was produced."
                         : "Produce could not measure this one — open Measure / adjust and mark the pin and ball by hand."}
