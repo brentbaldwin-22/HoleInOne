@@ -43,7 +43,7 @@ from .common import (
 from . import tee_roi
 from .focus_meter import FocusMeter
 from .livestream import LiveStreamer
-from .copyengine import CopyEngine
+from .copyengine import CopyEngine, copy_configured
 
 log = logging.getLogger("golfreelz_agent.tee")
 
@@ -328,6 +328,50 @@ def _in_roi(pt: tuple[int, int], roi) -> bool:
 # ---------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------
+# How deep the decoded pre-roll ring has to be
+# ---------------------------------------------------------------------
+
+# WHEN THE COPY ENGINE RUNS, THE SEGMENT RING IS THE PRE-ROLL.
+#
+# Both engines were filling a pre-roll at once. The copy engine keeps
+# ~155s of the camera's own H.264 on disk, and alongside it the decode
+# path kept `buffer_seconds * fps` DECODED frames in RAM -- 301 numpy
+# arrays of 1920x1080x3 at 1080p60, about 1.9GB, written every frame and
+# read by nothing, because the copy engine cuts its clips out of the
+# segment ring instead.
+#
+# IT CANNOT GO TO ZERO. Two things still read the ring: the detector,
+# which only ever looks at snapshot()[-1], and the decode FALLBACK at
+# the record fork -- an unhealthy segment ring sends that one swing down
+# the old path rather than losing it, and that path opens its clip with
+# whatever pre-roll is in RAM. So the ring shrinks to a fallback depth
+# rather than disappearing.
+#
+# WHAT THE SHORTER DEFAULT COSTS, stated plainly: if the segment ring is
+# unhealthy at the moment of a swing, that clip opens 2s before the
+# trigger instead of 5s. That is the downswing and impact but probably
+# not the address. It applies only on the degraded path, which is
+# already the "something is wrong" case -- and 1.9GB of RAM to hold a
+# pre-roll nothing reads is the wrong price for it.
+DEFAULT_COPY_FALLBACK_PREROLL = 2.0
+
+
+def preroll_seconds(cfg: dict) -> float:
+    """Seconds of DECODED frames to keep in RAM.
+
+    `buffer_seconds` when the decode path is doing the recording, and
+    the smaller fallback depth when the copy engine is. Pure, so the
+    rule can be tested without standing up an agent.
+    """
+    if not copy_configured(cfg):
+        return float(cfg.get("buffer_seconds", 5))
+    return max(0.5, float(
+        cfg.get("copy_fallback_preroll_seconds",
+                DEFAULT_COPY_FALLBACK_PREROLL)))
+
 
 class TeeAgent:
     def __init__(self, cfg: dict):
@@ -691,7 +735,15 @@ class TeeAgent:
             log.debug("could not read the frame size for zone scaling: %s", exc)
         fps = float(self.cam_cfg.get("fps", 30))
         self.fps = fps
-        self.buffer = FrameBuffer(self.buffer_seconds, fps)
+        _preroll = preroll_seconds(self.cfg)
+        self.buffer = FrameBuffer(_preroll, fps)
+        if _preroll != self.buffer_seconds:
+            log.info(
+                "pre-roll ring: %.1fs (%d frames), not buffer_seconds=%.1fs "
+                "— the copy engine's segment ring is the real pre-roll, and "
+                "this one is only for detection and the decode fallback",
+                _preroll, self.buffer.max_frames, self.buffer_seconds,
+            )
         # Camera-side delivery counters (see _capture_loop).
         self._cap_frames = 0
         self._cap_gaps = 0
@@ -801,7 +853,10 @@ class TeeAgent:
         prime_force_trigger()
         log.info(
             "tee agent running: roi=%s buffer=%.1fs dwell=%.1fs",
-            self.roi, self.buffer_seconds, dwell_seconds,
+            # The ring that exists, not the one config asked for — with
+            # the copy engine on, those differ and the journal saying 5s
+            # while 2s is allocated is how you lose an afternoon.
+            self.roi, _preroll, dwell_seconds,
         )
         try:
             while not self.stopping.is_set():

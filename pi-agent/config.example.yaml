@@ -46,6 +46,17 @@ auth_token: "cam_REPLACE_ME"
 #
 # Only read when capture_engine is "copy".
 # copy_segment_seconds: 1.0     # cut granularity; match the camera's GOV
+#
+# How much DECODED pre-roll to keep in RAM while the copy engine is the
+# one recording. The segment ring above is the real pre-roll, so this
+# one exists for two things only: the detector, which looks at the
+# newest frame, and the decode FALLBACK that records a swing the old way
+# when the segment ring is unhealthy. Left at buffer_seconds it costs
+# ~1.9GB at 1080p60 to hold frames nothing reads. What the default costs
+# you: on that fallback path only, a clip opens 2s before the trigger
+# instead of buffer_seconds — downswing and impact, probably not the
+# address.
+# copy_fallback_preroll_seconds: 2.0
 # copy_window_seconds: 0        # 0 = buffer_seconds + max_clip_seconds + 30
 
 camera:

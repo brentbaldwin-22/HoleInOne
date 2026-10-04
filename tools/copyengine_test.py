@@ -18,7 +18,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pi-agent"))
 
-from agent.copyengine import CopyEngine, engine_name  # noqa: E402
+from agent.copyengine import (  # noqa: E402
+    CopyEngine, copy_configured, engine_name,
+)
+from agent.tee import preroll_seconds  # noqa: E402
 
 FAIL: list[str] = []
 
@@ -162,6 +165,35 @@ def main() -> int:
     green_src = (ROOT / "pi-agent" / "agent" / "green.py").read_text()
     check("the green does not signal stop for itself",
           "on_recording_ended" in green_src, False)
+
+    # ---- the pre-roll ring is sized by whoever will RECORD ----------
+    # Both engines were filling a pre-roll at once: the copy engine's
+    # 155s segment ring on disk AND 301 decoded 1080p60 frames in RAM
+    # (~1.9GB) that nothing read, because clips are cut from the
+    # segments. The RAM ring still has to exist for the detector and for
+    # the decode fallback, so it shrinks rather than disappearing.
+    copy_cfg = {"capture_engine": "copy", "buffer_seconds": 5, **RTSP}
+    check("decode keeps the full pre-roll",
+          preroll_seconds({"buffer_seconds": 5}), 5.0)
+    check("copy drops to the fallback depth",
+          preroll_seconds(copy_cfg), 2.0)
+    check("and the fallback depth is configurable",
+          preroll_seconds({**copy_cfg, "copy_fallback_preroll_seconds": 3}),
+          3.0)
+    # The gate is BOTH conditions. `capture_engine: copy` on a USB camera
+    # leaves the agent decoding, so shrinking its ring there would cut
+    # the pre-roll off every clip it records.
+    check("copy asked for on a non-RTSP camera still decodes",
+          copy_configured({"capture_engine": "copy",
+                           "camera": {"device": "/dev/video0"}}), False)
+    check("so that config keeps the full pre-roll",
+          preroll_seconds({"capture_engine": "copy", "buffer_seconds": 5,
+                           "camera": {"device": "/dev/video0"}}), 5.0)
+    # One source of truth: the sizing and the engine must agree, or a
+    # rig decodes with a 2s ring.
+    check("copy_configured agrees with from_config",
+          copy_configured(copy_cfg),
+          CopyEngine.from_config(copy_cfg, tmp) is not None)
 
     print()
     if FAIL:

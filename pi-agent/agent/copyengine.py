@@ -60,6 +60,21 @@ def engine_name(cfg: dict) -> str:
     return "copy" if name in ("copy", "stream-copy", "streamcopy") else "decode"
 
 
+def copy_configured(cfg: dict) -> bool:
+    """Will the copy engine actually run on this config?
+
+    Both gates, not just the name: `capture_engine: copy` on a camera
+    that is not RTSP leaves the agent on the decode path. The tee has to
+    know this BEFORE it sizes its pre-roll ring, which is long before
+    from_config() is called, and a second hand-rolled version of the
+    same test would drift from this one the first time either moved.
+    """
+    if engine_name(cfg) != "copy":
+        return False
+    device = str((cfg.get("camera") or {}).get("device") or "")
+    return device.startswith(("rtsp://", "rtsps://"))
+
+
 class CopyEngine:
     """Owns the ring and turns a trigger into an uploaded clip."""
 
@@ -89,7 +104,7 @@ class CopyEngine:
             return None
         cam = cfg.get("camera") or {}
         device = str(cam.get("device") or "")
-        if not device.startswith(("rtsp://", "rtsps://")):
+        if not copy_configured(cfg):
             log.error(
                 "capture_engine: copy needs an rtsp:// camera (this one is "
                 "%r) — staying on the decode engine",
