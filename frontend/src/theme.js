@@ -4,7 +4,7 @@
  * Two attributes on <html> carry the whole thing:
  *
  *     data-mode="light"   (pinned; see clean())
- *     data-direction="broadcast" | "dusk" | "turf" | "linen"
+ *     data-direction="linen"
  *
  * styles.css defines a palette for each combination, so nothing here
  * knows a hex value except the small swatches the admin picker draws.
@@ -22,33 +22,16 @@ const CACHE_KEY = "golfreelz.theme";
 
 export const DEFAULT_THEME = { direction: "linen", mode: "light" };
 
-// Keep in step with the [data-direction] blocks in styles.css and with
-// DIRECTIONS in backend/app/services/site_theme.py.
+// ONE LOOK. The site had three colourways and a dark/light switch, and
+// styles.css carried a [data-direction] block for each. That whole
+// machinery is gone: there is one stylesheet now, built from the mark.
+//
+// The list survives with a single entry rather than being deleted,
+// because logoUrl() and directionMeta() are called from the header and
+// the admin card, and because the data-direction attribute is still
+// stamped on <html> — a second look later is an entry here plus a block
+// in the stylesheet, not a re-plumbing.
 export const DIRECTIONS = [
-  {
-    key: "broadcast",
-    name: "Broadcast",
-    logo: "/logos/broadcast.png",
-    mark: "/logos/broadcast-mark.png",
-    bands: ["#0a63b8", "#a9e4ff"],
-    note: "Blue and cyan. Reads as a camera system — the TV-truck look.",
-  },
-  {
-    key: "dusk",
-    name: "Dusk",
-    logo: "/logos/dusk.png",
-    mark: "/logos/dusk-mark.png",
-    bands: ["#e01f14", "#ffd36a"],
-    note: "Sunset red into amber. The last tee time of the day.",
-  },
-  {
-    key: "turf",
-    name: "Turf",
-    logo: "/logos/turf.png",
-    mark: "/logos/turf-mark.png",
-    bands: ["#0c7a3e", "#e6f5a3"],
-    note: "Fairway green into lime. The most golf-course of the three.",
-  },
   {
     key: "linen",
     name: "Linen",
@@ -56,9 +39,8 @@ export const DIRECTIONS = [
     mark: "/logos/linen-mark.png",
     bands: ["#0047e7", "#fe6610"],
     note:
-      "Cream paper, the logo's own blue, amber for the one thing that "
-      + "shouts. Hairlines instead of boxes — the only direction that "
-      + "warms the neutrals.",
+      "Linen paper, the logo's own six bands, and the red from the "
+      + "wordmark. Rules and whitespace instead of boxes and shadows.",
   },
 ];
 

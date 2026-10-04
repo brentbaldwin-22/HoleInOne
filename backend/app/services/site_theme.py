@@ -18,9 +18,10 @@ from ..models import AppSetting
 
 SETTING_KEY = "site_theme"
 
-# Keep in step with the [data-direction] blocks in frontend/src/styles.css
-# and with DIRECTIONS in frontend/src/theme.js.
-DIRECTIONS = ("broadcast", "dusk", "turf", "linen")
+# Keep in step with DIRECTIONS in frontend/src/theme.js. There is one
+# look now; the tuple survives so a second one is an entry rather
+# than a schema change.
+DIRECTIONS = ("linen",)
 # LIGHT ONLY. The frontend pins the mode regardless of what is stored,
 # so a "dark" left in the database by an older admin would be ignored
 # rather than obeyed — this keeps the two ends saying the same thing.

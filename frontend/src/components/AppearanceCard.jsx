@@ -1,46 +1,51 @@
 /**
- * THE SITE'S COLOURS, changed without a deploy.
+ * WHAT THE SITE IS WEARING.
  *
- * Two choices — a direction and dark or light — saved against the site
- * and worn by every page for every visitor, not just this browser. So
- * the preview is the admin console itself: the choice is applied here
- * the moment it saves, which is also the honest preview, because the
- * console is built out of the same tokens as the public pages.
+ * This was a picker — a colourway and a dark/light switch, saved
+ * against the site and worn by every visitor. There is one look now,
+ * built from the mark, so there is nothing left to choose, and a
+ * control offering a choice that changes nothing is worse than no
+ * control at all.
  *
- * Each direction ships its own logo colourway; picking one changes the
- * mark in the header too.
+ * It stays as a READOUT rather than being deleted, because one
+ * question outlived the choice: is this browser showing what the
+ * server actually has? The theme is cached in localStorage so the
+ * first paint is not a flash of the wrong colours, and a stale cache
+ * used to be invisible. Now it says so.
  */
 import { useEffect, useState } from "react";
 
 import { api } from "../api.js";
-import { DIRECTIONS, logoUrl } from "../theme.js";
+import { directionMeta, logoUrl } from "../theme.js";
 import useSiteTheme, { setSiteTheme } from "../hooks/useSiteTheme.js";
 
-export default function AppearanceCard({ adminPassword, onToast }) {
-  const theme = useSiteTheme();
-  const [saving, setSaving] = useState(null);
-  const [err, setErr] = useState(null);
+const BANDS = [
+  ["#0047e7", "band 1 — primary"],
+  ["#01acfd", "band 2"],
+  ["#76d0c9", "band 3"],
+  ["#fcdc5e", "band 4"],
+  ["#fea931", "band 5"],
+  ["#fe6610", "band 6"],
+  ["#f54304", "accent — the red REELZ is set in"],
+];
 
-  // The server is the authority on what is currently set; the hook may
-  // still be showing this browser's cached copy.
+export default function AppearanceCard({ adminPassword }) {
+  const theme = useSiteTheme();
+  const [served, setServed] = useState(null);
+
+  // The server is the authority; the hook may still be showing this
+  // browser's cached copy from before a deploy.
   useEffect(() => {
     if (!adminPassword) return;
-    api.adminTheme(adminPassword).then(setSiteTheme).catch(() => {});
+    let alive = true;
+    api.adminTheme(adminPassword)
+      .then((t) => { if (alive) { setServed(t); setSiteTheme(t); } })
+      .catch(() => {});
+    return () => { alive = false; };
   }, [adminPassword]);
 
-  async function save(patch) {
-    setSaving(Object.values(patch)[0]);
-    setErr(null);
-    try {
-      const out = await api.setAdminTheme(adminPassword, patch);
-      setSiteTheme(out);
-      onToast?.("Site colours updated — every visitor sees this now");
-    } catch (e) {
-      setErr(e?.message || String(e));
-    } finally {
-      setSaving(null);
-    }
-  }
+  const meta = directionMeta(theme?.direction || "linen");
+  const stale = served && theme && served.direction !== theme.direction;
 
   return (
     <div className="card">
@@ -50,49 +55,44 @@ export default function AppearanceCard({ adminPassword, onToast }) {
         <h3>Site appearance</h3>
         <span className="tiny upper muted">Live for everyone</span>
       </div>
-      <p className="small muted" style={{ marginTop: 6, marginBottom: 4 }}>
-        Changes the colours and the logo across the whole site — the
-        home page, the registration flow, the galleries and this
-        console. Saved against the site, so it follows every visitor.
+      <p className="small muted" style={{ marginTop: 6, marginBottom: 0 }}>
+        One look, built from the logo — the same colours and type on the
+        home page, the registration flow, the galleries and this console.
       </p>
 
-      <div className="tiny upper muted" style={{ marginTop: 14 }}>Direction</div>
-      <div className="theme-choice-row">
-        {DIRECTIONS.map((d) => (
-          <button
-            key={d.key}
-            type="button"
-            className="theme-choice"
-            aria-pressed={theme.direction === d.key}
-            disabled={saving !== null}
-            onClick={() => save({ direction: d.key })}
-            style={{ "--swatch-a": d.bands[0], "--swatch-b": d.bands[1] }}
-          >
-            <span className="bands" aria-hidden="true" />
-            <span>
-              <span className="name">
-                {d.name}{saving === d.key ? " — saving…" : ""}
-              </span>
-              <span className="note" style={{ display: "block" }}>{d.note}</span>
-            </span>
-          </button>
+      <div className="bands" style={{ marginTop: 18, height: 9 }} />
+
+      <div className="row" style={{ marginTop: 18, alignItems: "center" }}>
+        <img
+          src={logoUrl(meta.key)}
+          alt=""
+          style={{ width: 150, height: "auto", display: "block" }}
+        />
+        <div className="small" style={{ flex: "999 1 240px", minWidth: 0 }}>
+          <div className="name">{meta.name}</div>
+          <div className="muted">{meta.note}</div>
+        </div>
+      </div>
+
+      <div className="chip-row" style={{ marginTop: 18 }}>
+        {BANDS.map(([hex, label]) => (
+          <span key={hex} className="inline tiny muted" title={label}>
+            <span
+              className="dot"
+              style={{ background: hex, borderRadius: 0,
+                       width: 14, height: 14 }}
+            />
+            <code>{hex}</code>
+          </span>
         ))}
       </div>
 
-
-
-      <div className="inline" style={{ gap: 12, marginTop: 16 }}>
-        <img
-          src={logoUrl(theme.direction, "mark")}
-          alt=""
-          style={{ height: 40, width: "auto", display: "block" }}
-        />
-        <span className="small muted">
-          The mark this direction ships, as it appears in the header.
-        </span>
-      </div>
-
-      {err && <p className="err-text small" style={{ marginTop: 10 }}>{err}</p>}
+      {stale && (
+        <div className="warn-text small" style={{ marginTop: 14 }}>
+          This browser had <code>{theme.direction}</code> cached while the
+          server has <code>{served.direction}</code>. Reload to clear it.
+        </div>
+      )}
     </div>
   );
 }
