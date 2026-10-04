@@ -3,13 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <!-- Replaced at boot by theme.js with the active theme's ground. -->
-    <meta name="theme-color" content="#0a0f14" />
+    <!-- Replaced at boot by theme.js with the active theme's ground.
+         The static value is the linen ground, not the old near-black:
+         it is what a browser paints before any JS runs. -->
+    <meta name="theme-color" content="#f6f2ea" />
     <title>GolfReelz — Golf Shot Videos, Automatic</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- THESE ARE THE TWO FAMILIES THE STYLESHEET ASKS FOR, and for a
+         while they were not. The sheet sets --text to "Work Sans" and
+         --display to "Fraunces", and this link was still fetching
+         Inter 400-800 and Fraunces 500-700 from the previous look. Work
+         Sans was therefore never loaded at all -- every line of body
+         copy fell through to system-ui -- and the display weights the
+         sheet actually spends (300 for a big heading, 400 for a small
+         one) were not in the file either, so the browser synthesised
+         them from 500 and the headings came out heavier and wider than
+         the design. Weights here must stay in step with the sheet:
+         300/400/600 of Fraunces are the three it sets, and Work Sans
+         carries 700 on top of the sheet's 400/500/600 because <b> and
+         <strong> run through the admin pages and a missing 700 is a
+         synthesised bold, not a fallback anyone would notice. -->
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,600&family=Work+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <!-- The tab icon is the MARK, not the lockup: the full lockup is

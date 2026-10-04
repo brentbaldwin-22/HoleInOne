@@ -16538,44 +16538,17 @@ export default function AdminProduction() {
                 }}
               >
                 {state === "processing" && (
-                  <span
-                    className="small"
-                    style={{
-                      padding: "4px 10px",
-                      borderRadius: 999,
-                      background: "rgba(255, 176, 0, 0.15)",
-                      border: "1px solid rgba(255, 176, 0, 0.5)",
-                      textAlign: "center",
-                    }}
-                  >
-                    Production in Progress
+                  <span className="pill warn small">
+                    Production in progress
                   </span>
                 )}
                 {state === "produced" && (
-                  <span
-                    className="small"
-                    style={{
-                      padding: "4px 10px",
-                      borderRadius: 999,
-                      background: "rgba(40, 168, 92, 0.15)",
-                      border: "1px solid rgba(40, 168, 92, 0.5)",
-                      textAlign: "center",
-                    }}
-                  >
+                  <span className="pill ok small">
                     Produced · {row.last_n_succeeded}/{row.last_n_segments || row.last_n_succeeded} clips
                   </span>
                 )}
                 {state === "queued" && (
-                  <span
-                    className="small"
-                    style={{
-                      padding: "4px 10px",
-                      borderRadius: 999,
-                      background: "rgba(120, 120, 120, 0.15)",
-                      border: "1px solid rgba(120, 120, 120, 0.5)",
-                      textAlign: "center",
-                    }}
-                  >
+                  <span className="pill small">
                     Queued
                   </span>
                 )}
@@ -16585,16 +16558,16 @@ export default function AdminProduction() {
                     missed. */}
                 {state === "produced" ? (
                   <button
-                    className="small"
+                    className="btn small"
                     onClick={() => handleProduce(row)}
                     disabled={greyed || busy}
                   >
-                    Re-Produce
+                    Re-produce
                   </button>
                 ) : (
                   state === "queued" && (
                     <button
-                      className="small"
+                      className="btn small"
                       onClick={() => handleProduce(row)}
                       disabled={greyed || busy}
                     >

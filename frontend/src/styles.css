@@ -45,6 +45,9 @@
   --paper: #fcfaf6;
   --paper-sunk: #efe9dd;
   --ink: #23201c;
+  /* The stand-first sits between the headline and the body: darker than
+     body copy, lighter than a heading. 11.0:1 on linen. */
+  --ink-lead: #3d382f;
   --ink-soft: #5e564b;
   --ink-mute: #6d655a;
   /* DECORATIVE ONLY, and it still has to clear 3:1 — rules, dots and
@@ -86,6 +89,17 @@
   --ok: #1f6b45;
   --ok-soft: #e0efe6;
   --red-500: #d7382c;
+
+  /* FOUR NAMES SPENT IN AdminProduction.jsx THAT NOTHING HERE DEFINED.
+     Each is written there as var(--name, <fallback>) and every fallback
+     is a leftover from the dark sheet -- `--card-bg` fell back to
+     #1b1b1f, which painted a near-black panel in the middle of a linen
+     page. Defining them is how those inline styles join this palette
+     without editing 13,000 lines of JSX. */
+  --card: var(--paper);
+  --card-bg: var(--paper);
+  --surface-3: var(--paper-sunk);
+  --err: var(--danger);
   --focus-ring: color-mix(in srgb, var(--primary) 34%, transparent);
 
   /* ---- Shape. Square, because the mark is. ---- */
@@ -157,7 +171,7 @@ a:hover { color: var(--primary-hover); text-decoration: underline; text-underlin
 .muted { color: var(--ink-mute); }
 .muted-on-dark { color: rgba(255, 255, 255, 0.78); }
 .note, .hint { color: var(--ink-mute); font-size: 0.88rem; }
-.sub { color: var(--ink-soft); font-size: 1.05rem; }
+.sub { color: var(--ink-lead); font-size: 1.05rem; }
 .label {
   display: block;
   font-size: 0.72rem;
@@ -280,15 +294,31 @@ code {
   margin-bottom: 18px;
 }
 .hero h1 { max-width: 15ch; margin-bottom: 18px; }
-.hero p, .home-sub { color: var(--ink-soft); max-width: 54ch; font-size: 1.08rem; }
+.hero p, .home-sub {
+  color: var(--ink-lead);
+  max-width: 54ch;
+  font-size: 1.08rem;
+  line-height: 1.55;
+}
 .home-hero-in, .home-section-in, .home-close-in, .home-ticker-in { max-width: 1180px; margin: 0 auto; }
 .home-section { padding: 46px 0; border-top: 1px solid var(--rule); }
-.home-sec-head {
-  font-family: var(--display);
+/* THE DISPLAY FACE BELONGS TO THE HEADING, NOT TO THE BLOCK. This set
+   Fraunces 400 at 1.9rem on the container, and three of these heads
+   carry an explanatory <p> as well as the <h2> -- so "Every round you
+   play enters you automatically" and the two like it were being set in
+   1.9rem tracked serif, the same size as the heading above them, and
+   read as a second headline rather than as a line of copy. */
+.home-sec-head { margin-bottom: 20px; }
+.home-sec-head h2 { margin-bottom: 9px; }
+.home-sec-head p {
+  font-family: var(--text);
+  font-size: 1rem;
   font-weight: 400;
-  font-size: 1.9rem;
-  letter-spacing: -0.025em;
-  margin-bottom: 18px;
+  letter-spacing: 0;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  max-width: 62ch;
+  margin: 0;
 }
 .home-cta, .home-close { padding: 52px 0; border-top: 2px solid var(--rule-ink); }
 .home-price { font-family: var(--display); font-weight: 300; font-size: 2.6rem; letter-spacing: -0.03em; }
@@ -370,15 +400,81 @@ code {
 }
 .ghost:hover { background: transparent; color: var(--accent); box-shadow: inset 0 -1px 0 var(--accent); }
 .btn.danger, .danger { background: var(--danger); color: #fff; border-color: transparent; }
-.btn.accent { background: var(--accent); color: var(--on-accent); }
+.btn.danger:hover, .danger:hover { background: #8e1d17; color: #fff; }
+.btn.accent, .accent { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+.btn.accent:hover, .accent:hover { background: #d53a03; color: var(--on-accent); }
 .btn.wide, .wide.btn { width: 100%; }
-.btn:disabled, .btn.disabled, button:disabled { opacity: 0.45; cursor: not-allowed; }
-.btn.small { min-height: 36px; padding: 8px 15px; font-size: 0.74rem; }
 
+/* EVERY BUTTON, NOT JUST .btn.
+   There are 338 <button> elements in this app and 120 of them carry no
+   class, or carry only `small`. Styling `.btn` alone left those as raw
+   Chrome buttons -- rounded, grey-gradient, 13px system text -- sitting
+   in the same column as the house ones. Nobody added a class as they
+   went and nobody is going to; the element itself has to be dressed.
+
+   The element default is the SECONDARY treatment from the board: an ink
+   hairline, linen showing through, ink caps. It is the quiet one on
+   purpose -- a bare button is usually a secondary action, and the loud
+   fill stays something you opt into with .btn. Buttons that set their
+   own background or geometry inline (the dot and frame grids in
+   production) keep it: inline styles win over this block. */
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 9px 19px;
+  border: 1px solid var(--rule-ink);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
   font-family: var(--text);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
   cursor: pointer;
+  text-decoration: none;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
+button:hover { background: var(--ink); color: var(--paper); }
+/* ONE DISABLED LOOK, fill or outline. This used to be opacity 0.45,
+   which leaves a disabled primary still reading as a blue button you
+   could press -- it looked like a rendering glitch rather than a state.
+   Dropping the fill is unambiguous: nothing here is pressable. The
+   .ghost selectors are listed so the rule can out-specify .btn.ghost's
+   underline, which is the one thing that would otherwise survive. */
+button:disabled, button.disabled,
+.btn:disabled, .btn.disabled, a.btn.disabled,
+.btn.ghost:disabled, .ghost:disabled,
+button:disabled:hover, .btn:disabled:hover, .ghost:disabled:hover {
+  background: transparent;
+  color: var(--ink-faint);
+  border-color: var(--rule);
+  box-shadow: none;
+  opacity: 1;
+  cursor: not-allowed;
+}
+/* `small` is a text-size class everywhere else, so it is only a size
+   here when it is on a button. */
+button.small, .btn.small {
+  min-height: 32px;
+  padding: 6px 13px;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+}
+button.tiny, .btn.tiny {
+  min-height: 27px;
+  padding: 4px 9px;
+  font-size: 0.64rem;
+  letter-spacing: 0.04em;
+}
+/* AFTER the size rules, on purpose. A ghost is an underlined word, so
+   it has to sit flush with the column edge; `button.small` sets padding
+   with a shorthand and would otherwise push it in by 13px. */
+.btn.ghost, button.ghost, .ghost { padding-left: 0; padding-right: 0; }
 
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
 .field label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.16em; font-weight: 600; color: var(--ink-mute); }
@@ -438,6 +534,11 @@ tr:last-child td { border-bottom: 0; }
   border-left-width: 3px;
   padding: 7px 12px 7px 10px;
 }
+/* A chip is a choice, not an action: it keeps its ground on hover and
+   just firms up its rule. Without this it inherits button:hover and
+   flips to solid ink, which reads as "pressed" on something that is
+   only being pointed at. */
+.chip:hover { background: var(--paper); color: var(--ink); border-color: var(--ink); }
 .chip.selected, .chip.active { border-color: var(--ink); border-left-color: var(--accent); background: var(--paper); }
 .chip-row, .chip-row.row { display: flex; flex-wrap: wrap; gap: 8px; }
 
@@ -474,11 +575,38 @@ tr:last-child td { border-bottom: 0; }
 .stat .label, .stat .sub { margin-top: 9px; font-size: 0.7rem; }
 .metric { font-family: var(--display); font-weight: 300; font-size: 1.8rem; letter-spacing: -0.03em; }
 
-.feature-row, .step-row {
+.feature-row {
   display: flex; gap: 22px; align-items: flex-start;
   padding: 20px 0; border-top: 1px solid var(--rule);
 }
-.step { font-family: var(--display); font-size: 0.95rem; font-weight: 600; letter-spacing: 0.1em; color: var(--accent); flex-shrink: 0; }
+
+/* "HOW IT WORKS". `.step` was written here as the NUMERAL -- display
+   face, accent red, 0.1em tracking, flex-shrink: 0 -- but Home.jsx puts
+   the class on the whole step BLOCK and the number inside it as `.num`.
+   So every heading and body paragraph in the section was being set in
+   tracked red serif, and five unshrinkable blocks pushed the row to
+   2192px: the entire page scrolled sideways, on a phone as much as on a
+   desktop. The numeral styling is now on `.step .num`, where the markup
+   actually puts the number, and the blocks are columns that wrap. */
+.step-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px 30px;
+  align-items: flex-start;
+  padding: 24px 0;
+  border-top: 1px solid var(--rule-ink);
+}
+.step { flex: 1 1 200px; min-width: 0; color: var(--ink); }
+.step .num {
+  font-family: var(--display);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  margin-bottom: 13px;
+}
+.step h3 { font-size: 1.2rem; margin-bottom: 8px; }
+.step p { color: var(--ink-soft); font-size: 0.94rem; margin: 0; }
 
 /* ---- Clips and media -------------------------------------------- */
 
