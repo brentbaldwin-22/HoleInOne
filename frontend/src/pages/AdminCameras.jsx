@@ -183,6 +183,19 @@ function StreamReadout({ stream, onRead, busy, busyWhy }) {
     // a card reporting "stamped 50" for clips being written at 29.9.
     ["Clips stamped", s.stamped_fps ? `${s.stamped_fps.toFixed(1)} fps` : null],
     ["Config says", s.config_fps ? `${s.config_fps.toFixed(0)} fps` : null],
+    // THE OTHER HALF OF THE PIPELINE. Everything above describes what
+    // the camera SENDS. This is what the clip is cut down to before it
+    // crosses the link, and the two were never shown together — so a
+    // tee set to 1920x1080 read 1920x1080 here, on the card, and in the
+    // camera's own web UI, while delivering 1280x720 clips, because
+    // upload_scale_height was still 720 from when the link was the
+    // thing being optimised. Every number agreed and all of them were
+    // about the wrong half.
+    ["Uploads as", s.upload_scale_height
+      ? `${s.upload_scale_height}p`
+        + (s.upload_bitrate_kbps ? ` @ ${s.upload_bitrate_kbps} kbps` : "")
+      : (s.upload_bitrate_kbps
+          ? `full size @ ${s.upload_bitrate_kbps} kbps` : null)],
   ].filter(([, v]) => v);
   const p = s.profile;
   return (
@@ -239,6 +252,14 @@ function StreamReadout({ stream, onRead, busy, busyWhy }) {
               nothing we have a name for — open the raw list
             </span>
           )}
+        </div>
+      )}
+      {s.downscaled && (
+        <div className="warn-text tiny" style={{ marginTop: 4 }}>
+          Clips are scaled to {s.upload_scale_height}p before upload —
+          the camera is sending {s.open_h}p and the extra is thrown away
+          on the Pi. Clear <code>upload_scale_height</code> in its
+          config.yaml to keep what the camera sends.
         </div>
       )}
       {p && p.ok === false && (

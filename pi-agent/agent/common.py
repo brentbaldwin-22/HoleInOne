@@ -1965,6 +1965,20 @@ def stream_info_fields(runner) -> dict:
         "delivered_fps": round(fps, 2) if fps else None,
         "delivered_at": at,
         "profile": getattr(runner, "_stream_profile", None),
+        # WHAT THE CLIP IS REDUCED TO ON THE WAY OUT, which is not the
+        # same question as what the camera is sending and was invisible
+        # until it cost an afternoon. A tee set to 1920x1080 reported
+        # 1920x1080 here, on the card, and in the camera's own web UI --
+        # and delivered 1280x720 clips, because upload_scale_height was
+        # still 720 from when the link was the thing being optimised.
+        # Every number on the page agreed with every other one and all
+        # of them were about the wrong half of the pipeline.
+        "upload_scale_height": (
+            int(v) if (v := getattr(runner, "upload_scale_height", None))
+            else None),
+        "upload_bitrate_kbps": (
+            int(v) if (v := getattr(runner, "upload_bitrate_kbps", None))
+            else None),
     }
     # WHICH ENGINE IS ACTUALLY RUNNING, and how its ring is doing. Two
     # capture paths now exist and the only honest way to know which one

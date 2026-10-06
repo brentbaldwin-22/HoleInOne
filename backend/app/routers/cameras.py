@@ -603,6 +603,17 @@ def stream_status(info, updated_at=None) -> dict | None:
         "delivered_fps": got,
         "stamped_fps": stamped,
         "mismatch": mismatch,
+        # The other half of the pipeline. open_* is what the camera
+        # sends; these are what the clip is cut down to before it
+        # crosses the link, and the two disagreeing is a real finding
+        # rather than a detail — see downscaled below.
+        "upload_scale_height": info.get("upload_scale_height"),
+        "upload_bitrate_kbps": info.get("upload_bitrate_kbps"),
+        "downscaled": bool(
+            info.get("upload_scale_height")
+            and info.get("open_h")
+            and int(info["upload_scale_height"]) < int(info["open_h"])
+        ),
         # The camera's own answer, when somebody has asked it.
         "profile": info.get("profile"),
         # WHICH CAPTURE ENGINE THE PI IS RUNNING, in the Pi's own words.

@@ -141,3 +141,55 @@ export const tests = [
     },
   },
 ];
+
+// ---------------------------------------------------------------------
+// The card has to show BOTH halves of the pipeline.
+//
+// A tee set to 1920x1080 read 1920x1080 on this card, in its config,
+// and in the camera's own web UI — and delivered 1280x720 clips,
+// because upload_scale_height was still 720 from when the link was the
+// thing being optimised. Every number on the page agreed with every
+// other one and all of them were about what the camera SENDS, never
+// about what the clip is cut down to before it crosses the link.
+tests.push({
+  name: "a camera that downscales before upload says so",
+  async fn(ctx) {
+    const { page, errors } = await openApp(ctx.browser, {
+      baseUrl: ctx.baseUrl,
+      path: "/admin/cameras",
+      routes: ADMIN_ROUTES,
+      storage: ADMIN_STORAGE,
+      viewport: { width: 1400, height: 1400 },
+    });
+    assert.deepEqual(errors, [], "the page threw while rendering");
+    const byId = await page.$$eval(".card", (roots) => {
+      const out = {};
+      for (const root of roots) {
+        const text = (root.textContent || "").replace(/\s+/g, " ").trim();
+        const m = text.match(/^#(\d+)\b/);
+        if (m) out[m[1]] = text;
+      }
+      return out;
+    });
+    await page.close();
+
+    assert.match(
+      byId["1"], /Uploads as:? ?720p/,
+      "the card never says what the clip is reduced to",
+    );
+    assert.match(
+      byId["1"], /scaled to 720p before upload/,
+      "a camera sending 1080 and uploading 720 does not flag it",
+    );
+    // And the control: a camera keeping what it sends must NOT warn, or
+    // the warning means nothing. It has to be #2 — another IP camera —
+    // because the STREAM block only renders for kind "ip" and asserting
+    // against a Pi card means asserting against a row that was never
+    // going to be there.
+    assert.match(byId["2"], /Stream/, "the control card has no stream block");
+    assert.doesNotMatch(
+      byId["2"], /scaled to .* before upload/,
+      "a camera that keeps full size is being warned about anyway",
+    );
+  },
+});

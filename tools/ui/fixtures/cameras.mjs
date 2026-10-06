@@ -35,6 +35,12 @@ function camera(id, role, seenMsAgo, overrides = {}) {
     stream: {
       open_w: 1920, open_h: 1080, open_fps: 60,
       delivered_fps: 60, config_fps: 60, updated_at: naive(seenMsAgo),
+      // Sending 1080, uploading 720. `downscaled` is the backend's
+      // comparison of the two, which is the whole point of carrying
+      // both: on the real rig every number on the page said 1080 while
+      // the clips arrived 720.
+      upload_scale_height: 720, upload_bitrate_kbps: 3500,
+      downscaled: true,
     },
     power: { state: "clean", flags: [], throttled: "0x0" },
     focus: { score: 12.5, best: 132.6 },
@@ -55,11 +61,31 @@ function camera(id, role, seenMsAgo, overrides = {}) {
  */
 export const CAMERAS = [
   camera(1, "tee", DOWN_MS, { paired_with_camera_id: 2 }),
-  camera(2, "green", DOWN_MS, { paired_with_camera_id: 1 }),
+  // THE CONTROL, and it has to be an IP camera. The STREAM block only
+  // renders for kind "ip", so a Pi control asserts against a card that
+  // was never going to show the row — which is how the first version of
+  // this fixture let "warn on every camera" pass.
+  camera(2, "green", DOWN_MS, {
+    paired_with_camera_id: 1,
+    stream: {
+      open_w: 1280, open_h: 720, open_fps: 60,
+      delivered_fps: 60, config_fps: 60, updated_at: naive(DOWN_MS),
+      upload_scale_height: null, upload_bitrate_kbps: 3500,
+      downscaled: false,
+    },
+  }),
   camera(3, "tee", DOWN_MS,
     { kind: "pi", assigned_hole: 9, paired_with_camera_id: 4 }),
-  camera(4, "green", LIVE_MS,
-    { kind: "pi", assigned_hole: 9, paired_with_camera_id: 3 }),
+  camera(4, "green", LIVE_MS, {
+    kind: "pi", assigned_hole: 9, paired_with_camera_id: 3,
+    // The control: nothing is thrown away on the way out.
+    stream: {
+      open_w: 1920, open_h: 1080, open_fps: 60,
+      delivered_fps: 60, config_fps: 60, updated_at: naive(LIVE_MS),
+      upload_scale_height: null, upload_bitrate_kbps: 3500,
+      downscaled: false,
+    },
+  }),
 ];
 
 export const COURSES = [{ id: 1, name: "Rivertowne Country Club" }];
