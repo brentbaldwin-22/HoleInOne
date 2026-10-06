@@ -476,9 +476,43 @@ vcgencmd get_throttled     # 0x0 here while dmesg shows USB resets
                            # => NOT the Pi's power. Look at the modem.
 ```
 
-And on site, the LM1200's own admin page (usually `192.168.5.1`) reports
-RSRP / RSRQ / SINR. Compare the tee mount against the green mount: that
-is the location question answered in two minutes with a phone.
+### Reading the modem's signal
+
+The LM1200's own admin page reports RSRP / RSRQ / SINR, and comparing
+the tee mount against the green mount is the location question answered
+directly. It used to say here that you could do this from a phone. **You
+cannot** — the LM1200 is a USB/Ethernet modem with no WiFi of its own,
+so there is nothing for a phone to join. There are two real routes:
+
+**Over SSH, which needs no site visit.** The modem hangs off the Pi's
+USB bus, so reading it never touches the cellular link — only your SSH
+session does, which is why this works even while the uplink is too slow
+to carry a clip. Find the modem, then ask it:
+
+```bash
+ip route | grep -E "usb|wwan|enx"      # the gateway IS the modem
+curl -s --max-time 10 http://192.168.5.1/api/model.json \
+  | tr ',' '\n' | grep -iE "rsrp|rsrq|sinr|bars|band|rssi|usage|billing"
+```
+
+NETGEAR's LB/LM series serve that JSON, but confirm rather than assume —
+if it 404s, `curl -s http://192.168.5.1/ | head -40` shows what the
+firmware on this unit actually exposes. Note it down here when you find
+out.
+
+**Use curl, not a browser, while the link is bad.** An SSH port-forward
+(`ssh -L 8080:192.168.5.1:80 pi@<rig>`) does let you open the real UI on
+your laptop, but a full web UI with its assets crosses the starved link
+and will crawl. The JSON is a few KB.
+
+**On site**, a laptop in the modem's Ethernet port reaches the same page
+with nothing in between.
+
+WHAT TO READ. Bad RSRP/SINR means weak signal — an antenna or a mount
+position, not another modem. Good signal with low throughput means a cap
+or a carrier throttle, which the usage fields in that same blob will
+show. Those are different problems with the same symptom, and this is
+the one check that separates them.
 
 ---
 
