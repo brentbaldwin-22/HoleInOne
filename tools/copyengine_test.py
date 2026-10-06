@@ -111,11 +111,23 @@ def main() -> int:
     # A clip spooled WITHOUT an attempt (the link was busy) took a
     # different route to disk than _send, and that route re-encoded the
     # camera's 1080p H.264 down to 720p despite precompressed=True.
+    #
+    # THE RULE IS STATED ONCE NOW, which is the structural version of
+    # that fix: four sites decide whether a clip has been re-encoded —
+    # the pre-spool compress, _send, and both _spool calls — and four
+    # copies of a rule is four chances for one to be wrong, which is
+    # precisely how it went wrong. Whether the rule is RIGHT is pinned
+    # behaviourally in tools/uploader_precompressed_test.py, against the
+    # real route with a spy on the encoder; this only pins that there is
+    # one of it.
     import re
-    pre_spool = re.search(
-        r"if self\._kbps_now > 0 and not _precompressed:", src)
-    check("the pre-spool compression honours precompressed",
-          bool(pre_spool), True)
+    check("the compress decision has a single definition",
+          len(re.findall(r"def _compress_this\(", src)), 1)
+    check("and every site that acts on it reads that one answer",
+          len(re.findall(r"_want_compress", src)) >= 5, True)
+    check("no site spells the rule out for itself any more",
+          bool(re.search(r"(?<!`)\bnot _precompressed\b(?! *`)",
+                         re.sub(r'"""[\s\S]*?"""', "", src))), False)
 
     # Every uploader-queue unpack must take the full tuple. The drain
     # path only runs while shutting down with clips still queued, so a

@@ -116,6 +116,55 @@ def main() -> int:
               [c["path"] for c in calls], ["decode-xyz.mp4"])
         check("at the configured scale", calls[0]["scale_height"], 720)
 
+        # ---- THE EXEMPTION LIFTS WHEN THE LINK DEMANDS IT -----------
+        # The ladder drops _kbps_now after six passes of a clip inching
+        # across, which is the right response — and on a copy-engine rig
+        # it used to be spent nowhere, because every future clip was
+        # exempt too. The tee sat at 36% of 1.7 MB with the one lever
+        # that could have helped it wired to nothing.
+        check("at the ceiling, a copy clip is exempt",
+              up._compress_this(True), False)
+        up._kbps_now = 1250                      # the ladder halved it
+        check("below the ceiling, a copy clip is NOT exempt",
+              up._compress_this(True), True)
+        check("and a decode clip is compressed either way",
+              up._compress_this(False), True)
+        up._kbps_now = up.compress_kbps          # ten clean sends later
+        check("back at the ceiling, exempt again",
+              up._compress_this(True), False)
+
+        # The whole route, not just the predicate: a degraded link must
+        # reach the spooled-during-a-capture path too. That path is the
+        # one that got this wrong in production.
+        calls.clear()
+        up._kbps_now = 1250
+        copied2 = tmp / "copy-degraded.mp4"
+        copied2.write_bytes(b"\0" * 2048)
+        up.enqueue("sess-copy2", copied2, time.time(), real_fps=None,
+                   precompressed=True)
+        deadline = time.time() + 10
+        while time.time() < deadline and not calls:
+            time.sleep(0.1)
+        check("a copy clip IS re-encoded once the link has shrunk the "
+              "ceiling", [c["path"] for c in calls], ["copy-degraded.mp4"])
+        check("at the ceiling the link earned, not the configured one",
+              calls[0]["kbps"], 1250)
+        meta2 = json.loads(
+            (spool / "copy-degraded.json").read_text()
+            if (spool / "copy-degraded.json").exists()
+            else sorted(spool.glob("*.json"))[-1].read_text())
+        check("and the spool records that it IS our encode now",
+              meta2.get("compressed"), True)
+
+        # An operator who configured no ceiling opted out of all of it.
+        up_nokbps = common.BackgroundUploader(
+            FakeClient(), compress_kbps=0, spool_dir=spool,
+            settle_seconds=60.0, backoff_base=0.1,
+        )
+        check("no ceiling means no re-encode, copy or decode",
+              (up_nokbps._compress_this(True),
+               up_nokbps._compress_this(False)), (False, False))
+
         up.stop(drain_timeout=0.0)
 
         # ---- the shutdown drain must not throw on the queue shape ----

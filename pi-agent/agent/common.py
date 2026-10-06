@@ -1323,6 +1323,42 @@ class BackgroundUploader(threading.Thread):
         )
         return True
 
+    def _compress_this(self, precompressed: bool) -> bool:
+        """Should this clip be re-encoded before it goes up?
+
+        ONE ANSWER, ASKED IN FOUR PLACES. The pre-spool path, _send, and
+        both _spool calls each used to spell this out as
+        `not _precompressed`, and that is how a stream-copied clip got
+        re-encoded to 720p once already: the flag guarded _send, and a
+        clip spooled during a capture never reaches _send. Four copies
+        of a rule is four chances for one of them to be wrong.
+
+        A clip the uploader encoded itself is the ladder's to shrink.
+
+        A PRECOMPRESSED CLIP IS EXEMPT UNTIL THE LINK SAYS OTHERWISE.
+        The copy engine hands over the camera's own H.264 and re-encoding
+        it spends a pass to make a second-generation copy of a
+        first-generation file -- worth avoiding on a link that can carry
+        it. On a link that cannot, it is the whole problem: the ladder
+        drops _kbps_now after six passes of a clip inching across, which
+        is exactly the right response, and on a copy-engine rig that
+        lowered ceiling was spent nowhere, because every future clip was
+        exempt too. The tee sat at 36% of 1.7 MB with the one lever that
+        could have helped it wired to nothing.
+
+        So the exemption lasts while the ceiling is untouched, and lifts
+        once the link has forced the encode below it. It restores itself:
+        KBPS_RECOVER_AFTER clean sends walk _kbps_now back up, and when
+        it reaches the ceiling again copy clips go back to
+        first-generation. Losing quality beats losing the clip -- but
+        only for as long as the link actually demands it.
+        """
+        if self._kbps_now <= 0:
+            return False
+        if not precompressed:
+            return True
+        return self._kbps_now < self.compress_kbps
+
     def _send(self, session_id: str, clip_path: Path, ts: Optional[float],
               real_fps: Optional[float], compress: bool, retries: int,
               timeout: int) -> bool:
@@ -1378,6 +1414,22 @@ class BackgroundUploader(threading.Thread):
             try:
                 (session_id, clip_path, ts, real_fps,
                  _precompressed) = self._q.get(timeout=0.5)
+                # DECIDED ONCE, for every path this clip can take. The
+                # four sites below have to agree about whether this file
+                # has been re-encoded, and computing it four times is how
+                # they stopped agreeing last time.
+                _want_compress = self._compress_this(_precompressed)
+                if _precompressed and _want_compress:
+                    log.warning(
+                        "uploader: re-encoding %s at %d kbps even though the "
+                        "capture engine handed it over ready to send — the "
+                        "link has pushed the encode below the %d kbps "
+                        "ceiling, so this clip goes up second-generation. "
+                        "It returns to first-generation once %d clean sends "
+                        "walk the ceiling back up.",
+                        clip_path.name, self._kbps_now, self.compress_kbps,
+                        KBPS_RECOVER_AFTER,
+                    )
             except queue.Empty:
                 self._sending = False
                 self._maybe_sweep_spool()
@@ -1409,7 +1461,7 @@ class BackgroundUploader(threading.Thread):
                 # re-encoded to 720p despite precompressed=True: the
                 # flag guarded _send, and a clip spooled during a
                 # capture never reaches _send.
-                if self._kbps_now > 0 and not _precompressed:
+                if _want_compress:
                     compress_for_upload(
                         clip_path, target_kbps=self._kbps_now,
                         scale_height=(int(self.scale_height)
@@ -1425,7 +1477,7 @@ class BackgroundUploader(threading.Thread):
                     clip_path.name, _quiet,
                 )
                 self._spool(session_id, clip_path, ts, tries=0,
-                            compressed=not _precompressed)
+                            compressed=_want_compress)
                 try:
                     clip_path.unlink(missing_ok=True)
                 except Exception:
@@ -1442,7 +1494,7 @@ class BackgroundUploader(threading.Thread):
             _t_send = time.time()
             try:
                 ok = self._send(session_id, clip_path, ts, real_fps,
-                                compress=not _precompressed,
+                                compress=_want_compress,
                                 retries=_tries, timeout=_to)
             finally:
                 # Cleared the moment the wire is free, not on the next
@@ -1459,7 +1511,7 @@ class BackgroundUploader(threading.Thread):
             # Spooling an orphan would park a clip nothing can ever accept.
             if not ok and not self._last_orphaned:
                 self._spool(session_id, clip_path, ts, tries=_tries,
-                            compressed=not _precompressed)
+                            compressed=_want_compress)
             try:
                 clip_path.unlink(missing_ok=True)
             except Exception:

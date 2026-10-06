@@ -277,6 +277,13 @@ stop_poll_interval_seconds: 1.0
 # the ball tracer and needs more detail). Optionally downscale with
 # upload_scale_height (e.g. 720); leave unset to keep capture res.
 upload_bitrate_kbps: 2500
+# IT IS A CEILING, NOT A SETTING, and it governs the copy engine too.
+# The uploader halves this when a clip keeps failing, or when one keeps
+# inching across without finishing, and walks it back up after clean
+# sends. While it sits BELOW the number above, stream-copied clips are
+# re-encoded to it as well -- the capture engine's "already what we mean
+# to send" exemption only holds while the link can carry it. The journal
+# says so each time, and names the ceiling it is using.
 # upload_scale_height: 720
 
 # Clips whose upload fails are kept here (under work_dir/pending) and
