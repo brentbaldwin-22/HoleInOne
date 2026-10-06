@@ -20,30 +20,55 @@
  */
 const CACHE_KEY = "golfreelz.theme";
 
-export const DEFAULT_THEME = { direction: "linen", mode: "light" };
+export const DEFAULT_THEME = { direction: "sunset", mode: "light" };
 
-// ONE LOOK. The site had three colourways and a dark/light switch, and
-// styles.css carried a [data-direction] block for each. That whole
-// machinery is gone: there is one stylesheet now, built from the mark.
+// FOUR LOCKUPS, ONE LOOK. An admin picks one in Settings and the six
+// band tokens follow it — the rule under the masthead, the clip stills,
+// the hero stripe. Nothing else moves: the type, the buttons, the ink
+// and the linen ground are the same on all four, because they are
+// furniture rather than branding. styles.css pins --primary and --warn
+// for exactly that reason.
 //
-// The list survives with a single entry rather than being deleted,
-// because logoUrl() and directionMeta() are called from the header and
-// the admin card, and because the data-direction attribute is still
-// stamped on <html> — a second look later is an entry here plus a block
-// in the stylesheet, not a re-plumbing.
+// `bands` here is the pair shown on the picker swatch, not the ramp
+// itself — the real six live in styles.css under [data-direction], so
+// the stylesheet stays the one place colour is declared.
+//
+// ADDING A FIFTH: an entry here, a block in styles.css, the key in
+// site_theme.py, and the two PNGs under public/logos/.
 export const DIRECTIONS = [
   {
-    key: "linen",
-    name: "Linen",
-    logo: "/logos/linen.png",
-    mark: "/logos/linen-mark.png",
+    key: "sunset",
+    name: "Sunset",
+    logo: "/logos/sunset.png",
+    mark: "/logos/sunset-mark.png",
     bands: ["#0047e7", "#fe6610"],
-    note:
-      "Linen paper, the logo's own six bands, and the red from the "
-      + "wordmark. Rules and whitespace instead of boxes and shadows.",
+    note: "Blue through to orange, the way the original lockup runs.",
+  },
+  {
+    key: "fairway",
+    name: "Fairway",
+    logo: "/logos/fairway.png",
+    mark: "/logos/fairway-mark.png",
+    bands: ["#03855c", "#fee540"],
+    note: "Deep green down to a bright yellow.",
+  },
+  {
+    key: "sky",
+    name: "Sky",
+    logo: "/logos/sky.png",
+    mark: "/logos/sky-mark.png",
+    bands: ["#0045fd", "#baeffd"],
+    note: "One hue, dark to pale — the quietest of the four.",
+  },
+  {
+    key: "ember",
+    name: "Ember",
+    logo: "/logos/ember.png",
+    mark: "/logos/ember-mark.png",
+    bands: ["#fed121", "#fc131d"],
+    note: "Yellow into red. The loudest, and the warmest on linen.",
   },
 ];
-
 // LIGHT IS THE ONLY GROUND. The dark blocks are still in styles.css and
 // still correct; nothing selects them, because clean() below pins the
 // mode. Putting the choice back is this list plus the picker in
@@ -67,8 +92,15 @@ export function logoUrl(direction, size = "full") {
 function clean(theme) {
   const t = theme || {};
   return {
+    // "linen" was this look's only key until the lockups became a
+    // choice; the same artwork is "sunset" now. A theme stored under
+    // the old name is still in the database and in every visitor's
+    // localStorage, so it is translated rather than bounced to the
+    // default — which would be the same picture under a different
+    // name, but only by luck.
     direction: DIRECTION_KEYS.includes(t.direction)
-      ? t.direction : DEFAULT_THEME.direction,
+      ? t.direction
+      : (t.direction === "linen" ? "sunset" : DEFAULT_THEME.direction),
     // PINNED, not defaulted. A theme stored back when dark was the
     // default still lives in the database and in people's localStorage,
     // and honouring it would put some visitors on a ground the site no

@@ -149,6 +149,11 @@ export const api = {
   // it is deliberately unauthenticated and tiny.
   siteTheme: () => request(`/api/public/theme`, { auth: false }),
   adminTheme: (key) => request(`/api/admin/theme`, { adminPassword: key }),
+  // Live for every visitor the moment it returns — there is one theme,
+  // not one per admin.
+  adminSetTheme: (key, patch) => request(`/api/admin/theme`, {
+    method: "POST", adminPassword: key, body: patch,
+  }),
   setAdminTheme: (key, theme) =>
     request(`/api/admin/theme`, {
       method: "POST", body: theme, adminPassword: key,

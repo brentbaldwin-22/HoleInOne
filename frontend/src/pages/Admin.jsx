@@ -172,7 +172,7 @@ export default function Admin() {
 
       <TestEmailCard adminPassword={adminPassword} onToast={showToast} />
 
-      <AppearanceCard adminPassword={adminPassword} />
+      <AppearanceCard adminPassword={adminPassword} onToast={showToast} />
 
       <div className="card">
         <h3 style={{ marginBottom: 4 }}>Manual review queue</h3>

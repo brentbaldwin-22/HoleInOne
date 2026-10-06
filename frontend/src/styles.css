@@ -32,7 +32,12 @@
   color-scheme: light;
 
   /* ---- The mark's own colours, sampled from the file ---- */
-  --band-1: #0047e7;   /* top band, and the primary */
+  /* THE RAMP IS NOW A CHOICE. An admin picks a logo in Settings and
+     these six follow it, because they ARE the logo's stripes — the
+     band rule under the masthead, the clip stills, the hero. Each
+     colourway overrides exactly these six and nothing else, which is
+     why the three tokens below had to stop riding on them. */
+  --band-1: #0047e7;   /* top band of the default (sunset) ramp */
   --band-2: #01acfd;
   --band-3: #76d0c9;
   --band-4: #fcdc5e;
@@ -70,7 +75,13 @@
   --line: var(--rule);
   --muted: var(--ink-mute);
 
-  --primary: var(--band-1);
+  /* PINNED, not var(--band-1). It used to be the top band, which was
+     true while there was one logo and became a bug the moment there
+     were four: picking the green lockup would have turned every button
+     on the site green. Buttons, fields and focus rings are furniture —
+     they do not belong to the logo. Same blue as the sunset ramp's
+     band 1, so nothing moves today. */
+  --primary: #0047e7;
   --primary-hover: #0b3fc0;
   --primary-soft: #e7edfe;
   --on-primary: #ffffff;
@@ -110,7 +121,10 @@
 
   --danger: #b3261e;
   --danger-soft: #f7e3e1;
-  --warn: var(--band-5);
+  /* PINNED for the same reason: "warn" is a status, and a status that
+     changes colour because somebody picked a different logo is not a
+     status. This is the sunset ramp's band 5, where it has always been. */
+  --warn: #fea931;
   --warn-soft: #fdf0d9;
   --ok: #1f6b45;
   --ok-soft: #e0efe6;
@@ -174,6 +188,49 @@
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   font-family: var(--text);
+}
+
+/* ---- The colourways ---------------------------------------------
+   One block each, six declarations each, nothing else. `data-direction`
+   is stamped on <html> at boot from the theme the server holds, so the
+   first paint is already the right ramp rather than a flash of the
+   default one.
+
+   The six are sampled down each lockup's own gradient at even heights
+   rather than counted off its stripes, because the four files do not
+   all have six stripes and what the site spends is six stops down one
+   ramp. Sunset's stay exactly as they were — that ramp was signed off,
+   and re-deriving it would have moved band 3 from teal to a sage green
+   nobody asked for.
+
+   ADDING A FIFTH: a block here, an entry in theme.js, the key in
+   site_theme.py, and the two PNGs. No other file knows about this. */
+
+:root[data-direction="fairway"] {
+  --band-1: #03855c;
+  --band-2: #1baf61;
+  --band-3: #6dcb5e;
+  --band-4: #9edc4e;
+  --band-5: #dce542;
+  --band-6: #fee540;
+}
+
+:root[data-direction="sky"] {
+  --band-1: #0045fd;
+  --band-2: #007dfe;
+  --band-3: #0ab9ff;
+  --band-4: #32cbff;
+  --band-5: #7adefe;
+  --band-6: #baeffd;
+}
+
+:root[data-direction="ember"] {
+  --band-1: #fed121;
+  --band-2: #febb26;
+  --band-3: #fd9a25;
+  --band-4: #de7533;
+  --band-5: #fc441e;
+  --band-6: #fc131d;
 }
 
 * { box-sizing: border-box; }

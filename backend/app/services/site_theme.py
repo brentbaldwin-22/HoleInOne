@@ -18,25 +18,40 @@ from ..models import AppSetting
 
 SETTING_KEY = "site_theme"
 
-# Keep in step with DIRECTIONS in frontend/src/theme.js. There is one
-# look now; the tuple survives so a second one is an entry rather
-# than a schema change.
-DIRECTIONS = ("linen",)
+# Keep in step with DIRECTIONS in frontend/src/theme.js.
+#
+# These name a LOCKUP and the six band colours that come with it, not a
+# whole look: the type, the buttons and the linen ground are the same on
+# all four. An unknown name is refused rather than stored, because the
+# stylesheet has no [data-direction] block for it and the site would
+# come up with the default ramp under a name nothing can explain.
+#
+# "linen" is the name this look carried while it was the only one; the
+# same artwork is "sunset" now. It is accepted on the way IN and
+# translated, so a theme stored under the old name — in this database
+# or in a visitor's localStorage — keeps working.
+DIRECTIONS = ("sunset", "fairway", "sky", "ember")
+LEGACY_DIRECTIONS = {"linen": "sunset"}
 # LIGHT ONLY. The frontend pins the mode regardless of what is stored,
 # so a "dark" left in the database by an older admin would be ignored
 # rather than obeyed — this keeps the two ends saying the same thing.
 MODES = ("light",)
 
-DEFAULT_THEME = {"direction": "linen", "mode": "light"}
+DEFAULT_THEME = {"direction": "sunset", "mode": "light"}
+
+
+def _clean_direction(name):
+    """A stored direction, translated and validated. Never raises."""
+    if name in DIRECTIONS:
+        return name
+    return LEGACY_DIRECTIONS.get(name, DEFAULT_THEME["direction"])
 
 
 def get_theme(db: Session) -> dict:
     row = db.get(AppSetting, SETTING_KEY)
     stored = row.value if row and isinstance(row.value, dict) else {}
     return {
-        "direction": (stored.get("direction")
-                      if stored.get("direction") in DIRECTIONS
-                      else DEFAULT_THEME["direction"]),
+        "direction": _clean_direction(stored.get("direction")),
         "mode": (stored.get("mode") if stored.get("mode") in MODES
                  else DEFAULT_THEME["mode"]),
     }
@@ -52,6 +67,10 @@ def set_theme(db: Session, payload: dict) -> dict:
     for key, allowed in (("direction", DIRECTIONS), ("mode", MODES)):
         if key in payload and payload[key] is not None:
             val = str(payload[key]).strip().lower()
+            # Translate before validating, so a client still sending the
+            # old name is corrected rather than rejected.
+            if key == "direction":
+                val = LEGACY_DIRECTIONS.get(val, val)
             if val not in allowed:
                 raise ValueError(
                     f"{key} must be one of {', '.join(allowed)} — got {val!r}")
