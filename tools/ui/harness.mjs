@@ -120,6 +120,7 @@ export async function openApp(browser, {
   storage = {},
   viewport = { width: 1280, height: 1000 },
   baseUrl,
+  respond,
 } = {}) {
   const page = await browser.newPage({ viewport });
   const errors = [];
@@ -131,6 +132,18 @@ export async function openApp(browser, {
   }
   await page.route("**/api/**", (route) => {
     const url = route.request().url();
+    // Full control when a test needs to fail a call on purpose. Return
+    // null/undefined to fall through to `routes` and the default.
+    if (respond) {
+      const r = respond(url, route.request());
+      if (r) {
+        return route.fulfill({
+          status: r.status ?? 200,
+          contentType: r.contentType ?? "application/json",
+          body: typeof r.body === "string" ? r.body : JSON.stringify(r.body),
+        });
+      }
+    }
     for (const [needle, value] of Object.entries(routes)) {
       if (url.includes(needle)) {
         return route.fulfill({
