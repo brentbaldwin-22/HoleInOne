@@ -566,6 +566,142 @@ def throttled_status(blob, updated_at=None) -> dict | None:
     }
 
 
+def _num(v):
+    """A float from whatever the modem put in that field, or None."""
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        # Firmware reports "-95", "-95 dBm" and "-95.0" interchangeably.
+        m = re.search(r"-?\d+(?:\.\d+)?", str(v))
+        return float(m.group()) if m else None
+    except (TypeError, ValueError):
+        return None
+
+
+# WHERE THE CELLULAR THRESHOLDS COME FROM. These are the ordinary LTE
+# ones, not something tuned to this course: RSRP is the wanted signal
+# and SINR is how much of it survives the noise, and the pair is what
+# separates "this mount is in a bad spot" from "the tower is busy".
+_RSRP_BANDS = ((-90.0, "ok"), (-105.0, "warn"))     # above -90 is good
+_SINR_BANDS = ((13.0, "ok"), (0.0, "warn"))         # above 13 is good
+
+
+def _signal_level(rsrp, sinr) -> str:
+    """ok / warn / bad from the two numbers that matter, worst wins."""
+    worst = "ok"
+    order = {"ok": 0, "warn": 1, "bad": 2}
+    for value, bands in ((rsrp, _RSRP_BANDS), (sinr, _SINR_BANDS)):
+        if value is None:
+            continue
+        lvl = "bad"
+        for edge, name in bands:
+            if value >= edge:
+                lvl = name
+                break
+        if order[lvl] > order[worst]:
+            worst = lvl
+    return worst
+
+
+def link_status(blob, updated_at=None) -> dict | None:
+    """What the uplink says about itself. None when nothing reported.
+
+    THIS REPLACES AN SSH SESSION, which is the only reason it exists.
+    Every branch of the triage runbook used to start "SSH into the
+    affected Pi", and on the tee that is the first thing a starved link
+    kills. The agent reads the modem over USB and the counters out of
+    /proc, so all of this arrives on a heartbeat that was being sent
+    anyway, at a moment when nothing else can get through.
+
+    THREE DIFFERENT PROBLEMS WEAR THE SAME SYMPTOM, and the whole job
+    here is to tell them apart:
+
+      weak signal        -> an antenna or a mount position
+      good signal, no
+        throughput       -> a data cap or a carrier throttle
+      modem re-enumerating -> the power chain, per the runbook's
+                              "stop here and do not swap anything" test
+
+    So a clean reading is reported as loudly as a bad one: "the signal
+    is fine" is what rules the first one out, and a card that shows
+    nothing when all is well cannot do that.
+    """
+    if not isinstance(blob, dict):
+        return None
+    rsrp, rsrq = _num(blob.get("rsrp")), _num(blob.get("rsrq"))
+    sinr, rssi = _num(blob.get("sinr")), _num(blob.get("rssi"))
+    resets = blob.get("usb_resets")
+    resets = int(resets) if isinstance(resets, (int, float)) else None
+    uptime = _num(blob.get("uptime_seconds"))
+    have_signal = any(v is not None for v in (rsrp, sinr, rsrq, rssi))
+
+    if have_signal:
+        level = _signal_level(rsrp, sinr)
+        summary = {
+            "ok": "signal good",
+            "warn": "signal marginal",
+            "bad": "signal poor",
+        }[level]
+        # THE SENTENCE THAT SAYS WHAT TO DO, because the numbers alone
+        # send people to swap the modem either way.
+        verdict = (
+            "Weak signal. An antenna or a different mount position, not "
+            "another modem." if level == "bad"
+            else "Marginal signal — enough for heartbeats, not for "
+                 "sustained upload." if level == "warn"
+            else "Signal is fine, so slow uploads here are a cap, a "
+                 "carrier throttle, or congestion — not the mount."
+        )
+    elif blob.get("gateway") and not blob.get("ok", True):
+        level, summary = "unknown", "modem found but unreadable"
+        verdict = (
+            f"The modem answered at {blob['gateway']} but not with figures "
+            "we recognise"
+            + (f" ({blob['error']})" if blob.get("error") else "")
+            + ". Read it on site, or over SSH when the link allows."
+        )
+    elif resets is None and uptime is None:
+        return None
+    else:
+        level, summary = "unknown", "no modem reading"
+        verdict = "This rig reported no modem signal."
+
+    # THE RUNBOOK'S BANDWIDTH-OR-HARDWARE TEST, carried home by itself.
+    # Zero is the finding, not the absence of one: it means the modem
+    # never re-enumerated, so a link that is merely full is the whole
+    # story and nothing should be swapped.
+    if resets is not None:
+        if resets == 0:
+            verdict += (" The USB bus has not reset since boot, so the "
+                        "modem is not re-enumerating.")
+        else:
+            verdict += (f" The USB bus has reset {resets} time(s) since "
+                        "boot — if that climbs during an upload, the modem "
+                        "really is dropping off and the power chain is next.")
+            if level == "ok":
+                level = "warn"
+
+    return {
+        "level": level,
+        "summary": summary,
+        "verdict": verdict,
+        "rsrp": rsrp, "rsrq": rsrq, "sinr": sinr, "rssi": rssi,
+        "bars": blob.get("bars"),
+        "band": blob.get("band"),
+        "carrier": blob.get("carrier"),
+        # AS THE MODEM GAVE IT. The firmware may mean bytes, MB, or a
+        # billing-cycle total, and we have not confirmed which on this
+        # unit — so it is shown, not converted.
+        "usage": blob.get("usage"),
+        "usb_resets": resets,
+        "uptime_seconds": uptime,
+        "gateway": blob.get("gateway"),
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
 def stream_status(info, updated_at=None) -> dict | None:
     """What the camera is sending, and whether the numbers agree.
 
@@ -717,6 +853,7 @@ def heartbeat(
     stream_info: str | None = Form(None),
     lens_info: str | None = Form(None),
     throttled: str | None = Form(None),
+    link_info: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Cheap keepalive the Pi calls every ~60 s. Touches last_seen_at
@@ -810,6 +947,20 @@ def heartbeat(
         except (ValueError, TypeError) as exc:
             log.warning(
                 "cameras: camera %s sent unparseable throttled: %s",
+                cam.id, exc,
+            )
+    # THE UPLINK'S OWN ACCOUNT OF ITSELF. Read over USB, so it crosses
+    # no cellular bytes and arrives from a rig too starved to answer
+    # anything else.
+    if link_info:
+        try:
+            parsed = json.loads(link_info)
+            if isinstance(parsed, dict):
+                cam.link_info = parsed
+                cam.link_info_at = _utcnow_naive()
+        except (ValueError, TypeError) as exc:
+            log.warning(
+                "cameras: camera %s sent unparseable link_info: %s",
                 cam.id, exc,
             )
     # WHAT THE LENS SAID WHEN ASKED WHERE IT IS — which on this model is

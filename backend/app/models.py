@@ -533,6 +533,15 @@ class Camera(Base):
     throttled: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     throttled_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True)
+    # WHAT THE UPLINK LOOKS LIKE FROM THE PI: the modem's own signal and
+    # data-usage figures, plus the USB reset count and uptime. All of it
+    # is read over USB and /proc, never over the cellular link, which is
+    # the point -- it arrives when that link is too starved to hold the
+    # SSH session every branch of the triage runbook used to start with.
+    # See read_modem() / read_usb_resets() in the agent.
+    link_info: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    link_info_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # Soft toggle distinct from `enabled`: when False the camera stays
     # online (heartbeats + live-watch still work) but the backend

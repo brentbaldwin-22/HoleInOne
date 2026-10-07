@@ -1960,6 +1960,211 @@ def read_throttled(timeout: float = 3.0) -> dict | None:
     }
 
 
+# ── what the uplink can see, without an SSH session ──────────────────
+# EVERY BRANCH OF THE TRIAGE RUNBOOK SAID "SSH IN", and on the camera
+# you most want to ask about, SSH is the first thing to die: the uplink
+# alternates between ~125 KB/s and nothing, and ssh is a held TCP
+# connection. So the questions that decide whether a bad link is weak
+# signal, a data cap, or hardware were exactly the ones that could not
+# be asked.
+#
+# THE MODEM HANGS OFF THE PI'S USB BUS, so reading it never touches the
+# cellular link. That is the whole trick: this works precisely when the
+# uplink is too starved to carry anything else, and it rides home on a
+# heartbeat that was already being sent.
+#
+# NOTHING HERE IS LOAD-BEARING. Every reader returns None rather than
+# raise, a rig with no modem reports nothing at all, and the heartbeat
+# goes without — exactly as the battery and vcgencmd readers do.
+
+# The gateway the modem answers on. NETGEAR's LM/LB series default to
+# this; _modem_gateway() prefers whatever the routing table actually
+# says and falls back here.
+DEFAULT_MODEM_GATEWAY = "192.168.5.1"
+
+# How long a modem reading stays good. The heartbeat is ~60s and this
+# costs an HTTP round trip to a device that can be wedged, so it is
+# fetched on its own slower cadence and served from cache in between.
+MODEM_TTL_SECONDS = 300.0
+
+# What we pull out of whatever the modem serves. The LM1200's JSON
+# shape is NOT confirmed on our unit -- the runbook says to confirm
+# rather than assume -- so these are matched as substrings against leaf
+# key names anywhere in the document instead of being read from fixed
+# paths. A firmware that nests them differently still reports.
+_MODEM_WANTED = {
+    "rsrp": ("rsrp",),
+    "rsrq": ("rsrq",),
+    "sinr": ("sinr", "snr"),
+    "rssi": ("rssi",),
+    "bars": ("bars", "signalstrength"),
+    "band": ("band",),
+    "carrier": ("carrier", "registernetworkdisplay", "operator"),
+    # NO UNIT IN THE NAME. The firmware may report bytes, MB, or a
+    # cycle total, and claiming one we have not confirmed would put a
+    # wrong number on the card with full confidence. The card prints it
+    # as the modem gave it.
+    "usage": ("datatransferred", "dataused", "billingcycle", "usage"),
+}
+
+_modem_cache: dict = {"at": 0.0, "value": None}
+_modem_lock = threading.Lock()
+
+
+def _modem_gateway(timeout: float = 3.0) -> Optional[str]:
+    """The address the modem answers on, from the routing table.
+
+    The modem IS the default gateway on these rigs, so `ip route` names
+    it. Matching the interface as well keeps a rig that is on Ethernet
+    or Wi-Fi for a bench test from being asked about its cellular
+    signal and reporting someone's office router.
+    """
+    try:
+        out = subprocess.run(
+            ["ip", "route"], capture_output=True, text=True, timeout=timeout,
+        )
+    except Exception:  # noqa: BLE001 - no iproute2, not Linux
+        return None
+    for line in (out.stdout or "").splitlines():
+        parts = line.split()
+        if not parts or parts[0] != "default" or "via" not in parts:
+            continue
+        gw = parts[parts.index("via") + 1]
+        dev = parts[parts.index("dev") + 1] if "dev" in parts else ""
+        if re.match(r"^(usb|wwan|enx|eth1)", dev):
+            return gw
+    return None
+
+
+def _scavenge(node, out: dict, depth: int = 0, budget: list = None) -> None:
+    """Walk a JSON document picking up any leaf whose key we recognise.
+
+    Bounded on purpose: a modem page is small, but this parses output
+    from a device we do not control, and an unbounded walk over a
+    hostile or merely strange document is a way to hang a heartbeat.
+    """
+    if budget is None:
+        budget = [4000]
+    if depth > 8 or budget[0] <= 0:
+        return
+    budget[0] -= 1
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if isinstance(v, (dict, list)):
+                _scavenge(v, out, depth + 1, budget)
+                continue
+            flat = str(k).lower().replace("_", "")
+            for field, needles in _MODEM_WANTED.items():
+                if field in out:
+                    continue
+                if any(n in flat for n in needles):
+                    out[field] = v
+    elif isinstance(node, list):
+        for v in node[:200]:
+            _scavenge(v, out, depth + 1, budget)
+
+
+def read_modem(gateway: Optional[str] = None, timeout: float = 4.0,
+               ttl: float = MODEM_TTL_SECONDS) -> Optional[dict]:
+    """Signal and data usage straight off the USB modem. None if absent.
+
+    Returns a shape whenever a gateway was found, INCLUDING when the
+    modem would not answer or answered with something unreadable --
+    "there is a modem here and it will not talk" is an answer, and a
+    card that cannot tell it from "no modem fitted" sends you to site
+    to find out. `ok` says which you have.
+    """
+    now = time.time()
+    with _modem_lock:
+        fresh = now - _modem_cache["at"] < ttl
+        if _modem_cache["value"] is not None and fresh:
+            return _modem_cache["value"]
+
+    gw = gateway or _modem_gateway() or DEFAULT_MODEM_GATEWAY
+    result: dict = {"gateway": gw, "ok": False, "at": now}
+    try:
+        resp = requests.get(
+            f"http://{gw}/api/model.json", timeout=timeout,
+        )
+        if resp.status_code == 200:
+            try:
+                _scavenge(resp.json(), result)
+                result["ok"] = any(k in result for k in _MODEM_WANTED)
+                if not result["ok"]:
+                    result["error"] = "no known signal fields in model.json"
+            except ValueError:
+                result["error"] = "model.json was not JSON"
+        else:
+            result["error"] = f"model.json returned {resp.status_code}"
+    except Exception as exc:  # noqa: BLE001 - no modem, wedged, no route
+        result["error"] = f"{type(exc).__name__}: {exc}"[:120]
+
+    # A GATEWAY WE ONLY GUESSED AND COULD NOT REACH IS NOT A MODEM.
+    # Reporting one would put a permanent "modem unreachable" on every
+    # rig that has no cellular modem at all, which is noise, not news.
+    if not result["ok"] and gateway is None and _modem_gateway() is None:
+        value = None
+    else:
+        value = result
+    with _modem_lock:
+        _modem_cache["at"], _modem_cache["value"] = now, value
+    return value
+
+
+def read_usb_resets(timeout: float = 4.0) -> Optional[dict]:
+    """How often the USB bus has re-enumerated since boot, plus uptime.
+
+    THE ONE CHECK THAT SPLITS A BANDWIDTH PROBLEM FROM A HARDWARE ONE,
+    per the runbook: a count that stays at zero across an upload means
+    the modem never re-enumerated and the link is merely full -- stop,
+    swap nothing. A count that climbs each upload means the modem is
+    really resetting, and the power chain is next.
+
+    Needs `dmesg` readable by this user. Where the kernel restricts it
+    (dmesg_restrict=1) this returns None and the card simply does not
+    show the row, rather than reporting a misleading zero.
+    """
+    out: dict = {}
+    try:
+        with open("/proc/uptime", "r") as fh:
+            out["uptime_seconds"] = float(fh.read().split()[0])
+    except Exception:  # noqa: BLE001 - not Linux
+        pass
+    try:
+        res = subprocess.run(
+            ["dmesg"], capture_output=True, text=True, timeout=timeout,
+        )
+        if res.returncode != 0:
+            return out or None
+        text = res.stdout or ""
+    except Exception:  # noqa: BLE001 - no dmesg, or not permitted
+        return out or None
+    resets = len(re.findall(r"usb .*(?:reset|disconnect)", text, re.I))
+    out["usb_resets"] = resets
+    return out or None
+
+
+def link_info_fields() -> dict:
+    """The uplink's own account of itself, as heartbeat form fields.
+
+    ONE FIELD, TWO READERS, because they answer one question between
+    them: is this link weak, capped, or broken? Signal and data usage
+    come off the modem; the USB reset count and uptime come off the
+    kernel. Splitting them across two columns would mean two card rows
+    that have to be read together anyway.
+
+    tee.py and green.py both call this rather than assembling it
+    themselves, so the two rigs cannot drift into reporting different
+    shapes -- which is how the heartbeat has gone wrong before.
+    """
+    link: dict = {}
+    if (m := read_modem()):
+        link.update(m)
+    if (u := read_usb_resets()):
+        link.update(u)
+    return {"link_info": json.dumps(link)[:900]} if link else {}
+
+
 def agent_build_id() -> str:
     """A short digest of the agent's own source, for the heartbeat.
 

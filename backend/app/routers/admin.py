@@ -74,6 +74,7 @@ from .cameras import throttled_status as _throttled_status
 from .cameras import focus_status as _focus_status
 from .cameras import exposure_status as _exposure_status
 from .cameras import stream_status as _stream_status
+from .cameras import link_status as _link_status
 from .cameras import _focus_remaining as _cam_focus_remaining
 from ..models import (
     AuditLog,
@@ -14981,6 +14982,10 @@ def _camera_to_dict(
             c.camera_settings, c.camera_settings_at,
         ),
         "stream": _stream_status(c.stream_info, c.stream_info_at),
+        # WHAT THE UPLINK SAYS ABOUT ITSELF, read over USB on the Pi so
+        # it arrives from a rig whose cellular link is too starved to
+        # hold an SSH session. See link_status for what it separates.
+        "link": _link_status(c.link_info, c.link_info_at),
         # CLIPS RECORDED BUT NOT YET HANDED OVER. Derived from the
         # events table rather than reported by the Pi, so it works on
         # an agent too old — or a link too congested — to tell us

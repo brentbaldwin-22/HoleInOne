@@ -170,6 +170,78 @@ const TONE_CLASS = {
 // a frame rate (it cannot — the sensor belongs to the camera), so the
 // rate is changed in the camera's own profile, and this is how you find
 // out what it is.
+/**
+ * WHAT THE UPLINK SAYS ABOUT ITSELF — the panel that replaces an SSH
+ * session.
+ *
+ * Every branch of the triage runbook used to open "SSH into the
+ * affected Pi", and on the tee that is the first thing to die: the
+ * link alternates between ~125 KB/s and nothing, and ssh is a held TCP
+ * connection. So the three questions that decide what is actually
+ * wrong could only be asked at the moment they were impossible.
+ *
+ * The agent reads the modem over the USB bus and the counters out of
+ * /proc, so none of this crosses the cellular link. It rides home on a
+ * heartbeat that was already being sent.
+ *
+ * THE VERDICT LINE IS THE POINT. The numbers alone send people to swap
+ * the modem whichever way they read, because weak signal, a data cap
+ * and a failing power chain all present as "uploads are slow". The
+ * sentence says which one this is and what to do about it.
+ */
+function LinkReadout({ link }) {
+  const l = link || {};
+  const dbm = (v, unit) => (v == null ? null : `${v} ${unit}`);
+  const rows = [
+    ["RSRP", dbm(l.rsrp, "dBm")],
+    ["SINR", dbm(l.sinr, "dB")],
+    ["RSRQ", dbm(l.rsrq, "dB")],
+    ["RSSI", dbm(l.rssi, "dBm")],
+    ["Band", l.band],
+    ["Carrier", l.carrier],
+    // NO UNIT. The firmware may mean bytes, MB or a cycle total and we
+    // have not confirmed which on this unit, so it is shown as given
+    // rather than converted into a confident wrong number.
+    ["Data", l.usage == null ? null : String(l.usage)],
+    ["USB resets", l.usb_resets == null ? null : String(l.usb_resets)],
+    ["Up", l.uptime_seconds == null
+      ? null
+      : `${Math.floor(l.uptime_seconds / 3600)}h`],
+  ].filter(([, v]) => v);
+
+  return (
+    <div style={{ width: "100%" }}>
+      <div className="tiny upper muted" style={{ marginBottom: 3 }}
+           title="Read off the modem over USB and out of /proc on the Pi, so it arrives even when the cellular link is too starved to hold an SSH session.">
+        Uplink
+      </div>
+      {rows.length > 0 ? (
+        <div className="tiny" style={{ display: "flex", flexWrap: "wrap",
+                                       gap: "2px 14px" }}>
+          {rows.map(([label, v]) => (
+            <span key={label}>
+              <span className="muted">{label}:</span> <b>{v}</b>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="tiny muted">nothing reported yet</div>
+      )}
+      {l.verdict && (
+        <div className="tiny muted" style={{ marginTop: 3,
+                                             whiteSpace: "normal" }}>
+          {l.verdict}
+        </div>
+      )}
+      {l.updated_at && (
+        <div className="tiny muted" style={{ marginTop: 2 }}>
+          read {tsRel(l.updated_at)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StreamReadout({ stream, onRead, busy, busyWhy }) {
   const s = stream || {};
   const rows = [
@@ -2246,6 +2318,34 @@ export default function AdminCameras() {
                       ⚡ {cam.power.summary}
                     </span>
                   )}{" "}
+                  {/* WHAT THE UPLINK LOOKS LIKE FROM THE PI. Weak
+                      signal, a data cap and a failing power chain all
+                      present as "uploads are slow", and separating
+                      them used to need an SSH session on the one link
+                      that will not hold one. Shown when it is clean
+                      too: "the signal is fine" is what rules the mount
+                      position out. */}
+                  {cam.link && (
+                    <span
+                      className={`pill small ${
+                        cam.link.level === "ok" ? "ok" : "warn"}`}
+                      style={
+                        cam.link.level === "bad"
+                          ? { background: "#dc2626", color: "#fff" }
+                          : cam.link.level === "warn"
+                            ? { background: "#f59e0b", color: "#1a1a1a" }
+                            : undefined
+                      }
+                      title={[
+                        cam.link.verdict,
+                        cam.link.updated_at
+                          ? `read ${tsRel(cam.link.updated_at)}`
+                          : null,
+                      ].filter(Boolean).join(" · ")}
+                    >
+                      📶 {cam.link.summary}
+                    </span>
+                  )}{" "}
                   {/* CLIPS RECORDED BUT NOT YET HANDED OVER. The
                       question this answers is "is the uplink clear
                       yet", which until now could only be answered by
@@ -2821,6 +2921,23 @@ export default function AdminCameras() {
                     >
                       ⛳ Today&apos;s pin &amp; ball area
                     </button>
+                  )}
+                  {/* NOT GATED ON kind. The stream panel below
+                      describes the camera, so it is for IP cameras;
+                      this describes the Pi's own uplink, which every
+                      heartbeating rig has. */}
+                  {cam.link && (
+                    <div
+                      style={{
+                        display: "flex", flexWrap: "wrap", gap: 6,
+                        alignItems: "center", width: "100%",
+                        padding: "6px 8px", borderRadius: 8,
+                        border: "1px solid rgba(120,120,120,0.35)",
+                        background: "rgba(120,120,120,0.06)",
+                      }}
+                    >
+                      <LinkReadout link={cam.link} />
+                    </div>
                   )}
                   {cam.kind === "ip" && (
                     <div

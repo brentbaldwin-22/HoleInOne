@@ -28,6 +28,7 @@ from .common import (
     agent_build_id,
     ClipWriter,
     DeliveryMeter,
+    link_info_fields,
     read_throttled,
     reclock_fps,
     write_fps_for,
@@ -182,6 +183,11 @@ class GreenAgent:
                 out.update(f)
             out.update(drain_camera_settings(self))
             out.update(stream_info_fields(self))
+            # WHAT THE UPLINK LOOKS LIKE FROM HERE. Read over USB and
+            # /proc, so it costs the cellular link nothing and arrives
+            # even when that link is too starved to hold an SSH session
+            # -- which is the only time anyone wants it.
+            out.update(link_info_fields())
             return out or None
 
         hb = HeartbeatThread(

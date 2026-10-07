@@ -121,6 +121,12 @@ actually frees the link so the backlog can drain. Drag it back when you
 are done, and do not press **Capture** — that is exempt from the zone
 by design.
 
+**The 📶 pill answers the next question before you ask it.** If the
+card says live, the uplink panel already tells you whether the link is
+weak, capped, or re-enumerating — see *Reading the modem's signal*
+below. That is the one part of this runbook that no longer needs a
+shell.
+
 **If the card says live and SSH still times out:**
 
 ```bash
@@ -497,7 +503,38 @@ The LM1200's own admin page reports RSRP / RSRQ / SINR, and comparing
 the tee mount against the green mount is the location question answered
 directly. It used to say here that you could do this from a phone. **You
 cannot** — the LM1200 is a USB/Ethernet modem with no WiFi of its own,
-so there is nothing for a phone to join. There are two real routes:
+so there is nothing for a phone to join.
+
+**Start on the card. Since 7 Oct the agent reads this itself** and sends
+it on the heartbeat, as a 📶 pill and an **Uplink** panel on
+`/admin/cameras`. The modem hangs off the Pi's USB bus and the counters
+come out of `/proc`, so none of it crosses the cellular link — which
+means it arrives from a rig too starved to hold an SSH session, the only
+time anyone wants it. The panel carries RSRP, RSRQ, SINR, RSSI, band,
+carrier, the modem's data figure, the USB reset count and uptime, and
+one sentence saying which of the three faults this is:
+
+| The pill | What it means | What to do |
+|---|---|---|
+| 📶 **signal good** | RSRP above −90 and SINR above 13 | The mount is fine. Slow uploads here are a cap, a carrier throttle, or congestion |
+| 📶 **signal marginal** | RSRP −90…−105, or SINR 0…13 | Enough for heartbeats, not for sustained upload |
+| 📶 **signal poor** | RSRP below −105, or SINR below 0 | An antenna or a different mount position — **not** another modem |
+| 📶 amber with resets | Signal fine but the USB bus has re-enumerated | The power chain, per the test above. Watch whether the count climbs during an upload |
+| no pill | The rig found no modem | Nothing is fitted, or nothing is routed. Not a fault report |
+
+The reset count is the runbook's bandwidth-or-hardware test, carried
+home without an SSH session: **zero is a finding, not a blank.** It
+means the modem never re-enumerated, so a link that is merely full is
+the whole story and nothing should be swapped.
+
+The reading is refreshed every 5 minutes rather than every heartbeat —
+the modem can be wedged, and a diagnostic that blocks the beat becomes
+the outage. So a number up to five minutes old is expected.
+
+**The two routes below are still here**, for a rig running an agent
+older than 7 Oct, or when the panel says *modem found but unreadable* —
+which means the firmware on this unit does not serve the JSON shape the
+agent knows, and someone has to look at what it does serve.
 
 **Over SSH, which needs no site visit.** The modem hangs off the Pi's
 USB bus, so reading it never touches the cellular link — only your SSH
