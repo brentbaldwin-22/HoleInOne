@@ -1043,6 +1043,11 @@ class BackgroundUploader(threading.Thread):
                 # and writing True here would have been a lie the retry
                 # ladder then acted on.
                 "compressed": bool(compressed),
+                # WHEN THIS CLIP JOINED THE SPOOL, and the key the
+                # queue is ordered and expired by. It used to be the
+                # file's mtime, which the shrink ladder rewrites every
+                # time it re-encodes a clip -- see _spool_entries.
+                "spooled_at": time.time(),
             }))
             log.warning(
                 "uploader: kept %s (%.1f MB) for a later attempt — %d clip(s) "
@@ -1055,30 +1060,95 @@ class BackgroundUploader(threading.Thread):
             log.warning("uploader: could not spool %s: %s", clip_path.name, exc)
             return False
 
+    def _spool_entries(self) -> list:
+        """Every spooled clip as (joined_at, path, meta), oldest first.
+
+        ORDERED BY WHEN THE CLIP JOINED THE SPOOL, NOT BY ITS mtime.
+        Those were the same thing right up until the shrink ladder
+        re-encoded a clip: `compress_for_upload` replaces the file, so
+        the clip the sweep had been patiently grinding on acquired a
+        brand-new mtime and sorted to the BACK of the queue. The sweep
+        moved to a different clip, banked a little of that one, shrank
+        it, and lost it the same way.
+
+        The result was the thing _retry_one_spooled's "DO NOT ROTATE"
+        comment was written to prevent, arriving through the one door
+        that comment did not cover: a spool where every clip was 10-25%
+        uploaded and not one of them had finished.
+
+        mtime also decided EVICTION, so a re-encode reset the clip's
+        24-hour clock — a shrunk clip could outlive the cap forever
+        while genuinely older footage was dropped to make room for it.
+
+        `spooled_at` is written once, by _spool, and carried across
+        every meta rewrite after that. Clips spooled by an older agent
+        have no such key, so mtime remains the fallback — and
+        compress_for_upload now restores mtime across a re-encode, which
+        keeps that fallback honest for them too.
+        """
+        if self.spool_dir is None:
+            return []
+        try:
+            paths = list(self.spool_dir.glob("*.mp4"))
+        except OSError:
+            return []
+        out: list = []
+        for p in paths:
+            side = p.with_suffix(".json")
+            try:
+                meta = json.loads(side.read_text()) if side.exists() else {}
+            except Exception:  # noqa: BLE001
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            try:
+                joined = float(meta.get("spooled_at") or 0)
+            except (TypeError, ValueError):
+                joined = 0.0
+            if joined <= 0:
+                try:
+                    joined = p.stat().st_mtime
+                except OSError:
+                    continue      # vanished under us; nothing to send
+            out.append((joined, p, meta))
+        out.sort(key=lambda e: e[0])
+        return out
+
+    def _spooled_count(self) -> int:
+        """How many clips are waiting on the link."""
+        return len(self._spool_entries())
+
+    def _park_fresh(self) -> tuple:
+        """Should a fresh clip be parked rather than attempted?
+
+        Returns (quiet_seconds, backlog_depth); non-zero in either slot
+        means park it. DECIDED ONCE, and in one place, because the
+        answer has two independent reasons and the log line downstream
+        has to say which one applied.
+        """
+        return (max(self._in_backoff(), self._settling()),
+                self._spooled_count() if self.spool_dir else 0)
+
     def _prune_spool(self) -> None:
         """Keep the spool inside its size and age bounds, oldest out first."""
         if self.spool_dir is None:
             return
-        try:
-            clips = sorted(self.spool_dir.glob("*.mp4"),
-                           key=lambda p: p.stat().st_mtime)
-        except OSError:
-            return
+        entries = self._spool_entries()
         now = time.time()
         total = 0
         keep: list = []
-        for p in reversed(clips):          # newest first
+        for joined, p, _meta in reversed(entries):     # newest first
             try:
                 st = p.stat()
             except OSError:
                 continue
-            if (now - st.st_mtime) > self.spool_max_age:
+            if (now - joined) > self.spool_max_age:
                 continue
             if total + st.st_size > self.spool_max_bytes:
                 continue
             total += st.st_size
             keep.append(p)
-        for p in clips:
+        for _joined, p, _meta in entries:
             if p in keep:
                 continue
             log.warning("uploader: dropping spooled %s (spool full or stale)",
@@ -1088,21 +1158,11 @@ class BackgroundUploader(threading.Thread):
 
     def _next_spooled(self):
         """The oldest clip waiting on the link, or None."""
-        if self.spool_dir is None:
+        entries = self._spool_entries()
+        if not entries:
             return None
-        try:
-            clips = sorted(self.spool_dir.glob("*.mp4"),
-                           key=lambda p: p.stat().st_mtime)
-        except OSError:
-            return None
-        for p in clips:
-            side = p.with_suffix(".json")
-            try:
-                meta = json.loads(side.read_text()) if side.exists() else {}
-            except Exception:  # noqa: BLE001
-                meta = {}
-            return p, meta
-        return None
+        _joined, path, meta = entries[0]
+        return path, meta
 
     # ---- worker -----------------------------------------------------
 
@@ -1446,13 +1506,34 @@ class BackgroundUploader(threading.Thread):
             # in a dead window for the full 180s. A longer attempt would
             # simply have been in progress when the link came back.
             #
-            # But patience costs the queue. So: a fresh clip gets a short
-            # attempt and is spooled if it misses — nothing is lost, the
-            # spool will retry it. The patient attempt happens on the
-            # spool sweep below, where the worker is idle and a ten-minute
-            # wait costs nothing.
-            _quiet = max(self._in_backoff(), self._settling())
-            if _quiet > 0:
+            # But patience costs the queue. So: a fresh clip with a clear
+            # run ahead of it gets a short attempt and is spooled if it
+            # misses — nothing is lost, the spool will retry it. The
+            # patient attempt happens on the spool sweep below, where the
+            # worker is idle and a ten-minute wait costs nothing.
+            #
+            # A BACKLOG MAKES EVERY FRESH CLIP LAST IN LINE, so sending
+            # one here is a queue-jump the spool will not honour anyway:
+            # the sweep is strictly oldest-first, so whatever this
+            # attempt banks is banked on a clip that then waits behind
+            # every clip already parked.
+            #
+            # And it banks something. Observed on the tee: nine clips,
+            # each 10-25% uploaded, each stalled over an hour, none
+            # finished. The backoff gate below already covered a link
+            # that had FAILED — but a link that is merely slow keeps
+            # progressing, and _note_result deliberately holds the quiet
+            # window at backoff_base for exactly that case. So the gate
+            # kept opening, every new swing spent the link painting a
+            # sliver onto itself, and the one clip at the head of the
+            # queue never got a clear run.
+            #
+            # Joining the back of the spool costs this clip nothing: it
+            # is a rename into the same directory, the sweep runs right
+            # after this loop, and the order clips arrive in is now the
+            # order they go up in.
+            _quiet, _backlog = self._park_fresh()
+            if _quiet > 0 or _backlog:
                 # THE POINT OF THE BACKOFF. Attempting here is what kept
                 # the link permanently busy; spool it and stay off the
                 # wire. Compress first, so the retry has nothing left to
@@ -1468,14 +1549,22 @@ class BackgroundUploader(threading.Thread):
                                       if self.scale_height else None),
                         force_input_fps=real_fps,
                     )
-                log.info(
-                    "uploader: %s — spooling %s without an attempt so the "
-                    "link stays idle (%.0fs)",
-                    ("a capture is running" if self._capture_active
-                     else "settling after a capture" if self._settling() > 0
-                     else "backing off"),
-                    clip_path.name, _quiet,
-                )
+                if _quiet > 0:
+                    log.info(
+                        "uploader: %s — spooling %s without an attempt so the "
+                        "link stays idle (%.0fs)",
+                        ("a capture is running" if self._capture_active
+                         else "settling after a capture"
+                         if self._settling() > 0 else "backing off"),
+                        clip_path.name, _quiet,
+                    )
+                else:
+                    log.info(
+                        "uploader: %d clip(s) already waiting — %s joins the "
+                        "back of the spool without an attempt, so the link "
+                        "finishes the oldest one instead of starting a tenth",
+                        _backlog, clip_path.name,
+                    )
                 self._spool(session_id, clip_path, ts, tries=0,
                             compressed=_want_compress)
                 try:
@@ -3113,8 +3202,21 @@ def compress_for_upload(
         tmp_out.unlink(missing_ok=True)
         return False
     try:
-        orig_mb = video_path.stat().st_size / (1024 * 1024)
+        _st = video_path.stat()
+        orig_mb = _st.st_size / (1024 * 1024)
         tmp_out.replace(video_path)
+        # KEEP THE FILE'S AGE. `replace` stamps the new file with now,
+        # and the spool falls back to mtime when it has nothing better
+        # to order and expire clips by -- so a shrunk clip jumped to the
+        # BACK of the queue and had its 24h eviction clock reset, on the
+        # very pass that had just made it small enough to send. The
+        # shrink ladder exists to finish the oldest clip; rotating away
+        # from it there is the exact opposite, and it is how a spool of
+        # clips each ended up 10-25% uploaded and none of them finished.
+        try:
+            os.utime(video_path, (_st.st_atime, _st.st_mtime))
+        except OSError:
+            pass                      # ordering degrades, the clip is fine
         new_mb = video_path.stat().st_size / (1024 * 1024)
         log.info(
             "compress: %s %.1f MB -> %.1f MB (H.264 %dk)",

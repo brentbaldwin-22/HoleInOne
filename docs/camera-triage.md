@@ -93,6 +93,21 @@ evicted the file to make room, leaves exactly the same row behind. So a
 number that will not come down is a reason to go and look, not a reason
 to keep waiting.
 
+**Many clips each part-uploaded is a different shape from one clip
+stuck.** On 7 Oct the tee showed nine clips at 10–25%, each stalled for
+over an hour, none finished — which looks like parallel uploads and is
+not: the uploader is a single thread and the spool is strictly
+oldest-first. Two ordering bugs produced it, both now fixed. The shrink
+ladder re-encoded a clip, which rewrote the file and so its mtime, and
+the spool ordered and expired by mtime — so the clip it had just made
+sendable sorted to the back of the queue. And every fresh swing got an
+attempt ahead of the whole backlog, because the backoff gate only
+covered a link that had *failed*, not one that was merely slow. Clips
+now carry a `spooled_at` in their sidecar JSON that a re-encode cannot
+move, and a fresh clip joins the back of the spool rather than jumping
+it. **If you see this shape again on an agent from 7 Oct or later, the
+ordering is not the cause — read the agent log before assuming it is.**
+
 **Shrinking the trigger zone is the brake that works on an old agent.**
 Pausing a camera from the app stops the server writing event rows, but
 only an agent carrying the `triggering_disabled` fix stops *recording
