@@ -418,9 +418,10 @@ hats, not two problems.
 
 ### Do the 2x2, and measure THROUGHPUT, not ping (10 Oct)
 
-The swap finally happened with both rigs on a bench indoors, and it
-answered in twenty minutes what three site visits had not. The method
-is the part worth keeping:
+Both rigs went on a bench indoors and were measured against each
+other. The measurement method below is sound and worth keeping. The
+conclusion originally drawn from it was not — see the warning under
+the table.
 
 **Measure the same way in all four configurations, agents stopped.**
 
@@ -435,28 +436,42 @@ head -c 10000000 /dev/zero | curl -o /dev/null -w "up:   %{speed_upload} B/s\n" 
 
 | Configuration | down B/s | up B/s | loss |
 |---|---|---|---|
-| tee Pi + tee radio | 3,770 | 2,384 | 40% |
-| green Pi + green radio | 138,238 | 43,689 | 0% |
-| **green Pi + tee radio** | — unreachable, could not hold SSH — | | |
-| **tee Pi + green radio** | 475,781 | 144,171 | 0% |
-| **tee Pi + tee MODEM + green SIM** | 310,232 | 96,111 | 0% |
+| before any swap | 3,770 | 2,384 | 40% |
+| the other rig, before any swap | 138,238 | 43,689 | 0% |
+| after the swap — one rig | — unreachable, could not hold SSH — | | |
+| after the swap — other rig | 475,781 | 144,171 | 0% |
+| after a further modem change | 310,232 | 96,111 | 0% |
 
-The fault followed the radio in both directions, and then the last row
-split the radio itself: the tee's own modem does 310/96 KB/s once a
-different SIM is in it.
+**THE CAUSE IS NOT ESTABLISHED, AND THIS SECTION ONCE SAID IT WAS.**
+It read "IT WAS THE SIM" in confident bold. That was wrong, and it is
+worth leaving the scar: the numbers above are real and the fault is
+real, but the labels on the rows were an assumption about which parts
+had been exchanged, not a record of it. What was actually swapped
+between the two rigs was the **SD cards** — the SIMs never left their
+modems. So every row attributing the result to a radio was describing
+an experiment nobody ran.
 
-**IT WAS THE SIM.** Every configuration works except the two containing
-the tee's SIM, and both of those are catastrophic. Location, Pi
-hardware, USB, power, the agent and the modem are all eliminated — the
-line is throttled or capped, and the fix is the carrier, not parts.
+A 100x throughput difference is a fact. "Therefore the SIM" was a
+story laid over it, and it survived three paragraphs of reasoning
+because the reasoning was never checked against what the hands did.
 
-The signature to recognise next time: **~30 kbps with intermittent
-loss and a sometimes-perfect ping.** That is the band carriers throttle
-to after a data cap (32-128 kbps). Heartbeats are a few hundred bytes
-and always get through; clips are megabytes and never do. Ask the
-carrier for the line's high-speed usage this cycle, whether tethered
-data is metered separately (it usually is on a hotspot dongle), and
-whether the line is flagged — before buying anything.
+WHAT THIS RUNBOOK NOW ASKS OF YOU, before anything else:
+
+1. **Write down the physical configuration before each measurement** —
+   which board, which SD card, which modem, which SIM. All four. The
+   hostname does NOT do this for you: it lives on the SD card, so the
+   prompt follows the card and not the board, which is exactly how the
+   labels above went wrong.
+2. **Change one thing at a time**, and re-measure after each.
+3. Only then write a conclusion.
+
+SWAPPING SD CARDS SWAPS THE CAMERAS' IDENTITIES. The card carries
+config.yaml, and with it the auth token, the assigned role and the
+camera's RTSP address. Two rigs with exchanged cards have exchanged
+identities in the backend: each reports as the other, triggers as the
+other, and uploads against the other's events. Check `/admin/cameras`
+after any card swap, and treat clips recorded in that window with
+suspicion.
 
 One counter to read with care: `dmesg` USB resets went 0 -> 2 across
 this session, entirely from unplugging modems by hand. A physical
