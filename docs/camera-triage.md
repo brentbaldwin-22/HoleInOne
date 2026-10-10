@@ -439,11 +439,30 @@ head -c 10000000 /dev/zero | curl -o /dev/null -w "up:   %{speed_upload} B/s\n" 
 | green Pi + green radio | 138,238 | 43,689 | 0% |
 | **green Pi + tee radio** | — unreachable, could not hold SSH — | | |
 | **tee Pi + green radio** | 475,781 | 144,171 | 0% |
+| **tee Pi + tee MODEM + green SIM** | 310,232 | 96,111 | 0% |
 
-The fault followed the radio in both directions. **The tee Pi was never
-the problem** — on a good radio it is the fastest box measured. So
-location, Pi hardware, USB, power and the agent are all eliminated, and
-the remaining split is modem versus SIM.
+The fault followed the radio in both directions, and then the last row
+split the radio itself: the tee's own modem does 310/96 KB/s once a
+different SIM is in it.
+
+**IT WAS THE SIM.** Every configuration works except the two containing
+the tee's SIM, and both of those are catastrophic. Location, Pi
+hardware, USB, power, the agent and the modem are all eliminated — the
+line is throttled or capped, and the fix is the carrier, not parts.
+
+The signature to recognise next time: **~30 kbps with intermittent
+loss and a sometimes-perfect ping.** That is the band carriers throttle
+to after a data cap (32-128 kbps). Heartbeats are a few hundred bytes
+and always get through; clips are megabytes and never do. Ask the
+carrier for the line's high-speed usage this cycle, whether tethered
+data is metered separately (it usually is on a hotspot dongle), and
+whether the line is flagged — before buying anything.
+
+One counter to read with care: `dmesg` USB resets went 0 -> 2 across
+this session, entirely from unplugging modems by hand. A physical
+disconnect is a USB disconnect and the counter cannot tell the
+difference, so it only means something while nobody is touching the
+hardware.
 
 **PING IS NOT A LINK TEST.** The first ping on the broken rig came back
 72 ms with 0% loss and sent this investigation sideways for an hour. A
