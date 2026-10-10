@@ -416,6 +416,53 @@ anything sustained dies within half a minute. That is the tee's
 signature, in SSH and in clip upload alike — the same fault wearing two
 hats, not two problems.
 
+### Do the 2x2, and measure THROUGHPUT, not ping (10 Oct)
+
+The swap finally happened with both rigs on a bench indoors, and it
+answered in twenty minutes what three site visits had not. The method
+is the part worth keeping:
+
+**Measure the same way in all four configurations, agents stopped.**
+
+```bash
+echo "=== $(hostname) $(date) ==="
+ping -c 10 8.8.8.8 | tail -2
+curl -o /dev/null -w "down: %{speed_download} B/s\n" --max-time 30 \
+  "https://speed.cloudflare.com/__down?bytes=25000000"
+head -c 10000000 /dev/zero | curl -o /dev/null -w "up:   %{speed_upload} B/s\n" \
+  --max-time 30 -X POST --data-binary @- "https://speed.cloudflare.com/__up"
+```
+
+| Configuration | down B/s | up B/s | loss |
+|---|---|---|---|
+| tee Pi + tee radio | 3,770 | 2,384 | 40% |
+| green Pi + green radio | 138,238 | 43,689 | 0% |
+| **green Pi + tee radio** | — unreachable, could not hold SSH — | | |
+| **tee Pi + green radio** | 475,781 | 144,171 | 0% |
+
+The fault followed the radio in both directions. **The tee Pi was never
+the problem** — on a good radio it is the fastest box measured. So
+location, Pi hardware, USB, power and the agent are all eliminated, and
+the remaining split is modem versus SIM.
+
+**PING IS NOT A LINK TEST.** The first ping on the broken rig came back
+72 ms with 0% loss and sent this investigation sideways for an hour. A
+link can be perfect for 64-byte packets and carry 3 KB/s. Throughput is
+the measurement; latency is a hint. Run the ping again too — the second
+run on the same rig lost 40%, so one clean ping proves nothing either.
+
+**A hotspot dongle is not an industrial modem.** Many consumer plans
+meter or deprioritise tethered data separately, and a throttle to
+~2G speeds (32-128 kbps) looks exactly like 3,770 B/s with intermittent
+loss. Before buying hardware, read the line's usage in the carrier
+portal.
+
+**Both rigs look identical from the Pi.** Each modem NATs to
+`192.168.1.100` via `192.168.1.1`, so after a swap nothing on the Pi
+changes and nothing in the config or the agent needs touching — the
+agent knows nothing about SIMs, carriers or modems. Label the hardware,
+because the software cannot tell you what is plugged in.
+
 ### First, rule out the boring one: the link is just full
 
 **Observed 2 Oct: the tee became reachable the moment its uploads
@@ -499,11 +546,22 @@ vcgencmd get_throttled     # 0x0 here while dmesg shows USB resets
 
 ### Reading the modem's signal
 
-The LM1200's own admin page reports RSRP / RSRQ / SINR, and comparing
-the tee mount against the green mount is the location question answered
-directly. It used to say here that you could do this from a phone. **You
-cannot** — the LM1200 is a USB/Ethernet modem with no WiFi of its own,
-so there is nothing for a phone to join.
+The modem's own admin page reports RSRP / RSRQ / SINR, and comparing one
+mount against the other is the location question answered directly.
+
+**KNOW WHICH MODEM YOU HAVE — the address is not the same.** This has
+already sent one evening chasing an empty `curl`:
+
+| Modem | Admin page | API | Has its own WiFi? |
+|---|---|---|---|
+| NETGEAR LM1200 (original) | `http://192.168.5.1` | `/api/model.json` | **No** — USB/Ethernet only, nothing for a phone to join |
+| EIOTCLUB 4G USB dongle (from 10 Oct) | `http://192.168.1.1` | NOT `model.json` — generic MiFi firmware, 404s | **Yes** — join its hotspot and browse to it from a phone |
+
+Both present to the Pi as a USB network gadget on `eth1`, and both NAT
+their clients to `192.168.1.100`, so **`ip route` cannot tell you which
+modem is plugged in and neither can the Pi's address.** Label the
+hardware. `lsusb` is the only honest answer, and note that a grep for
+"netgear|sierra|huawei" misses the EIOTCLUB entirely.
 
 **Start on the card. Since 7 Oct the agent reads this itself** and sends
 it on the heartbeat, as a 📶 pill and an **Uplink** panel on
@@ -542,15 +600,25 @@ session does, which is why this works even while the uplink is too slow
 to carry a clip. Find the modem, then ask it:
 
 ```bash
-ip route | grep -E "usb|wwan|enx"      # the gateway IS the modem
-curl -s --max-time 10 http://192.168.5.1/api/model.json \
+ip route | grep -E "usb|wwan|enx|eth1"   # the gateway IS the modem
+GW=$(ip route | awk '/^default/{print $3; exit}')
+curl -s --max-time 10 "http://$GW/api/model.json" \
   | tr ',' '\n' | grep -iE "rsrp|rsrq|sinr|bars|band|rssi|usage|billing"
 ```
 
-NETGEAR's LB/LM series serve that JSON, but confirm rather than assume —
-if it 404s, `curl -s http://192.168.5.1/ | head -40` shows what the
-firmware on this unit actually exposes. Note it down here when you find
-out.
+Take the gateway from the routing table rather than typing an address:
+the two modems live on different subnets and hardcoding either one is
+how this check silently returns nothing.
+
+NETGEAR's LB/LM series serve that JSON. The EIOTCLUB does not — it runs
+generic MiFi firmware (`g_platformName = "mifi"`) and 404s. Its real
+endpoints are named in its own JavaScript, which is the fastest way to
+find any unknown modem's API:
+
+```bash
+curl -s --max-time 10 "http://$GW/" | head -40            # what is it?
+curl -s --max-time 10 "http://$GW/js/base/ajax_calls.js" | head -60
+```
 
 **Use curl, not a browser, while the link is bad.** An SSH port-forward
 (`ssh -L 8080:192.168.5.1:80 pi@<rig>`) does let you open the real UI on
@@ -586,6 +654,16 @@ get_throttled == 0x0 ?
 
 ## Known-good reference
 
+- Uplink throughput, measured as above with the agent stopped: a
+  healthy rig did **138–476 KB/s down, 26–144 KB/s up, 0% loss,
+  70–145 ms**. A broken one did **3.8 KB/s down, 2.4 KB/s up, 40%
+  loss**. There is no grey area between those two; if a reading is
+  closer to the second, stop looking at the Pi.
+- Upload is the number that matters, and even a healthy rig here is
+  only ~35–144 KB/s. A 35s clip at 4000 kbps is ~17 MB, which is 2
+  minutes at the top of that range and 8 at the bottom. Size the
+  camera's own encoder against the measured uplink, not against what
+  the link is supposed to do.
 - Converter output: **5.0–5.2 V**, at idle *and* under load
 - Fuse: **5 A**, standard ATC (tan), within ~6" of the battery
 - Pi 5 LED: red = powered but not booting (usually SD card); green

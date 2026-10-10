@@ -97,7 +97,7 @@ tournament day. Find out:
 | Enclosure | Pelican 1050 + cable glands | $50 | |
 | Mount | Manfrotto Super Clamp + 2" ratchet strap | $30 | |
 | **Shared** | | | |
-| Network (×2) | NETGEAR LM1200 LTE USB modem + month of data | $80 + $20 | one per Pi |
+| Network (×2) | LTE USB modem + month of data | $80 + $20 | one per Pi. Originally NETGEAR LM1200; an EIOTCLUB 4G USB dongle was added 10 Oct. They sit on different admin addresses — see camera-triage.md |
 | Power (×2) | Anker 537 PowerHouse 200 Wh power station | $300 | swap daily |
 | **Total MVP** | | **~$980** | + $20/mo data |
 
