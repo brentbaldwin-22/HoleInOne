@@ -207,6 +207,28 @@ def _apply_capture_mode(cfg: dict) -> None:
             f"pre-roll buffer: ~{_mb:.0f}MB RAM "
             f"({_w}x{_h}@{_f:.0f} x {_sec:.1f}s)"
         )
+        # WHAT THIS LINE IS NOT. It reports `buffer_seconds`, and on a
+        # TEE running the copy engine that is not what gets allocated:
+        # the copy ring already holds the pre-roll on disk, so the
+        # decode ring is cut to copy_fallback_preroll_seconds (see
+        # preroll_seconds in tee.py). The GREEN allocates the full
+        # buffer_seconds either way, and the role is not known until
+        # the backend answers -- long after this runs. So rather than
+        # print a figure that is right for one role and wrong for the
+        # other, say both. The tee logs the ring it really took once
+        # the camera opens; this is the startup estimate.
+        try:
+            from .copyengine import copy_configured
+            if copy_configured(cfg):
+                _cut = max(0.5, float(
+                    cfg.get("copy_fallback_preroll_seconds", 2.0)))
+                msg += (
+                    f" — on a TEE with the copy engine the decode ring is "
+                    f"cut to {_cut:.1f}s (~{_mb * _cut / _sec:.0f}MB); the "
+                    f"green takes the full figure above"
+                )
+        except Exception:  # noqa: BLE001 - estimate only, never fatal
+            pass
         if _mb > 2600:
             log.warning(
                 "%s — heavy! reduce buffer_seconds or fps if the Pi "
