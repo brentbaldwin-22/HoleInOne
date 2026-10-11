@@ -43,6 +43,7 @@ from typing import Callable, Optional
 
 from .common import build_audio_recorder, mux_audio_into_video
 from .copycap import SegmentRing
+from .swingfind import coverage_fraction, find_swings, merge_windows
 
 log = logging.getLogger("golfreelz_agent.copyengine")
 
@@ -73,6 +74,48 @@ def copy_configured(cfg: dict) -> bool:
         return False
     device = str((cfg.get("camera") or {}).get("device") or "")
     return device.startswith(("rtsp://", "rtsps://"))
+
+
+# Below this, cutting is not worth it. Four swings in two minutes
+# makes the windows nearly tile the session, and then several uploads
+# with their overlaps cost MORE than the one clip -- plus every extra
+# upload is another chance for the modem to drop mid-transfer. Measured
+# on event-736 the saving was 74% and on event-859 51%; at 70% coverage
+# there is nothing left to win.
+_CUT_WORTH_IT_BELOW = 0.70
+
+# Sub-cuts are stream copies of a stream copy: no re-encode, so the
+# clip stays first-generation and a cut costs well under a second.
+_SUBCUT_TIMEOUT = 120
+
+
+def _subcut(src: Path, dst: Path, start: float, end: float) -> bool:
+    """Copy [start, end) out of src. No re-encode; never raises."""
+    import subprocess
+    dur = max(0.1, end - start)
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        # -ss BEFORE -i seeks the container, which is fast but lands
+        # on a keyframe. That is exactly what we want: the camera is
+        # on GOV 60 at 60 fps, so keyframes are one per second and the
+        # cut lands within a second of the asked-for point, on a clean
+        # frame, with no re-encode to make it exact.
+        "-ss", f"{max(0.0, start):.3f}", "-i", str(src),
+        "-t", f"{dur:.3f}", "-c", "copy", "-movflags", "+faststart",
+        str(dst),
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=_SUBCUT_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("copy: sub-cut failed to run (%s)", exc)
+        return False
+    if r.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
+        log.warning("copy: sub-cut %.1f-%.1fs failed (rc=%s) %s",
+                    start, end, r.returncode, (r.stderr or "")[:160])
+        dst.unlink(missing_ok=True)
+        return False
+    return True
 
 
 class CopyEngine:
@@ -349,8 +392,118 @@ class CopyEngine:
             # match; these frames carry the camera's own timestamps and
             # were never re-timed, so there is nothing to correct.
             # precompressed likewise: this IS the camera's encode.
-            up.enqueue(
-                session_id, clip_path, res["start"],
-                real_fps=None, precompressed=True,
-            )
+            sent = self._enqueue_swings(
+                runner, up, session_id, clip_path, res, t_trigger)
+            if not sent:
+                up.enqueue(
+                    session_id, clip_path, res["start"],
+                    real_fps=None, precompressed=True,
+                )
         return reason
+
+    # ---- swing selection -----------------------------------------------
+
+    def _enqueue_swings(self, runner, up, session_id, clip_path, res,
+                        t_trigger) -> int:
+        """Upload only the swings. Returns how many clips were sent.
+
+        ZERO MEANS "SEND THE WHOLE THING", and every failure path
+        returns zero. That is the whole safety story: this can decline,
+        it can throw, ffmpeg can refuse, the tracker can be absent —
+        and the caller still uploads the session exactly as it did
+        before. Nothing here can lose a swing that was recorded; the
+        worst it can do is fail to save bandwidth.
+
+        Why selection is worth the trouble: a 120 s session at 4000
+        kbps is 60 MB, eleven minutes on a link that re-enumerates
+        every couple of minutes, and it usually does not finish. The
+        same session as two 13.5 s cuts is 6.75 MB each, about seventy
+        seconds, and those fit between the drops. The win is not the
+        byte count — it is landing inside the gap.
+        """
+        tracker = getattr(runner, "motion", None)
+        if tracker is None:
+            return 0
+        try:
+            clip_start = float(res["start"])
+            clip_secs = float(res["seconds"])
+            times, motion = tracker.span(clip_start, clip_start + clip_secs)
+            if len(times) < 10:
+                log.info("copy: only %d motion samples for session=%s — "
+                         "uploading the session whole", len(times), session_id)
+                return 0
+
+            # None and [] MEAN DIFFERENT THINGS and must not be
+            # conflated. None is "no detector ran" -> do not gate, or a
+            # green camera would reject every swing. [] is "the
+            # detector ran and saw nobody" -> gate, and the session
+            # falls back to uploading whole. Writing `if people else
+            # None` collapsed the two and let cloud movement through on
+            # a camera with no golfer in it.
+            seen = getattr(runner, "_person_seen_at", None)
+            people = None if seen is None else [p - clip_start for p in seen]
+
+            windows = merge_windows(find_swings(
+                times, motion, duration_sec=clip_secs, person_times=people))
+            if not windows:
+                log.info("copy: no swing found in %.0fs for session=%s — "
+                         "uploading whole (nothing is discarded)",
+                         clip_secs, session_id)
+                return 0
+
+            cov = coverage_fraction(windows, clip_secs)
+            if cov >= _CUT_WORTH_IT_BELOW:
+                log.info("copy: %d swing(s) cover %.0f%% of session=%s — "
+                         "cutting would not save anything, uploading whole",
+                         len(windows), cov * 100, session_id)
+                return 0
+
+            # CUT EVERYTHING FIRST, ENQUEUE NOTHING UNTIL ALL OF IT
+            # WORKED. An enqueue cannot be taken back: handing the
+            # uploader a clip and then deciding to send the whole
+            # session instead means the backend receives both, and the
+            # cut file gets deleted out from under a worker that is
+            # about to read it. So the two phases stay separate.
+            cuts = []
+            for n, w in enumerate(windows, 1):
+                dst = clip_path.with_name(
+                    "%s-sw%d%s" % (clip_path.stem, n, clip_path.suffix))
+                if not _subcut(clip_path, dst, w["start_sec"], w["end_sec"]):
+                    break
+                cuts.append((n, w, dst))
+
+            if len(cuts) < len(windows):
+                # A partial set silently loses the swings whose cuts
+                # did not make it. Throw the lot away and let the
+                # caller send the session whole.
+                log.warning("copy: only %d of %d cuts succeeded for "
+                            "session=%s — uploading whole instead so no "
+                            "swing is lost", len(cuts), len(windows),
+                            session_id)
+                for _, _, dst in cuts:
+                    dst.unlink(missing_ok=True)
+                return 0
+
+            for n, w, dst in cuts:
+                # Each cut is its own session for the backend, derived
+                # from the parent so the two can be matched up later.
+                up.enqueue("%s-s%d" % (session_id, n), dst,
+                           clip_start + w["start_sec"],
+                           real_fps=None, precompressed=True)
+                log.info(
+                    "copy: swing %d/%d of session=%s — %.1f-%.1fs "
+                    "(%.1fs, %.1f MB, ratio %.1f, %s)",
+                    n, len(windows), session_id, w["start_sec"],
+                    w["end_sec"], w["end_sec"] - w["start_sec"],
+                    dst.stat().st_size / 1e6, w["ratio"], w["confidence"],
+                )
+
+            log.info("copy: session=%s sent as %d swing clip(s), %.0f%% of "
+                     "the footage — %.0f%% less to upload",
+                     session_id, len(cuts), cov * 100, (1 - cov) * 100)
+            clip_path.unlink(missing_ok=True)
+            return len(cuts)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("copy: swing selection failed for session=%s (%s) — "
+                        "uploading the session whole", session_id, exc)
+            return 0

@@ -45,6 +45,7 @@ from . import tee_roi
 from .focus_meter import FocusMeter
 from .livestream import LiveStreamer
 from .copyengine import CopyEngine, copy_configured
+from .swingfind import MotionTracker
 
 log = logging.getLogger("golfreelz_agent.tee")
 
@@ -706,6 +707,19 @@ class TeeAgent:
             prev = fcopy
             ts = time.time()
             self.buffer.push(ts, fcopy)
+            # THE SWING SIGNAL RIDES ALONG HERE. One resize and one
+            # absolute difference on a frame already decoded for the
+            # person detector, rate-limited to 20 Hz -- so selecting
+            # which seconds to upload costs no second decode and no
+            # pass over the clip at the end. It runs whether or not a
+            # recording is in progress, because a clip starts
+            # buffer_seconds before its trigger and a swing in that
+            # pre-roll is common. feed() swallows everything: a
+            # tracker that raised in here would cost frames, and
+            # frames are the one thing this must never cost.
+            tracker = getattr(self, "motion", None)
+            if tracker is not None:
+                tracker.feed(ts, fcopy)
             streamer = getattr(self, "streamer", None)
             if streamer is not None:
                 streamer.update_frame(frame)
@@ -738,6 +752,25 @@ class TeeAgent:
         self.fps = fps
         _preroll = preroll_seconds(self.cfg)
         self.buffer = FrameBuffer(_preroll, fps)
+        # SWING SELECTION, off unless asked for. The tracker is cheap
+        # but it is not free, and a rig in the field should not change
+        # what it uploads because an agent was updated.
+        _sw = self.cfg.get("swing_select") or {}
+        self._person_seen_at: list = []
+        self.motion = None
+        if _sw.get("enabled"):
+            self.motion = MotionTracker(
+                sample_hz=float(_sw.get("sample_hz", 20.0)),
+                roi_top=float(_sw.get("roi_top", 0.25)),
+                roi_bottom=float(_sw.get("roi_bottom", 0.68)),
+                keep_seconds=float(self.buffer_seconds)
+                + float(self.cfg.get("max_clip_seconds", 120)) + 60.0,
+            )
+            log.info("swing select: ON (sampling %.0f Hz, ROI %.2f-%.2f of "
+                     "frame height) — only the swings go up",
+                     float(_sw.get("sample_hz", 20.0)),
+                     float(_sw.get("roi_top", 0.25)),
+                     float(_sw.get("roi_bottom", 0.68)))
         if _preroll != self.buffer_seconds:
             log.info(
                 "pre-roll ring: %.1fs (%d frames), not buffer_seconds=%.1fs "
@@ -1252,6 +1285,14 @@ class TeeAgent:
                     centroid = detector.detect(current[-1][1])
                 if centroid is not None:
                     last_person_seen = now
+                    # NOTHING SWINGS WITHOUT A PERSON. Kept so the
+                    # swing finder can throw out peaks with nobody
+                    # near them: on a camera aimed down the hole,
+                    # moving cloud scored a 4.72 "swing" in footage
+                    # containing no golfer at all.
+                    _seen = getattr(self, "_person_seen_at", None)
+                    if _seen is not None:
+                        _seen.append(now)
                 elif now - last_person_seen > no_person_timeout:
                     log.info(
                         "no person for %.1fs; stopping (recorded %.1fs)",

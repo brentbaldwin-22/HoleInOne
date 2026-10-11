@@ -156,6 +156,8 @@ def find_swings(
     duration_sec: Optional[float] = None,
     confirm_times: Optional[Iterable[float]] = None,
     confirm_tolerance_sec: float = 1.0,
+    person_times: Optional[Iterable[float]] = None,
+    person_tolerance_sec: float = 6.0,
 ) -> list:
     """Swing windows from a motion signal sampled during recording.
 
@@ -168,6 +170,15 @@ def find_swings(
     the club met the ball. Peaks with no match are still returned;
     audio CONFIRMS, it does not veto, since a missed microphone would
     otherwise throw away every swing.
+
+    `person_times` are moments the detector saw somebody in the ROI.
+    A peak with nobody near it is dropped: on a camera aimed down the
+    hole, two thirds of the frame is sky and moving cloud produced a
+    4.72-ratio "swing" in 36 s of footage containing no golfer at all
+    (events 914 and 1001). Nothing swings without a person. Passing
+    None disables the check rather than rejecting everything, because
+    a detector that has stopped reporting must not also silently stop
+    the uploads.
 
     Returns a list shaped like detect_swings_from_audio's, so the rest
     of the pipeline cannot tell which detector produced it.
@@ -208,10 +219,18 @@ def find_swings(
     # Strongest first, then suppress anything too close to one already
     # taken. Order matters: keeping the EARLIEST of a cluster would
     # keep the backswing and drop the impact.
+    people = (sorted(float(x) for x in person_times)
+              if person_times is not None else None)
+
     peaks.sort(reverse=True)
     kept: list = []
     for r, t, i in peaks:
         if any(abs(t - k[1]) < min_separation_sec for k in kept):
+            continue
+        if people is not None and not any(
+                abs(t - pt) <= person_tolerance_sec for pt in people):
+            log.debug("swingfind: peak at t=%.1f (ratio %.1f) had nobody "
+                      "in the ROI — not a swing", t, r)
             continue
         w = burst_width(ratio, i, rate)
         if max_burst_sec > 0 and w > max_burst_sec:
@@ -299,3 +318,89 @@ def merge_windows(windows: Sequence[dict]) -> list:
         else:
             out.append(dict(w))
     return out
+
+
+class MotionTracker:
+    """Accumulates the motion signal while the camera is running.
+
+    THE POINT IS THAT THIS COSTS ALMOST NOTHING. The capture thread
+    already has every decoded frame in hand for the person detector,
+    so the swing signal is one resize, one absolute difference and one
+    mean on top of work that is happening anyway. No second decode,
+    no second pass over the clip at the end: when the session stops,
+    the signal is already there.
+
+    It runs CONTINUOUSLY, not only while recording, because a clip
+    begins `buffer_seconds` before its trigger and a swing in that
+    pre-roll is common — the trigger fires as the player walks up and
+    they hit almost at once.
+
+    Sampling at `sample_hz` rather than every frame: a swing's burst
+    lasts about 0.4 s, so 20 Hz puts eight samples across it, and at
+    1080p60 differencing every frame would cost thirty times more for
+    no extra resolution on the thing being measured.
+    """
+
+    def __init__(self, sample_hz: float = 20.0, roi_top: float = 0.25,
+                 roi_bottom: float = 0.68, width: int = 320,
+                 height: int = 180, keep_seconds: float = 200.0) -> None:
+        self.period = 1.0 / max(1.0, float(sample_hz))
+        # The default band is the one measured on real tee footage.
+        # On a camera aimed down the hole it matters a great deal: two
+        # thirds of that frame is sky, and whole-frame averaging put a
+        # real swing at ratio 3.91, under the 4.0 threshold, where the
+        # band put it at 5.16. On well-framed footage it is worth
+        # 10-30%. Set 0.0/1.0 for the whole frame.
+        self.roi_top = max(0.0, min(1.0, float(roi_top)))
+        self.roi_bottom = max(self.roi_top + 0.01, min(1.0, float(roi_bottom)))
+        self.width = int(width)
+        self.height = int(height)
+        self.keep = float(keep_seconds)
+        self._prev = None
+        self._next_at = 0.0
+        self._t: list = []
+        self._m: list = []
+        self.samples = 0
+
+    def feed(self, ts: float, frame) -> None:
+        """Offer a frame. Rate-limited internally; cheap to call often.
+
+        Never raises. A tracker that throws inside the capture thread
+        would cost frames, and frames are the one thing this system
+        must not drop — a swing signal is worth nothing if getting it
+        damages the footage it is meant to select from.
+        """
+        if ts < self._next_at:
+            return
+        self._next_at = ts + self.period
+        try:
+            import cv2
+            import numpy as np
+
+            small = cv2.resize(frame, (self.width, self.height))
+            if small.ndim == 3:
+                small = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            small = small.astype(np.int16)
+            if self._prev is not None and self._prev.shape == small.shape:
+                lo = int(self.height * self.roi_top)
+                hi = int(self.height * self.roi_bottom)
+                d = np.abs(small[lo:hi, :] - self._prev[lo:hi, :])
+                self._t.append(float(ts))
+                self._m.append(float(d.mean()))
+                self.samples += 1
+                cut = ts - self.keep
+                while self._t and self._t[0] < cut:
+                    self._t.pop(0)
+                    self._m.pop(0)
+            self._prev = small
+        except Exception:  # noqa: BLE001 - never cost the capture thread
+            pass
+
+    def span(self, t_start: float, t_end: float) -> tuple:
+        """(times, motion) within a window, times relative to t_start."""
+        ts, ms = [], []
+        for t, m in zip(self._t, self._m):
+            if t_start <= t <= t_end:
+                ts.append(t - t_start)
+                ms.append(m)
+        return ts, ms

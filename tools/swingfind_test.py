@@ -163,6 +163,49 @@ def main() -> int:
     check("burst_width with a bad index is 0.0",
           burst_width([1.0, 2.0], 99, RATE), 0.0)
 
+
+    # ---- person gating: nothing swings without a person ---------
+    t, m = sig(60, [(30.0, 8.0, 0.5)])
+    check("with a person nearby, the swing stands",
+          len(find_swings(t, m, duration_sec=60, person_times=[29.0])), 1)
+    check("with nobody near it, the peak is dropped (cloud)",
+          len(find_swings(t, m, duration_sec=60, person_times=[5.0])), 0)
+    # CONTROL: a detector that has gone quiet must not mute uploads.
+    check("person_times=None disables the check, never rejects all",
+          len(find_swings(t, m, duration_sec=60, person_times=None)), 1)
+    check("an empty person list DOES reject (explicitly nobody there)",
+          len(find_swings(t, m, duration_sec=60, person_times=[])), 0)
+
+    # ---- MotionTracker ------------------------------------------
+    import numpy as np
+    from agent.swingfind import MotionTracker
+    tr = MotionTracker(sample_hz=20.0, keep_seconds=5.0)
+    blank = np.zeros((180, 320, 3), dtype=np.uint8)
+    bright = np.full((180, 320, 3), 200, dtype=np.uint8)
+    for i in range(40):
+        tr.feed(i * 0.05, bright if i == 20 else blank)
+    check("tracker samples at its configured rate", tr.samples > 0, True)
+    ts, ms = tr.span(0.0, 2.0)
+    check("  and the flash is the largest sample",
+          abs(ts[ms.index(max(ms))] - 1.0) < 0.2, True)
+
+    tr2 = MotionTracker(sample_hz=2.0)
+    for i in range(100):
+        tr2.feed(i * 0.01, blank)
+    check("rate limiting really limits (control)", tr2.samples <= 3, True)
+
+    tr3 = MotionTracker(sample_hz=20.0, keep_seconds=1.0)
+    for i in range(200):
+        tr3.feed(i * 0.05, blank)
+    ts3, _ = tr3.span(0.0, 100.0)
+    check("old samples are evicted", len(ts3) <= 25, True)
+
+    bad = MotionTracker()
+    bad.feed(0.0, "not a frame")
+    bad.feed(1.0, None)
+    check("a bad frame never raises into the capture thread",
+          bad.samples, 0)
+
     print()
     if FAIL:
         print(f"{len(FAIL)} FAILED: " + ", ".join(FAIL))

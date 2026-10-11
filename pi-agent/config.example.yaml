@@ -358,6 +358,40 @@ upload_bitrate_kbps: 2500
 # upload_settle_seconds: 120
 
 # ---------------------------------------------------------------------
+# Swing select (tee, copy engine only) — upload the swings, not the session
+# ---------------------------------------------------------------------
+# A session runs until the tee box empties: 36-126 s holding three or
+# four swings and a lot of standing about, all of it uploaded. At 4000
+# kbps a 120 s clip is 60 MB, eleven minutes on a modem that
+# re-enumerates every couple of minutes, and it usually does not
+# finish. The same session as two 13.5 s cuts is 6.75 MB each, about
+# seventy seconds — and those fit between the drops. The win is not
+# the byte count, it is landing inside the gap.
+#
+# Measured on real tee footage (docs/swing-detection-eval.md):
+# event-736 went to 2 clips covering 26% of the session, event-859 to
+# 3 covering 49%.
+#
+# OFF BY DEFAULT. A rig in the field must not change what it uploads
+# because its agent was updated.
+#
+# NOTHING HERE CAN LOSE A SWING. Every failure — no tracker, too few
+# samples, nothing found, nobody in the ROI, a refused cut, a partial
+# cut set, an exception — falls back to uploading the session whole,
+# exactly as before. The worst it does is fail to save bandwidth.
+#
+# swing_select:
+#   enabled: true
+#   sample_hz: 20          # a swing's burst is ~0.4 s; 20 Hz puts 8 across it
+#   # Band of the frame to measure, as fractions of height. The default
+#   # is what was validated on tee footage. It MATTERS on a camera aimed
+#   # down the hole: two thirds of that frame is sky, and whole-frame
+#   # averaging put a real swing at ratio 3.91 — under the threshold —
+#   # where the band put it at 5.16. Set 0.0/1.0 for the whole frame.
+#   roi_top: 0.25
+#   roi_bottom: 0.68
+
+# ---------------------------------------------------------------------
 # Audio (both sides)
 # ---------------------------------------------------------------------
 # Captured in parallel with each recording via `arecord` (alsa-utils)
