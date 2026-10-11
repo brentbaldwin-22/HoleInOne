@@ -158,6 +158,7 @@ def find_swings(
     confirm_tolerance_sec: float = 1.0,
     person_times: Optional[Iterable[float]] = None,
     person_tolerance_sec: float = 6.0,
+    debug: Optional[dict] = None,
 ) -> list:
     """Swing windows from a motion signal sampled during recording.
 
@@ -179,6 +180,12 @@ def find_swings(
     None disables the check rather than rejecting everything, because
     a detector that has stopped reporting must not also silently stop
     the uploads.
+
+    `debug`, if given, is filled with why nothing was found. "No swing
+    found" is useless on its own: a peak of 3.9 against a 4.0
+    threshold and a peak of 1.1 are the same message and completely
+    different problems, and the difference decides whether to lower a
+    number or re-aim a camera.
 
     Returns a list shaped like detect_swings_from_audio's, so the rest
     of the pipeline cannot tell which detector produced it.
@@ -221,6 +228,16 @@ def find_swings(
     # keep the backswing and drop the impact.
     people = (sorted(float(x) for x in person_times)
               if person_times is not None else None)
+    if debug is not None:
+        best = max(ratio) if ratio else 0.0
+        debug.update({
+            "samples": n, "rate_hz": round(rate, 1),
+            "best_ratio": round(best, 2),
+            "best_at": round(times[ratio.index(best)], 2) if ratio else None,
+            "min_ratio": min_ratio,
+            "above_threshold": sum(1 for v in ratio if v >= min_ratio),
+            "rejected_no_person": 0, "rejected_too_wide": 0,
+        })
 
     peaks.sort(reverse=True)
     kept: list = []
@@ -231,6 +248,8 @@ def find_swings(
                 abs(t - pt) <= person_tolerance_sec for pt in people):
             log.debug("swingfind: peak at t=%.1f (ratio %.1f) had nobody "
                       "in the ROI — not a swing", t, r)
+            if debug is not None:
+                debug["rejected_no_person"] += 1
             continue
         w = burst_width(ratio, i, rate)
         if max_burst_sec > 0 and w > max_burst_sec:
@@ -239,6 +258,10 @@ def find_swings(
             # window is mostly footage of a group walking away.
             log.debug("swingfind: %.2fs burst at t=%.1f (ratio %.1f) "
                       "looks like locomotion, not a swing", w, t, r)
+            if debug is not None:
+                debug["rejected_too_wide"] += 1
+                debug["widest_rejected_sec"] = round(
+                    max(w, debug.get("widest_rejected_sec", 0.0)), 2)
             continue
         kept.append((r, t, w))
     kept.sort(key=lambda k: k[1])
@@ -341,26 +364,54 @@ class MotionTracker:
     no extra resolution on the thing being measured.
     """
 
-    def __init__(self, sample_hz: float = 20.0, roi_top: float = 0.25,
-                 roi_bottom: float = 0.68, width: int = 320,
+    def __init__(self, sample_hz: float = 20.0, roi_top: float = 0.0,
+                 roi_bottom: float = 1.0, width: int = 320,
                  height: int = 180, keep_seconds: float = 200.0) -> None:
         self.period = 1.0 / max(1.0, float(sample_hz))
-        # The default band is the one measured on real tee footage.
-        # On a camera aimed down the hole it matters a great deal: two
-        # thirds of that frame is sky, and whole-frame averaging put a
-        # real swing at ratio 3.91, under the 4.0 threshold, where the
-        # band put it at 5.16. On well-framed footage it is worth
-        # 10-30%. Set 0.0/1.0 for the whole frame.
+        # THE BAND IS A FALLBACK, NOT THE PLAN. `set_zones` points this
+        # at the operator's own trigger boxes, which are the right
+        # answer: they are drawn per camera, they already exclude the
+        # cart path and the bench between tees, and asking for the same
+        # fact twice in config is how the two come to disagree. The
+        # band only applies until zones arrive, and defaults to the
+        # whole frame so that a camera with no zones measures
+        # everything rather than a strip somebody guessed.
         self.roi_top = max(0.0, min(1.0, float(roi_top)))
         self.roi_bottom = max(self.roi_top + 0.01, min(1.0, float(roi_bottom)))
         self.width = int(width)
         self.height = int(height)
         self.keep = float(keep_seconds)
+        self._boxes: list = []       # (x0, y0, x1, y1) in SMALL pixels
         self._prev = None
         self._next_at = 0.0
         self._t: list = []
         self._m: list = []
         self.samples = 0
+
+    def set_zones(self, boxes, frame_w: int, frame_h: int) -> None:
+        """Measure motion inside these trigger boxes, in frame pixels.
+
+        Scaled down to the tracker's own working size. Passing nothing
+        reverts to the band: a camera whose zones have not arrived yet
+        must keep measuring something, or the first session after a
+        restart silently uploads whole.
+        """
+        self._boxes = []
+        if not boxes or frame_w <= 0 or frame_h <= 0:
+            return
+        sx = self.width / float(frame_w)
+        sy = self.height / float(frame_h)
+        for b in boxes:
+            try:
+                x0 = max(0, min(self.width - 1, int(float(b["x"]) * sx)))
+                y0 = max(0, min(self.height - 1, int(float(b["y"]) * sy)))
+                x1 = max(x0 + 1, min(self.width,
+                                     int((float(b["x"]) + float(b["w"])) * sx)))
+                y1 = max(y0 + 1, min(self.height,
+                                     int((float(b["y"]) + float(b["h"])) * sy)))
+            except (KeyError, TypeError, ValueError):
+                continue
+            self._boxes.append((x0, y0, x1, y1))
 
     def feed(self, ts: float, frame) -> None:
         """Offer a frame. Rate-limited internally; cheap to call often.
@@ -382,11 +433,25 @@ class MotionTracker:
                 small = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
             small = small.astype(np.int16)
             if self._prev is not None and self._prev.shape == small.shape:
-                lo = int(self.height * self.roi_top)
-                hi = int(self.height * self.roi_bottom)
-                d = np.abs(small[lo:hi, :] - self._prev[lo:hi, :])
+                diff = np.abs(small - self._prev)
+                if self._boxes:
+                    # Mean over the boxes only. A golfer on the cart
+                    # path is now OUTSIDE what is measured rather than
+                    # inside it, which is the whole reason the operator
+                    # drew several boxes instead of one rectangle.
+                    tot = 0.0
+                    npx = 0
+                    for x0, y0, x1, y1 in self._boxes:
+                        sub = diff[y0:y1, x0:x1]
+                        tot += float(sub.sum())
+                        npx += sub.size
+                    val = (tot / npx) if npx else 0.0
+                else:
+                    lo = int(self.height * self.roi_top)
+                    hi = int(self.height * self.roi_bottom)
+                    val = float(diff[lo:hi, :].mean())
                 self._t.append(float(ts))
-                self._m.append(float(d.mean()))
+                self._m.append(val)
                 self.samples += 1
                 cut = ts - self.keep
                 while self._t and self._t[0] < cut:

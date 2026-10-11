@@ -443,12 +443,31 @@ class CopyEngine:
             seen = getattr(runner, "_person_seen_at", None)
             people = None if seen is None else [p - clip_start for p in seen]
 
+            dbg: dict = {}
             windows = merge_windows(find_swings(
-                times, motion, duration_sec=clip_secs, person_times=people))
+                times, motion, duration_sec=clip_secs, person_times=people,
+                debug=dbg))
             if not windows:
-                log.info("copy: no swing found in %.0fs for session=%s — "
-                         "uploading whole (nothing is discarded)",
-                         clip_secs, session_id)
+                # SAY HOW CLOSE IT CAME. "No swing found" is the same
+                # message whether the best peak was 3.9 against a 4.0
+                # threshold or 1.1 against it, and those are different
+                # problems with different fixes -- one is a number to
+                # lower, the other is a camera to re-aim.
+                log.info(
+                    "copy: no swing found in %.0fs for session=%s — "
+                    "uploading whole (nothing is discarded). Best peak was "
+                    "%.2f at t=%.1fs against a threshold of %.1f; %d peak(s) "
+                    "cleared it, %d rejected for nobody in the ROI, %d for "
+                    "too wide a burst%s. %d samples at %.1f Hz.",
+                    clip_secs, session_id, dbg.get("best_ratio", 0),
+                    dbg.get("best_at") or -1, dbg.get("min_ratio", 0),
+                    dbg.get("above_threshold", 0),
+                    dbg.get("rejected_no_person", 0),
+                    dbg.get("rejected_too_wide", 0),
+                    (" (widest %.1fs)" % dbg["widest_rejected_sec"]
+                     if dbg.get("widest_rejected_sec") else ""),
+                    dbg.get("samples", 0), dbg.get("rate_hz", 0),
+                )
                 return 0
 
             cov = coverage_fraction(windows, clip_secs)

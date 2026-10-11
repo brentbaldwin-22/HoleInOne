@@ -569,6 +569,17 @@ class TeeAgent:
             if tee_roi.boxes(self.roi) == boxes:
                 return
             self.roi = scaled
+        # SWING SELECT MEASURES WHERE THE OPERATOR SAID THE GOLFERS ARE.
+        # The zones are already drawn per camera and already exclude
+        # the cart path and the bench between tees; a second ROI typed
+        # into config.yaml is the same fact stored twice, and the two
+        # drifted apart the first time this ran in the field.
+        tracker = getattr(self, "motion", None)
+        if tracker is not None and size:
+            try:
+                tracker.set_zones(boxes, size[0], size[1])
+            except Exception as exc:  # noqa: BLE001
+                log.debug("swing select: could not adopt zones (%s)", exc)
         log.info(
             "trigger zones updated from the backend: %s",
             ", ".join(
@@ -761,16 +772,26 @@ class TeeAgent:
         if _sw.get("enabled"):
             self.motion = MotionTracker(
                 sample_hz=float(_sw.get("sample_hz", 20.0)),
-                roi_top=float(_sw.get("roi_top", 0.25)),
-                roi_bottom=float(_sw.get("roi_bottom", 0.68)),
+                roi_top=float(_sw.get("roi_top", 0.0)),
+                roi_bottom=float(_sw.get("roi_bottom", 1.0)),
                 keep_seconds=float(self.buffer_seconds)
                 + float(self.cfg.get("max_clip_seconds", 120)) + 60.0,
             )
-            log.info("swing select: ON (sampling %.0f Hz, ROI %.2f-%.2f of "
-                     "frame height) — only the swings go up",
-                     float(_sw.get("sample_hz", 20.0)),
-                     float(_sw.get("roi_top", 0.25)),
-                     float(_sw.get("roi_bottom", 0.68)))
+            try:
+                _boxes = tee_roi.boxes(self.roi)
+                _size = getattr(self, "_roi_frame", None)
+                if _boxes and _size:
+                    self.motion.set_zones(_boxes, _size[0], _size[1])
+            except Exception as exc:  # noqa: BLE001
+                log.debug("swing select: no zones at startup (%s)", exc)
+            log.info(
+                "swing select: ON (sampling %.0f Hz, measuring %s) — only "
+                "the swings go up",
+                float(_sw.get("sample_hz", 20.0)),
+                ("inside %d trigger zone(s)" % len(self.motion._boxes))
+                if self.motion._boxes else
+                "the whole frame until trigger zones arrive",
+            )
         if _preroll != self.buffer_seconds:
             log.info(
                 "pre-roll ring: %.1fs (%d frames), not buffer_seconds=%.1fs "

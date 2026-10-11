@@ -206,6 +206,48 @@ def main() -> int:
     check("a bad frame never raises into the capture thread",
           bad.samples, 0)
 
+
+    # ---- zones replace the band ---------------------------------
+    tr4 = MotionTracker(sample_hz=100.0)
+    check("with no zones it measures the whole frame", tr4._boxes, [])
+    tr4.set_zones([{"x": 143, "y": 87, "w": 1706, "h": 993}], 1920, 1080)
+    check("zones scale into the tracker's working size",
+          tr4._boxes, [(23, 14, 308, 180)])
+    tr4.set_zones([], 1920, 1080)
+    check("clearing zones reverts to the band, never to nothing",
+          tr4._boxes, [])
+    tr4.set_zones([{"bad": 1}], 1920, 1080)
+    check("a malformed box is skipped, not fatal", tr4._boxes, [])
+
+    # motion inside a zone counts; motion outside it does not
+    left = np.zeros((180, 320, 3), dtype=np.uint8)
+    right = np.zeros((180, 320, 3), dtype=np.uint8)
+    right[:, 200:] = 255
+    tz = MotionTracker(sample_hz=100.0)
+    tz.set_zones([{"x": 0, "y": 0, "w": 600, "h": 1080}], 1920, 1080)
+    tz.feed(0.0, left); tz.feed(0.02, right)
+    _, m_out = tz.span(0.0, 1.0)
+    tz2 = MotionTracker(sample_hz=100.0)
+    tz2.set_zones([{"x": 1200, "y": 0, "w": 720, "h": 1080}], 1920, 1080)
+    tz2.feed(0.0, left); tz2.feed(0.02, right)
+    _, m_in = tz2.span(0.0, 1.0)
+    check("motion outside the zone is ignored", max(m_out) < 1.0, True)
+    check("motion inside the zone is seen (control)", max(m_in) > 50.0, True)
+
+    # ---- debug tells you WHY nothing was found ------------------
+    t, m = sig(60, [(30.0, 3.0, 0.5)])
+    d = {}
+    find_swings(t, m, duration_sec=60, debug=d)
+    check("debug reports the best peak it saw",
+          3.0 > d["best_ratio"] > 2.0, True)
+    check("  and where", abs(d["best_at"] - 30.0) < 1.0, True)
+    check("  and that nothing cleared the threshold",
+          d["above_threshold"], 0)
+    d2 = {}
+    find_swings(t, m, duration_sec=60, min_ratio=2.0, debug=d2)
+    check("  lowering the threshold changes that count (control)",
+          d2["above_threshold"] > 0, True)
+
     print()
     if FAIL:
         print(f"{len(FAIL)} FAILED: " + ", ".join(FAIL))

@@ -383,13 +383,16 @@ upload_bitrate_kbps: 2500
 # swing_select:
 #   enabled: true
 #   sample_hz: 20          # a swing's burst is ~0.4 s; 20 Hz puts 8 across it
-#   # Band of the frame to measure, as fractions of height. The default
-#   # is what was validated on tee footage. It MATTERS on a camera aimed
-#   # down the hole: two thirds of that frame is sky, and whole-frame
-#   # averaging put a real swing at ratio 3.91 — under the threshold —
-#   # where the band put it at 5.16. Set 0.0/1.0 for the whole frame.
-#   roi_top: 0.25
-#   roi_bottom: 0.68
+#   # WHERE IT MEASURES IS THE TRIGGER ZONES, not a setting. The boxes
+#   # drawn on the Cameras page are already per-camera, already scaled
+#   # to the frame, and already exclude the cart path and the bench
+#   # between tees — so swing select follows them, and there is nothing
+#   # here to keep in step. The band below applies ONLY until zones
+#   # arrive (a fresh agent before its first poll), and defaults to the
+#   # whole frame so a camera with no zones measures everything rather
+#   # than a strip somebody guessed.
+#   roi_top: 0.0
+#   roi_bottom: 1.0
 
 # ---------------------------------------------------------------------
 # Audio (both sides)
