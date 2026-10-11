@@ -448,6 +448,15 @@ the feature is missing when it is only the verb. Try both, or read the
 answer off the capability XML (below). `image.cgi?msubmenu=camera`
 also takes `set`.
 
+**2b. CODEC-SPECIFIC FIELDS KEEP THEIR NAMESPACE IN THE UPDATE.**
+`FrameRate` is written plain, but `BitrateControlType` is rejected
+with `NG / 602 / Invalid Parameter(s)` and must be sent as
+`H264.BitrateControlType`. The rule is what the `view` dump shows: a
+key that reads back as `Channel.0.Profile.2.H264.X` is written as
+`H264.X`, one that reads back as `Channel.0.Profile.2.X` is written
+as `X`. Expect the same for the H.265 profile with an `H265.` prefix.
+Send both spellings and take whichever returns OK.
+
 **3. `OK` DOES NOT MEAN IT CHANGED.** This firmware returns `OK` for a
 clamped write. **Always read the value back** — never trust the
 response. The cheap test for "is this field writable at all" is to
