@@ -550,18 +550,34 @@ def throttled_status(blob, updated_at=None) -> dict | None:
         return None
     now = bool(value & 1)
     ever = bool(value & (1 << 16))
+    temp = _num(blob.get("temp_c"))
+    # THE PI 5's OWN LIMITS, not numbers we picked: it begins capping
+    # at 80C and throttles hard at 85C. A rig sitting at 78C is not
+    # faulty but it is one warm afternoon from being slow, which is
+    # exactly the trend worth seeing before it becomes an outage.
+    hot_now = temp is not None and temp >= 85.0
+    warm = temp is not None and temp >= 80.0
+    level = ("bad" if now or hot_now
+             else "warn" if ever or warm
+             else "ok")
+    summary = (
+        "under-voltage right now" if now
+        else f"throttling hot ({temp:.0f}°C)" if hot_now
+        else "browned out since boot" if ever
+        else f"warm ({temp:.0f}°C)" if warm
+        else "power clean"
+    )
     return {
         "raw": blob.get("raw") or hex(value),
         "under_voltage_now": now,
         "under_voltage_ever": ever,
         "flags": blob.get("flags") or [],
+        # HOW CLOSE TO THE LIMIT, not just whether it was hit. `flags`
+        # says a cap happened; this says whether one is coming.
+        "temp_c": temp,
         # What an operator should conclude, in one word.
-        "level": "bad" if now else "warn" if ever else "ok",
-        "summary": (
-            "under-voltage right now" if now
-            else "browned out since boot" if ever
-            else "power clean"
-        ),
+        "level": level,
+        "summary": summary,
         "updated_at": updated_at.isoformat() if updated_at else None,
     }
 

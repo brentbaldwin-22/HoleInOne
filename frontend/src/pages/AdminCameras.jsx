@@ -2310,12 +2310,26 @@ export default function AdminCameras() {
                             + "this Pi last booted — measure the converter "
                             + "output under load, not at idle."
                           : null,
+                        cam.power.temp_c != null
+                          ? `SoC ${cam.power.temp_c.toFixed(1)}°C — the Pi 5 `
+                            + "caps at 80°C and throttles hard at 85°C"
+                          : null,
                         cam.power.updated_at
                           ? `read ${tsRel(cam.power.updated_at)}`
                           : null,
                       ].filter(Boolean).join(" · ")}
                     >
+                      {/* TEMPERATURE EVEN WHEN IT IS FINE. `flags` says
+                          a limit was HIT; the number says how close it
+                          is the rest of the time, and the tee's daytime
+                          slowness is exactly the kind of trend that is
+                          only visible before it trips. The summary
+                          already names the temperature once it is warm,
+                          so do not print it twice. */}
                       ⚡ {cam.power.summary}
+                      {cam.power.temp_c != null
+                        && !cam.power.summary.includes("°C")
+                        && ` · ${Math.round(cam.power.temp_c)}°C`}
                     </span>
                   )}{" "}
                   {/* WHAT THE UPLINK LOOKS LIKE FROM THE PI. Weak

@@ -1950,12 +1950,46 @@ _THROTTLED_BITS = {
 }
 
 
-def read_throttled(timeout: float = 3.0) -> dict | None:
-    """What `vcgencmd get_throttled` says, decoded. None off a Pi.
+def read_soc_temp(timeout: float = 3.0) -> Optional[float]:
+    """SoC temperature in °C from `vcgencmd measure_temp`. None off a Pi.
 
-    Best-effort and cheap — one tiny binary, once a heartbeat. A board
+    THE NUMBER THAT SEPARATES THE TWO DAYTIME THEORIES. The tee is slow
+    by day and fine by evening, in three different locations, while the
+    green beside it is fine throughout — so it is something about that
+    rig rather than the place or the tower. Two candidates fit: it
+    saturates its own uplink (its view carries ~6.5 MB a clip against
+    the green's ~1 MB, and golfers play in the day), or it throttles,
+    because it runs the detector, the copy ring and the live stream in
+    a sealed box in the sun while the green mostly waits.
+
+    `throttled` already tells us whether a limit was HIT. Temperature
+    tells us how close it is the rest of the time, which is what makes
+    a trend readable before it becomes a fault — and the two together,
+    beside the clips-owed count, say which theory is right without
+    anyone opening an SSH session at noon.
+    """
+    try:
+        out = subprocess.run(
+            ["vcgencmd", "measure_temp"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except Exception:  # noqa: BLE001 - not a Pi, or no vcgencmd
+        return None
+    m = re.search(r"-?\d+(?:\.\d+)?", out.stdout or "")
+    return float(m.group()) if m else None
+
+
+def read_throttled(timeout: float = 3.0) -> dict | None:
+    """What `vcgencmd get_throttled` says, decoded, plus the SoC
+    temperature. None off a Pi.
+
+    Best-effort and cheap — two tiny binaries, once a heartbeat. A board
     without vcgencmd (a dev box, a container) returns None and the
     heartbeat goes without it, exactly as the battery reader does.
+
+    The temperature rides along here rather than in its own field
+    because it answers the same question — is this Pi in trouble — and
+    the card draws both in one pill.
     """
     try:
         out = subprocess.run(
@@ -1979,6 +2013,7 @@ def read_throttled(timeout: float = 3.0) -> dict | None:
                   if value & (1 << bit)],
         "under_voltage_now": bool(value & 1),
         "under_voltage_ever": bool(value & (1 << 16)),
+        "temp_c": read_soc_temp(timeout=timeout),
     }
 
 
