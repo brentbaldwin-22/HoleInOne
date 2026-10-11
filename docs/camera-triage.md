@@ -425,6 +425,42 @@ the table.
 
 **Measure the same way in all four configurations, agents stopped.**
 
+**STOPPING THE AGENT STOPS THE HEARTBEAT — AND NOTHING RESTARTS IT.**
+This reads as a fault on the card and is not one. Every round below
+begins `sudo systemctl stop golfreelz-agent`; the heartbeat *is* the
+agent, so `last seen` freezes at the beat immediately before the stop
+and then ages — seen, late, offline — while the rig is perfectly
+healthy. The tell is that `last seen` is pinned to the minute the test
+started, every time. Rounds that end in `sudo reboot` hide it, because
+systemd brings the unit back on boot; rounds that just end leave the
+agent down until someone notices.
+
+Do not rely on remembering the restart. Wrap it once per Pi:
+
+```bash
+cat > ~/lt.sh <<'EOF'
+#!/bin/bash
+sudo systemctl stop golfreelz-agent
+trap 'sudo systemctl start golfreelz-agent; echo "agent restarted"' EXIT
+~/linktest.sh "$@"
+EOF
+chmod +x ~/lt.sh
+```
+
+and run `~/lt.sh LABEL` thereafter. The trap fires on Ctrl-C and on
+failure too, which is exactly when the restart is forgotten.
+
+Separately: a measurement run saturates the uplink for ~3.5 minutes
+(five runs x 12 s down + 12 s up). Heartbeats have a 5 s timeout, so
+even with the agent running a few minutes of lateness during a test is
+expected and clears itself. A `last seen` that keeps climbing past
+that is a stopped service, not congestion. Check which it is before
+chasing the radio:
+
+```bash
+systemctl is-active golfreelz-agent
+```
+
 ```bash
 echo "=== $(hostname) $(date) ==="
 ping -c 10 8.8.8.8 | tail -2
