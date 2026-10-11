@@ -179,8 +179,17 @@ def main() -> int:  # noqa: C901
         was = now - 12345
         os.utime(clip, (was, was))
         before = clip.stat().st_mtime
-        ok = common.compress_for_upload(clip, target_kbps=200)
+        before_bytes = clip.stat().st_size
+        # 20 kbps, not 200. This fixture is a 160x120 testsrc, which
+        # x264 encodes at about 43 kbps, so the 200 kbps this once
+        # asked for was a re-encode that INFLATED the clip — the very
+        # thing compress_for_upload now refuses. The control was
+        # passing because nothing stopped it. Ask for a target that
+        # genuinely shrinks the file, and check that it did.
+        ok = common.compress_for_upload(clip, target_kbps=20)
         check("the re-encode ran at all (control)", ok, True)
+        check("and it really did shrink the clip (control)",
+              clip.stat().st_size < before_bytes, True)
         check("and left the clip's age alone",
               round(clip.stat().st_mtime, 3), round(before, 3))
 

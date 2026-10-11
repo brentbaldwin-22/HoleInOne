@@ -3418,6 +3418,42 @@ def mux_audio_into_video(
     return True
 
 
+# How close to the clip's own bitrate a re-encode target may come
+# before the pass stops being worth taking. At 0.9 a re-encode has to
+# promise at least a tenth off; below that the CPU time and the
+# generation loss buy nothing.
+COMPRESS_MIN_SAVING = 0.9
+
+
+def source_kbps(video_path: Path, timeout: float = 10.0) -> Optional[int]:
+    """The clip's own overall bitrate in kbps, or None if unreadable.
+
+    None means "could not tell", NOT "zero" — and every caller has to
+    treat it as permission to carry on. A missing or broken ffprobe
+    must never be the reason a clip stays too big to send.
+    """
+    try:
+        res = subprocess.run(
+            ["ffprobe", "-v", "error",
+             "-show_entries", "format=bit_rate",
+             "-of", "default=noprint_wrappers=1:nokey=1",
+             str(video_path)],
+            capture_output=True, text=True, timeout=timeout, check=False,
+        )
+    except Exception:  # noqa: BLE001 - no ffprobe, timeout, anything
+        return None
+    if res.returncode != 0:
+        return None
+    for line in (res.stdout or "").splitlines():
+        try:
+            bps = int(line.strip())
+        except ValueError:
+            continue              # "N/A" for a container with no figure
+        if bps > 0:
+            return bps // 1000
+    return None
+
+
 def compress_for_upload(
     video_path: Path,
     target_kbps: int = 2500,
@@ -3443,6 +3479,31 @@ def compress_for_upload(
     """
     if not video_path.exists() or target_kbps <= 0:
         return False
+
+    # A RE-ENCODE THAT DOES NOT SHRINK THE FILE IS PURE LOSS, and the
+    # ladder cannot see that on its own: it picks a target by comparing
+    # against its own CEILING, never against the clip. On a stream-copy
+    # rig the clip is already the camera's H.264 at the camera's
+    # bitrate, so a "degrade" to a target ABOVE that bitrate inflates
+    # it. Observed on the tee, 11 Oct: a 2367 kbps clip re-encoded at
+    # 4000k went 10.2 MB -> 16.2 MB and then crossed a cellular link
+    # 59% slower than the untouched original would have, having first
+    # spent a software x264 pass on 1080p60 to get there. The Pi 5 has
+    # no hardware H.264 encoder, so that pass is not cheap either.
+    #
+    # ONLY THE BITRATE-ONLY CASE IS REFUSED. A scale_height or a
+    # reclock is asked for because the GEOMETRY or the TIMING is wrong,
+    # and those still have to be fixed whatever it costs in bytes.
+    if scale_height is None and not force_input_fps:
+        src = source_kbps(video_path)
+        if src is not None and target_kbps >= src * COMPRESS_MIN_SAVING:
+            log.info(
+                "compress: %s is already %d kbps — skipping the %d kbps "
+                "re-encode, which would make it bigger, not smaller",
+                video_path.name, src, int(target_kbps),
+            )
+            return False
+
     tmp_out = video_path.with_suffix(".h264.mp4")
     vf = ["-vf", f"scale=-2:{int(scale_height)}"] if scale_height else []
     # When the capture dropped frames, the clip's header fps overstates the
