@@ -3000,6 +3000,43 @@ def exposure_set(cam_cfg: dict, mode: str, speed: str | None = None,
     return after
 
 
+class CameraUnavailable(RuntimeError):
+    """The camera could not be opened. Transient by assumption.
+
+    A SEPARATE TYPE BECAUSE THE CALLER'S ANSWER IS DIFFERENT. Any other
+    failure in run() is a bug and should take the process down so
+    systemd restarts it clean. This one usually means a cable is out,
+    the camera lost power, or it is still booting -- none of which a
+    restart fixes, and restarting made it worse: the agent died before
+    reaching the heartbeat that carries the real firmware string, the
+    uploader and the uplink telemetry, so a rig with an unplugged
+    camera went dark on the card while systemd span 1062 times in
+    twelve hours. Every diagnostic you would want was in the half of
+    startup that never ran.
+    """
+
+
+def camera_free_telemetry() -> dict:
+    """Heartbeat fields that need no camera, for the waiting loop.
+
+    Deliberately the same readers the running agent uses, so a rig
+    waiting on a cable reports its power, its temperature and its
+    uplink exactly as one that is working. That is the whole point:
+    the moment you most want to see a rig is when it is not running.
+    """
+    out: dict = {}
+    try:
+        if (t := read_throttled()):
+            out["throttled"] = json.dumps(t)[:500]
+    except Exception:  # noqa: BLE001 - telemetry must never be fatal
+        pass
+    try:
+        out.update(link_info_fields())
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def open_camera(cam_cfg: dict):
     """Open the configured camera with OpenCV. `device: "auto"` tries
     /dev/video0..3 and returns the first that opens; otherwise uses
@@ -3029,7 +3066,7 @@ def open_camera(cam_cfg: dict):
         )
         cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         if not cap.isOpened():
-            raise RuntimeError(
+            raise CameraUnavailable(
                 "could not open the RTSP stream — check the host, the "
                 "path, and that GOLFREELZ_CAM_PASSWORD is set"
             )
@@ -3064,7 +3101,7 @@ def open_camera(cam_cfg: dict):
         except (TypeError, ValueError):
             cap = cv2.VideoCapture(str(device))
     if cap is None or not cap.isOpened():
-        raise RuntimeError(f"could not open camera device={device!r}")
+        raise CameraUnavailable(f"could not open camera device={device!r}")
 
     width = int(cam_cfg.get("width", 1920))
     height = int(cam_cfg.get("height", 1080))

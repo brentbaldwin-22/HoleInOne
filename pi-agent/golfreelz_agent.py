@@ -18,9 +18,16 @@ from __future__ import annotations
 import logging
 import signal
 import sys
+import time
 from pathlib import Path
 
-from agent.common import BackendClient, install_dns_cache, load_config
+from agent.common import (
+    BackendClient,
+    CameraUnavailable,
+    camera_free_telemetry,
+    install_dns_cache,
+    load_config,
+)
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -98,12 +105,14 @@ def main(argv: list[str]) -> int:
                 "who is on the tee",
             )
             return 2
+        from agent.tee import FIRMWARE as _firmware
         agent = TeeAgent(cfg)
         if tee_roi.boxes(server_zones):
             # Before the first status poll, so the very first golfer is
             # judged against the zones an operator actually drew.
             agent.apply_tee_zones(server_zones)
     else:
+        from agent.green import FIRMWARE as _firmware
         from agent.green import GreenAgent
         agent = GreenAgent(cfg)
 
@@ -123,16 +132,61 @@ def main(argv: list[str]) -> int:
     curfew.start()
 
     # Graceful Ctrl-C / systemd stop.
+    stopping = {"yes": False}
+
     def _shutdown(signum, _frame):
         log.info("signal %d received — shutting down", signum)
+        stopping["yes"] = True
         agent.stop()
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
-    try:
-        agent.run()
-    except KeyboardInterrupt:
-        agent.stop()
+    # A MISSING CAMERA IS NOT A REASON TO DIE.
+    #
+    # open_camera() is the first thing run() does, so a rig whose
+    # camera is unplugged used to exit before anything else started —
+    # before the heartbeat that carries the real firmware string,
+    # before the uploader, before the uplink and temperature readers.
+    # systemd restarted it; it died again. Observed: 1062 restarts in
+    # twelve hours, during which the camera card showed `fw bootstrap`
+    # and a frozen snapshot from the night before, while the rig was
+    # up the whole time and perfectly reachable.
+    #
+    # So wait instead, and KEEP REPORTING WHILE WAITING. The readers
+    # here need no camera, which means the rig you most want to look
+    # at — the broken one — is the one still answering. The spool
+    # cannot drain without run(), but nothing is lost by waiting: the
+    # clips are on disk either way.
+    wait = 5.0
+    while not stopping["yes"]:
+        try:
+            agent.run()
+            break
+        except KeyboardInterrupt:
+            agent.stop()
+            break
+        except CameraUnavailable as exc:
+            if stopping["yes"]:
+                break
+            log.warning(
+                "camera not available (%s) — retrying in %.0fs. The agent "
+                "stays up and keeps heartbeating so the card can still "
+                "show this rig's power, temperature and uplink.",
+                exc, wait,
+            )
+            try:
+                client.heartbeat(
+                    firmware_version=_firmware,
+                    extra=camera_free_telemetry(),
+                )
+            except Exception as hb_exc:  # noqa: BLE001
+                log.debug("waiting heartbeat failed: %s", hb_exc)
+            # Slept in slices so a systemd stop is honoured promptly
+            # rather than after a full minute of backoff.
+            _deadline = time.time() + wait
+            while time.time() < _deadline and not stopping["yes"]:
+                time.sleep(0.5)
+            wait = min(wait * 2, 60.0)
     return 0
 
 
