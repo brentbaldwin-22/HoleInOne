@@ -442,7 +442,50 @@ head -c 10000000 /dev/zero | curl -o /dev/null -w "up:   %{speed_upload} B/s\n" 
 | after the swap — other rig | 475,781 | 144,171 | 0% |
 | after a further modem change | 310,232 | 96,111 | 0% |
 
-### READ THIS FIRST: the link is slow by DAY and fast by NIGHT
+### ANSWERED: it is the RADIO UNIT (modem + SIM), 11 Oct
+
+Done the way the rest of this page had been begging for: **both rigs
+measured within seconds of each other, and the suspect part swapped in
+BOTH directions.** Four readings inside six minutes, on a weekday
+morning when the fault actually shows.
+
+| time | card | board | modem | down KB/s | up KB/s |
+|---|---|---|---|---|---|
+| 10:35 | green | 5355… | **green** | 673 | 277 |
+| 10:36 | tee | 96b4… | **tee** | 172 | 59 |
+| 10:41 | green | 5355… | **tee** | **48** | **0** |
+| 10:41 | tee | 96b4… | **green** | **678** | **404** |
+
+The fault followed the modem into the green rig and left the tee rig in
+the same swap. Fourteenfold one way, four to sevenfold the other, with
+the cards and boards untouched.
+
+The bad side also shows the real symptom rather than just a low number:
+two of its five runs could not complete a ping at all (`loss=?`, 0/0)
+between runs that managed 213-217 KB/s. Total intermittent dropout --
+which is what the tee has been doing for months, now reproduced on the
+green rig because it is holding the tee's radio.
+
+**ELIMINATED, ALL AT ONCE:** the SD card, the Pi board, the kernel
+version, the USB port, the mount, the location, and the time of day.
+Each had been blamed at some point; none of them moved.
+
+**NOT YET SEPARATED:** the SIM travels with its modem, so this isolates
+the radio as a UNIT. Swapping only the SIMs splits dongle from line --
+and since both are EIOTCLUB prepaid, entering each ICCID at
+sim.eiotclub.com answers the data-cap question without touching the
+hardware at all.
+
+WHY THIS ONE COUNTS AND THE EARLIER ONES DID NOT. Everything before it
+was sequential: measure, change a part, measure again, on a link that
+moves more than 10x by itself. Three conclusions were drawn that way
+and all three were wrong. Simultaneity is what makes the difference --
+drift can flatter one rig, it cannot flatter one and cripple the other
+in the same thirty seconds.
+
+---
+
+### Background: the link is also slow by DAY and fast by NIGHT
 
 The oldest and most reliable observation about this deployment, and
 the one that explains almost every "fault" chased in these pages:
