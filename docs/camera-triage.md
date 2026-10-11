@@ -405,6 +405,108 @@ tee build is wrong.
 
 ---
 
+## Step 4b — Change a CAMERA setting without the web UI (11 Oct)
+
+**The Hanwha web UI is unusable over the LTE link, and that is not a
+fault to fix.** It is a single-page app that fires dozens of requests
+per screen and needs the tunnel held open throughout. The modem gives
+~23 s alive then ~8 s gone while it re-enumerates, so the first page
+loads and the next click lands in a dead window. Hours have been lost
+to retrying this.
+
+**Use SUNAPI instead.** Every setting the web UI exposes is one HTTP
+request, which crosses the bad link without noticing it, and the agent
+already speaks it — `agent/common.py::_sunapi`. Read first:
+
+```bash
+sudo -u golfreelz /opt/golfreelz-agent/venv/bin/python3 - <<'EOF'
+import sys, json, yaml
+sys.path.insert(0, "/opt/golfreelz-agent")
+from agent.common import stream_profile_view
+cfg = yaml.safe_load(open("/opt/golfreelz-agent/config.yaml"))
+print(json.dumps(stream_profile_view(cfg.get("camera", {})), indent=2))
+EOF
+```
+
+### Four things that will waste your time if you do not know them
+
+**1. THE SENSOR MODE GATES EVERYTHING.** A profile cannot ask for a
+frame rate the sensor is not producing. Set `FrameRate=60` on the
+profile alone and the camera answers `OK` and **silently leaves it at
+30**. Raise the sensor first:
+
+```
+media.cgi?msubmenu=videosource&action=set&Channel=0&SensorCaptureFrameRate=60
+```
+
+Legal values on the XNV-6080R are 25, 30, 50, 60. Then set the profile.
+
+**2. THE VERB IS NOT THE SAME ACROSS SUBMENUS.** `videosource` takes
+`action=set`; `videoprofile` takes `action=update`. The wrong one
+returns `NG / Error Code: 601 / Action Not Found`, which reads like
+the feature is missing when it is only the verb. Try both, or read the
+answer off the capability XML (below). `image.cgi?msubmenu=camera`
+also takes `set`.
+
+**3. `OK` DOES NOT MEAN IT CHANGED.** This firmware returns `OK` for a
+clamped write. **Always read the value back** — never trust the
+response. The cheap test for "is this field writable at all" is to
+write a value you know is legal but different (30 -> 25), read it
+back, then put it straight back. If the small change sticks and the
+big one does not, the field is fine and something is capping it.
+
+**4. THE CAMERA DOCUMENTS ITSELF.** `attributes.cgi` is the authority
+on field names, legal values and which verb each action takes — far
+better than guessing:
+
+```bash
+curl -s --digest -u admin:PASSWORD http://<cam>/stw-cgi/attributes.cgi/media
+```
+
+It takes a path, NOT a `msubmenu` query, so `_sunapi` cannot fetch it
+— use `requests` directly. ~21 KB for media, ~209 KB for everything.
+Save it to `/tmp` and grep locally; it does not change, so fetch it
+once per camera and never again over a bad link.
+
+### What the tee camera was set to, and what it is now
+
+| field | was | now | why |
+|---|---|---|---|
+| `SensorCaptureFrameRate` | 30 | **60** | the gate on everything below |
+| `Profile.2.FrameRate` | 30 | **60** | ~2x tracer points, less motion blur |
+| `Profile.2.H264.GOVLength` | 60 | 60 | unchanged, but see below |
+| `Profile.2.Resolution` | 1920x1080 | same | already right |
+| `Profile.2.Bitrate` | 2560 | same | close enough to the 2500 target |
+| `Profile.2.H264.BitrateControlType` | VBR | **CBR** | predictable clip size |
+
+**GOV 60 only became correct when the frame rate did.** The copy
+engine cuts the ring into 1-second segments
+(`copyengine.py`, `copy_segment_seconds: 1.0`) and ffmpeg's segment
+muxer can only break on a keyframe. At GOV 60 / 30 fps a keyframe
+arrives every TWO seconds, so every "1 second" segment was really two
+and clip starts quantised to 2 s. At 60 fps it is one keyframe per
+second and the segment length means what it says. Nobody set out to
+fix this; it fell out of the frame-rate change. If the frame rate is
+ever lowered again, lower GOV with it.
+
+**A profile the agent is streaming will drop when you change it**, and
+the sensor change restarts the whole pipeline. The agent reopens after
+`stall_reopen_seconds` (15 s). Restart it afterwards anyway so it
+opens cleanly against the new profile rather than whatever it
+reconnected to mid-change.
+
+**Then read the CARD, not the API.** The heartbeat reports the size
+and rate the agent OPENED at AND the rate frames are really arriving
+at, side by side. That pair exists precisely because a camera that
+claims a setting and delivers another is the failure mode here — it
+has now happened twice in one day.
+
+**60 fps costs a stop of light.** Half the exposure window, made up
+with gain, and `AGCMode` on this camera is already `High`. Fine in
+daylight; look at an actual dusk clip before assuming.
+
+---
+
 ## Step 5 — Swap the MODEMS (when the symptom is load-correlated)
 
 Step 4 swaps the power chain. This swaps the radio, and the two
