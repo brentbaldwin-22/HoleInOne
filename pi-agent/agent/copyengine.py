@@ -123,12 +123,16 @@ class CopyEngine:
 
     def __init__(self, source: str, work_dir: Path, *,
                  segment_seconds: float = 1.0,
-                 window_seconds: float = 90.0) -> None:
+                 window_seconds: float = 90.0,
+                 min_free_mb: float = 1024.0,
+                 window_max_mb: float = 0.0) -> None:
         self.ring = SegmentRing(
             source=source,
             work_dir=Path(work_dir) / "ring",
             segment_seconds=segment_seconds,
             window_seconds=window_seconds,
+            min_free_mb=min_free_mb,
+            window_max_mb=window_max_mb,
         )
         self.clips_dir = Path(work_dir)
         self._extracted = 0
@@ -166,13 +170,23 @@ class CopyEngine:
         seg = float(cfg.get("copy_segment_seconds", 1.0))
         window = float(cfg.get("copy_window_seconds", 0)) or (
             preroll + longest + 30.0)
+        # RETENTION IS BOUNDED BY DISK AS WELL AS BY TIME. The window
+        # is seconds; the segments are whatever bitrate the camera is
+        # sending. An hour is 1.8 GB at 4000 kbps and 7.2 GB at 16000,
+        # and the upload spool shares this filesystem. So a free-space
+        # floor is always on, and a byte cap is available for a rig
+        # whose card is small.
+        min_free = float(cfg.get("copy_min_free_mb", 1024))
+        max_mb = float(cfg.get("copy_window_max_mb", 0))
         log.info(
-            "capture engine: COPY (%.0fs segments, %.0fs window) — the "
-            "camera's own H.264 is written to disk and cut out; nothing "
-            "is decoded or re-encoded to make a clip",
-            seg, window,
+            "capture engine: COPY (%.0fs segments, %.0fs window, keeping "
+            "%.0f MB free%s) — the camera's own H.264 is written to disk "
+            "and cut out; nothing is decoded or re-encoded to make a clip",
+            seg, window, min_free,
+            (", %.0f MB cap" % max_mb) if max_mb else "",
         )
-        return cls(url, work_dir, segment_seconds=seg, window_seconds=window)
+        return cls(url, work_dir, segment_seconds=seg, window_seconds=window,
+                   min_free_mb=min_free, window_max_mb=max_mb)
 
     # ---- lifecycle -----------------------------------------------------
 

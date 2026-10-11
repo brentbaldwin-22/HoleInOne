@@ -114,6 +114,8 @@ class SegmentRing:
         *,
         segment_seconds: float = 1.0,
         window_seconds: float = 90.0,
+        min_free_mb: float = 1024.0,
+        window_max_mb: float = 0.0,
         rtsp_transport: str = "tcp",
         input_args: Optional[list[str]] = None,
         ffmpeg: str = "ffmpeg",
@@ -124,6 +126,19 @@ class SegmentRing:
         # The window has to hold the pre-roll AND the longest clip, or
         # the oldest part of a swing is swept while it is being written.
         self.window_seconds = max(10.0, float(window_seconds))
+        # AGE IS NOT A SIZE. The window is in seconds and the segments
+        # are whatever bitrate the camera is sending, which the
+        # operator sets — so an hour of retention is 1.8 GB at 4000
+        # kbps and 7.2 GB at 16000, and nothing in an age-only sweep
+        # notices the difference. The spool (2 GB) lives on the same
+        # filesystem. A full card on a golf course is a dead camera
+        # nobody can reach, so retention yields to disk, in both
+        # directions: a byte cap if one is set, and always a floor of
+        # free space.
+        self.min_free_bytes = max(0.0, float(min_free_mb)) * 1024 * 1024
+        self.window_max_bytes = max(0.0, float(window_max_mb)) * 1024 * 1024
+        self._short_logged = False
+        self.evicted_for_space = 0
         self.rtsp_transport = rtsp_transport
         self._input_args = input_args
         self.ffmpeg = ffmpeg
@@ -302,6 +317,85 @@ class SegmentRing:
                     p.unlink()
                 except OSError:
                     pass
+        self._sweep_for_space()
+
+    def _free_bytes(self) -> Optional[float]:
+        """Free space on the ring's filesystem, or None if unknowable.
+
+        None means "cannot tell", and the caller treats that as "do not
+        evict" — guessing low would throw footage away for a stat call
+        that failed, which is the opposite of what the guard is for.
+        """
+        try:
+            import os
+            st = os.statvfs(self.dir)
+            return float(st.f_bavail) * float(st.f_frsize)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _sweep_for_space(self) -> int:
+        """Evict oldest-first until the ring fits in the disk it has.
+
+        Runs AFTER the age sweep, so a ring comfortably inside its
+        window never reaches here. Returns how many were dropped.
+
+        The newest segment is never touched — ffmpeg is writing into
+        it, and unlinking it costs the second currently being recorded
+        for no gain.
+        """
+        need_cap = self.window_max_bytes > 0
+        need_free = self.min_free_bytes > 0
+        if not (need_cap or need_free):
+            return 0
+
+        segs = self.segments(include_current=True)
+        if len(segs) < 2:
+            return 0
+        sizes = {}
+        held = 0.0
+        for p in segs:
+            try:
+                sz = float(p.stat().st_size)
+            except OSError:
+                sz = 0.0
+            sizes[p] = sz
+            held += sz
+
+        free = self._free_bytes() if need_free else None
+        dropped = 0
+        for p in segs[:-1]:
+            over_cap = need_cap and held > self.window_max_bytes
+            short = (need_free and free is not None
+                     and free < self.min_free_bytes)
+            if not (over_cap or short):
+                break
+            try:
+                p.unlink()
+            except OSError:
+                continue
+            held -= sizes.get(p, 0.0)
+            if free is not None:
+                free += sizes.get(p, 0.0)
+            dropped += 1
+
+        if dropped:
+            self.evicted_for_space += dropped
+            if not self._short_logged:
+                self._short_logged = True
+                log.warning(
+                    "copycap: retention is being cut short by DISK, not by "
+                    "window_seconds=%.0f — dropped %d segment(s) to stay "
+                    "under %s%s. The window is in seconds and the segments "
+                    "are whatever bitrate the camera sends; lower the "
+                    "camera's bitrate or shorten the window if recovery "
+                    "footage matters.",
+                    self.window_seconds, dropped,
+                    ("%.0f MB" % (self.window_max_bytes / 1e6)
+                     if need_cap else ""),
+                    (" and keep %.0f MB free" % (self.min_free_bytes / 1e6)
+                     if need_free else ""),
+                )
+        return dropped
 
     # -------- reading --------------------------------------------------
 
@@ -362,6 +456,9 @@ class SegmentRing:
             "restarts": self._restarts,
             "segment_seconds": self.segment_seconds,
             "window_seconds": self.window_seconds,
+            "evicted_for_space": self.evicted_for_space,
+            "free_mb": (round(fb / 1e6) if (fb := self._free_bytes())
+                        is not None else None),
         }
 
     # -------- extraction -----------------------------------------------

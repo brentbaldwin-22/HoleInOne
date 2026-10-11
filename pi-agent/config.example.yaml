@@ -58,6 +58,29 @@ auth_token: "cam_REPLACE_ME"
 # address.
 # copy_fallback_preroll_seconds: 2.0
 # copy_window_seconds: 0        # 0 = buffer_seconds + max_clip_seconds + 30
+#
+# HOW LONG THE RING KEEPS FOOTAGE. The default (155 s) is only what a
+# single clip needs. Raise it and the ring becomes a recovery buffer:
+# on 11 Oct two swings were lost outright because /event-trigger hit
+# "Network is unreachable" and the agent logged "skipping" — nothing
+# recorded, nothing spooled, gone. With an hour of retention that
+# footage is still on disk when the link comes back.
+#
+#   copy_window_seconds: 3600     # one hour
+#
+# AGE IS NOT A SIZE, and this is the trap. The window is in seconds;
+# the segments are whatever bitrate the CAMERA is sending, which the
+# operator sets. An hour is:
+#
+#    4000 kbps  ->  1.8 GB        16000 kbps  ->  7.2 GB
+#
+# and the 2 GB upload spool shares the same filesystem. So retention
+# yields to disk. A free-space floor is always on; a byte cap is
+# available for a small card. When either bites, the ring logs once
+# that retention is being cut short by DISK rather than by the window,
+# and `evicted_for_space` counts it.
+# copy_min_free_mb: 1024        # always keep this much free (0 = off)
+# copy_window_max_mb: 0         # hard byte cap on the ring (0 = none)
 
 camera:
   # "auto" tries /dev/video0..3 and picks the first that opens. Or
