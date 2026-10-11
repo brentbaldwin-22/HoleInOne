@@ -442,7 +442,7 @@ head -c 10000000 /dev/zero | curl -o /dev/null -w "up:   %{speed_upload} B/s\n" 
 | after the swap — other rig | 475,781 | 144,171 | 0% |
 | after a further modem change | 310,232 | 96,111 | 0% |
 
-### It is the SD CARD — A-B-A, one board, one dongle (10 Oct, 21:30)
+### NOT the SD card either — and why A-B-A still fooled us (10 Oct)
 
 Run properly the second time: one board (`96b4bdce178f1479`), one
 dongle, nothing else touched, five runs per round, a clean shutdown and
@@ -454,16 +454,45 @@ two reboots between the legs.
 | B1 | green | 6.12.75 | ~400 | **133** | 112-149 |
 | A2 | tee | 6.18.34 | 226 | **21** | 11-64 |
 
-**UPLOAD IS THE SIGNAL; DOWNLOAD IS NOISE.** Upload returned to the
-same median on the return leg, and the three groups do not overlap at
-all -- every B1 sample beats every A1 and A2 sample. Download moved the
-same way but only 2-4x and with overlapping ranges, which is what a
-transmit-side fault looks like from the receive side: the downloads
-suffer only through delayed ACKs.
+**RETRACTED AN HOUR LATER. IT IS NOT THE CARD EITHER.** Kept here
+because the way this went wrong is the most useful thing on the page.
 
-This also kills the theory that the swings were the modem re-registering
-on each power cycle. Two reboots separate A1 from A2 and the upload
-median came back to 21 KB/s both times.
+The rounds above looked decisive: upload returned to the same median on
+the return leg and the three groups did not overlap. Then the same card,
+same board, same dongle, kept being measured:
+
+| time | config | up median | down median |
+|---|---|---|---|
+| 20:56 | A1 | 21 | 109 |
+| 21:29 | A2 | 21 | 226 |
+| 21:43 | A3, wmem_max 212k | 107 | 404 |
+| 22:23 | A4, wmem_max 4M | **244** | **736** |
+
+Upload climbed 21 -> 244 across ninety minutes while a sysctl was
+toggled back and forth, and the best figure of the night came from
+restoring the value that was supposed to be the fault. It tracks the
+clock, not the configuration: late evening, tower load falling.
+
+Near-simultaneous pairs flip sign across the same evening -- 20:38 green
+13 / tee 509; 20:56 tee 109 / green 385; 22:24 tee 244 / green 96. There
+is no stable difference between the rigs.
+
+WHY A-B-A WAS NOT ENOUGH. It controls for LINEAR drift. This trend
+accelerated after A2, so A1 and A2 both sat in an early slow patch while
+B1 fell partway up the rise. Five runs per round made each round precise
+and did nothing about the thing that actually moved.
+
+WHAT WOULD ACTUALLY SETTLE IT: measure both rigs SIMULTANEOUSLY, in
+pairs, repeatedly over hours. Time is then controlled by construction
+rather than by argument. A single pair proves nothing -- the three pairs
+above disagree with each other.
+
+THE STANDING LESSON, now paid for three times in one day (the SIM, the
+card, the send buffer): on this deployment the link varies by more than
+10x over tens of minutes, independently per modem. Any hypothesis tested
+by measuring one thing, changing it, and measuring again will confirm
+itself. If a difference cannot be shown with both rigs measured at the
+same instant, repeatedly, it has not been shown.
 
 WHY THE EARLIER ROUNDS SAID NOTHING. Single measurements, taken minutes
 apart on different boards, ranged 13-509 KB/s. Against that spread one
