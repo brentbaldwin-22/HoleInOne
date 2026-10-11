@@ -775,6 +775,28 @@ disconnect is a USB disconnect and the counter cannot tell the
 difference, so it only means something while nobody is touching the
 hardware.
 
+**SLOW LINK vs MODEM GONE — the log says which, exactly.** Both end
+with a clip that never arrives, and they need different fixes, so do
+not guess:
+
+| in the agent log | what it means |
+|---|---|
+| `Read timed out. (read timeout=45)` | the link is UP and slow. Wait, or lower the bitrate. |
+| `[Errno 101] Network is unreachable` | the INTERFACE IS GONE. The modem is re-enumerating mid-transfer. No bitrate change helps. |
+
+Confirm it with the card: `USB resets` climbing **during an upload**
+is the modem dropping off. Flat while a clip crawls is a slow link.
+Observed 11 Oct: 41 -> 48 inside one upload, with errno 101 in the
+log and `chunk_bytes` already at the 65536 floor — three independent
+readings of the same fault.
+
+**CLIP SIZE IS NOT THE BUG WHEN THE RADIO IS.** 2367 kbps of video is
+296 KB/s, so a 36 s swing is 10.6 MB: 26 seconds on a healthy modem
+(404 KB/s, measured), eight minutes at 21 KB/s. Before cutting
+`max_clip_seconds`, read its comment in `config.example.yaml` — it
+was 30 s once and cut real swings in half, and chunked resumable
+upload is what removed the need for a small cap.
+
 **PING IS NOT A LINK TEST.** The first ping on the broken rig came back
 72 ms with 0% loss and sent this investigation sideways for an hour. A
 link can be perfect for 64-byte packets and carry 3 KB/s. Throughput is
