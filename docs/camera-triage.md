@@ -442,7 +442,44 @@ head -c 10000000 /dev/zero | curl -o /dev/null -w "up:   %{speed_upload} B/s\n" 
 | after the swap — other rig | 475,781 | 144,171 | 0% |
 | after a further modem change | 310,232 | 96,111 | 0% |
 
-**THE CAUSE IS NOT ESTABLISHED, AND THIS SECTION ONCE SAID IT WAS.**
+### It is the SD CARD — A-B-A, one board, one dongle (10 Oct, 21:30)
+
+Run properly the second time: one board (`96b4bdce178f1479`), one
+dongle, nothing else touched, five runs per round, a clean shutdown and
+two reboots between the legs.
+
+| round | card | kernel | down median | **up median** | up range |
+|---|---|---|---|---|---|
+| A1 | tee | 6.18.34 | 109 | **21** | 11-48 |
+| B1 | green | 6.12.75 | ~400 | **133** | 112-149 |
+| A2 | tee | 6.18.34 | 226 | **21** | 11-64 |
+
+**UPLOAD IS THE SIGNAL; DOWNLOAD IS NOISE.** Upload returned to the
+same median on the return leg, and the three groups do not overlap at
+all -- every B1 sample beats every A1 and A2 sample. Download moved the
+same way but only 2-4x and with overlapping ranges, which is what a
+transmit-side fault looks like from the receive side: the downloads
+suffer only through delayed ACKs.
+
+This also kills the theory that the swings were the modem re-registering
+on each power cycle. Two reboots separate A1 from A2 and the upload
+median came back to 21 KB/s both times.
+
+WHY THE EARLIER ROUNDS SAID NOTHING. Single measurements, taken minutes
+apart on different boards, ranged 13-509 KB/s. Against that spread one
+sample per configuration cannot see a 6x effect, and two confident
+conclusions were drawn from exactly that. `~/linktest.sh` (five runs,
+median, board serial and hostname in the header) is what made the
+difference -- not a better hypothesis.
+
+The hard difference between the cards is the kernel: **6.12.75 is fast,
+6.18.34 is slow.** A transmit-path regression is the leading suspect,
+and TX offload defaults (TSO/GSO) on a cheap USB-ethernet dongle are the
+usual cause. Check with `ethtool -i eth1` and `ethtool -k eth1` on both.
+
+---
+
+**AN EARLIER VERSION OF THIS SECTION SAID "IT WAS THE SIM."**
 It read "IT WAS THE SIM" in confident bold. That was wrong, and it is
 worth leaving the scar: the numbers above are real and the fault is
 real, but the labels on the rows were an assumption about which parts
