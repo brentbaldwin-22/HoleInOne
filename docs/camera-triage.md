@@ -442,6 +442,46 @@ head -c 10000000 /dev/zero | curl -o /dev/null -w "up:   %{speed_upload} B/s\n" 
 | after the swap — other rig | 475,781 | 144,171 | 0% |
 | after a further modem change | 310,232 | 96,111 | 0% |
 
+### READ THIS FIRST: the link is slow by DAY and fast by NIGHT
+
+The oldest and most reliable observation about this deployment, and
+the one that explains almost every "fault" chased in these pages:
+
+> **Uploads crawl during the day and push through in the late
+> afternoon and evening.** Observed across months, on the ORIGINAL tee
+> rig with its original modem and its original SIM, and again on
+> entirely new hardware.
+
+Because it predates every component now installed, it cannot be the
+Pi, the card, the modem, the SIM or the mount. It is congestion on a
+consumer LTE line, and it is the environment rather than a fault.
+
+Measured on 10 Oct, one rig, unchanged, over ninety minutes:
+
+| time | up median | down median |
+|---|---|---|
+| 20:56 | 21 | 109 |
+| 21:29 | 21 | 226 |
+| 21:43 | 107 | 404 |
+| 22:23 | **244** | **736** |
+
+Twelvefold on upload, with nothing changed that mattered.
+
+WHAT THIS MEANS FOR TRIAGE. A slow reading in the afternoon is not
+evidence of anything. Before suspecting hardware, ask what time it is,
+and compare against a reading from the SAME hour on a rig known to be
+healthy. Every diagnosis below that rests on a single measurement is
+worthless without that control.
+
+WHAT IT MEANS FOR THE SYSTEM. Size clips for the DAYTIME link, which
+is when golfers actually play, not for the evening one that makes the
+numbers look good. The uploader's own ladder already walks the encode
+down when the link cannot carry it and back up after clean sends;
+that adaptation is not a workaround here, it is the design responding
+to the real conditions.
+
+---
+
 ### NOT the SD card either — and why A-B-A still fooled us (10 Oct)
 
 Run properly the second time: one board (`96b4bdce178f1479`), one
