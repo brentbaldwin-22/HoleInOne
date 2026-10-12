@@ -1791,29 +1791,59 @@ def _process_camera_event_job(event_id: int) -> None:
             log.warning("cameras: event %s vanished before processing", event_id)
             return
 
-        # Rehydrate raws from object storage if the ephemeral disk lost them
-        # (e.g. reprocessing an event after a redeploy).
-        if event.tee_clip_filename:
-            storage.ensure_local(CLIPS_DIR, event.tee_clip_filename)
-        if event.green_clip_filename:
-            storage.ensure_local(CLIPS_DIR, event.green_clip_filename)
+        # SAME RULE AS THE PRODUCE WAIT BELOW, and for the same reason:
+        # read what we need, then RELEASE THE POOLED CONNECTION before
+        # doing media work. Rehydrating a 50 MB raw from object storage
+        # and re-encoding it are minutes, not milliseconds, and a
+        # session held across them is a transaction sitting IDLE for
+        # minutes. Postgres kills it on idle_in_transaction_timeout and
+        # the next query dies with "SSL connection has been closed
+        # unexpectedly" -- which is how this presented: clips that had
+        # survived the whole cellular link, discarded by the backend.
+        #
+        # It was duration-dependent, which is what made it look random:
+        #
+        #     36 s, 79 s   -> processed
+        #     114 s, 126 s -> failed
+        #
+        # The wait below was already fixed this way. The rehydrate and
+        # the re-encode above it were not.
+        _tee_name = event.tee_clip_filename
+        _green_name = event.green_clip_filename
+        missing = True
+        db.close()
+        try:
+            # Rehydrate raws from object storage if the ephemeral disk
+            # lost them (e.g. reprocessing an event after a redeploy).
+            if _tee_name:
+                storage.ensure_local(CLIPS_DIR, _tee_name)
+            if _green_name:
+                storage.ensure_local(CLIPS_DIR, _green_name)
 
-        tee_path = (
-            CLIPS_DIR / event.tee_clip_filename if event.tee_clip_filename else None
-        )
-        if tee_path is None or not tee_path.exists():
+            tee_path = CLIPS_DIR / _tee_name if _tee_name else None
+            missing = tee_path is None or not tee_path.exists()
+
+            # Re-encode the raws to browser-friendly H.264 + extract a
+            # thumbnail in this thread before production opens them.
+            # Cheap no-op when the upload-time hook already did it.
+            if not missing:
+                if _tee_name:
+                    _post_process_raw_clip(_tee_name)
+                if _green_name:
+                    _post_process_raw_clip(_green_name)
+        finally:
+            db = SessionLocal()
+
+        event = db.get(CameraEvent, event_id)
+        if event is None:
+            log.warning("cameras: event %s vanished during media work",
+                        event_id)
+            return
+        if missing:
             event.status = "failed"
             event.last_error = "tee clip missing on disk"
             db.commit()
             return
-
-        # Re-encode the raws to browser-friendly H.264 + extract a
-        # thumbnail in this thread before production opens them. Cheap
-        # no-op when the upload-time hook already did it.
-        if event.tee_clip_filename:
-            _post_process_raw_clip(event.tee_clip_filename)
-        if event.green_clip_filename:
-            _post_process_raw_clip(event.green_clip_filename)
 
         green_filename = event.green_clip_filename
         green_path = CLIPS_DIR / green_filename if green_filename else None
