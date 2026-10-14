@@ -25,6 +25,7 @@ import numpy as np
 from .common import (
     agent_build_id,
     BackendClient,
+    BackendUnreachable,
     BackgroundUploader,
     ClipWriter,
     FrameBuffer,
@@ -40,6 +41,7 @@ from .common import (
     write_fps_for,
     stream_info_fields,
     DeliveryMeter,
+    TriggerGate,
 )
 from . import tee_roi
 from .focus_meter import FocusMeter
@@ -481,6 +483,16 @@ class TeeAgent:
         self.work_dir = Path(
             cfg.get("work_dir", "/var/lib/golfreelz-agent"))
         self.work_dir.mkdir(parents=True, exist_ok=True)
+        # Whether to record a swing whose trigger could not be
+        # registered. Beside the spool on purpose: both exist so that an
+        # unreachable backend costs footage later rather than never.
+        self._gate = TriggerGate(self.work_dir)
+        # The session whose trigger never landed, if the one currently
+        # recording is that session. Only ever one at a time -- the
+        # capture loop runs a session to completion before looking for
+        # the next -- so a single slot is the honest shape, and an
+        # attribute that is usually None keeps the loop readable.
+        self._unregistered_session: Optional[str] = None
         self.stopping = threading.Event()
 
     def stop(self) -> None:
@@ -868,6 +880,7 @@ class TeeAgent:
             on_focus_mode=self._on_focus_mode,
             on_lens_command=self._on_lens_command,
             on_tee_zones=self.apply_tee_zones,
+            on_triggering_state=self._gate.note_backend_state,
         )
         streamer.start()
         self.streamer = streamer
@@ -975,10 +988,39 @@ class TeeAgent:
                         else (" (MANUAL)" if forced else ""),
                     )
                     _ack = None
+                    self._unregistered_session = None
                     try:
                         _ack = self.client.event_trigger(session_id) or {}
+                    except BackendUnreachable as exc:
+                        # SILENCE IS NOT A REFUSAL, and this used to be
+                        # treated as one. A trigger that times out took
+                        # the whole swing with it -- nothing recorded,
+                        # nothing spooled, nothing to recover -- on a
+                        # rig whose modem re-enumerates every three
+                        # minutes. Two swings died this way inside two
+                        # minutes on 14 Oct.
+                        #
+                        # Record it. The clip spools like any other, and
+                        # the uploader's _recover_lost_event registers
+                        # the session when the link returns, because
+                        # /event-trigger is idempotent and takes a
+                        # `recover` flag for exactly this. The gate is
+                        # the one veto: an operator who PAUSED this
+                        # camera still means it.
+                        log.warning(
+                            "event_trigger got no answer (%s)", exc)
+                        if self._gate.should_record_unregistered(session_id):
+                            self._unregistered_session = session_id
+                            _ack = {}
                     except Exception as exc:
-                        log.error("event_trigger failed (%s) — skipping", exc)
+                        # The backend ANSWERED and refused -- a 4xx:
+                        # unknown token, camera disabled, not a tee
+                        # camera. Recording against that is pointless,
+                        # and spooling a clip for it would re-send it
+                        # for 24 hours.
+                        log.error(
+                            "event_trigger refused (%s) — skipping "
+                            "session=%s", exc, session_id)
                     if _ack is None:
                         pass        # the trigger never registered
                     # PAUSED MEANS PAUSED, INCLUDING THE UPLOAD.
@@ -1115,7 +1157,25 @@ class TeeAgent:
         stops recording. Best-effort and loud about failing: the decode
         path has always done this and the symptom when it does not
         happen is silent and expensive — a green that keeps rolling to
-        its cap."""
+        its cap.
+
+        BOTH RECORDING PATHS COME THROUGH HERE. The copy engine calls it
+        from on_recording_ended and the decode loop calls it before its
+        upload; they used to be two copies of the same try/except, which
+        is two places for the guard below to be missing from.
+        """
+        if session_id and session_id == self._unregistered_session:
+            # There is no event to stop. This session's trigger never
+            # reached the backend, so /event-stop would 404 its way
+            # through four retries and log a warning that reads like a
+            # fault -- and no green is waiting on it, because no green
+            # was ever woken.
+            log.info(
+                "event_stop skipped for %s — its trigger never registered, "
+                "so there is no event to end and no green to release",
+                session_id,
+            )
+            return
         try:
             self.client.event_stop(session_id)
         except Exception as exc:  # noqa: BLE001
@@ -1370,10 +1430,7 @@ class TeeAgent:
         # which is polling /event-status — can release its writer at
         # roughly the same wall-clock moment. Best-effort: if the
         # call fails the green Pi will eventually hit its safety cap.
-        try:
-            self.client.event_stop(session_id)
-        except Exception as exc:
-            log.warning("event_stop failed for %s: %s", session_id, exc)
+        self._signal_event_stop(session_id)
 
         # Stop the parallel audio capture and fold the WAV into the
         # MP4. Each step is best-effort; failures leave the video

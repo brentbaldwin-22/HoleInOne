@@ -266,6 +266,30 @@ def load_config(path: Path) -> dict:
 # Backend HTTP client
 # ---------------------------------------------------------------------
 
+class BackendUnreachable(RuntimeError):
+    """We never got a usable answer out of the backend.
+
+    Raised by _retry when every attempt is spent without a 2xx and
+    without a hard 4xx — so a dead modem, a DNS failure, a timeout, or
+    a 5xx from a server that is up but cannot answer. All of those mean
+    THE SAME THING TO A CAPTURE LOOP: nobody told us not to record.
+
+    THE DISTINCTION IS THE WHOLE POINT. A 4xx is the backend answering
+    and refusing — wrong token, camera disabled, not a tee camera — and
+    recording against that is pointless. Anything else is silence, and
+    a swing that happened during silence still happened. The tee used
+    to treat the two identically and drop the swing: see the
+    `event_trigger` handler in tee.py, and the two swings lost at 17:41
+    and 17:42 on 14 Oct to a modem that re-enumerates every three
+    minutes.
+
+    Subclasses RuntimeError ON PURPOSE. Every existing `except
+    Exception` and `except RuntimeError` around a backend call keeps
+    behaving exactly as it did; only the sites that care to tell
+    silence from refusal have to say so.
+    """
+
+
 class UnattachableClip(RuntimeError):
     """This clip can never be delivered, however good the link gets.
 
@@ -424,7 +448,11 @@ class BackendClient:
                             pass
             time.sleep(delay)
             delay = min(delay * 2, 30)
-        raise RuntimeError(f"backend {method} {path} failed: {last_err}")
+        # NOT a plain RuntimeError. Reaching here means the retries are
+        # spent with no 2xx and no hard 4xx — the backend never refused,
+        # it just never answered. See BackendUnreachable.
+        raise BackendUnreachable(
+            f"backend {method} {path} failed: {last_err}")
 
     def heartbeat(
         self, firmware_version: str = "", extra: dict | None = None,
@@ -860,6 +888,133 @@ class HeartbeatThread(threading.Thread):
 
     def stop(self) -> None:
         self.stopping.set()
+
+
+# ---------------------------------------------------------------------
+# Recording a swing the backend never heard about
+# ---------------------------------------------------------------------
+
+class TriggerGate:
+    """May the tee record a swing whose /event-trigger never landed?
+
+    THE LINK IS NOT UP WHEN THE SWING HAPPENS. Measured on the tee rig,
+    14 Oct: the modem re-enumerates roughly every three minutes, which
+    on a good run leaves ten seconds an hour where a trigger POST cannot
+    complete. Two swings died in consecutive minutes that way, each one
+    logged as `event_trigger failed — skipping` and then never recorded
+    at all. The clip was not lost in transit; it was never cut.
+
+    Everything DOWNSTREAM of the trigger already survives an unreachable
+    backend. The spool holds a clip for 24 hours, the bitrate ladder
+    backs off, and _recover_lost_event re-registers a session the server
+    has no row for at the moment the clip finally goes up. The trigger
+    is the one call on the capture path with no fallback, and it is the
+    first one, so its failure takes the whole swing with it.
+
+    So: record anyway, and let the recovery that already exists do its
+    job. The only thing that should stop the tee recording is the
+    operator having PAUSED it — and that answer comes from the backend,
+    which by definition we cannot reach at the moment we need it.
+
+    Hence this gate. The backend states `triggering_enabled` on every
+    watch-status poll (about once a second), and this remembers the last
+    answer it gave:
+
+      last answer was ENABLED  -> record. The swing is real.
+      last answer was PAUSED   -> do not. The operator said no, and
+                                  nothing since has said otherwise.
+      no answer ever seen      -> record.
+
+    THAT LAST LINE IS A CHOICE, and it is the one that keeps footage.
+    A rig that has never had a successful poll is far more likely to be
+    a camera on a tee box with a sick modem than a paused camera on a
+    bench, and the cost of being wrong is bounded: the spool is capped
+    by size and age, so the worst case is some clips that get dropped
+    without ever being sent. The cost of the other default is every
+    swing of the round.
+
+    REMEMBERED ON DISK, because the case that defeats an in-memory
+    answer is a Pi that reboots during an outage — exactly what a
+    browning-out rig does. Without the file it would wake up with no
+    answer, take the keep-footage default, and spool clips for a camera
+    the operator paused hours ago.
+
+    An older backend omits the field. ABSENT IS NOT PAUSED: a missing
+    key teaches this nothing and leaves the memory alone, so a Pi
+    running ahead of its backend keeps recording rather than going
+    quiet.
+    """
+
+    FILENAME = "trigger-gate.json"
+
+    def __init__(self, state_dir: Optional[Path] = None):
+        self._path = (Path(state_dir) / self.FILENAME) if state_dir else None
+        self._enabled: Optional[bool] = self._load()
+
+    # ---- the backend's answer ---------------------------------------
+
+    def note_backend_state(self, triggering_enabled) -> None:
+        """Remember what watch-status just said. Called on every poll.
+
+        `None` means the key was absent -- an older backend -- and is
+        not an answer, so it changes nothing.
+        """
+        if triggering_enabled is None:
+            return
+        val = bool(triggering_enabled)
+        if val == self._enabled:
+            return
+        self._enabled = val
+        log.info(
+            "triggering is %s for this camera (per the backend)",
+            "enabled" if val else "PAUSED",
+        )
+        self._save()
+
+    @property
+    def last_known_enabled(self) -> Optional[bool]:
+        """True, False, or None for "never heard"."""
+        return self._enabled
+
+    # ---- the decision -----------------------------------------------
+
+    def should_record_unregistered(self, session_id: str = "") -> bool:
+        """The trigger did not land. Record this swing anyway?"""
+        if self._enabled is False:
+            log.info(
+                "trigger: session=%s not recorded — the backend is "
+                "unreachable AND the last thing it told us was that "
+                "triggering is paused for this camera", session_id,
+            )
+            return False
+        log.warning(
+            "trigger: session=%s did not reach the backend — recording it "
+            "anyway%s. The clip will spool and re-register itself when the "
+            "link returns.", session_id,
+            "" if self._enabled else " (we have never had an answer from "
+                                     "the backend about this camera)",
+        )
+        return True
+
+    # ---- persistence ------------------------------------------------
+
+    def _load(self) -> Optional[bool]:
+        if self._path is None:
+            return None
+        try:
+            val = json.loads(self._path.read_text()).get("triggering_enabled")
+        except Exception:  # noqa: BLE001 - absent, truncated, not ours
+            return None
+        return None if val is None else bool(val)
+
+    def _save(self) -> None:
+        if self._path is None:
+            return
+        try:
+            self._path.write_text(
+                json.dumps({"triggering_enabled": self._enabled}))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("trigger gate: could not persist state: %s", exc)
 
 
 # ---------------------------------------------------------------------
@@ -1379,7 +1534,14 @@ class BackgroundUploader(threading.Thread):
             on_chunk_size=_sized,
         )
 
-    def _recover_lost_event(self, session_id: str) -> bool:
+    # What _recover_lost_event managed. Three outcomes, not two,
+    # because "no event can ever exist for this clip" and "we could not
+    # ask" must not share an answer -- the first one deletes footage.
+    RECOVERED = "registered"
+    RECOVER_REFUSED = "refused"
+    RECOVER_UNREACHABLE = "unreachable"
+
+    def _recover_lost_event(self, session_id: str) -> str:
         """Re-register a session the server has no event for.
 
         A trigger can be lost — the backend mid-deploy, the modem between
@@ -1394,16 +1556,33 @@ class BackgroundUploader(threading.Thread):
         """
         try:
             out = self.client.recover_event(session_id)
+        except BackendUnreachable as exc:
+            # WE DID NOT GET AN ANSWER, which is not the same as being
+            # told no. The caller must keep the clip: a 404 on the
+            # upload plus a dead modem on the recovery looks exactly
+            # like an orphan and is not one, and treating it as one
+            # DELETES the footage. On the tee rig, where the modem
+            # re-enumerates every three minutes, a recovery landing in
+            # one of those gaps is routine.
+            log.warning(
+                "uploader: could not re-register %s — the backend did not "
+                "answer (%s). Keeping the clip; this says nothing about "
+                "whether an event can exist for it.", session_id, exc,
+            )
+            return self.RECOVER_UNREACHABLE
         except Exception as exc:  # noqa: BLE001
-            log.warning("uploader: could not re-register %s: %s",
+            # The backend answered and refused -- most often because the
+            # operator deleted the session, which /event-trigger
+            # declines to undo. Nothing to keep the clip for.
+            log.warning("uploader: backend refused to re-register %s: %s",
                         session_id, exc)
-            return False
+            return self.RECOVER_REFUSED
         log.warning(
             "uploader: %s had no event on the server — re-registered it as "
             "event %s (tee-only) so the clip is not lost",
             session_id, out.get("event_id"),
         )
-        return True
+        return self.RECOVERED
 
     def _compress_this(self, precompressed: bool) -> bool:
         """Should this clip be re-encoded before it goes up?
@@ -1470,8 +1649,23 @@ class BackgroundUploader(threading.Thread):
                     session_id, clip_path, ts, retries, timeout,
                 )
             except UnattachableClip as exc:
-                if _pass == 0 and self._recover_lost_event(session_id):
-                    continue
+                if _pass == 0:
+                    _recovery = self._recover_lost_event(session_id)
+                    if _recovery == self.RECOVERED:
+                        continue
+                    if _recovery == self.RECOVER_UNREACHABLE:
+                        # Deliberately NOT orphaned: _last_orphaned
+                        # deletes the clip, and we do not know that it
+                        # is undeliverable -- only that we could not
+                        # find out. An ordinary failure keeps it
+                        # spooled for the next attempt.
+                        log.warning(
+                            "upload of %s has no event to attach to and the "
+                            "backend could not be asked to make one — "
+                            "keeping the clip for the next attempt",
+                            session_id,
+                        )
+                        return False
                 self._last_orphaned = True
                 log.error(
                     "upload rejected for %s: %s — there is no event to "

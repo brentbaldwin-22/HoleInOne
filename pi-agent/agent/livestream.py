@@ -62,6 +62,7 @@ class LiveStreamer:
         on_focus_mode=None,
         on_lens_command=None,
         on_tee_zones=None,
+        on_triggering_state=None,
         still_quality: int = 85,
         still_min_interval: float = 15.0,
     ) -> None:
@@ -84,6 +85,13 @@ class LiveStreamer:
         # Pi that restarts or wakes from curfew has no idea what it
         # missed.
         self.on_tee_zones = on_tee_zones
+        # Called on every poll with the backend's `triggering_enabled`
+        # (None when an older backend omits it). A STATE, like the zones
+        # above. The tee needs it for the case it can never ask about:
+        # a trigger POST that cannot complete, where "is this camera
+        # paused?" has to be answered from the last thing we were told.
+        # See TriggerGate.
+        self.on_triggering_state = on_triggering_state
         self.frame_interval = 1.0 / max(1, fps)
         self.jpeg_quality = max(20, min(95, jpeg_quality))
         # The still is looked AT rather than through, one frame every
@@ -235,6 +243,11 @@ class LiveStreamer:
                     self.on_tee_zones(payload.get("tee_box_roi"))
                 except Exception as exc:  # noqa: BLE001
                     log.debug("tee-zone handler failed: %s", exc)
+            if self.on_triggering_state:
+                try:
+                    self.on_triggering_state(payload.get("triggering_enabled"))
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("triggering-state handler failed: %s", exc)
             secs = payload.get("capture_seconds")
             if secs and self.on_capture_request:
                 log.info("capture requested by operator: %ss", secs)

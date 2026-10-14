@@ -1078,6 +1078,90 @@ Do not swap the hub in *and* reseat the antenna *and* change the APN in
 the same visit. This page already has one wrong conclusion in it from a
 test that moved two things at once.
 
+### WHAT THOSE TESTS ANSWERED, 14 Oct
+
+**The dongle reboots itself, every three minutes, all day.** Read it
+off the kernel log in thirty seconds after weeks of guessing:
+
+```
+17:22:47  disconnect       device 92   1286:4e3c ASRMicro  <- working modem
+17:22:48  reappears        device 93   2ecc:3001 MARVELL "WUKONG"
+17:22:51  disconnect       device 93
+17:22:56  reappears        device 94   1286:4e3c ASRMicro, eth1 registers
+```
+
+**A device that comes back under a DIFFERENT vendor/product ID has
+returned to its power-on identity and booted again.** That is the whole
+diagnosis, and it does not depend on knowing what "WUKONG" is.
+Autosuspend cannot do that — a suspended device resumes as the same
+device, often without re-enumerating at all. **Test 1 is dead; do not
+bother with the udev rule.**
+
+Rate, off the same Pi: **98 disconnects in 2 h 35 m**, with 99
+`cdc_ether` registrations confirming each one re-registered. Two
+disconnects per reboot cycle, so **~19 reboots an hour, one every three
+minutes, for the whole uptime.** A baseline, not a load spike.
+
+| Reading | 14 Oct | What it says |
+|---|---|---|
+| `usb_max_current_enable` | `0`, and **not** in config.txt | the firmware's own detected value: all downstream USB capped at **600 mA** |
+| `EXT5V_V` | 5.089 V **at idle** | the input rail is fine when nothing is transmitting. Says nothing about load |
+| `get_throttled` | `0x0` | correct and irrelevant — see below |
+| ModemManager / uhubctl / usb_modeswitch | none running, nothing in the journal | **nothing on the Pi is resetting the port** |
+
+**WHY THE 600 mA MATTERS ON THIS RIG SPECIFICALLY.** The tee Pi is fed
+from a buck converter off the 12 V battery, not a USB-C PD brick. A
+buck converter cannot negotiate PD, so **the Pi will never detect a 5 A
+supply and the 600 mA cap is permanent** until the flag is forced. An
+LTE modem on transmit crosses 600 mA without trying.
+
+**THE ⚡ PILL CANNOT SEE THIS, and that is worth knowing before you
+trust it again.** It reports `get_throttled`, which watches the Pi's
+5 V *input* rail. The shortage here is *downstream* of that, at the
+port's own limiter. `POWER CLEAN` and a starved dongle are consistent
+readings, and this page previously treated the pill as settling the
+question.
+
+### TWO FAULTS, NOT ONE — and 11 Oct only ever answered the first
+
+The "ANSWERED: it is the RADIO UNIT" section above measured **down/up
+KB/s**. It never counted a single USB disconnect. So:
+
+| Fault | Signature | Where it lives |
+|---|---|---|
+| slow / zero throughput | KB/s, ping loss | **followed the radio unit**, 11 Oct. That conclusion stands |
+| USB re-enumeration | disconnect count in `dmesg` | **stays with the tee Pi** across dongle swaps. Never tested on 11 Oct |
+
+Which makes that section's "**ELIMINATED, ALL AT ONCE:** … the USB
+port" an over-reach. It eliminated the port as a cause of *slow
+throughput*. It said nothing about the port as a cause of *resets*.
+Treat the two lists of eliminations separately from here on.
+
+Both dongles having been swapped and the resets having stayed on the
+tee Pi is what points at the Pi. **One confound, stated so nobody
+treats the green rig as a clean control:** the green has no camera on
+it at the moment, so it uploads far less. A current-correlated fault
+shows less on a quieter rig with identical hardware.
+
+### STILL OPEN after those tests
+
+- **`gr-linklog.sh` runs from cron EVERY MINUTE** on the tee Pi
+  (`* * * * * /home/pi/gr-linklog.sh`), and nobody remembers writing
+  it. It is a leftover from earlier link debugging. **Read it before
+  concluding anything else** — a per-minute script that touches the
+  interface, the modem's web UI, or `ifdown`/`ifup` would be a
+  Pi-specific cause of a Pi-specific fault, which is exactly the shape
+  of what we are looking at.
+- **`EXT5V_V` under load** has not been read. Idle is 5.089 V; the
+  number that matters is the one taken while an upload is pushing.
+- **`usb_max_current_enable=1` was appended to config.txt on 14 Oct**
+  without the converter's rating having been confirmed first, and it
+  went in **twice** (two reboots, same command). The duplicate is
+  harmless — the firmware takes the last line — but the file should be
+  tidied, and `get_throttled` wants watching now: raising the USB cap
+  on a converter that cannot supply it moves the brownout from the port
+  to the board.
+
 ### Reading the modem's signal
 
 The modem's own admin page reports RSRP / RSRQ / SINR, and comparing one

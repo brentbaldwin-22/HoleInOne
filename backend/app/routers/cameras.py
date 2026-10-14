@@ -1212,6 +1212,16 @@ def watch_status(token: str, db: Session = Depends(get_db)):
         # the agent stays in, not a one-shot, and it has to survive every
         # poll until it expires.
         "focus_seconds": _focus_remaining(cam.id),
+        # THE OPERATOR'S PAUSE, STATED ON EVERY POLL. /event-trigger
+        # already answers a paused camera with `triggering_disabled`,
+        # and that is the authoritative answer whenever the Pi can
+        # reach us. This is for when it cannot: a trigger POST that
+        # times out tells the agent nothing, and it has to decide
+        # whether to record the swing anyway. Being told the current
+        # answer once a second means that decision is made against
+        # something at most a second stale instead of against nothing.
+        # See TriggerGate in the agent.
+        "triggering_enabled": bool(cam.triggering_enabled),
         # THE SNAPSHOT ASK. True when the picture the Cameras page would
         # show is missing or stale; the agent answers with one frame to
         # /still and goes back to sleep. Not consumed on read — it stays

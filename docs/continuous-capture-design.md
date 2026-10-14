@@ -212,7 +212,40 @@ and it is not designed here.
 2. **The sweep**, emitting through the existing `/event-trigger` with
    `impact_at`. Tee only, green still on the old path.
 3. **Local queue for unreachable-backend**, which is where the
-   robustness win is.
+   robustness win is. **DONE, 14 Oct, and taken out of order** — the
+   tee's modem turned out to re-enumerate every three minutes, which
+   made this the step that was actually losing swings.
+
+   IT WAS NOT A NEW QUEUE. Almost all of it already existed: the
+   spool holds a clip for 24 h, and `_recover_lost_event` re-registers
+   a session the server has no row for at the moment the clip finally
+   goes up. What was missing was a way IN. `/event-trigger` is the
+   first call on the capture path and was the only one with no
+   fallback — it failed, the loop logged `skipping`, and the swing was
+   never cut. Nothing downstream ever got a chance.
+
+   Three pieces, listed here because each one is a trap worth
+   remembering:
+
+   - **`BackendUnreachable`.** Silence told apart from refusal. A 4xx
+     is the backend saying no and recording against it is pointless;
+     anything else — dead modem, DNS, timeout, 5xx — is nobody
+     answering, and a swing during silence still happened. It
+     subclasses `RuntimeError` so every existing handler is unchanged.
+   - **`TriggerGate`.** The one veto is the operator's pause, and that
+     answer lives on the backend we cannot reach. So `watch-status`
+     states `triggering_enabled` on every poll (~1 s) and the agent
+     remembers the last answer, on disk, because the rig that needs
+     this is the rig that reboots mid-outage. Never heard → record:
+     the cost of guessing wrong is a bounded spool, the cost of the
+     other default is the whole round.
+   - **The recovery tri-state.** Found while wiring the above, and it
+     would have eaten exactly the swings this step exists to save:
+     `_recover_lost_event` returned a bool, so "the backend refused to
+     make an event" and "we could not ask" shared an answer — and that
+     answer DELETES the clip. On a link that dies every three minutes,
+     a recovery landing in one of those gaps is routine. Now
+     `refused` drops and `unreachable` keeps.
 4. **Green cuts from its ring** on `impact_at`, plus clock health on
    the heartbeat.
 5. **Delete the session machinery** once the above has run a real
@@ -220,4 +253,6 @@ and it is not designed here.
 6. **Audio ring** with the mic, and `confirm_times` wired live.
 
 Each step is independently useful and independently revertible. Step 1
-alone would have saved the two swings lost on 11 Oct.
+alone would have saved the two swings lost on 11 Oct; step 3 is what
+saves the ones lost to the modem, and on the current tee rig that is
+the larger number.
