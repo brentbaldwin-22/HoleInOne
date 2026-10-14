@@ -1145,13 +1145,35 @@ shows less on a quieter rig with identical hardware.
 
 ### STILL OPEN after those tests
 
-- **`gr-linklog.sh` runs from cron EVERY MINUTE** on the tee Pi
-  (`* * * * * /home/pi/gr-linklog.sh`), and nobody remembers writing
-  it. It is a leftover from earlier link debugging. **Read it before
-  concluding anything else** — a per-minute script that touches the
-  interface, the modem's web UI, or `ifdown`/`ifup` would be a
-  Pi-specific cause of a Pi-specific fault, which is exactly the shape
-  of what we are looking at.
+- ~~`gr-linklog.sh` runs from cron every minute~~ **CLEARED, and then
+  promoted.** It was briefly a suspect for the best possible reason: an
+  unexplained script running sixty times an hour on the one rig with
+  the fault. It is read-only — two `ping -c 5`, `measure_temp`,
+  `get_throttled`, one CSV line, trim at 45000 lines. Ten pings a
+  minute causes nothing.
+
+  **It is also the only long timeline this project has.**
+  `~/golfreelz-link.csv` carries one row a minute for up to thirty days
+  with `uptime_s`, `temp_c`, `throttled` and gateway loss, which
+  answers three things no live reading can:
+
+  | Column | Question it answers |
+  |---|---|
+  | `gw_loss_pct` = 100 | when was the modem actually between lives |
+  | `uptime_s` dropping | every Pi reboot, timestamped |
+  | `throttled` | has this rig EVER browned out — we had only read it live, on a rig that was fine at that moment |
+
+  So a change can be judged against the week before it instead of
+  against a hopeful ten minutes after it. Read it with
+  `tools/linklog_report.py`; the script itself is now in the repo at
+  `pi-agent/tools/gr-linklog.sh` rather than on one SD card.
+
+  **WHAT THE PERCENTAGES ARE NOT.** It pings for about three seconds
+  out of every sixty, so a ten-second outage every three minutes lands
+  inside a sample only a fraction of the time. The absolute numbers
+  understate outage time, by a lot. They are a relative measure, and
+  identical sampling on both sides of a change is what makes them
+  worth having.
 - **`EXT5V_V` under load** has not been read. Idle is 5.089 V; the
   number that matters is the one taken while an upload is pushing.
 - **`usb_max_current_enable=1` was appended to config.txt on 14 Oct**
