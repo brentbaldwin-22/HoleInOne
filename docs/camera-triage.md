@@ -896,6 +896,188 @@ vcgencmd get_throttled     # 0x0 here while dmesg shows USB resets
                            # => NOT the Pi's power. Look at the modem.
 ```
 
+### Test 1 and Test 2 — autosuspend, then port power (14 Oct)
+
+Two theories survived the review of Google's advice. Both are cheap,
+both are read-only to start, and **the first command below may settle
+both of them in thirty seconds**, so run it first.
+
+Everything here runs on the tee Pi over SSH. Nothing in Test 1 or the
+first two steps of Test 2 changes anything — they only read.
+
+#### Step A — read the kernel's own words (run this first)
+
+The reset *count* on the card says a disconnect happened. The kernel
+log says **why**. We have never read it.
+
+```bash
+sudo dmesg -T | grep -iE "usb|eth1|over-?current|error -(71|110)|enumerate" | tail -60
+```
+
+| What the log says | What it means |
+|---|---|
+| `over-current condition` / `over-current change` | the port's current limit tripped. **Power, definitively.** Go to Test 2. |
+| `device descriptor read/64, error -71` | stalled during enumeration — power or a marginal cable |
+| `error -110` (timeout) | the device never answered — power, or a dongle that is dying |
+| `unable to enumerate USB device` | the dongle stopped responding altogether |
+| bare `usb 1-1: USB disconnect` with **no error line before it** | the device took itself off the bus. **Not power.** Modem firmware, or autosuspend — go to Test 1. |
+
+If `dmesg` has rolled over and shows nothing from the bad window, make
+it persistent so the next one is captured:
+
+```bash
+sudo mkdir -p /var/log/journal && sudo systemd-tmpfiles --create --prefix /var/log/journal
+sudo systemctl restart systemd-journald
+# afterwards: sudo journalctl -k --since "-2 hours" | grep -i usb
+```
+
+#### Test 1 — is the kernel suspending the modem?
+
+**Step 1. Find the modem's USB device.** The interface is probably
+`eth1`, but do not assume it — this prints whichever network interfaces
+are USB-attached:
+
+```bash
+for i in /sys/class/net/*; do
+  p=$(readlink -f "$i")
+  case "$p" in *usb*) echo "$(basename "$i") -> $p";; esac
+done
+```
+
+**Step 2. Walk up to the USB device directory and read its power
+settings.** Substitute the interface name from Step 1 if it is not
+`eth1`:
+
+```bash
+d=$(readlink -f /sys/class/net/eth1/device)
+while [ -n "$d" ] && [ "$d" != "/" ] && [ ! -f "$d/idVendor" ]; do d=$(dirname "$d"); done
+echo "USB device dir: $d"
+cat "$d/idVendor" "$d/idProduct" 2>/dev/null; cat "$d/product" 2>/dev/null
+echo "--- power ---"
+for f in control autosuspend_delay_ms runtime_status runtime_suspended_time; do
+  printf '%-26s %s\n' "$f" "$(cat "$d/power/$f" 2>/dev/null)"
+done
+cat /sys/module/usbcore/parameters/autosuspend   # -1 = off globally
+```
+
+How to read it:
+
+| Reading | Verdict |
+|---|---|
+| `control` = `on` | autosuspend is already disabled for this device. **Test 1 is dead** — go to Test 2. |
+| `control` = `auto` | the kernel is *allowed* to suspend it. Necessary, not sufficient — do Step 3. |
+| `runtime_status` = `suspended` while the card shows the rig online | caught in the act. Theory confirmed. |
+
+**Step 3. Prove it actually suspends, don't just prove it's allowed
+to.** `runtime_suspended_time` is cumulative milliseconds spent
+suspended. Read it, wait, read it again — with the rig idle, no
+uploads:
+
+```bash
+cat "$d/power/runtime_suspended_time"; sleep 600; cat "$d/power/runtime_suspended_time"
+```
+
+Number grew → the modem **is** being suspended, and this is the fault.
+Number identical → it has never been suspended, and autosuspend is not
+our problem no matter what `control` says.
+
+Expect the second outcome. Most USB network drivers hold the device
+awake while the interface is up, so this test most often comes back
+negative — but it costs ten minutes of waiting and the fix below is
+free, so apply the fix either way.
+
+**Step 4. The fix (free, harmless, idempotent).** Immediately:
+
+```bash
+echo on | sudo tee "$d/power/control"
+```
+
+That is lost on replug and reboot. To make it permanent, use the
+vendor and product IDs printed in Step 2 in place of `XXXX`/`YYYY`:
+
+```bash
+sudo tee /etc/udev/rules.d/50-modem-no-autosuspend.rules >/dev/null <<'EOF'
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="XXXX", ATTR{idProduct}=="YYYY", TEST=="power/control", ATTR{power/control}="on"
+EOF
+sudo udevadm control --reload-rules
+```
+
+Verify the rule actually takes, rather than trusting that it did —
+reboot, then re-run Step 2 and confirm `control` reads `on`.
+
+#### Test 2 — is the Pi starving the USB port?
+
+This is the theory that fits our best evidence: **resets climb during
+uploads, not while idle.** An LTE modem's draw spikes on transmit.
+
+**The ⚡ pill on the card does not answer this.** It reports
+`vcgencmd get_throttled`, which watches the Pi's own 5 V input rail. A
+USB port can brown out its peripheral while that rail reads perfectly
+clean — `POWER CLEAN` and a starved dongle are consistent readings.
+
+**Step 1. Read the Pi 5's USB current budget.** A Pi 5 that does not
+detect a 5 V / 5 A supply caps *all* downstream USB at 600 mA; with
+one, it allows 1.6 A. An LTE dongle on transmit can cross 600 mA on
+its own.
+
+```bash
+vcgencmd get_config usb_max_current_enable
+grep -i usb_max_current /boot/firmware/config.txt
+sudo dmesg | grep -iE "usb_max_current|power budget|insufficient|5A|pd "
+vcgencmd get_throttled
+```
+
+**Step 2. Decide from what the PSU actually is, not from the reading
+alone.**
+
+- Official 27 W Raspberry Pi 5 PSU (or any supply genuinely rated
+  5 V / 5 A): add `usb_max_current_enable=1` to
+  `/boot/firmware/config.txt`, reboot, re-read. This raises the cap to
+  1.6 A and is the one-line version of this fix.
+- A phone charger, a car adapter, a 15 W brick: **do not set that
+  flag.** Raising the cap on a supply that cannot deliver it moves the
+  brownout from the port to the whole board. Replace the PSU first.
+
+**Step 3. Catch a reset in the act, correlated with an upload.** Two
+SSH sessions. In the first, watch the bus live:
+
+```bash
+sudo dmesg -TW | grep -iE "usb (disconnect|reset)|over-current|error -(71|110)" \
+  | tee -a /tmp/usb-resets.log
+```
+
+In the second, saturate the uplink the way an upload does — this is the
+upload half of the throughput test above, looped:
+
+```bash
+for n in 1 2 3 4 5; do
+  head -c 10000000 /dev/zero | curl -o /dev/null -w "up $n: %{speed_upload} B/s\n" \
+    --max-time 60 -X POST --data-binary @- "https://speed.cloudflare.com/__up"
+done
+```
+
+Lines appearing in the first window *while the second is pushing*, and
+not between runs, is the load correlation made visible. Note that this
+leaves the agent running, so a minute or two of heartbeat lateness
+during the push is expected.
+
+**Step 4. The controlled test: one change, one reading.** Only if
+Step 3 shows resets under load.
+
+1. Baseline: run Step 3 exactly as written. Record the reset count.
+2. Change **one** thing — put the dongle on a **powered** USB hub, so
+   it draws from the hub's own supply instead of the Pi's port.
+   Nothing else: same SIM, same position, same cable to the hub.
+3. Re-run Step 3 identically. Record the count.
+
+Zero resets on the hub → it is power, and the fix is the hub or a
+proper PSU. The same count on the hub → it is not the Pi's power
+budget, and Step A's kernel text is pointing at the modem itself.
+
+Do not swap the hub in *and* reseat the antenna *and* change the APN in
+the same visit. This page already has one wrong conclusion in it from a
+test that moved two things at once.
+
 ### Reading the modem's signal
 
 The modem's own admin page reports RSRP / RSRQ / SINR, and comparing one
@@ -992,8 +1174,11 @@ the one check that separates them.
 
 ```
 get_throttled == 0x0 ?
-├── YES → not power. Go to journalctl (Step 2).
+├── YES → not the Pi's INPUT rail. Go to journalctl (Step 2).
 │         Likely: upload timeout, tmpfs full, agent crash.
+│         It does NOT clear the USB PORT's current budget —
+│         0x0 here and a starved modem are consistent. See
+│         "Test 1 and Test 2".
 └── NO  → it has browned out.
           Measure converter INPUT under load (Step 3).
           ├── holds 12V  → converter is weak. Swap the spare.
