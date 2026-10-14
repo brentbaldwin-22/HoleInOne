@@ -1078,6 +1078,51 @@ Do not swap the hub in *and* reseat the antenna *and* change the APN in
 the same visit. This page already has one wrong conclusion in it from a
 test that moved two things at once.
 
+### ANSWERED: THE PI WAS CURRENT-LIMITING ITS OWN USB PORT (14 Oct)
+
+**The Raspberry Pi 5 caps all downstream USB at 600 mA unless it
+detects a 5 V / 5 A supply. The tee rig is fed from a buck converter,
+which cannot negotiate PD, so the cap was permanent.** An LTE modem on
+transmit crosses 600 mA, browned out past its own undervoltage
+lockout, reset, and rebooted — once every three minutes, all day, for
+weeks.
+
+The fix is one line in `/boot/firmware/config.txt`:
+
+```
+usb_max_current_enable=1
+```
+
+which lifts the cap to 1.6 A. Confirm with `vcgencmd get_config
+usb_max_current_enable` (wants `1`) and reboot for it to take.
+
+**ONLY DO THIS ON A SUPPLY THAT CAN DELIVER IT.** Raising the cap on a
+converter that cannot moves the brownout from the port to the board,
+and you will be chasing SD-card corruption instead. Watch
+`vcgencmd get_throttled` afterwards; non-zero means back it out.
+
+The measurement, with the dongle confirmed still at the same bus
+address (`readlink -f /sys/class/net/eth1/device`) so the count is of
+the same thing:
+
+| | |
+|---|---|
+| before | 98 disconnects in 155 min = **0.63/min** |
+| expected in the 42 min after | **~27** |
+| observed | **0** |
+
+Zero against twenty-seven is not a quiet spell. The link log agrees
+independently: the hour after the reboot ran **0 dead minutes out of
+39**, against 7.8% for the three hours before it.
+
+**WHY THIS TOOK WEEKS, and the lesson for the next one.** Six days of
+per-minute `get_throttled` readings are all `0x0` — the Pi's 5 V INPUT
+rail never sagged, not once. Every power check this page documents
+reads that rail, including the ⚡ pill on the Cameras card. The
+shortage was at the PORT's own limiter, downstream of everything we
+were measuring. **A clean `get_throttled` does not mean a peripheral
+is being fed.**
+
 ### WHAT THOSE TESTS ANSWERED, 14 Oct
 
 **The dongle reboots itself, every three minutes, all day.** Read it

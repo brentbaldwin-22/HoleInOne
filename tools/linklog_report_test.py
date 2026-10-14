@@ -130,6 +130,13 @@ check("dead minutes are the hotter ones in this fixture",
 # Junk must be skipped, not fatal: this file is appended to by cron
 # while being read and trimmed by `tail`, so a short final line is
 # ordinary.
+#
+# THE GLUED ROW IS THE ONE THAT MATTERS. The first version of this
+# reader only asked for a "T" somewhere in the field, so a line with
+# junk on the front parsed -- and the junk became its own day bucket.
+# The real 14 Oct report showed two phantom one-minute "days" sorting
+# ahead of the real ones, which is a reader inventing data. Worse than
+# crashing, because it looks like a reading.
 JUNK = [
     HEADER,
     "2026-10-14T12:00:00+00:00,100,45.0,0x0,0",        # truncated
@@ -137,10 +144,30 @@ JUNK = [
     "garbage with no comma",
     "no-T-in-timestamp,100,45.0,0x0,0,1,0,1",
     "2026-10-14TXX:00:00+00:00,100,45.0,0x0,0,1,0,1",  # mangled hour
+    "x2026-10-10T14:30:03-04:00,100,45.0,0x0,0,1,0,1",  # glued prefix
+    "2026-10-14,100,45.0,0x0,0,1,0,1",                 # date, no time
     row("2026-10-14T12:01:00+00:00"),                   # the one good row
 ]
+_bad: list = []
 check("junk rows are skipped, the good one survives",
-      [r["ts"] for r in rep.parse(JUNK)], ["2026-10-14T12:01:00+00:00"])
+      [r["ts"] for r in rep.parse(JUNK, skipped=_bad)],
+      ["2026-10-14T12:01:00+00:00"])
+check("every junk row is counted, not silently dropped", len(_bad), 6)
+# The specific defect, named: a glued prefix must not become a day.
+check(
+    "a glued prefix does not invent a day bucket",
+    list(rep.bucket(rep.parse(JUNK), "_day").keys()),
+    ["2026-10-14"],
+)
+# CONTROL: a well-formed row with a trailing timezone still parses --
+# the anchor must not have tightened into rejecting real data. Every
+# real row in the file looks like this.
+check(
+    "a real -04:00 timestamp still parses to day and hour",
+    [(r["_day"], r["_hour"]) for r in rep.parse(
+        [row("2026-10-14T15:12:24-04:00")])],
+    [("2026-10-14", "15")],
+)
 
 # And the whole report runs over the junk file without raising -- the
 # day it is needed is the day the file is ugly.

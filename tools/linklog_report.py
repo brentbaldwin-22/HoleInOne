@@ -31,6 +31,7 @@ means almost nothing; a day's worth means something.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -56,13 +57,37 @@ def _num(raw):
         return None
 
 
-def parse(lines):
+# A timestamp this reader will trust: YYYY-MM-DDTHH:MM:SS, VALIDATED
+# rather than merely located, and the day and hour taken from the
+# match instead of from a split.
+#
+# WHAT WENT WRONG BEFORE. The first version asked only whether the
+# field contained a "T" and then did `split("T", 1)`. For a row with
+# junk glued to the front -- `x2026-10-10T14:30:03,...` -- that gives
+# a day of "x2026-10-10", and the 14 Oct report duly printed phantom
+# one-minute "days" that sorted ahead of the real ones. A reader
+# inventing data is worse than a reader crashing, because it looks
+# like a reading.
+#
+# The fix is checking the SHAPE of the whole prefix. The leading ^ is
+# documentation: re.match already anchors at the start of the string,
+# so removing it changes nothing -- which a mutation run confirmed.
+# Keep it anyway; a reader of this line should not have to know that
+# about .match to see the intent.
+_TS = re.compile(r"^(\d{4}-\d{2}-\d{2})T(\d{2}):\d{2}:\d{2}")
+
+
+def parse(lines, skipped=None):
     """CSV lines -> list of row dicts. Unparseable rows are skipped.
 
     Tolerant on purpose: this file is appended to by cron while being
     read, is trimmed by `tail` at 45000 lines, and has survived at
     least one agent version. A reader that dies on one short line is a
     reader that cannot answer the question on the day it matters.
+
+    Pass a list as `skipped` to collect the lines that were rejected.
+    The report prints how many there were, because a count of bad rows
+    is information and a silent drop is not.
     """
     rows = []
     for line in lines:
@@ -77,6 +102,8 @@ def parse(lines):
             continue
         parts = line.split(",")
         if len(parts) < len(COLUMNS):
+            if skipped is not None:
+                skipped.append(line)
             continue
         r = dict(zip(COLUMNS, parts))
         # .get() throughout, not r[...]. The length guard above already
@@ -84,15 +111,12 @@ def parse(lines):
         # is appended to by cron WHILE being read, and a parser that can
         # raise KeyError on a half-written line is a parser that dies on
         # the one day somebody needs the report.
-        if "T" not in r.get("ts", ""):
+        m = _TS.match(r.get("ts", ""))
+        if m is None:
+            if skipped is not None:
+                skipped.append(line)
             continue
-        r["_day"] = r["ts"].split("T", 1)[0]
-        # 'HH' out of '...THH:MM:SS+00:00'. Guarded because a row whose
-        # timestamp is mangled should be dropped, not crash the report.
-        _t = r["ts"].split("T", 1)[1]
-        if len(_t) < 2 or not _t[:2].isdigit():
-            continue
-        r["_hour"] = _t[:2]
+        r["_day"], r["_hour"] = m.group(1), m.group(2)
         r["_gw_loss"] = _num(r.get("gw_loss_pct"))
         r["_net_loss"] = _num(r.get("net_loss_pct"))
         r["_temp"] = _num(r.get("temp_c"))
@@ -182,11 +206,14 @@ def _bar(frac, width=28):
     return "#" * n + "." * (width - n)
 
 
-def report(rows, day=None, out=print):
+def report(rows, day=None, out=print, skipped=None):
     if not rows:
         out("no usable rows")
         return
     out(f"{len(rows)} minutes, {rows[0]['ts']} .. {rows[-1]['ts']}")
+    if skipped:
+        out(f"{len(skipped)} unparseable row(s) skipped, first: "
+            f"{skipped[0][:70]!r}")
     out("")
     out("DEAD MINUTES PER DAY  (gateway unreachable; understates real "
         "outage time -- see the module docstring)")
@@ -239,12 +266,21 @@ def main(argv=None):
               "missing, gr-linklog.sh is not installed there — see "
               "pi-agent/tools/gr-linklog.sh.", file=sys.stderr)
         return 2
-    rows = parse(path.read_text(errors="replace").splitlines())
+    bad: list = []
+    rows = parse(path.read_text(errors="replace").splitlines(), skipped=bad)
     if a.since:
         rows = [r for r in rows if r["_day"] >= a.since]
-    report(rows, day=a.day)
+    report(rows, day=a.day, skipped=bad)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        # `| head` closes the pipe mid-report. A traceback there reads
+        # like a fault in the tool and is not one.
+        try:
+            sys.stdout.close()
+        finally:
+            sys.exit(0)
