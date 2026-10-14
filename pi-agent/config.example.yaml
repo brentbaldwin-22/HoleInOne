@@ -298,7 +298,20 @@ stop_poll_interval_seconds: 1.0
 # Code defaults differ by role if this is unset: the GREEN uses ~2.5
 # Mbps (cosmetic landing view), the TEE uses ~5 Mbps (its footage feeds
 # the ball tracer and needs more detail). Optionally downscale with
-# upload_scale_height (e.g. 720); leave unset to keep capture res.
+# upload_scale_height (e.g. 720).
+#
+# "LEAVE UNSET TO KEEP CAPTURE RES" IS ONLY TRUE ON THE TEE, and this
+# line used to say it without that qualifier. The GREEN defaults to 720
+# when the key is absent (green.py), on purpose -- see the reasoning
+# there -- so commenting this out does not turn downscaling off on a
+# green, it turns it on at 720. To actually disable it on a green, set
+# it explicitly:
+#
+#     upload_scale_height: 0
+#
+# 0 is falsy, so the uploader passes scale_height=None and no scale
+# filter is applied. That is the only form that means "off" on both
+# roles.
 upload_bitrate_kbps: 2500
 # IT IS A CEILING, NOT A SETTING, and it governs the copy engine too.
 # The uploader halves this when a clip keeps failing, or when one keeps

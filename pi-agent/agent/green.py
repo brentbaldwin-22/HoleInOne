@@ -96,6 +96,12 @@ class GreenAgent:
         # no quality loss the composite would have kept anyway. Override in
         # config; set bitrate 0 to disable compression (fast wired/WiFi).
         self.upload_bitrate_kbps = int(cfg.get("upload_bitrate_kbps", 1500))
+        # 720 WHEN THE KEY IS ABSENT, unlike the tee, which defaults to
+        # None. So "unset" does not mean "off" here -- it means 720, and
+        # a config that omits the line gets downscaling it never asked
+        # for. Turning it off on a green takes an explicit
+        # `upload_scale_height: 0`; 0 is falsy, so the uploader passes
+        # scale_height=None.
         self.upload_scale_height = cfg.get("upload_scale_height", 720)
         # NOT /tmp. The spool (work_dir/pending) holds clips part-way
         # through an upload, sometimes for tens of minutes across
