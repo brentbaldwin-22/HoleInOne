@@ -96,6 +96,52 @@ APN change routing through a gateway with different tunnel overhead --
 the tee's SIM was refilled hours before this appeared. **Re-run the
 1472 test after any SIM or plan change.**
 
+### BOTH RIGS, SIMULTANEOUSLY: IT IS NOT OUR HARDWARE (15 Oct, 17:43)
+
+The control this page had been missing. Same block run on the tee and
+the green within seconds of each other -- simultaneity matters, because
+three earlier conclusions on this page were drawn from sequential
+readings on a link that moves 10x by itself, and all three were wrong.
+
+| | tee | green |
+|---|---|---|
+| dongle | one EIOTCLUB | **a different one** |
+| SIM | `...856138` | **a different SIM** |
+| Pi | one | **a different Pi** |
+| camera | yes | **none attached** |
+| usb_max_current_enable | 1 (fixed 14 Oct) | **not applied** |
+| MTU 1472 / 1412 | FAIL / OK | **FAIL / OK** |
+| download | 46-511 KB/s | 79 KB/s |
+| **upload** | **2,184-8,737 B/s** | **2,184 B/s** |
+
+The green moved **exactly 65,536 bytes in 30 seconds** -- the same
+power-of-two burst-then-stall as the tee, to the byte.
+
+**ELIMINATED, ALL AT ONCE:** both dongles, both SIMs, both plans, both
+Pis, the camera load, the agent, and yesterday's USB current fix. Two
+rigs sharing nothing but a location and a carrier fail identically.
+**No hardware swap at the course can help, and the 11 Oct "it is the
+radio unit" conclusion does not apply to THIS fault** -- that test
+measured a rig against a healthy one, and here there is no healthy one.
+
+It also reframes the MTU black hole above: **both rigs fail at 1500**,
+so that is the carrier's tunnel overhead (the BICS APN's
+encapsulation), not a per-rig fault. Set 1440 on every rig.
+
+What is left needs no code and no parts:
+
+1. **TIME OF DAY, and it is free.** Every reading in this section was
+   taken between 1pm and 5:43pm. "Uploads crawl during the day and
+   push through in the late evening" is the oldest observation on this
+   page, and the 96-144 KB/s figures being compared against may all be
+   evening ones. **Re-run both rigs at 9-10pm before anything else.**
+2. **A phone speed test standing at the tee box.** Same location,
+   different carrier. A phone doing megabits where both dongles manage
+   2 KB/s means the EIOTCLUB service is the problem; a phone that also
+   crawls means the tower is.
+3. **One dongle and SIM taken elsewhere.** Same hardware, different
+   location -- the clean separation of carrier from tower.
+
 ### What was still broken after fixing it
 
 Upload stayed at 3-7 KB/s against a 511 KB/s download, still stalling
