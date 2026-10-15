@@ -605,6 +605,7 @@ class BackendClient:
         video_path: Path,
         recording_started_at: float | None = None,
         chunk_bytes: int = 512 * 1024,
+        chunk_max: int = 0,
         chunk_timeout: int = 45,
         deadline_seconds: int = 300,
         max_stalls: int = 40,
@@ -658,6 +659,34 @@ class BackendClient:
         # Adapted DOWN on a timeout and back up on a run of clean chunks.
         # Local to this attempt plus whatever the caller learned before.
         _chunk = max(CHUNK_MIN_BYTES, int(chunk_bytes))
+        # WHERE IT MAY CLIMB BACK TO, which is NOT where it started.
+        #
+        # This used to grow back only as far as `chunk_bytes` -- the
+        # size the caller handed in, which is the size it had already
+        # been beaten down to. That made the chunk size a RATCHET: every
+        # bad patch halved it, the lower value was saved to
+        # learned_kbps.json, the next upload started there and could
+        # never exceed it, and a restart restored the lower value too.
+        # Nothing in the system could ever raise it again.
+        #
+        # It cost a day. The tee's SIM expired mid-upload on 15 Oct, so
+        # every chunk timed out and the size walked down to the 64 KB
+        # floor. Refilling the SIM fixed the link and the uploads stayed
+        # broken -- 23.7 MB in 64 KB slices is 371 separate round trips,
+        # which on a cellular link is most of the wall clock. The owner's
+        # report was that uploads "slow down with each successive upload
+        # to the point where it's unusable", which is this ratchet
+        # described exactly.
+        #
+        # The bitrate ladder beside it has always had a fixed ceiling to
+        # climb back to (compress_kbps, from config). The chunk size now
+        # has one too.
+        # `or int(chunk_bytes)` used to sit on the end of this and was
+        # dead: _chunk is already max(floor, chunk_bytes), so it is
+        # always the lower bound here and the fallback could never
+        # change the result. A mutation run proved it by deleting it
+        # with no test noticing.
+        _chunk_max = max(_chunk, int(chunk_max))
         _clean = 0
         _grow_need = CHUNK_GROW_AFTER
 
@@ -749,10 +778,9 @@ class BackendClient:
                 # the link has room for a bigger one, and bigger chunks
                 # are fewer round trips.
                 _clean += 1
-                if (_clean >= _grow_need
-                        and _chunk < int(chunk_bytes)):
+                if _clean >= _grow_need and _chunk < _chunk_max:
                     _clean = 0
-                    _chunk = min(int(chunk_bytes), _chunk * 2)
+                    _chunk = min(_chunk_max, _chunk * 2)
                     log.info("upload: back up to %d KB chunks",
                              _chunk // 1024)
                     if on_chunk_size is not None:
@@ -1528,6 +1556,10 @@ class BackgroundUploader(threading.Thread):
         return self.client.upload_event_chunked(
             session_id, clip_path, recording_started_at=ts,
             chunk_bytes=self._chunk_now,
+            # Start where the link left us, but allow the climb back to
+            # the CONFIGURED size rather than to wherever we were beaten
+            # down to. See _chunk_max in upload_event_chunked.
+            chunk_max=self.chunk_bytes,
             chunk_timeout=min(45, max(20, int(timeout))),
             deadline_seconds=int(timeout) * max(1, int(retries)),
             on_progress=_seen,
