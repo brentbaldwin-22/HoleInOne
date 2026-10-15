@@ -68,6 +68,38 @@ truth: on 15 Oct the first SIM read **15 of 15 GB unused**, which
 briefly looked like proof that data was NOT the problem. It was a
 different SIM.
 
+### The dongle's LED, which needs no tools at all
+
+Worth knowing because it is readable by anyone standing at the rig,
+and because it is easy to over-read. Per EIOTCLUB's own guide for the
+CLR907, **green blinks for three different states** and the DUTY CYCLE
+is what separates them:
+
+| Pattern | State |
+|---|---|
+| ~200 ms on, 1800 ms off (brief winks, mostly dark) | searching / no SIM / not registered |
+| ~1800 ms on, 200 ms off (mostly lit, brief gaps) | registered, standby -- ready |
+| ~200 ms on/off, fast and even | data transferring |
+| blue + green steady | just powered on |
+| **no light** | power problem -- check the USB supply |
+
+So "it was flashing green" is NOT a diagnosis. On 15 Oct it was
+reported alongside a suspended SIM and is consistent with the
+searching state, but the same colour means "registered and fine" with
+the timing inverted.
+
+What it does settle: the dongle has power and is alive. No light would
+have pointed back at the USB supply.
+
+**Its real use is confirming a refill.** After buying a package, watch
+the LED: mostly-lit with brief gaps, or fast even blinking, means
+registered and carrying data. Still mostly dark means the refill did
+not take. That is a check with no SSH, no browser and no laptop.
+
+Model caveat: the table above is the CLR907's. A CLR903 or M47 may
+differ -- a mismatch means read the printed manual, not that something
+is broken.
+
 ### Prevention
 
 - **The expiry is a date, not a balance.** A 30-day package dies on day
