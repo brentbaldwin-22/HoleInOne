@@ -14,6 +14,15 @@ arrived · GREEN ✓ arrived** and nothing reaches Production.
 
 ## STEP MINUS TWO — CAN THE LINK CARRY A FULL-SIZE PACKET? (15 Oct)
 
+> **READ THIS FIRST: on the tee, this was REAL AND NOT THE CAUSE.**
+> The black hole below is genuine -- 1472 lost every packet, 1412 lost
+> none -- and the MTU should be set correctly regardless. But setting
+> it to 1440 did NOT restore upload throughput: 6,553 and 3,440 B/s,
+> indistinguishable from the 2,184-8,737 B/s before the change. It was
+> a second fault found while hunting the first.
+>
+> Fix it when you find it. Do not stop looking because you did.
+
 **Downloads fine and uploads dead is an MTU problem until proven
 otherwise.** Three commands, no guessing:
 
@@ -86,6 +95,34 @@ months-old fault that was missed. The likeliest trigger is a plan or
 APN change routing through a gateway with different tunnel overhead --
 the tee's SIM was refilled hours before this appeared. **Re-run the
 1472 test after any SIM or plan change.**
+
+### What was still broken after fixing it
+
+Upload stayed at 3-7 KB/s against a 511 KB/s download, still stalling
+after a power-of-two burst (192 KB, then 64 KB and a "Connection reset
+by peer"). A burst that runs then collapses to a trickle is the shape
+of a **token bucket**, which points at carrier uplink shaping rather
+than anything on the Pi.
+
+Three candidates remained, and all three need a site visit to settle,
+because each is a swap:
+
+1. **The plan or APN.** `america.bics` is a BICS aggregator APN and has
+   never been checked on this deployment. The spare RiverTowne SIM
+   (15 GB, active, unused) swapped into the tee dongle is a clean A/B:
+   same hardware, same spot, different account.
+2. **The radio unit.** The 11 Oct section below concluded the
+   THROUGHPUT fault followed the modem in a two-direction swap. This is
+   a throughput fault. That conclusion was never retired, and it was
+   the USB-reset fault -- a different one -- that turned out to live
+   with the Pi.
+3. **Time of day.** "Uploads crawl during the day and push through in
+   the late evening" is the oldest and most reliable observation on
+   this page, and every reading here was taken in the afternoon. The
+   96-144 KB/s figures this is being compared against may all be
+   evening ones. **Re-measure at night before swapping any hardware.**
+
+That last one is free, so do it first.
 
 ---
 
