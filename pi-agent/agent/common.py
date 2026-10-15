@@ -2525,6 +2525,25 @@ def stream_info_fields(runner) -> dict:
             int(v) if (v := getattr(runner, "upload_bitrate_kbps", None))
             else None),
     }
+    # THE LADDER'S CURRENT RUNG, which was invisible from anywhere but
+    # the Pi's own journal -- and it is the first thing to suspect when
+    # "uploads were fine and then went slow". The ceiling above is what
+    # config asked for; this is what the link has actually forced, and
+    # one bad patch holds it down for KBPS_RECOVER_AFTER clean sends
+    # afterwards. So the slowdown outlives its cause, and the card used
+    # to show only the number that had not changed.
+    #
+    # It cost us a diagnosis on 15 Oct: uploads stalled, every field on
+    # this card looked healthy, and the one number that would have said
+    # why existed solely inside the spool's sidecar JSON files.
+    _up = getattr(runner, "uploader", None)
+    if _up is not None:
+        # getattr throughout: the heartbeat's first beat fires when the
+        # thread starts, which on the tee is BEFORE self.uploader is
+        # assigned. A card field is not worth an exception on startup.
+        out["upload_kbps_now"] = int(getattr(_up, "_kbps_now", 0) or 0) or None
+        out["upload_spooled"] = int(
+            getattr(_up, "_spooled_count", lambda: 0)() or 0)
     # WHICH ENGINE IS ACTUALLY RUNNING, and how its ring is doing. Two
     # capture paths now exist and the only honest way to know which one
     # a rig is on is to have the rig say so -- a config file read from

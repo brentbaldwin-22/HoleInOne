@@ -268,6 +268,25 @@ function StreamReadout({ stream, onRead, busy, busyWhy }) {
         + (s.upload_bitrate_kbps ? ` @ ${s.upload_bitrate_kbps} kbps` : "")
       : (s.upload_bitrate_kbps
           ? `full size @ ${s.upload_bitrate_kbps} kbps` : null)],
+    // THE CEILING ABOVE IS NOT WHAT IS BEING SENT. The uploader halves
+    // its target when a clip keeps failing or inches across, and needs
+    // ten clean sends to climb back -- so a bad patch makes everything
+    // after it slower, long after the patch ends. Shown only while the
+    // two disagree, because on a healthy link they are the same number
+    // and a row that always repeats itself is a row nobody reads.
+    ["Link forced down to", s.upload_kbps_now
+      && s.upload_bitrate_kbps
+      && s.upload_kbps_now < s.upload_bitrate_kbps
+      ? `${s.upload_kbps_now} kbps`
+        + (s.upload_spooled ? ` · ${s.upload_spooled} clip(s) waiting` : "")
+      : null],
+    // Shown on its own when nothing has been forced but clips are
+    // queued anyway -- a backlog with the bitrate untouched is a
+    // different fault from a backlog with it halved.
+    ["Spooled", !(s.upload_kbps_now && s.upload_bitrate_kbps
+                  && s.upload_kbps_now < s.upload_bitrate_kbps)
+      && s.upload_spooled
+      ? `${s.upload_spooled} clip(s) waiting to go up` : null],
   ].filter(([, v]) => v);
   const p = s.profile;
   return (
