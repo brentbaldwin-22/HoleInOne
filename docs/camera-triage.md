@@ -12,6 +12,83 @@ arrived · GREEN ✓ arrived** and nothing reaches Production.
 
 ---
 
+## STEP MINUS TWO — CAN THE LINK CARRY A FULL-SIZE PACKET? (15 Oct)
+
+**Downloads fine and uploads dead is an MTU problem until proven
+otherwise.** Three commands, no guessing:
+
+```bash
+ip link show eth1 | grep -o 'mtu [0-9]*'
+ping -M do -s 1472 -c 3 8.8.8.8    # needs a full 1500 MTU
+ping -M do -s 1400 -c 3 8.8.8.8    # needs 1428
+```
+
+`-M do` forbids fragmentation, so each packet arrives whole or not at
+all. **1472 failing while 1400 succeeds is the diagnosis.** Measured on
+the tee, 15 Oct: the interface was set to 1500, 1472 lost 100% of
+packets, 1400 lost none.
+
+### Why it is invisible without that test
+
+The path drops oversize packets **silently** -- no ICMP
+"fragmentation needed" comes back -- so TCP never learns and simply
+stalls. Everything small keeps working, which is most of what anyone
+looks at:
+
+| What you see | Why |
+|---|---|
+| ping, SSH, heartbeats all fine | small packets |
+| **download 511 KB/s, the best ever recorded here** | the server's path to the Pi is unaffected |
+| upload sends a burst, then nothing | TCP scales up to full-size segments, which vanish |
+| upload byte counts are exact powers of two (64/128/256 KB in 30 s) | the socket buffer absorbed that much and then the flow wedged |
+| the uploader's smaller chunks limp while big ones time out | smaller writes keep more segments under the limit |
+
+**That power-of-two byte count is the tell to remember.** A link that
+is merely slow transfers arbitrary numbers of bytes. A clean 65536 or
+131072 means a buffer filled and the wire stopped.
+
+### What it is NOT, and how we wasted a day proving it
+
+The same rig, in the same hour, read: **USB resets 0**, `POWER CLEAN`,
+60.1 fps delivering, SIM paid up, and on one run **0% packet loss with
+74 ms RTT and 511 KB/s down**. Upload was 8.7 KB/s on that run. A
+healthy radio and a dead uplink at the same moment rules out signal,
+congestion and power together -- so when every hardware reading is
+good, stop testing hardware.
+
+Three explanations were offered and knocked down by measurement before
+this one stuck: the upload chunk ratchet (a real bug, fixed, but not
+this), weak uplink RF (killed by the 0%-loss run), and a carrier data
+cap (that was the SIM expiry earlier the same day, a separate fault).
+
+### The fix
+
+Find the largest payload that gets through, add 28 for the IP+ICMP
+headers, and set that as the MTU:
+
+```bash
+for s in 1472 1452 1442 1432 1422 1412 1400; do
+  printf "payload %5d (MTU %5d): " "$s" "$((s+28))"
+  ping -M do -s $s -c 2 -W 2 8.8.8.8 >/dev/null 2>&1 && echo OK || echo FAIL
+done
+sudo ip link set eth1 mtu 1428       # whatever the ladder says
+```
+
+`ip link set` does NOT survive a reboot or a modem re-enumeration, and
+this dongle re-enumerates. Make it permanent for whichever stack the
+rig runs (`systemctl is-active NetworkManager dhcpcd`).
+
+### Is it new?
+
+Probably. This deployment has historical upload readings of 96-144
+KB/s, which cannot happen through a black hole, so this is not a
+months-old fault that was missed. The likeliest trigger is a plan or
+APN change routing through a gateway with different tunnel overhead --
+the tee's SIM was refilled hours before this appeared. **Re-run the
+1472 test after any SIM or plan change.**
+
+---
+
 ## STEP MINUS ONE — IS THERE DATA ON THE SIM? (15 Oct)
 
 **Do this before anything else on this page.** It takes thirty seconds,
