@@ -12,6 +12,81 @@ arrived · GREEN ✓ arrived** and nothing reaches Production.
 
 ---
 
+## STEP MINUS ONE — IS THERE DATA ON THE SIM? (15 Oct)
+
+**Do this before anything else on this page.** It takes thirty seconds,
+it needs no SSH and no site visit, and on 15 Oct it was the answer to a
+fault we had chased through USB resets, power rails, modem swaps, buck
+converters and two Raspberry Pis.
+
+Log in at **sim.eiotclub.com** and read the SIM's card:
+
+| Reading | Meaning |
+|---|---|
+| `Activated`, GB remaining | the account is fine — carry on down this page |
+| **`Suspended`** | **STOP. The plan is dead. No amount of triage fixes this.** |
+| `0 / 0 MB` | there is no package on this SIM at all |
+| Expire Date in the past, or today | the plan ran out by TIME, which it does whether or not the data was used |
+
+### What it looks like from the outside, and why it fools you
+
+The tee's plan expired on 15 Oct. The symptoms were, in order:
+
+1. The first few uploads of the morning went through fine
+2. Each successive upload was slower than the last
+3. One stalled dead at 97.1% and never moved
+4. The heartbeat stopped **at the same instant** as the upload
+5. **USB resets: 0.** `POWER CLEAN`. 60.1 fps delivering. Every piece
+   of hardware reporting perfect health
+
+Points 2 and 3 are what make this worth a section. A plan running out
+does not look like a switch being thrown; it looks like **progressive
+degradation**, which is the exact signature of a weak radio, a failing
+modem, or a starved USB port — all three of which this page spends
+pages on, and all three of which we chased.
+
+Point 5 is the tell, and it is the one to learn. **A rig whose every
+hardware reading is healthy while its throughput dies is an ACCOUNT
+problem, not a hardware problem.** The modem never re-enumerated. The
+Pi never browned out. The camera never dropped a frame. Nothing was
+broken, and that is information rather than a dead end.
+
+### The ICCIDs collide — read them carefully
+
+Two of the SIMs in this deployment differ by one digit in the
+seventeenth position:
+
+```
+RiverTowne   8932042000021856238
+tee          8932042000021856138
+                           ^
+```
+
+A third (`...21458188`) is also suspended and expired months ago.
+Checking the wrong card is easy and tells you the opposite of the
+truth: on 15 Oct the first SIM read **15 of 15 GB unused**, which
+briefly looked like proof that data was NOT the problem. It was a
+different SIM.
+
+### Prevention
+
+- **The expiry is a date, not a balance.** A 30-day package dies on day
+  30 with data left on it. Diary the expiry, or the rig goes dark
+  mid-round with everything reporting healthy.
+- **Swing select is a data decision, not just a bandwidth one.** It
+  cuts a session to the ~20 s around each swing -- measured at 26%
+  coverage on this deployment's own footage, with every swing kept. On
+  a metered SIM that is roughly four times as much golf per gigabyte,
+  at no cost in quality, because it drops the walking rather than
+  compressing the swing.
+- Sizing, at the clip sizes this deployment actually produces (11-28 MB
+  for 36-40 s): a 15 GB month is about **830 clips**, or ~3,300 with
+  swing select on. A 24 GB / 360-day package is less than two months of
+  that spread over a year -- it is a plan for a spare SIM, not a
+  working camera.
+
+---
+
 ## First: read the panel, don't guess
 
 **`/admin/cameras` → Camera events** (bottom of the page). Tick
