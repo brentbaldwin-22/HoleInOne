@@ -24,6 +24,12 @@ same SIM, same MTU, same hour.
 | RTT | 70 ms | 58 ms (min 49) |
 | loss | 0% | 0% |
 
+**CONFIRMED ACROSS A REBOOT**, which this page has learned to insist
+on: a second run after a full power cycle gave **1,627,211 B/s** up
+and 1,429 KB/s down — within 4% of the first on upload. Two readings,
+one power cycle, same answer. Against the worst reading of 15 Oct
+(2,184 B/s) it is 745x.
+
 **Both transfers COMPLETED.** Every earlier test in this
 investigation timed out at 30 s having moved a fraction of its
 payload; this one pushed 10 MB in five seconds. Upload is now faster
