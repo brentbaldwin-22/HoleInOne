@@ -744,6 +744,47 @@ It takes a path, NOT a `msubmenu` query, so `_sunapi` cannot fetch it
 Save it to `/tmp` and grep locally; it does not change, so fetch it
 once per camera and never again over a bad link.
 
+### The AUDIO input, read off the camera (16 Oct)
+
+`media.cgi?msubmenu=audioinput` — verb is **`set`**, not `update`.
+
+| Field | Legal values | Tee, as found |
+|---|---|---|
+| `Source` | `ExternalMIC`, `LineIn` | **`LineIn`** |
+| `PowerOnExternalMIC` | bool | `True` |
+| `Gain` | int **1-10** | **5** |
+| `EncodingType` | G711, G726, AAC | `AAC` |
+| `Bitrate` | 16000..64000 | `48000` |
+| `Mode` | Mono only | `Mono` |
+| `NoiseReduction` | bool | `False` |
+| `NoiseReductionSensitivity` | 1-3 | 1 |
+| `SampleRate` | **NOT SETTABLE** — view only | 16000 |
+
+**`Source=LineIn` with `PowerOnExternalMIC=True` is worth a second
+look.** The camera is powering an external mic while reading the input
+as line level, and the two differ by roughly 20-40 dB. A microphone
+feeding a line-level input is far too quiet, and `Gain` (1-10) cannot
+make that up. Which is correct depends on the mic: one with its own
+preamp and a separate 12 V feed may genuinely be line level. It is a
+one-command A/B and fully reversible — try it before touching Gain.
+
+**SAMPLE RATE IS FIXED AT 16 kHz on this model.** It appears only as a
+`view` response and is absent from `set`. So there is nothing above
+8 kHz in the audio, ever, and raising `Bitrate` past 48000 buys nothing
+— there is no bandwidth there to encode. Any plan that depends on
+wideband audio needs a different mic path, not a camera setting.
+
+**LEAVE NoiseReduction OFF.** It works by smearing transients, and a
+club-on-ball strike IS a transient — it would attack the exact signal
+the server's `detect_swings_from_audio` reads. There is no AGC
+parameter in this submenu, which is a relief for the same reason.
+
+**Gain is not reach.** It lifts the noise floor by as much as the
+signal, and the failure mode at the top of the range is clipping on
+near strikes — losing the impact you need to catch the ambience you
+were curious about. If `ExternalMIC` turns out to be right, the useful
+move may be gain BELOW 5, not above.
+
 ### What the tee camera was set to, and what it is now
 
 | field | was | now | why |
