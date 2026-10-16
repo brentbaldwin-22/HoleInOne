@@ -12,6 +12,60 @@ arrived · GREEN ✓ arrived** and nothing reaches Production.
 
 ---
 
+## ANSWERED: IT WAS WHERE THE DONGLE WAS SITTING (16 Oct)
+
+The tee's dongle was moved a few feet, next to a window. Same rig,
+same SIM, same MTU, same hour.
+
+| | before, old spot | **after, by the window** |
+|---|---|---|
+| **upload** | 17,474 B/s | **1,696,346 B/s** (**97x**) |
+| download | 581 KB/s | 1,120 KB/s |
+| RTT | 70 ms | 58 ms (min 49) |
+| loss | 0% | 0% |
+
+**Both transfers COMPLETED.** Every earlier test in this
+investigation timed out at 30 s having moved a fraction of its
+payload; this one pushed 10 MB in five seconds. Upload is now faster
+than download. A 23 MB clip goes from 22 minutes to about 14 seconds.
+
+### Why it hid for a month
+
+**Uplink is power-limited at the device.** The tower transmits with far
+more power than a USB dongle can, so a marginal RF path cripples
+upload while download stays healthy. That asymmetry is the whole
+signature, and we kept measuring it and kept explaining it away as
+something else:
+
+| Theory | How it died |
+|---|---|
+| USB current cap | real, fixed 14 Oct, resets went to 0 — and uploads stayed broken |
+| SIM expired | real, refilled 15 Oct — and uploads stayed broken |
+| upload chunk ratchet | real bug, fixed in bed67c6 — and uploads stayed broken |
+| weak RF (first pass) | killed by a run with 0% loss, 74 ms and 511 KB/s down... which measured the DOWNLINK |
+| MTU black hole | real, fixed — upload went 3,440 -> 6,553 B/s, i.e. nothing |
+| carrier uplink shaping | **killed by this**: no token bucket lifts 97x because a device moved a few feet |
+
+**MTU is cleanly excluded as the cause**, which is what makes this
+conclusive rather than suggestive: 1440 was set in the OLD position on
+15 Oct and upload stayed at 3,440-6,553 B/s. Same MTU, new position,
+1.7 MB/s. Position is the only variable.
+
+### The lesson worth keeping
+
+**A healthy downlink says nothing about the uplink, and every
+convenient measurement we had was a downlink measurement.** Ping, the
+heartbeat, SSH responsiveness, the live view, `speed.cloudflare.com`'s
+default test — all of them look fine on a link that cannot push a clip.
+When uploads are the symptom, measure uploads, and treat a good
+download as no evidence at all.
+
+Corollary for this deployment: **the dongle's position is a
+first-class piece of hardware configuration.** Write down where it
+goes, and re-measure upload after anyone touches the rig.
+
+---
+
 ## STEP MINUS TWO — CAN THE LINK CARRY A FULL-SIZE PACKET? (15 Oct)
 
 > **READ THIS FIRST: on the tee, this was REAL AND NOT THE CAUSE.**
