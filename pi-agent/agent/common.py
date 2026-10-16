@@ -4006,6 +4006,43 @@ class RtspAudioRecorder:
         return wav
 
 
+def audio_in_segments(cfg: dict) -> bool:
+    """Does the camera's own audio ride in the ring segments?
+
+    ONE SETTING, BOTH SIDES, because the two audio paths must never
+    both be on. The separate recorder's mux maps `0:v:0` and `1:a:0`,
+    so a clip that already carries camera audio would have it THROWN
+    AWAY and replaced by the separately-recorded WAV -- silently, and
+    with the worse of the two winning.
+
+    Segment audio is better where the camera has a mic on it:
+
+      * the pre-roll has sound. The ring holds footage from before
+        anything triggered, and a recorder started at the trigger has
+        nothing for it -- which is the five seconds of silence at the
+        head of every clip, correctly aligned and genuinely empty.
+      * sync is sample-accurate by construction, same container, same
+        timestamps, instead of two recordings aligned by arithmetic
+        and an `extra_lead_seconds` fudge that needs re-tuning.
+      * one RTSP session to the camera instead of two.
+      * no ffmpeg mux pass per clip.
+
+    Off by default: a rig whose camera profile carries no audio would
+    get silent segments and no fallback, and most of them don't. Check
+    before turning it on:
+
+        ffprobe -v error -rtsp_transport tcp -show_streams "$URL" \
+          | grep codec_type
+
+    THE DECODE PATH IS UNAFFECTED. It builds clips from decoded frames
+    and has no container to carry audio in, so it keeps using the
+    separate recorder whatever this says -- see build_audio_recorder.
+    Only the copy engine honours this.
+    """
+    a = cfg.get("audio") or {}
+    return bool(a.get("enabled", True)) and bool(a.get("in_segments", False))
+
+
 def build_audio_recorder(cfg: dict, work_dir: Path):
     """Construct the right audio recorder for this camera.
 

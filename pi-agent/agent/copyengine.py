@@ -41,7 +41,11 @@ import uuid
 from pathlib import Path
 from typing import Callable, Optional
 
-from .common import build_audio_recorder, mux_audio_into_video
+from .common import (
+    audio_in_segments,
+    build_audio_recorder,
+    mux_audio_into_video,
+)
 from .copycap import SegmentRing
 from .swingfind import coverage_fraction, find_swings, merge_windows
 
@@ -125,15 +129,20 @@ class CopyEngine:
                  segment_seconds: float = 1.0,
                  window_seconds: float = 90.0,
                  min_free_mb: float = 1024.0,
-                 window_max_mb: float = 0.0) -> None:
+                 window_max_mb: float = 0.0,
+                 keep_audio: bool = False) -> None:
         self.ring = SegmentRing(
             source=source,
             work_dir=Path(work_dir) / "ring",
             segment_seconds=segment_seconds,
             window_seconds=window_seconds,
+            keep_audio=keep_audio,
             min_free_mb=min_free_mb,
             window_max_mb=window_max_mb,
         )
+        # Remembered so record_and_upload does not have to re-read the
+        # config to know whether it still owes this clip a WAV.
+        self.keep_audio = bool(keep_audio)
         self.clips_dir = Path(work_dir)
         self._extracted = 0
         self._failed = 0
@@ -185,8 +194,34 @@ class CopyEngine:
             seg, window, min_free,
             (", %.0f MB cap" % max_mb) if max_mb else "",
         )
+        _keep_audio = audio_in_segments(cfg)
+        if _keep_audio:
+            log.info(
+                "capture engine: the camera's audio rides in the segments, "
+                "so the pre-roll has sound and no WAV is muxed in after",
+            )
         return cls(url, work_dir, segment_seconds=seg, window_seconds=window,
-                   min_free_mb=min_free, window_max_mb=max_mb)
+                   min_free_mb=min_free, window_max_mb=max_mb,
+                   keep_audio=_keep_audio)
+
+    def _audio_recorder_for(self, runner):
+        """The WAV recorder this clip needs, or None.
+
+        THE LOCK, and it is a method so a test can ask the real code
+        rather than restate the condition. The first version of this
+        was an `if` inline in record_and_upload, and the test that
+        "covered" it had copied the condition into itself -- so
+        deleting the guard entirely changed nothing the test could see.
+
+        None when the segments already carry the camera's audio: there
+        is nothing a second recorder could add, and plenty it would
+        destroy. mux_audio_into_video maps 0:v:0 and 1:a:0, so it would
+        discard the camera's track and substitute its own WAV --
+        silently, with the worse of the two winning.
+        """
+        if self.keep_audio:
+            return None
+        return build_audio_recorder(runner.cfg, self.clips_dir)
 
     # ---- lifecycle -----------------------------------------------------
 
@@ -265,7 +300,7 @@ class CopyEngine:
         # something a long way from here.
         audio = None
         try:
-            audio = build_audio_recorder(runner.cfg, self.clips_dir)
+            audio = self._audio_recorder_for(runner)
             audio.start(session_id)
         except Exception as exc:  # noqa: BLE001
             log.warning("copy: audio capture did not start (%s) — the clip "

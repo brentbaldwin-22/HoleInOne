@@ -440,6 +440,33 @@ upload_bitrate_kbps: 2500
 
 audio:
   enabled: true
+  # WHO CARRIES THE SOUND. Off by default; only turn it on once you
+  # have checked that the camera's profile really has an audio track:
+  #
+  #   URL=$(sudo grep -oE 'rtsp://[^ "]+' config.yaml | head -1)
+  #   ffprobe -v error -rtsp_transport tcp -show_streams "$URL" \
+  #     | grep codec_type          # want codec_type=audio
+  #
+  # false (default): a separate recorder opens its OWN RTSP session for
+  #   audio, writes a WAV, and ffmpeg muxes it in per clip. It starts at
+  #   the trigger, while the clip starts `buffer_seconds` earlier from
+  #   the ring -- so THE PRE-ROLL IS SILENT, about five seconds of it,
+  #   and mux_audio_into_video pads the WAV by exactly that much to keep
+  #   the rest aligned. That silence is correct, not a bug, and it
+  #   cannot be fixed on this path.
+  #
+  # true: the camera's own AAC track rides in the ring segments. The
+  #   pre-roll has sound, sync is sample-accurate because it is one
+  #   container rather than two recordings aligned by arithmetic, there
+  #   is one RTSP session instead of two, and no mux pass per clip.
+  #   16 kHz mono is ~2 KB/s, nothing beside the video.
+  #
+  # ONE SETTING, BOTH SIDES. The two paths must never both run: the mux
+  # maps 0:v:0 and 1:a:0, so it would throw the camera's track away and
+  # substitute the WAV. audio_in_segments() in common.py is the single
+  # answer; nothing else decides. The decode-engine fallback always
+  # uses the separate recorder -- it has no container to carry audio in.
+  in_segments: false
   # ALSA capture device. Leave unset (or set to null) to auto-detect:
   # the agent looks in /proc/asound/cards for a GoPro / HERO / UVC /
   # USB-Audio card and picks the first match. Hardcode if you have

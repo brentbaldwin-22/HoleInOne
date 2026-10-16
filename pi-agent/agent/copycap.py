@@ -114,6 +114,7 @@ class SegmentRing:
         *,
         segment_seconds: float = 1.0,
         window_seconds: float = 90.0,
+        keep_audio: bool = False,
         min_free_mb: float = 1024.0,
         window_max_mb: float = 0.0,
         rtsp_transport: str = "tcp",
@@ -135,6 +136,10 @@ class SegmentRing:
         # nobody can reach, so retention yields to disk, in both
         # directions: a byte cap if one is set, and always a floor of
         # free space.
+        # Whether the segments carry the camera's audio track. See
+        # audio_in_segments() in common.py for why this is one setting
+        # rather than two.
+        self.keep_audio = bool(keep_audio)
         self.min_free_bytes = max(0.0, float(min_free_mb)) * 1024 * 1024
         self.window_max_bytes = max(0.0, float(window_max_mb)) * 1024 * 1024
         self._short_logged = False
@@ -197,10 +202,22 @@ class SegmentRing:
         return [
             self.ffmpeg, "-nostdin", "-loglevel", "error", "-y",
             *inp,
-            # VIDEO ONLY, COPIED. -an because the pipeline has never
-            # used audio and a copied audio track is bytes that would
-            # ride the cellular link for nothing.
-            "-an", "-c:v", "copy",
+            # VIDEO COPIED, AND AUDIO TOO WHEN THE CAMERA HAS A MIC.
+            #
+            # -an was right while the pipeline had no use for sound and
+            # the Hanwhas' profile carried none. Both stopped being
+            # true: the server's detect_swings_from_audio reads it, and
+            # a mic wired into the camera puts an AAC track in the
+            # stream. Stripping it then costs the pre-roll its sound --
+            # the ring holds footage from before the trigger, and a
+            # recorder started AT the trigger has nothing for it, which
+            # is the silent head on every clip.
+            #
+            # Copied, never re-encoded: 16 kHz mono AAC is ~2 KB/s,
+            # which is nothing next to the video, and a re-encode here
+            # would cost a pass per segment forever.
+            *(["-c:a", "copy"] if self.keep_audio else ["-an"]),
+            "-c:v", "copy",
             "-f", "segment",
             "-segment_time", f"{self.segment_seconds:g}",
             "-segment_format", "mpegts",
