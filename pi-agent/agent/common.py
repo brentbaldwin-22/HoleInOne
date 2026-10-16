@@ -3957,6 +3957,18 @@ class RtspAudioRecorder:
         self._proc = None
         if proc is None:
             return None
+        # STAMPED BEFORE THE TEARDOWN, NOT AFTER IT. `elapsed` used to
+        # be read at the bottom of this method, after terminate() and a
+        # wait() allowed five seconds -- so everything ffmpeg spent
+        # shutting down landed in it, and lead_seconds attributes the
+        # whole of `elapsed - duration` to the FRONT of the recording.
+        #
+        # The front is where the connect delay genuinely is. The
+        # teardown is at the other end. Counting it as lead pushed the
+        # audio LATE by however long the shutdown took -- which on a Pi
+        # already decoding 1080p60 is not small, and showed up as three
+        # claps heard a second or two after they were seen.
+        _t_stop = time.monotonic()
         try:
             # SIGTERM lets ffmpeg patch the WAV header's length fields
             # on the way out; killing it outright leaves them at zero
@@ -3993,7 +4005,7 @@ class RtspAudioRecorder:
         # the audio is than the window it was recorded in. PCM is a flat
         # 2 bytes per sample per channel, so the duration is exact from
         # the size -- no second ffprobe needed.
-        elapsed = time.monotonic() - (self._t0 or time.monotonic())
+        elapsed = _t_stop - (self._t0 or _t_stop)
         bytes_per_sec = self.sample_rate * self.channels * 2
         duration = max(0.0, (wav.stat().st_size - 44) / float(bytes_per_sec))
         self.lead_seconds = max(
