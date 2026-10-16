@@ -466,6 +466,33 @@ audio:
   # substitute the WAV. audio_in_segments() in common.py is the single
   # answer; nothing else decides. The decode-engine fallback always
   # uses the separate recorder -- it has no container to carry audio in.
+  #
+  # KNOWN BROKEN ON THE HANWHA XNV-6080R AS OF 16 OCT — LEAVE IT OFF.
+  # Each 1s segment probes fine on its own (one program, h264 PID
+  # 0x100 + aac PID 0x101), and then EVERY join drops the audio:
+  #
+  #   [concat] Could not find codec parameters for stream 1
+  #            (Audio: aac, 0 channels, fltp): unspecified sample rate
+  #   Stream mapping:
+  #     Stream #0:0 -> #0:0 (copy)        <- audio never mapped
+  #   video:3045KiB audio:0KiB
+  #
+  # Ruled out on the device: the probe budget (analyzeduration and
+  # probesize raised 20x, no change), a partial leading segment
+  # (skipping it changes nothing), the concat protocol instead of the
+  # demuxer (same), duplicate ring processes (none running), and
+  # multiple programs in the container (there is one, with two
+  # streams -- ffprobe lists each stream under BOTH the programs and
+  # the streams section, which is what made it look like four).
+  #
+  # The remaining lead is "no TS found at start of file" on the audio
+  # stream, which points at how the segment muxer timestamps audio at
+  # a segment boundary rather than at anything on the joining side.
+  #
+  # The result with this ON is SILENT CLIPS, which is worse than the
+  # pre-roll silence it was meant to fix. The test that let it through
+  # built its segments from a synthetic lavfi source whose streams are
+  # far tidier than a camera's.
   in_segments: false
   # ALSA capture device. Leave unset (or set to null) to auto-detect:
   # the agent looks in /proc/asound/cards for a GoPro / HERO / UVC /
