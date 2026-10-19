@@ -160,7 +160,18 @@ at 30.
 | `Profile.N.H264.GOVLength` | **60** | `videoprofile` / `action=update` |
 | `Profile.N.H264.BitrateControlType` | **CBR** | `videoprofile` / `action=update` |
 | `Profile.N.Resolution` | 1920x1080 | `videoprofile` / `action=update` |
-| `Profile.N.Bitrate` | match the tee's | `videoprofile` / `action=update` |
+| `Profile.N.Bitrate` | **read the tee's — do not assume** | `videoprofile` / `action=update` |
+
+**Set `BitrateControlType` BEFORE `Bitrate`.** Changing the mode
+re-clamps the bitrate to something legal for the new mode, silently and
+after the fact. On the green, 19 Oct: `Bitrate=2560` then `CBR` both
+answered `OK` and read back **5120**; the identical write of 2560 sent
+again, once the profile was already CBR, stuck first time.
+
+**And read the TEE rather than trusting a table — including the one in
+camera-triage.md.** That table recorded the tee's bitrate as 2560 and a
+read on 19 Oct returned **4000**. A number written down once is a
+number about a camera as it was that day.
 
 Four things that waste an afternoon if you do not know them:
 

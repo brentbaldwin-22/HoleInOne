@@ -791,6 +791,14 @@ write a value you know is legal but different (30 -> 25), read it
 back, then put it straight back. If the small change sticks and the
 big one does not, the field is fine and something is capping it.
 
+**3b. SET THE MODE BEFORE THE VALUE IT GOVERNS.** Changing
+`BitrateControlType` re-clamps `Bitrate` to something legal for the new
+mode, silently and after the fact. On the green, 19 Oct: `Bitrate=2560`
+then `CBR` both answered `OK` and read back **5120**. The same write of
+2560, sent again once the profile was already CBR, stuck first time.
+Nothing was wrong with the field or the value — only with the order.
+Mode first, then the numbers it governs, then read back.
+
 **4. THE CAMERA DOCUMENTS ITSELF.** `attributes.cgi` is the authority
 on field names, legal values and which verb each action takes — far
 better than guessing:
@@ -853,7 +861,7 @@ move may be gain BELOW 5, not above.
 | `Profile.2.FrameRate` | 30 | **60** | ~2x tracer points, less motion blur |
 | `Profile.2.H264.GOVLength` | 60 | 60 | unchanged, but see below |
 | `Profile.2.Resolution` | 1920x1080 | same | already right |
-| `Profile.2.Bitrate` | 2560 | same | close enough to the 2500 target |
+| `Profile.2.Bitrate` | 2560 | **4000** | read back 19 Oct; the table said 2560 and was wrong — read, don't trust this row |
 | `Profile.2.H264.BitrateControlType` | VBR | **CBR** | predictable clip size |
 
 **GOV 60 only became correct when the frame rate did.** The copy
