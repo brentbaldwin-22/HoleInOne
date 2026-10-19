@@ -8843,8 +8843,10 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                 wizard and running a different pass with different
                 gates on the same footage. */}
             {tuneUploadId && adminPassword && (
-              <AscentProbe sweep={rep.sweep} uploadId={tuneUploadId}
-                           adminPassword={adminPassword} />
+              <Boundary name="ascent probe">
+                <AscentProbe sweep={rep.sweep} uploadId={tuneUploadId}
+                             adminPassword={adminPassword} />
+              </Boundary>
             )}
           </details>
         )}
@@ -11301,6 +11303,34 @@ function AscentProbe({ sweep, uploadId, adminPassword }) {
     return () => { live = false; };
   }, [adminPassword, uploadId, mid]);
 
+  // useCallback, NOT AN INLINE ARROW. PlotHeatCanvas lists loadFrame in
+  // a useEffect dependency array, so a fresh identity every render
+  // re-fires that effect, which setStates, which renders, which makes
+  // another fresh identity. React tears the tree down and the admin
+  // page goes white — which is exactly what this did on first ship.
+  //
+  // And it must resolve to a URL STRING: the value goes straight into
+  // setFrameUrl and out as an <img src>, so handing back the whole
+  // frame object renders "[object Object]".
+  const loadFrame = useCallback(
+    (n) => api.getLongUploadFrame(adminPassword, uploadId, n, "tee")
+      .then((f) => f.image_url),
+    [adminPassword, uploadId],
+  );
+  const scanRegion = useCallback(
+    async (region, level) => {
+      const out = await api.scanPlotRegion(adminPassword, uploadId, {
+        ...region,
+        sensitivity: level,
+        which: "tee",
+        start_frame: f0,
+        end_frame: f1,
+      });
+      return out?.dots || [];
+    },
+    [adminPassword, uploadId, f0, f1],
+  );
+
   if (mid == null) return null;
   if (err) return <div className="err-text small">{err}</div>;
   if (!frame) {
@@ -11321,21 +11351,11 @@ function AscentProbe({ sweep, uploadId, adminPassword }) {
         frameH={frame.height}
         marks={{}}
         onToggleDot={() => {}}
-        loadFrame={(n) => api.getLongUploadFrame(
-          adminPassword, uploadId, n, "tee")}
+        loadFrame={loadFrame}
         frameLo={f0}
         frameHi={f1}
         startFrame={mid}
-        scanRegion={async (region, level) => {
-          const out = await api.scanPlotRegion(adminPassword, uploadId, {
-            ...region,
-            sensitivity: level,
-            which: "tee",
-            start_frame: f0,
-            end_frame: f1,
-          });
-          return out?.dots || [];
-        }}
+        scanRegion={scanRegion}
         note={`${near.length} detection(s) the sweep had here, over `
           + `f${pts[0].frame}-${pts[pts.length - 1].frame}; its chain `
           + `kept ${pts.length}. Zoom in and press Scan to see what a `
