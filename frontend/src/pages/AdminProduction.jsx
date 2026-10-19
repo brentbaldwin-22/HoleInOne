@@ -8837,6 +8837,15 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                    alt="every detection around the best chain"
                    style={{ width: "100%", borderRadius: 6 }} />
             </a>
+            {/* AND THE SAME THING, INTERROGABLE. The still above can be
+                read; this one can be zoomed into and re-scanned, which
+                is the step that previously meant leaving for the edit
+                wizard and running a different pass with different
+                gates on the same footage. */}
+            {tuneUploadId && adminPassword && (
+              <AscentProbe sweep={rep.sweep} uploadId={tuneUploadId}
+                           adminPassword={adminPassword} />
+            )}
           </details>
         )}
 
@@ -11257,6 +11266,86 @@ function ImageLightbox({ url, title, onClose }) {
  * so a sparse timed chain can be filled in from the full detection set.
  * Used by the wizard's Step-2 plot view AND the standalone card modal.
  */
+/* ZOOM AND RE-SCAN THE SWEEP'S OWN VIEW.
+ *
+ * The sweep's pictures are stills: they show what it found and cannot
+ * be interrogated. Answering "is the ball actually there" meant leaving
+ * this modal, opening the edit wizard, zooming to 2.7x and pressing
+ * Scan — a different pass, with different gates, on the same footage,
+ * which is exactly what made the two impossible to compare.
+ *
+ * This is that interrogation in place, on the frame the chain was built
+ * from, with the SWEEP'S OWN detections already drawn as the dense
+ * layer. Pressing Scan then adds what a scan finds on the same pixels.
+ * Dots the scan finds and the sweep did not are the gap, visible side
+ * by side instead of across two screens and two sets of gates.
+ */
+function AscentProbe({ sweep, uploadId, adminPassword }) {
+  const [frame, setFrame] = useState(null);
+  const [err, setErr] = useState(null);
+  const chain = (sweep?.considered || [])[0] || null;
+  const pts = chain?.points || [];
+  const near = sweep?.near_dets || [];
+  const mid = pts.length ? pts[Math.floor(pts.length / 2)].frame : null;
+  // The window a scan covers: the chain's own frames with room either
+  // side, which is where a continuation would be if there is one.
+  const f0 = pts.length ? Math.max(0, pts[0].frame - 30) : 0;
+  const f1 = pts.length ? pts[pts.length - 1].frame + 30 : 240;
+
+  useEffect(() => {
+    if (mid == null) return undefined;
+    let live = true;
+    api.getLongUploadFrame(adminPassword, uploadId, mid, "tee")
+      .then((f) => live && setFrame(f))
+      .catch((e) => live && setErr(e.message));
+    return () => { live = false; };
+  }, [adminPassword, uploadId, mid]);
+
+  if (mid == null) return null;
+  if (err) return <div className="err-text small">{err}</div>;
+  if (!frame) {
+    return <div className="small" style={{ padding: 8 }}>Loading the frame…</div>;
+  }
+  return (
+    <div style={{ height: "min(70vh, 640px)", display: "flex" }}>
+      <PlotHeatCanvas
+        key={`ascent-probe-${uploadId}-${mid}`}
+        bgUrl={frame.image_url}
+        // The chain, as the bright layer.
+        dots={pts.map((p) => ({ frame: p.frame, x: p.x, y: p.y }))}
+        // EVERYTHING THE SWEEP DETECTED around it, as the dense layer.
+        // This is the comparison: if Scan turns up a column of dots
+        // where these are sparse, the sweep's detector is the gap.
+        denseDots={near}
+        frameW={frame.width}
+        frameH={frame.height}
+        marks={{}}
+        onToggleDot={() => {}}
+        loadFrame={(n) => api.getLongUploadFrame(
+          adminPassword, uploadId, n, "tee")}
+        frameLo={f0}
+        frameHi={f1}
+        startFrame={mid}
+        scanRegion={async (region, level) => {
+          const out = await api.scanPlotRegion(adminPassword, uploadId, {
+            ...region,
+            sensitivity: level,
+            which: "tee",
+            start_frame: f0,
+            end_frame: f1,
+          });
+          return out?.dots || [];
+        }}
+        note={`${near.length} detection(s) the sweep had here, over `
+          + `f${pts[0].frame}-${pts[pts.length - 1].frame}; its chain `
+          + `kept ${pts.length}. Zoom in and press Scan to see what a `
+          + `scan of the same pixels finds.`}
+        noteColour="#67e8f9"
+      />
+    </div>
+  );
+}
+
 const DENSE_DOT_ZOOM = 2.5;
 
 function PlotHeatCanvas({

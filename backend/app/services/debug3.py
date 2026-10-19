@@ -3714,7 +3714,7 @@ def _ascent_x_span(frame_w: int, left_frac: float | None,
 # How far either side of a chain to show what else was moving, and how
 # many frames past its ends. Wide enough that a flight the tracker cut
 # short shows its continuation, tight enough to stay readable.
-NEAR_DETS_PAD_PX = 90
+NEAR_DETS_PAD_PX = 160
 NEAR_DETS_PAD_FRAMES = 12
 
 
@@ -3734,7 +3734,7 @@ def _dets_near_chain(dets: list, chain: dict | None) -> list:
     return [{"frame": int(d["frame"]), "x": int(d["x"]), "y": int(d["y"]),
              "area": int(d.get("area") or 0)}
             for d in dets
-            if f0 <= d["frame"] <= f1 and x0 <= d["x"] <= x1][:4000]
+            if f0 <= d["frame"] <= f1 and x0 <= d["x"] <= x1][:1200]
 
 
 def _band_too_thin(band_h: int, frame_h: int, min_rise_frac: float,
