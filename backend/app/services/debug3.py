@@ -3942,7 +3942,29 @@ def find_ascents(
 # little up there that is not the ball, and a whole video's worth of
 # detections has to be small enough for the tracker to link without
 # choking. Ten is what the operator's own map uses.
-SWEEP_PER_FRAME = 10
+# HOW MANY BLOBS A FRAME SURVIVE, largest-first. Raised from 10 to 40
+# on 19 Oct, and it was the wrong number in two ways at once.
+#
+# IT WAS STRICTER THAN THE OPERATOR'S OWN SCAN. The sweep runs at
+# sensitivity 3, whose detector default is SIXTEEN per frame; this
+# overrode it down to ten. So the search that decides whether a swing
+# exists was deliberately seeing less than the scan an operator presses
+# when they want to find something, on the same footage, with the same
+# threshold and the same area band. Nothing ever justified that.
+#
+# AND LARGEST-FIRST IS A PROXY THAT INVERTS AT RANGE. Inside a
+# ball-sized window the ball is the big one; across a band with a
+# treeline in it, a tree edge lit by a pixel of shake is far bigger
+# than a ball at 180 yards, and the cut keeps the trees. The field
+# evidence is the operator's: in the edit wizard the same flight yields
+# 30+ points when zoomed in and a handful at 1x. Zooming changes no
+# threshold and no gate -- it shrinks the CROP, so fewer things compete
+# for the cap, which is this constant described from the other side.
+#
+# Tunable per hole now (`ascent_per_frame`), because the right value is
+# a property of what else moves in a particular band, and the only
+# honest way to set it is to look at one.
+SWEEP_PER_FRAME = 40
 
 # HOW LONG A CHAIN IN THE SWEEP MAY RUN, in frames. A ball crosses the
 # band above the golfers in well under a second; at 50fps sixty frames is
@@ -4528,6 +4550,7 @@ def sweep_ascents(
     ASCENT_MIN_DENSITY = _G["ascent_min_density"]
     ASCENT_MAX_STEP_FRAMES = _G["ascent_max_step_frames"]
     ASCENT_MAX_BACKRUN_SEC = _G["ascent_max_backrun_sec"]
+    _per_frame = int(_G["ascent_per_frame"])
     if min_points is None:
         min_points = ASCENT_MIN_POINTS
     out = {"ok": False, "ascents": [], "n_tracks": 0, "n_dets": 0,
@@ -4582,7 +4605,7 @@ def sweep_ascents(
         _stats: dict = {}
         dets = detect_movers_by_diff(input_path, 0, n_frames - 1,
                                      sens=int(sens),
-                                     per_frame=SWEEP_PER_FRAME,
+                                     per_frame=_per_frame,
                                      roi=(_x0, 0, _x1 - _x0, band_h),
                                      cap=200000, three_frame=True,
                                      stats=_stats)
@@ -4592,7 +4615,7 @@ def sweep_ascents(
         # never being emitted, and every gate on the page is beside the
         # point. See `detect_movers_by_diff`'s `stats`.
         _fr = int(_stats.get("frames") or 0)
-        out["per_frame_cap"] = SWEEP_PER_FRAME
+        out["per_frame_cap"] = _per_frame
         out["cap_hit_frames"] = int(_stats.get("capped") or 0)
         out["cap_hit_frac"] = (round(_stats.get("capped", 0) / _fr, 3)
                                if _fr else None)
@@ -4823,13 +4846,13 @@ def sweep_ascents(
             # nothing reads identically whether the gates refused the
             # ball or the detector never offered it, and only the second
             # one is unfixable from the gate editor.
-            + (f". THE {SWEEP_PER_FRAME}-BLOB PER-FRAME CAP BOUND ON "
+            + (f". THE {_per_frame}-BLOB PER-FRAME CAP BOUND ON "
                f"{out['cap_hit_frac']:.0%} OF FRAMES "
                f"(worst frame had {out['max_hits_in_a_frame']}; "
                f"{out['dropped_to_cap']} detections dropped) — a ball "
                f"smaller than the biggest {SWEEP_PER_FRAME} things in "
                f"the band is never emitted, so no gate here can reach "
-               f"it. Narrow the search area or raise the cap."
+               f"it. Narrow the search area or raise ascent_per_frame."
                if (out.get("cap_hit_frac") or 0) > 0.2 else ""))
     except Exception as exc:  # noqa: BLE001
         out["reason"] = f"sweep failed: {exc}"
@@ -6311,6 +6334,12 @@ __all__ = [
 # per-hole copy of them would be a per-hole fork of the detector.
 GATE_SPEC = {
     # key                        default                  lo     hi   int
+    # NOT A FILTER ON CHAINS, unlike everything else here: this one is
+    # the DETECTOR's per-frame keep. Every other gate can only refuse a
+    # chain that exists, and when this is too low the ball's chain never
+    # exists to be refused -- which made the one knob that could have
+    # helped the one knob nobody could reach.
+    "ascent_per_frame":         (SWEEP_PER_FRAME,          4,    200, True),
     "ascent_min_points":        (ASCENT_MIN_POINTS,        2,     20, True),
     "ascent_min_rise_frac":     (ASCENT_MIN_RISE_FRAC,  0.01,    0.9, False),
     "ascent_rate_lo":           (ASCENT_RATE_LO,        0.05,   20.0, False),

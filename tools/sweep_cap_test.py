@@ -20,6 +20,7 @@ So the detector counts it and the sweep says so.
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +61,7 @@ def synth(path, frames, blobs_per_frame, size=6):
 
 def main() -> int:
     import tempfile
+    from pathlib import Path as _P  # noqa: F401
 
     with tempfile.TemporaryDirectory() as td:
         quiet = Path(td) / "quiet.mp4"
@@ -101,6 +103,51 @@ def main() -> int:
                                        three_frame=True)
         check("the detector still works when nobody asks for stats",
               len(got) > 0, True)
+
+    # ---- the cap is a GATE now, not a constant ----------------------
+    # Every other gate filters chains that exist. This one decides
+    # whether the ball's chain exists at all, so when it is too low the
+    # one knob that could help is the one knob nobody can reach.
+    check("the per-frame keep is tunable per hole",
+          d3.resolve_gates({"ascent_per_frame": 8})["ascent_per_frame"], 8)
+    check("  nonsense falls back to the default",
+          d3.resolve_gates({"ascent_per_frame": "x"})["ascent_per_frame"],
+          d3.GATE_DEFAULTS["ascent_per_frame"])
+    check("  and it is clamped, not rejected, at the rail",
+          d3.resolve_gates({"ascent_per_frame": 9999})["ascent_per_frame"],
+          d3.GATE_SPEC["ascent_per_frame"][2])
+
+    # IT MUST NOT BE STRICTER THAN THE OPERATOR'S OWN SCAN. The sweep
+    # runs at sensitivity 3; overriding that below its own per-frame
+    # default meant the search deciding whether a swing exists saw less
+    # than the scan an operator presses when they want to find one — on
+    # the same footage, same threshold, same area band.
+    _sens3_default = d3.DIFF_SENS[3][1]
+    check("the sweep keeps at least as many blobs as its sensitivity does",
+          d3.SWEEP_PER_FRAME >= _sens3_default, True)
+
+    # AND THE TUNED VALUE HAS TO REACH THE DETECTOR. Reading it out of
+    # resolve_gates proves only that the editor can store a number; a
+    # mutation that resolved the gate and then passed the module
+    # constant anyway survived exactly that test, because the default
+    # equals the constant and an untuned run cannot tell them apart.
+    with tempfile.TemporaryDirectory() as td:
+        clip = Path(td) / "busy.mp4"
+        synth(clip, 20, 25)
+        for want in (4, 40):
+            out = d3.sweep_ascents(clip, 60.0, roi={"y": 0.9},
+                                   gates={"ascent_per_frame": want})
+            check(f"  a hole tuned to {want} runs the detector at {want}",
+                  out.get("per_frame_cap"), want)
+        # And the saturation report follows it: the same clip is capped
+        # at 4 and not at 40, which is the whole point of tuning it.
+        lo = d3.sweep_ascents(clip, 60.0, roi={"y": 0.9},
+                              gates={"ascent_per_frame": 4})
+        hi = d3.sweep_ascents(clip, 60.0, roi={"y": 0.9},
+                              gates={"ascent_per_frame": 60})
+        check("  and raising it is what stops the cap binding",
+              (lo.get("cap_hit_frames", 0) > 0,
+               hi.get("cap_hit_frames", 0)), (True, 0))
 
     print()
     if FAIL:
