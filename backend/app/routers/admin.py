@@ -19149,11 +19149,34 @@ def _ball_scan_sweep_image(row, src_path, sweep) -> None:
             if a.get("from_x") is not None and _ty:
                 cv2.drawMarker(im, (int(a["from_x"]), _ty), _col,
                                cv2.MARKER_TILTED_CROSS, 16, 2, cv2.LINE_AA)
+        # THE NUMBERS, ON THE PICTURE. This image is what gets
+        # screenshotted and sent; the counts that say WHY a sweep found
+        # what it found live in a report pane that does not travel with
+        # it. Four separate times a question was answered with "read me
+        # the stage-1 line" when the answer could have been in the
+        # corner of the thing already on screen.
+        im[0:52] = (im[0:52].astype("float32") * 0.35).astype("uint8")
         cv2.putText(
             im,
             f"{len(_asc)} ball(s) seen leaving in {sweep.get('seconds')}s - "
             f"crosses on the tee line are where each was traced back to",
-            (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1,
+            (12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
+            cv2.LINE_AA)
+        _b = sweep.get("band") or [0, 0, 0, 0]
+        _cf = sweep.get("cap_hit_frac")
+        cv2.putText(
+            im,
+            f"{sweep.get('n_dets', '?')} detections -> "
+            f"{sweep.get('n_tracks', '?')} chains -> "
+            f"{sweep.get('n_considered', '?')} weighed  |  "
+            f"keep {sweep.get('per_frame_cap', '?')}/frame"
+            + (f", capped on {_cf:.0%} of frames "
+               f"(worst {sweep.get('max_hits_in_a_frame', '?')})"
+               if _cf is not None else "")
+            + f"  |  {'3-frame' if sweep.get('three_frame', True) else '2-frame'}"
+            f" diff  |  band x{int(_b[0])}-{int(_b[0]) + int(_b[2])}"
+            f" y0-{int(_b[3])}",
+            (12, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 230, 255), 1,
             cv2.LINE_AA)
         nm = f"ballscan-{row.id}-sweep.jpg"
         if cv2.imwrite(str(CLIPS_DIR / nm), im,

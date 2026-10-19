@@ -4551,6 +4551,7 @@ def sweep_ascents(
     ASCENT_MAX_STEP_FRAMES = _G["ascent_max_step_frames"]
     ASCENT_MAX_BACKRUN_SEC = _G["ascent_max_backrun_sec"]
     _per_frame = int(_G["ascent_per_frame"])
+    _three = bool(int(_G["ascent_three_frame"]))
     if min_points is None:
         min_points = ASCENT_MIN_POINTS
     out = {"ok": False, "ascents": [], "n_tracks": 0, "n_dets": 0,
@@ -4607,7 +4608,7 @@ def sweep_ascents(
                                      sens=int(sens),
                                      per_frame=_per_frame,
                                      roi=(_x0, 0, _x1 - _x0, band_h),
-                                     cap=200000, three_frame=True,
+                                     cap=200000, three_frame=_three,
                                      stats=_stats)
         out["n_dets"] = len(dets)
         # THE ANSWER TO "WHY IS THE BALL NOT IN HERE AT ALL". When the
@@ -4616,6 +4617,7 @@ def sweep_ascents(
         # point. See `detect_movers_by_diff`'s `stats`.
         _fr = int(_stats.get("frames") or 0)
         out["per_frame_cap"] = _per_frame
+        out["three_frame"] = _three
         out["cap_hit_frames"] = int(_stats.get("capped") or 0)
         out["cap_hit_frac"] = (round(_stats.get("capped", 0) / _fr, 3)
                                if _fr else None)
@@ -6340,6 +6342,19 @@ GATE_SPEC = {
     # exists to be refused -- which made the one knob that could have
     # helped the one knob nobody could reach.
     "ascent_per_frame":         (SWEEP_PER_FRAME,          4,    200, True),
+    # THREE-FRAME DIFFERENCING, ON OR OFF (1/0). The other knob here
+    # that is not a filter on chains, and the last real difference
+    # between this sweep and the scan an operator runs by hand: the
+    # scan diffs against the previous frame only, this ANDs that with
+    # the diff against the NEXT one. The AND kills the "where it was"
+    # ghost that otherwise measures a ball's velocity as zero -- on a
+    # synthetic ascent, eight frames of perfect detections yielded ZERO
+    # tracks without it. But it also asks the ball to clear threshold
+    # in both diffs at the same pixels, which is a harder test than
+    # either alone, and on a real flight nobody has measured what it
+    # costs. A switch, so that can be measured on one clip instead of
+    # argued about.
+    "ascent_three_frame":       (1,                        0,      1, True),
     "ascent_min_points":        (ASCENT_MIN_POINTS,        2,     20, True),
     "ascent_min_rise_frac":     (ASCENT_MIN_RISE_FRAC,  0.01,    0.9, False),
     "ascent_rate_lo":           (ASCENT_RATE_LO,        0.05,   20.0, False),

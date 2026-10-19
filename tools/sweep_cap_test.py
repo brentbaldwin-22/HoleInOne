@@ -149,6 +149,36 @@ def main() -> int:
               (lo.get("cap_hit_frames", 0) > 0,
                hi.get("cap_hit_frames", 0)), (True, 0))
 
+    # ---- three-frame differencing is a switch now --------------------
+    # The last real difference between this sweep and the scan an
+    # operator runs by hand. The AND kills the "where it was" ghost
+    # that otherwise reads a ball's velocity as zero — but it also asks
+    # the ball to clear threshold in both diffs at the same pixels, and
+    # what that costs on a real flight has never been measured. The
+    # switch is so it can be, on one clip, instead of argued about.
+    check("three-frame differencing defaults on",
+          d3.GATE_DEFAULTS["ascent_three_frame"], 1)
+    check("  and can be turned off per hole",
+          d3.resolve_gates({"ascent_three_frame": 0})["ascent_three_frame"],
+          0)
+    with tempfile.TemporaryDirectory() as td:
+        clip = Path(td) / "sw.mp4"
+        synth(clip, 20, 6)
+        for want in (0, 1):
+            out = d3.sweep_ascents(clip, 60.0, roi={"y": 0.9},
+                                   gates={"ascent_three_frame": want})
+            check(f"  a hole set to {want} runs the detector that way",
+                  out.get("three_frame"), bool(want))
+        # THE GHOST IS REAL, and it is why the default is on: a
+        # two-frame diff lights a mover twice, where it is and where it
+        # was, so the two runs cannot return the same detections.
+        two = d3.sweep_ascents(clip, 60.0, roi={"y": 0.9},
+                               gates={"ascent_three_frame": 0})
+        three = d3.sweep_ascents(clip, 60.0, roi={"y": 0.9},
+                                 gates={"ascent_three_frame": 1})
+        check("  two-frame sees more, because it sees every ghost too",
+              two.get("n_dets", 0) > three.get("n_dets", 0), True)
+
     print()
     if FAIL:
         print(f"{len(FAIL)} FAILED: " + ", ".join(FAIL))
