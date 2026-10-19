@@ -207,25 +207,29 @@ def _apply_capture_mode(cfg: dict) -> None:
             f"pre-roll buffer: ~{_mb:.0f}MB RAM "
             f"({_w}x{_h}@{_f:.0f} x {_sec:.1f}s)"
         )
-        # WHAT THIS LINE IS NOT. It reports `buffer_seconds`, and on a
-        # TEE running the copy engine that is not what gets allocated:
-        # the copy ring already holds the pre-roll on disk, so the
-        # decode ring is cut to copy_fallback_preroll_seconds (see
-        # preroll_seconds in tee.py). The GREEN allocates the full
-        # buffer_seconds either way, and the role is not known until
-        # the backend answers -- long after this runs. So rather than
-        # print a figure that is right for one role and wrong for the
-        # other, say both. The tee logs the ring it really took once
-        # the camera opens; this is the startup estimate.
+        # WHAT THIS LINE IS NOT. It reports `buffer_seconds`, and with
+        # the copy engine running that is not what gets allocated: the
+        # copy ring already holds the pre-roll on disk, so the decode
+        # ring is cut to copy_fallback_preroll_seconds (see
+        # preroll_seconds in copyengine.py).
+        #
+        # THIS USED TO SAY "the GREEN allocates the full buffer_seconds
+        # either way", and it was right -- preroll_seconds lived in
+        # tee.py and green.py never called it, so a green on the copy
+        # engine held 1.9GB of frames at 1080p60 for a ring only its
+        # decode fallback reads. Documenting an asymmetry is how it
+        # survived. Both roles now take the same cut, so this estimate
+        # is right for either. Each logs the ring it really took once
+        # the camera opens; this is the startup figure.
         try:
             from .copyengine import copy_configured
             if copy_configured(cfg):
                 _cut = max(0.5, float(
                     cfg.get("copy_fallback_preroll_seconds", 2.0)))
                 msg += (
-                    f" — on a TEE with the copy engine the decode ring is "
-                    f"cut to {_cut:.1f}s (~{_mb * _cut / _sec:.0f}MB); the "
-                    f"green takes the full figure above"
+                    f" — with the copy engine the decode ring is cut to "
+                    f"{_cut:.1f}s (~{_mb * _cut / _sec:.0f}MB) on either "
+                    f"role; the segment ring on disk is the real pre-roll"
                 )
         except Exception:  # noqa: BLE001 - estimate only, never fatal
             pass

@@ -253,13 +253,33 @@ to put back — not the frame rate.
 - The pre-roll ring holds `buffer_seconds * fps` **frames** — ~1.9 GB
   at 1080p60 with `buffer_seconds: 5`. Fine on an 8 GB Pi 5, not on a
   4 GB one. Under `capture_engine: copy` the segment ring on disk is
-  the real pre-roll, and `copy_fallback_preroll_seconds: 2.0` keeps the
-  RAM one small — check the tee's file for which it runs.
+  the real pre-roll, so the RAM one is cut to
+  `copy_fallback_preroll_seconds` (2.0 s).
+
+  **That cut used to apply to the TEE ONLY** — the rule lived in
+  `tee.py` and `green.py` never called it, so a green on the copy
+  engine held the full 1.9 GB for a ring nothing but its decode
+  fallback reads, while also holding the segments on disk. Fixed on
+  19 Oct, in time for this switch; it needs `update.sh` on the green to
+  take.
 - Under `copy` there is no decode and no re-encode, so the software
   encoder's ~31 fps ceiling at 1080p does not apply. **Under `decode`
-  it does**, and a camera set to 60 gives you about half of it. If the
-  tee runs `capture_engine: copy` and the green does not, that alone
-  can account for choppy green clips — copy the key over.
+  it does**, and a camera set to 60 gives you about half of it.
+
+  **CONFIRMED 19 Oct: the tee runs `copy`, the green ran `decode`.**
+  Every rate on the green's card read 60 — opened, delivering, stamped,
+  config — and the clips were still wrong, because not one of those
+  four is about the Pi. A decode-path agent fed 60 fps writes ~31 fps
+  of frames into a file stamped 60, and that plays at half speed. The
+  card now has a **"Recorded by"** row for exactly this; the agent had
+  been reporting the field on every heartbeat and the page never read
+  it.
+
+      capture_engine: "copy"
+      copy_segment_seconds: 1.0        # must match the camera's GOV
+
+  Raising the green 30 -> 60 while it is still on `decode` makes this
+  WORSE, not better: at 30 the encoder could keep up.
 - `copy_window_seconds` is an age, not a size, and the segments are at
   whatever bitrate the camera sends. An hour at 4000 kbps is 1.8 GB,
   and the 2 GB upload spool shares the filesystem.

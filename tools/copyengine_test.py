@@ -21,7 +21,30 @@ sys.path.insert(0, str(ROOT / "pi-agent"))
 from agent.copyengine import (  # noqa: E402
     CopyEngine, copy_configured, engine_name,
 )
-from agent.tee import preroll_seconds  # noqa: E402
+from agent.tee import preroll_seconds  # noqa: E402  (re-export)
+from agent.copyengine import preroll_seconds as _pr_canonical  # noqa: E402
+
+
+def _green_sizes_ring_from_rule() -> bool:
+    """Does green.py build its FrameBuffer from the rule?
+
+    SOURCE INSPECTION, AND IT SAYS SO. Standing up a GreenAgent needs a
+    backend to answer a heartbeat, which is far more machinery than one
+    constructor argument is worth. What this catches is the regression
+    that actually happened: the line read `self.buffer_seconds` for as
+    long as the rule lived in tee.py, and a green on the copy engine
+    held 1.9GB at 1080p60 for a ring only its decode fallback reads.
+    """
+    import inspect
+
+    from agent import green as _g
+
+    if getattr(_g, "preroll_seconds", None) is not _pr_canonical:
+        return False
+    for line in inspect.getsource(_g).splitlines():
+        if "FrameBuffer(" in line and "self.buffer" in line:
+            return "preroll_seconds(" in line
+    return False
 
 FAIL: list[str] = []
 
@@ -189,6 +212,13 @@ def main() -> int:
           preroll_seconds({"buffer_seconds": 5}), 5.0)
     check("copy drops to the fallback depth",
           preroll_seconds(copy_cfg), 2.0)
+    # ONE RULE, BOTH ROLES. It lived in tee.py and green.py never called
+    # it, so a green on the copy engine held the full buffer_seconds --
+    # 1.9GB at 1080p60 for a ring only the decode fallback reads.
+    check("  and the tee's name is the same function as copyengine's",
+          preroll_seconds is _pr_canonical, True)
+    check("  and the GREEN sizes its ring from it, not buffer_seconds",
+          _green_sizes_ring_from_rule(), True)
     check("and the fallback depth is configurable",
           preroll_seconds({**copy_cfg, "copy_fallback_preroll_seconds": 3}),
           3.0)

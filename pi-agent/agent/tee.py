@@ -46,7 +46,12 @@ from .common import (
 from . import tee_roi
 from .focus_meter import FocusMeter
 from .livestream import LiveStreamer
-from .copyengine import CopyEngine, copy_configured
+from .copyengine import (
+    CopyEngine,
+    DEFAULT_COPY_FALLBACK_PREROLL,
+    copy_configured,
+    preroll_seconds,
+)
 from .swingfind import MotionTracker
 
 log = logging.getLogger("golfreelz_agent.tee")
@@ -354,29 +359,6 @@ def _in_roi(pt: tuple[int, int], roi) -> bool:
 # whatever pre-roll is in RAM. So the ring shrinks to a fallback depth
 # rather than disappearing.
 #
-# WHAT THE SHORTER DEFAULT COSTS, stated plainly: if the segment ring is
-# unhealthy at the moment of a swing, that clip opens 2s before the
-# trigger instead of 5s. That is the downswing and impact but probably
-# not the address. It applies only on the degraded path, which is
-# already the "something is wrong" case -- and 1.9GB of RAM to hold a
-# pre-roll nothing reads is the wrong price for it.
-DEFAULT_COPY_FALLBACK_PREROLL = 2.0
-
-
-def preroll_seconds(cfg: dict) -> float:
-    """Seconds of DECODED frames to keep in RAM.
-
-    `buffer_seconds` when the decode path is doing the recording, and
-    the smaller fallback depth when the copy engine is. Pure, so the
-    rule can be tested without standing up an agent.
-    """
-    if not copy_configured(cfg):
-        return float(cfg.get("buffer_seconds", 5))
-    return max(0.5, float(
-        cfg.get("copy_fallback_preroll_seconds",
-                DEFAULT_COPY_FALLBACK_PREROLL)))
-
-
 class TeeAgent:
     def __init__(self, cfg: dict):
         self.cfg = cfg

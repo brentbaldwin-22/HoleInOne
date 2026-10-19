@@ -45,7 +45,7 @@ from .common import (
 )
 from .focus_meter import FocusMeter
 from .livestream import LiveStreamer
-from .copyengine import CopyEngine
+from .copyengine import CopyEngine, preroll_seconds
 
 log = logging.getLogger("golfreelz_agent.green")
 # The build id is a hash of the installed agent source, so this
@@ -139,7 +139,12 @@ class GreenAgent:
                 self._open_size = (_w, _h)
         except Exception as exc:  # noqa: BLE001
             log.debug("could not read the stream geometry: %s", exc)
-        self.buffer = FrameBuffer(self.buffer_seconds, self.fps)
+        # NOT buffer_seconds OUTRIGHT. With the copy engine running,
+        # the pre-roll is the segment ring on disk and this one is read
+        # only by the decode fallback -- 1.9GB of frames at 1080p60 for
+        # a ring nothing looks at, on a Pi already holding the segments.
+        # Same rule the tee has used since the copy engine landed.
+        self.buffer = FrameBuffer(preroll_seconds(self.cfg), self.fps)
         self._cap_frames = 0
         self._cap_gaps = 0
         self._cap_worst = 0.0

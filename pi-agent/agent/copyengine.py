@@ -80,6 +80,42 @@ def copy_configured(cfg: dict) -> bool:
     return device.startswith(("rtsp://", "rtsps://"))
 
 
+# WHAT THE SHORTER DEFAULT COSTS, stated plainly: if the segment ring is
+# unhealthy at the moment of a swing, that clip opens 2s before the
+# trigger instead of 5s. That is the downswing and impact but probably
+# not the address. It applies only on the degraded path, which is
+# already the "something is wrong" case -- and 1.9GB of RAM to hold a
+# pre-roll nothing reads is the wrong price for it.
+DEFAULT_COPY_FALLBACK_PREROLL = 2.0
+
+
+def preroll_seconds(cfg: dict) -> float:
+    """Seconds of DECODED frames to keep in RAM.
+
+    `buffer_seconds` when the decode path is doing the recording, and
+    the smaller fallback depth when the copy engine is. Pure, so the
+    rule can be tested without standing up an agent.
+
+    IT LIVES HERE SO BOTH ROLES GET IT. It was written in tee.py, which
+    is where the copy engine was first switched on, and the green went
+    on allocating `buffer_seconds * fps` frames whatever engine it ran
+    -- 1.9GB at 1080p60 for a ring only the decode fallback ever reads,
+    on a Pi that is also holding the segment ring on disk. The comment
+    in common.py describing the startup estimate said as much, as a
+    known asymmetry, which is how it survived: it was documented rather
+    than fixed.
+
+    The green has LESS use for the pre-roll than the tee, not more. It
+    records a landing on a trigger the tee already fired, so there is
+    no backswing of its own to catch.
+    """
+    if not copy_configured(cfg):
+        return float(cfg.get("buffer_seconds", 5))
+    return max(0.5, float(
+        cfg.get("copy_fallback_preroll_seconds",
+                DEFAULT_COPY_FALLBACK_PREROLL)))
+
+
 # Below this, cutting is not worth it. Four swings in two minutes
 # makes the windows nearly tile the session, and then several uploads
 # with their overlaps cost MORE than the one clip -- plus every extra
