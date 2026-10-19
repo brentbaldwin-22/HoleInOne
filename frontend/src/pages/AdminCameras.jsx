@@ -265,6 +265,26 @@ function StreamReadout({ stream, onRead, busy, busyWhy }) {
     // a card reporting "stamped 50" for clips being written at 29.9.
     ["Clips stamped", s.stamped_fps ? `${s.stamped_fps.toFixed(1)} fps` : null],
     ["Config says", s.config_fps ? `${s.config_fps.toFixed(0)} fps` : null],
+    // AND WHICH ENGINE IS WRITING THE CLIP. Every row above is about
+    // the CAMERA, and all four of them can read 60 while the file comes
+    // out at half speed: on the decode path the Pi re-encodes in
+    // software, which tops out near 31 fps at 1080p, and the clip is
+    // still stamped at the camera's cadence. 31 fps of frames in a file
+    // claiming 60 plays at half speed, and nothing above would blink.
+    //
+    // The agent has reported this on every heartbeat since the copy
+    // engine landed. The card simply never read it, so the only way to
+    // ask which engine a rig was on was an SSH session on each Pi --
+    // which is also a belief about a Pi that may not have restarted
+    // since its config was edited, and this is the rig saying so.
+    ["Recorded by", s.engine
+      ? (s.engine === "copy"
+          ? `copy — the camera's own H.264, no re-encode${
+            s.ring && s.ring.healthy === false ? " (RING UNHEALTHY)" : ""}`
+          : "decode + re-encode — the software encoder caps near 31fps "
+            + "at 1080p, and clips are stamped at the camera's rate "
+            + "regardless")
+      : null],
     // THE OTHER HALF OF THE PIPELINE. Everything above describes what
     // the camera SENDS. This is what the clip is cut down to before it
     // crosses the link, and the two were never shown together — so a
