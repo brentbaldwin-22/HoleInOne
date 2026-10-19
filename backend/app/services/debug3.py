@@ -3612,7 +3612,8 @@ ASCENT_BAND_FALLBACK_FRAC = 0.45
 _BAND_USABLE_FRAC = 0.9
 
 
-def _ascent_band(frame_h: int, roi: dict | None) -> tuple[int, float]:
+def _ascent_band(frame_h: int, roi: dict | None,
+                 sky_frac: float | None = None) -> tuple[int, float]:
     """(band height, tee line y) — the strip of sky the ascent searches.
 
     ONE COPY. find_ascents and sweep_ascents each had this arithmetic
@@ -3621,16 +3622,37 @@ def _ascent_band(frame_h: int, roi: dict | None) -> tuple[int, float]:
     exists to check, and a check that re-derives what it is checking
     checks nothing.
 
-    The floor is a golfer's height above the tee box, because everything
-    that makes a tee view hard to track -- players walking, a club
-    swinging, shadows -- is below that line, and a ball on its way out
-    crosses above them against plain sky.
+    THE FLOOR IS THE SKYLINE WHEN SOMEBODY HAS DRAWN ONE, and a
+    computed guess otherwise. The guess is "a golfer's height above the
+    tee box", which is a PROXY for the thing that actually matters:
+    above the noise. Everything that makes a tee view hard to track --
+    players walking, a club swinging, shadows -- is below that line, and
+    a ball on its way out crosses above them against plain sky.
+
+    The proxy was measured off one reference frame where the hitting
+    area sat at 0.79 of frame height. On Rivertowne 8 it lands 150px
+    INSIDE the treeline, and the band then carries both stands of trees,
+    the houses and the flag -- all of them competing for a per-frame
+    budget of ten blobs, largest-first, against a ball at 180 yards. A
+    tree edge lit by a pixel of camera shake is the bigger blob every
+    time. Measured there: a flight detected on nearly every frame by a
+    scan of the same footage came through the sweep as FOUR points.
+
+    The skyline is the line a person can see and the camera cannot
+    compute. It is per-camera because the camera is bolted down.
+
+    Clamped to the tee line: a skyline drawn below where the ball is
+    struck would have the search looking at the golfer, which is the
+    one thing the band exists to exclude.
     """
     tee_top = (float(roi.get("y", 0.0)) * frame_h if roi
                else (ASCENT_BAND_FALLBACK_FRAC
                      + ASCENT_HEAD_ROOM_FRAC) * frame_h)
-    band_h = int(max(40, min(frame_h - 1,
-                             tee_top - ASCENT_HEAD_ROOM_FRAC * frame_h)))
+    if sky_frac is not None and 0.0 < float(sky_frac) < 1.0:
+        _floor = min(float(sky_frac) * frame_h, tee_top)
+    else:
+        _floor = tee_top - ASCENT_HEAD_ROOM_FRAC * frame_h
+    band_h = int(max(40, min(frame_h - 1, _floor)))
     return band_h, tee_top
 
 
@@ -3682,6 +3704,9 @@ def find_ascents(
     window_frames: int = ASCENT_WINDOW_FRAMES,
     min_points: int = ASCENT_MIN_POINTS,
     roi: dict | None = None,
+    # WHERE THE NOISE STOPS, as a fraction of frame height, or None to
+    # fall back to the computed guess. See `_ascent_band`.
+    sky_frac: float | None = None,
 ) -> dict:
     """Did a ball rise away from `ball_xy` just after `impact_frame`?
 
@@ -3722,7 +3747,7 @@ def find_ascents(
             return out
         # The band: full width, from the top of the frame down to a
         # golfer's height above the tee box.
-        band_h, _tee_top = _ascent_band(frame_h, roi)
+        band_h, _tee_top = _ascent_band(frame_h, roi, sky_frac)
         out["band"] = [0, 0, int(frame_w), band_h]
         out["band_warning"] = _band_too_thin(
             band_h, frame_h, ASCENT_MIN_RISE_FRAC, _tee_top)
@@ -4393,6 +4418,9 @@ def sweep_ascents(
     min_points: int | None = None,
     # THIS HOLE'S GATES, or None for the module defaults. See GATE_SPEC.
     gates: dict | None = None,
+    # WHERE THE NOISE STOPS, as a fraction of frame height, or None to
+    # fall back to the computed guess. See `_ascent_band`.
+    sky_frac: float | None = None,
 ) -> dict:
     """Every ball leaving the tee in the WHOLE video, found from above.
 
@@ -4462,7 +4490,7 @@ def sweep_ascents(
         if frame_h <= 0 or n_frames <= 1:
             out["reason"] = "the tee video reports no frames"
             return out
-        band_h, _tee_top = _ascent_band(frame_h, roi)
+        band_h, _tee_top = _ascent_band(frame_h, roi, sky_frac)
         out["band"] = [0, 0, int(frame_w), band_h]
         out["tee_line_y"] = int(_tee_top)
         # REPORTED, NOT REFUSED. The rise gate is tunable per hole, so
@@ -4472,6 +4500,14 @@ def sweep_ascents(
         # that explains it away along with the choice.
         out["band_warning"] = _band_too_thin(
             band_h, frame_h, ASCENT_MIN_RISE_FRAC, _tee_top)
+        # WHERE THE FLOOR CAME FROM. A band is the single biggest thing
+        # deciding what this sweep can find, and "0 to 489" says nothing
+        # about whether that was drawn by a person or guessed from a box.
+        out["band_floor_source"] = (
+            "the skyline drawn for this camera"
+            if (sky_frac is not None and 0.0 < float(sky_frac) < 1.0)
+            else "a golfer's height above the hitting area (no skyline "
+                 "drawn for this camera)")
         # THE HITTING AREA, if one has been drawn for this hole. Without
         # it there is nothing to be outside of, and the gate below is
         # skipped -- reported, so a run that checked nothing does not

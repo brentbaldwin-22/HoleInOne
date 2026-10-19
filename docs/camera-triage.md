@@ -1745,6 +1745,15 @@ That set is enough to name the cause without another site visit.
 
 ---
 
+- **The skyline.** The ascent sweep searches a strip of sky and keeps
+  ten blobs a frame, largest first. Draw the line just above the
+  treeline (**☁ Skyline** on the camera card) — below it are the trees,
+  the houses and the flag, every one of them a bigger blob than a ball
+  at 180 yards. Until one is drawn the floor is guessed as "a golfer's
+  height above the hitting area", which on Rivertowne 8 lands 150px
+  inside the trees: a flight a scan found on nearly every frame came
+  through the sweep as four points.
+
 ## Related
 
 - [`green-parity.md`](./green-parity.md) — every fix on this page was

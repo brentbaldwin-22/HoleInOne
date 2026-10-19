@@ -488,6 +488,19 @@ export const api = {
   // ---- Green-camera calibration (image px -> feet on the green) ----
   getGreenCalibration: (key, cameraId) =>
     request(`/api/admin/cameras/${cameraId}/calibration`, { adminPassword: key }),
+  // WHERE THE NOISE STOPS on this camera, and a frame to draw it on.
+  // The ascent sweep searches only above this line; below it is the
+  // treeline, the houses and the flag, all of them competing for its
+  // ten-blobs-a-frame budget against a ball at 180 yards.
+  getCameraSkyLine: (key, cameraId) =>
+    request(`/api/admin/cameras/${cameraId}/sky-line`, { adminPassword: key }),
+  setCameraSkyLine: (key, cameraId, frac) =>
+    // null clears it and the sweep goes back to the computed guess.
+    request(`/api/admin/cameras/${cameraId}/sky-line`, {
+      method: "POST",
+      body: { sky_line_frac: frac },
+      adminPassword: key,
+    }),
   cameraCalibrationSource: (key, cameraId) =>
     // A dual-camera capture from this camera's pair, to fit the
     // green->tee homography on. The frames are only backdrops to click

@@ -9437,6 +9437,136 @@ def _pin_for_row(db, row):
     return e, (f"marked {str(_eff)[:16]}" if _eff else "marked (undated)")
 
 
+def _sky_frac_for(db, row) -> float | None:
+    """This upload's TEE camera's skyline, or None.
+
+    The tee camera's, always — the ascent sweep runs on tee footage
+    whoever asked for it, and a green's own horizon describes a
+    different picture entirely.
+    """
+    try:
+        ev = (db.get(CameraEvent, row.camera_event_id)
+              if getattr(row, "camera_event_id", None) else None)
+        cam = (db.get(Camera, ev.tee_camera_id)
+               if ev is not None and ev.tee_camera_id else None)
+        v = getattr(cam, "sky_line_frac", None)
+        return float(v) if v is not None else None
+    except Exception as exc:  # noqa: BLE001
+        log.debug("skyline lookup failed for upload %s: %s",
+                  getattr(row, "id", None), exc)
+        return None
+
+
+def _recent_upload_for_camera(db, cam):
+    """(upload, which) — the newest clip this camera appears in, and
+    which half of it is this camera's. (None, None) if it has none."""
+    _is_green = (cam.assigned_role or "tee") == "green"
+    _col = (CameraEvent.green_camera_id if _is_green
+            else CameraEvent.tee_camera_id)
+    ev_ids = [e.id for e in db.query(CameraEvent)
+              .filter(_col == cam.id)
+              .order_by(CameraEvent.id.desc()).limit(200).all()]
+    if not ev_ids:
+        return None, None
+    _file = (LongVideoUpload.green_filename if _is_green
+             else LongVideoUpload.tee_filename)
+    row = (db.query(LongVideoUpload)
+           .filter(LongVideoUpload.camera_event_id.in_(ev_ids))
+           .filter(_file.isnot(None))
+           .order_by(LongVideoUpload.id.desc()).first())
+    return row, ("green" if _is_green else "tee")
+
+
+@router.get("/cameras/{camera_id}/sky-line")
+def get_camera_sky_line(camera_id: int, db: Session = Depends(get_db)):
+    """This camera's skyline, and a frame to draw it on.
+
+    THE LINE A PERSON CAN SEE AND THE CAMERA CANNOT COMPUTE. The ascent
+    sweep searches a strip of sky above the noise; where that strip
+    stops used to be guessed as "a golfer's height above the hitting
+    area", which is a proxy measured off one reference frame. On
+    Rivertowne 8 the proxy lands 150px inside the treeline, and the
+    sweep's per-frame budget of ten blobs then goes to tree edges
+    rather than to the ball.
+
+    Serves the frame as an upload id rather than a picture, so the
+    drawing modal goes through the SAME frame endpoint the calibrator
+    uses -- and, like that one, keeps working with the rig off the air,
+    which is exactly when somebody is sitting down to set this up.
+    """
+    from ..services import debug3 as _d3
+
+    cam = db.get(Camera, camera_id)
+    if cam is None:
+        raise HTTPException(404, "camera not found")
+    row, which = _recent_upload_for_camera(db, cam)
+    if row is None:
+        raise HTTPException(
+            409, "no capture from this camera yet — record one, then draw "
+                 "the skyline on it")
+    # WHERE THE FLOOR SITS TODAY, so the modal can show what it is
+    # replacing rather than opening on an empty frame. Fractions, which
+    # is what the line is stored as.
+    # The tee half whenever there is one: the camera ROI is in tee
+    # pixels and sizing it against a green file would scale it wrong.
+    # Falls back to the green so a green-only row still answers.
+    _src = _local_tee(row) or _local_green(row)
+    _roi = _tee_box_roi_fractions(_src, db, row)
+    _r = _roi.get("roi") or {}
+    _tee_frac = float(_r.get("y")) if _r.get("y") is not None else None
+    _guess = (max(0.0, _tee_frac - _d3.ASCENT_HEAD_ROOM_FRAC)
+              if _tee_frac is not None
+              else _d3.ASCENT_BAND_FALLBACK_FRAC)
+    return {
+        "camera_id": cam.id,
+        "sky_line_frac": getattr(cam, "sky_line_frac", None),
+        "upload_id": row.id,
+        "which": which,
+        "captured_at": (row.base_captured_at.isoformat()
+                        if row.base_captured_at else None),
+        # The computed guess this replaces, and the tee line it is
+        # measured from — both as fractions of frame height.
+        "guess_frac": round(_guess, 4),
+        "tee_line_frac": round(_tee_frac, 4) if _tee_frac is not None else None,
+        "roi_source": _roi.get("source"),
+    }
+
+
+@router.post("/cameras/{camera_id}/sky-line")
+def set_camera_sky_line(
+    camera_id: int,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+):
+    """Store (or clear) this camera's skyline. Body: {sky_line_frac}.
+
+    Null or absent clears it and the sweep goes back to the computed
+    guess, which is the right escape hatch for a line drawn wrong on a
+    camera that has since been re-aimed.
+    """
+    cam = db.get(Camera, camera_id)
+    if cam is None:
+        raise HTTPException(404, "camera not found")
+    raw = payload.get("sky_line_frac")
+    if raw is None:
+        cam.sky_line_frac = None
+    else:
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "sky_line_frac must be a number 0-1")
+        # REFUSED, NOT CLAMPED. A line at 0 or 1 is a mis-drag, not a
+        # setting, and silently moving it to something legal would hide
+        # that from the person who just drew it.
+        if not (0.01 <= v <= 0.99):
+            raise HTTPException(
+                400, "the skyline must sit between 0.01 and 0.99 of the "
+                     "frame height — that one is off the picture")
+        cam.sky_line_frac = v
+    db.commit()
+    return {"camera_id": cam.id, "sky_line_frac": cam.sky_line_frac}
+
+
 @router.get("/cameras/{camera_id}/calibration-source")
 def camera_calibration_source(camera_id: int, db: Session = Depends(get_db)):
     """A dual-camera capture from this camera's pair, to calibrate on.
@@ -14962,6 +15092,7 @@ def _camera_to_dict(
         "rtsp_url": _rtsp_url_for(c),
         "rtsp_substream_url": _rtsp_url_for(c, sub=True),
         "tee_box_roi": c.tee_box_roi,
+        "sky_line_frac": getattr(c, "sky_line_frac", None),
         # Normalised for the editor: always a list, whichever shape the
         # column holds.
         "tee_zones": {
@@ -19560,7 +19691,8 @@ def _ball_scan_run(row, src_path, db, progress=None) -> dict:
         try:
             _asc = _d3.find_ascents(src_path, fps, int(_imp),
                                     (_sp["x"], _sp["y"]),
-                                    roi=_roi.get("roi")) or {}
+                                    roi=_roi.get("roi"),
+                                    sky_frac=_sky_frac_for(db, row)) or {}
         except Exception as exc:  # noqa: BLE001
             log.warning("ball scan: ascent search failed on %s: %s",
                         row.id, exc)
@@ -19586,7 +19718,8 @@ def _ball_scan_run(row, src_path, db, progress=None) -> dict:
     try:
         _sweep = _d3.sweep_ascents(
             src_path, fps, roi=_roi.get("roi"),
-            gates=_gate_tuning_for(db, row)[0]) or {}
+            gates=_gate_tuning_for(db, row)[0],
+            sky_frac=_sky_frac_for(db, row)) or {}
     except Exception as exc:  # noqa: BLE001
         log.warning("ball scan: ascent sweep failed on %s: %s", row.id, exc)
         _sweep = {"ok": False, "reason": f"failed: {exc}"}
@@ -19840,7 +19973,8 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     rep["gate_key"] = _gt_key
     rep["gate_key_reason"] = _gt_why
     sweep = _d3.sweep_ascents(src_path, fps, roi=_roi.get("roi"),
-                              gates=_gt) or {}
+                              gates=_gt,
+                              sky_frac=_sky_frac_for(db, row)) or {}
     _ball_scan_sweep_image(row, src_path, sweep)
     _ball_scan_considered_image(row, src_path, sweep)
     # AND ONE PER SWING. The whole-clip pictures answer "did the sweep

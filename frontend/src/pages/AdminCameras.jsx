@@ -252,6 +252,180 @@ function LinkReadout({ link }) {
   );
 }
 
+/* WHERE THE NOISE STOPS — one horizontal line, dragged onto a real
+ * frame from this camera.
+ *
+ * The ascent sweep searches a strip of sky and keeps ten blobs a frame,
+ * largest first. Where that strip stops used to be a computed guess:
+ * "a golfer's height above the hitting area", a proxy measured off one
+ * reference frame. On Rivertowne 8 the proxy lands 150px inside the
+ * treeline, and the budget then goes to tree edges rather than to a
+ * ball at 180 yards — a flight a scan of the same footage found on
+ * nearly every frame came through the sweep as four points.
+ *
+ * A person can see the horizon in one glance and no amount of code can
+ * compute it reliably on an arbitrary course. So this asks.
+ */
+function SkyLineModal({ cam, adminPassword, onClose, onSaved }) {
+  const [src, setSrc] = useState(null);
+  const [frame, setFrame] = useState(null);
+  const [frac, setFrac] = useState(null);
+  const [err, setErr] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const boxRef = useRef(null);
+
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const s = await api.getCameraSkyLine(adminPassword, cam.id);
+        if (!live) return;
+        setSrc(s);
+        setFrac(s.sky_line_frac ?? s.guess_frac ?? 0.4);
+        const f = await api.getLongUploadFrame(
+          adminPassword, s.upload_id, 0, s.which);
+        if (live) setFrame(f);
+      } catch (e) {
+        if (live) setErr(e?.message || String(e));
+      }
+    })();
+    return () => { live = false; };
+  }, [adminPassword, cam.id]);
+
+  // Drag anywhere on the picture: the line follows the pointer. There
+  // is only one thing to set here, so there is nothing to miss and no
+  // need to grab a handle first.
+  function trackPointer(e) {
+    const el = boxRef.current;
+    if (!el) return;
+    const move = (ev) => {
+      const r = el.getBoundingClientRect();
+      setFrac(Math.min(0.99, Math.max(0.01, (ev.clientY - r.top) / r.height)));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    move(e);
+  }
+
+  async function save(value) {
+    setSaving(true);
+    setErr(null);
+    try {
+      await api.setCameraSkyLine(adminPassword, cam.id, value);
+      onSaved?.();
+      onClose();
+    } catch (e) {
+      setErr(e?.message || String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const pct = frac == null ? null : `${(frac * 100).toFixed(1)}%`;
+  return (
+    <div role="dialog" onClick={onClose}
+         style={{ position: "fixed", inset: 0, zIndex: 1200,
+                  background: "rgba(0,0,0,0.75)", display: "flex",
+                  alignItems: "center", justifyContent: "center",
+                  padding: 16, overflow: "auto" }}>
+      <div className="card" onClick={(e) => e.stopPropagation()}
+           style={{ margin: 0, maxWidth: 1100, width: "100%", padding: 14 }}>
+        <div className="row" style={{ alignItems: "baseline", gap: 10 }}>
+          <b>☁ Skyline — {cam.name || `camera ${cam.id}`}</b>
+          <span className="tiny muted" style={{ maxWidth: 620 }}>
+            Drag the line to just ABOVE the treeline — above the trees,
+            the houses and the flag, below anything the ball crosses.
+            The ascent search looks only above it, and everything below
+            is noise it would otherwise spend its budget on. Set once:
+            the camera is bolted down.
+          </span>
+          <button type="button" className="ghost small"
+                  style={{ width: "auto", marginLeft: "auto" }}
+                  onClick={onClose}>Close</button>
+        </div>
+
+        {err && <div className="err-text small" style={{ marginTop: 8 }}>{err}</div>}
+        {!frame && !err && (
+          <div className="small" style={{ marginTop: 10 }}>
+            Finding a frame from this camera…
+          </div>
+        )}
+
+        {frame?.image_url && (
+          <div
+            ref={boxRef}
+            onPointerDown={trackPointer}
+            style={{ position: "relative", marginTop: 10, userSelect: "none",
+                     cursor: "ns-resize", touchAction: "none",
+                     borderRadius: 6, overflow: "hidden" }}
+          >
+            <img src={frame.image_url} alt="frame from this camera"
+                 draggable={false} style={{ width: "100%", display: "block" }} />
+            {/* EVERYTHING BELOW THE LINE IS DIMMED, because the question
+                is not "where is the line" but "what does it exclude". */}
+            <div style={{ position: "absolute", left: 0, right: 0,
+                          top: `${(frac ?? 0.4) * 100}%`, bottom: 0,
+                          background: "rgba(0,0,0,0.55)",
+                          pointerEvents: "none" }} />
+            <div style={{ position: "absolute", left: 0, right: 0,
+                          top: `${(frac ?? 0.4) * 100}%`, height: 0,
+                          borderTop: "2px solid #38bdf8",
+                          pointerEvents: "none" }} />
+            {/* The guess it replaces, so the change is visible rather
+                than theoretical. */}
+            {src?.guess_frac != null && (
+              <div style={{ position: "absolute", left: 0, right: 0,
+                            top: `${src.guess_frac * 100}%`, height: 0,
+                            borderTop: "1px dashed rgba(245,158,11,0.9)",
+                            pointerEvents: "none" }} />
+            )}
+            <div className="tiny" style={{
+              position: "absolute", left: 8, top: 8, color: "#fff",
+              background: "rgba(0,0,0,0.6)", padding: "2px 8px",
+              borderRadius: 4, pointerEvents: "none" }}>
+              searched · {pct} of the frame
+              {src?.guess_frac != null && (
+                <span style={{ color: "#f59e0b" }}>
+                  {"  ·  dashed = the old guess, "}
+                  {(src.guess_frac * 100).toFixed(1)}%
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="row" style={{ gap: 10, marginTop: 10,
+                                      alignItems: "center", flexWrap: "wrap" }}>
+          <span className="small">
+            {src?.captured_at
+              ? `frame from ${fmtDateTime(src.captured_at, undefined, {
+                dateStyle: "medium", timeStyle: "short" })}`
+              : ""}
+          </span>
+          {cam.sky_line_frac != null && (
+            <button type="button" className="ghost small"
+                    style={{ width: "auto" }} disabled={saving}
+                    onClick={() => save(null)}
+                    title="Go back to the computed guess — the right move on a camera that has been re-aimed since this was drawn">
+              Clear it
+            </button>
+          )}
+          <button type="button" className="small"
+                  style={{ width: "auto", marginLeft: "auto", minWidth: 160 }}
+                  disabled={saving || frac == null || !frame}
+                  onClick={() => save(frac)}>
+            {saving ? "Saving…" : "Save skyline"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StreamReadout({ stream, onRead, busy, busyWhy }) {
   const s = stream || {};
   const rows = [
@@ -1515,6 +1689,7 @@ export default function AdminCameras() {
   const [busy, setBusy] = useState({}); // {camera_id: true}
   const [revealedToken, setRevealedToken] = useState({}); // {camera_id: true}
   const [cal, setCal] = useState(null);  // green→tee calibrator
+  const [skyCam, setSkyCam] = useState(null);   // skyline drawer
   const [calibratingCam, setCalibratingCam] = useState(null);
   // The pin and the tee box: set daily, from the camera, by whoever is
   // standing there — unlike the calibration above, which is done once.
@@ -2950,6 +3125,24 @@ export default function AdminCameras() {
                       ⊹ Aim: calibrate green→tee
                     </button>
                   )}
+                  {/* WHERE THE NOISE STOPS. Tee cameras only: the
+                      ascent sweep runs on tee footage, and a green's
+                      own horizon describes a different picture. Sits
+                      with the other bolted-down settings rather than
+                      with the daily marks — the tee markers move every
+                      morning, the treeline does not. */}
+                  {(cam.assigned_role || "tee") === "tee" && (
+                    <button
+                      type="button" className="secondary small"
+                      onClick={() => setSkyCam(cam)}
+                      disabled={isBusy}
+                      title="Draw the line just above the treeline. The ascent search looks only above it — below is the trees, the houses and the flag, which otherwise spend its per-frame budget before the ball gets a look in."
+                    >
+                      {cam.sky_line_frac != null
+                        ? `☁ Skyline ✓ (${(cam.sky_line_frac * 100).toFixed(0)}%)`
+                        : "☁ Skyline — not set"}
+                    </button>
+                  )}
                   {/* GREEN PIXELS TO FEET — the only thing that can
                       measure a yardage. Closest-to-the-pin and the
                       distance plate come from it, and nothing else does.
@@ -3303,6 +3496,15 @@ export default function AdminCameras() {
           onSaved={() => { setCal(null); load(); }}
         />
       ))}
+
+      {skyCam && (
+        <SkyLineModal
+          cam={skyCam}
+          adminPassword={adminPassword}
+          onClose={() => setSkyCam(null)}
+          onSaved={load}
+        />
+      )}
 
       {dailyCam && (
         <DailyMarksModal

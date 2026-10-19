@@ -237,6 +237,10 @@ def _migrate() -> None:
     # Camera additions — per-camera trigger kill-switch.
     if "cameras" in inspector.get_table_names():
         cam_cols = {c["name"] for c in inspector.get_columns("cameras")}
+        if "sky_line_frac" not in cam_cols:
+            statements.append(
+                "ALTER TABLE cameras ADD COLUMN sky_line_frac FLOAT"
+            )
         if "triggering_enabled" not in cam_cols:
             statements.append(
                 "ALTER TABLE cameras ADD COLUMN triggering_enabled BOOLEAN DEFAULT TRUE"

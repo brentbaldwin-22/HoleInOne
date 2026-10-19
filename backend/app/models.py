@@ -431,6 +431,25 @@ class Camera(Base):
     # the bounding box the tee-side person detector treats as "on the
     # tee". Green cameras leave this null.
     tee_box_roi: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # WHERE THE NOISE STOPS, as a fraction of frame height (0..1): the
+    # floor of the strip of sky the ascent sweep searches. Above it is
+    # the ball and the odd bird; below it is the treeline, the houses
+    # and the flag.
+    #
+    # It replaces a computed guess -- "a golfer's height above the
+    # hitting area" -- which is a proxy for the same thing and was
+    # measured off one reference frame. On Rivertowne 8 the proxy lands
+    # 150px inside the trees, and the sweep's per-frame budget of ten
+    # blobs then goes to tree edges rather than to the ball: a flight
+    # a scan of the same footage found on nearly every frame came
+    # through as four points.
+    #
+    # A FRACTION, NOT PIXELS, unlike tee_box_roi beside it -- that one
+    # records the frame size it was drawn at and has to be rescaled;
+    # this needs no such care. Per camera because the camera is bolted
+    # down: the tee markers move every morning, the horizon does not.
+    sky_line_frac: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True)
     # GREEN cameras only. Maps this camera's image pixels onto the plane
     # of the green, in feet, so a ball's resting pixel becomes a real
     # position — which is what closest-to-the-pin measures and what lets
