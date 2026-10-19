@@ -244,25 +244,49 @@ def main() -> int:
         camera_produce_max_retries = 3
         camera_recover_max_age_hours = 24
 
-    saved = (cameras.CameraEvent, cameras.SessionLocal, cameras.settings,
-             cameras._utcnow_naive, cameras._run_camera_event_job)
-    cameras.CameraEvent = FakeEventModel
-    cameras.SessionLocal = lambda: FakeDB(rows)
-    cameras.settings = Knobs()
-    cameras._utcnow_naive = lambda: NOW
-    cameras._run_camera_event_job = record
-    try:
-        cameras._camera_event_recovery_sweep()
-        for _ in range(500):
-            if len(seen) >= cameras._RECOVER_PER_SWEEP:
-                break
-            time.sleep(0.002)
-        time.sleep(0.05)      # give a third job a chance to show up
-    finally:
-        (cameras.CameraEvent, cameras.SessionLocal, cameras.settings,
-         cameras._utcnow_naive, cameras._run_camera_event_job) = saved
+    import app.routers.admin as admin           # noqa: E402
 
-    check("one sweep restarts at most _RECOVER_PER_SWEEP events",
+    def run_sweep(queue_state):
+        seen.clear()
+        for r in rows:
+            r.produce_retries = 0
+        saved = (cameras.CameraEvent, cameras.SessionLocal, cameras.settings,
+                 cameras._utcnow_naive, cameras._run_camera_event_job,
+                 admin.produce_queue_status)
+        cameras.CameraEvent = FakeEventModel
+        cameras.SessionLocal = lambda: FakeDB(rows)
+        cameras.settings = Knobs()
+        cameras._utcnow_naive = lambda: NOW
+        cameras._run_camera_event_job = record
+        admin.produce_queue_status = lambda: queue_state
+        try:
+            cameras._camera_event_recovery_sweep()
+            for _ in range(500):
+                if len(seen) >= cameras._RECOVER_PER_SWEEP:
+                    break
+                time.sleep(0.002)
+            time.sleep(0.05)      # give a third job a chance to show up
+        finally:
+            (cameras.CameraEvent, cameras.SessionLocal, cameras.settings,
+             cameras._utcnow_naive, cameras._run_camera_event_job,
+             admin.produce_queue_status) = saved
+
+    IDLE = {"depth": 0, "running_upload_id": None, "queued_upload_ids": []}
+
+    # RECOVERY NEVER GOES IN FRONT OF LIVE GOLF. The produce queue is
+    # ordered oldest-first, so anything the sweep adds sorts ahead of the
+    # shot somebody just hit. It may only ever use an idle queue.
+    run_sweep({"depth": 3, "running_upload_id": None,
+               "queued_upload_ids": [1, 2, 3]})
+    check("nothing is recovered while the produce queue has a backlog",
+          seen, [])
+    run_sweep({"depth": 0, "running_upload_id": 44, "queued_upload_ids": []})
+    check("  nor while one is actually producing", seen, [])
+    check("  and no retry is spent on a sweep that did nothing",
+          [r.produce_retries for r in rows], [0, 0, 0])
+
+    run_sweep(IDLE)
+    check("one sweep of an idle queue restarts at most _RECOVER_PER_SWEEP",
           len(seen), cameras._RECOVER_PER_SWEEP)
     check("  the oldest ones", sorted(e for e, _ in seen), [11, 12])
     check("  each already charged a retry before its job ran",

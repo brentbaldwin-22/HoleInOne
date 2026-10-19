@@ -2100,9 +2100,24 @@ def _camera_event_recovery_sweep() -> None:
     database for the same reason -- an in-memory counter is wiped by the
     very event it is supposed to be counting.
     """
+    from .admin import produce_queue_status
+
     _fallback = int(settings.camera_tee_only_fallback_seconds or 0)
     _stall = int(settings.camera_paired_stall_seconds or 0)
     if _fallback <= 0 and _stall <= 0:
+        return
+    # NOT WHILE PRODUCE IS BUSY — and this is the whole reason the sweep
+    # is safe to run at all. The produce queue is a priority queue keyed
+    # on the upload's created_at, so a recovered event from this morning
+    # sorts AHEAD of the shot somebody has just hit. Feeding it on a
+    # timer put a day's backlog in front of live golf: sixteen captures
+    # deep, each one a couple of minutes of 1080p to pose-detect on a
+    # shared core, with the group on the tee at the back of it.
+    #
+    # Recovery is never urgent. Let it have the gaps instead: one quiet
+    # queue, two events, and the next quiet queue after that.
+    _q = produce_queue_status()
+    if _q.get("depth") or _q.get("running_upload_id") is not None:
         return
     _budget = int(settings.camera_produce_max_retries or 0)
     now = _utcnow_naive()
