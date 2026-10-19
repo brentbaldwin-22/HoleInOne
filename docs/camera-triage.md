@@ -1739,6 +1739,10 @@ That set is enough to name the cause without another site visit.
 
 ## Related
 
+- [`green-parity.md`](./green-parity.md) — every fix on this page was
+  made on the TEE while the tee was the one being debugged. That is the
+  ordered list for bringing the green up to the same configuration,
+  with the check that says each step took.
 - [`battery-power-wiring.md`](./battery-power-wiring.md) — the full power
   build, terminal sizes, and the wiring order
 - [`field-deployment.md`](./field-deployment.md) — hardware BOM and
