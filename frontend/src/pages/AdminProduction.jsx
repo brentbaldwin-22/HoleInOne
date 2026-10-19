@@ -8809,6 +8809,37 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
           </div>
         )}
 
+        {/* WHAT THE TRACKER WAS GIVEN, not what it built. Every other
+            picture here shows chains — things the tracker already
+            assembled — so a ball the DETECTOR never saw and a ball the
+            TRACKER would not link look exactly alike, and they need
+            opposite fixes. Open by default: it is the first question
+            worth asking when a chain comes back short. */}
+        {rep?.sweep?.dets_image_url && (
+          <details style={{ margin: "10px 0" }} open>
+            <summary className="small">
+              Every detection around the best chain — is the ball there
+              at all?
+            </summary>
+            <div className="tiny muted" style={{ margin: "6px 0" }}>
+              Grey dots are everything the sweep detected around its best
+              chain; red is what the chain kept. Grey dots lying along
+              the red line that were NOT kept means the detector saw the
+              ball and the tracker refused it. No grey dots means the
+              detector never saw it. This is the same view as zooming the
+              edit wizard to 2.7× and pressing Scan, drawn from the
+              sweep&apos;s own detections rather than a second pass with
+              different gates.
+            </div>
+            <a href={rep.sweep.dets_image_url} target="_blank"
+               rel="noreferrer">
+              <img src={rep.sweep.dets_image_url}
+                   alt="every detection around the best chain"
+                   style={{ width: "100%", borderRadius: 6 }} />
+            </a>
+          </details>
+        )}
+
         {/* EVERY CHAIN, NOT JUST THE ONES THAT WON. When a shot is
             missing the accepted picture above shows nothing, which is
             also what a sweep that found the ball and threw it away

@@ -3711,6 +3711,32 @@ def _ascent_x_span(frame_w: int, left_frac: float | None,
     return x0, x1
 
 
+# How far either side of a chain to show what else was moving, and how
+# many frames past its ends. Wide enough that a flight the tracker cut
+# short shows its continuation, tight enough to stay readable.
+NEAR_DETS_PAD_PX = 90
+NEAR_DETS_PAD_FRAMES = 12
+
+
+def _dets_near_chain(dets: list, chain: dict | None) -> list:
+    """Every detection around one chain, in its frames and a pad either
+    end. The raw material of that chain, so a picture can show whether
+    the ball was missing from the DETECTOR or only from the TRACKER."""
+    if not chain or not (chain.get("points") or []):
+        return []
+    pts = chain["points"]
+    f0 = min(p["frame"] for p in pts) - NEAR_DETS_PAD_FRAMES
+    f1 = max(p["frame"] for p in pts) + NEAR_DETS_PAD_FRAMES
+    x0 = min(p["x"] for p in pts) - NEAR_DETS_PAD_PX
+    x1 = max(p["x"] for p in pts) + NEAR_DETS_PAD_PX
+    # No y bound: the question is usually "where did it go above the
+    # last point", and clamping y is how that answer gets cropped out.
+    return [{"frame": int(d["frame"]), "x": int(d["x"]), "y": int(d["y"]),
+             "area": int(d.get("area") or 0)}
+            for d in dets
+            if f0 <= d["frame"] <= f1 and x0 <= d["x"] <= x1][:4000]
+
+
 def _band_too_thin(band_h: int, frame_h: int, min_rise_frac: float,
                    tee_top: float) -> str | None:
     """Can anything in a band this thin clear the rise gate? If not, say
@@ -4801,7 +4827,19 @@ def sweep_ascents(
         # the order in which a missing ascent is worth looking for, and
         # it is also the order the picture draws them in, so an accepted
         # chain is never buried under a rejected one.
+        # WHAT THE TRACKER WAS HANDED, around the chains that got
+        # furthest. The sweep has always reported what it ASSEMBLED and
+        # never what it was given, so "the ball is not in the chain" and
+        # "the ball was never detected" look identical from outside --
+        # and they need opposite fixes. Five attempts to tell them apart
+        # by simulation failed; the detections themselves settle it in
+        # one glance.
+        #
+        # A slice, not the lot: 89,596 detections is a megabyte of
+        # coordinates and all but a handful are somewhere else entirely.
         _considered.sort(key=lambda z: (len(z["why"]), -z["n_points"]))
+        out["near_dets"] = _dets_near_chain(
+            dets, _considered[0] if _considered else None)
         # A NUMBER EACH, IN THE ORDER THE TABLE SHOWS THEM. The picture
         # and the table have been two lists of the same chains with no
         # way to get from a row to a line -- so "why was THAT one

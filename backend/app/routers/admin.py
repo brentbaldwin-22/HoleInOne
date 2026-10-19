@@ -19458,6 +19458,104 @@ def _ball_scan_considered_image(row, src_path, sweep) -> None:
         log.debug("ball scan: considered image failed on %s: %s", row.id, exc)
 
 
+def _ascent_detection_zoom_image(row, src_path, sweep) -> None:
+    """THE WIZARD'S ZOOMED VIEW, MADE BY THE SWEEP ITSELF.
+
+    Every picture this sweep draws shows what it ASSEMBLED. None of them
+    shows what it was GIVEN, and those are the two halves that have to
+    be told apart: a ball missing from the chain because the detector
+    never saw it needs the detector fixed, and one missing because the
+    tracker would not link it needs the tracker fixed. From outside,
+    both read as "4pts".
+
+    The operator could already see the difference — by opening the edit
+    wizard, zooming to 2.7x and pressing Scan, where the flight shows up
+    as a clean column of dots. This is that view, cropped to the chain
+    the sweep got furthest with, drawn from the sweep's OWN detections
+    rather than a second scan with different gates. Grey is every
+    detection it had; red is what its chain kept.
+    """
+    from ..services import debug3 as _d3
+
+    _near = (sweep or {}).get("near_dets") or []
+    _con = (sweep or {}).get("considered") or []
+    if not _near or not _con:
+        return
+    chain = _con[0]
+    pts = chain.get("points") or []
+    if not pts:
+        return
+    try:
+        import cv2  # type: ignore
+
+        cap = cv2.VideoCapture(str(src_path))
+        if not cap.isOpened():
+            return
+        try:
+            _mid = pts[len(pts) // 2]["frame"]
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(_mid)))
+            ok, im = cap.read()
+            if not ok or im is None:
+                return
+        finally:
+            cap.release()
+        H, W = im.shape[:2]
+        # The crop: the chain and everything the pad reached, which is
+        # where a continuation would be if there is one.
+        xs = [d["x"] for d in _near] + [p["x"] for p in pts]
+        ys = [d["y"] for d in _near] + [p["y"] for p in pts]
+        x0 = max(0, min(xs) - 40)
+        x1 = min(W, max(xs) + 40)
+        y0 = max(0, min(ys) - 40)
+        y1 = min(H, max(ys) + 40)
+        if x1 - x0 < 60 or y1 - y0 < 60:
+            return
+        crop = (im[y0:y1, x0:x1].astype("float32") * 0.45).astype("uint8")
+        _kept = {(p["frame"], p["x"], p["y"]) for p in pts}
+        for d in _near:
+            _p = (int(d["x"]) - x0, int(d["y"]) - y0)
+            _in = (d["frame"], d["x"], d["y"]) in _kept
+            cv2.circle(crop, _p, 3 if _in else 2,
+                       (90, 90, 255) if _in else (190, 190, 190),
+                       -1 if _in else 1, cv2.LINE_AA)
+            cv2.putText(crop, str(int(d["frame"])),
+                        (_p[0] + 4, _p[1] - 3), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.3, (150, 200, 150) if not _in else (90, 90, 255),
+                        1, cv2.LINE_AA)
+        for u, v in zip(pts, pts[1:]):
+            cv2.line(crop, (u["x"] - x0, u["y"] - y0),
+                     (v["x"] - x0, v["y"] - y0), (90, 90, 255), 1,
+                     cv2.LINE_AA)
+        # BLOWN UP, because at native scale the thing being judged is a
+        # three-pixel dot and the whole point is to look at it.
+        _scale = max(1.0, min(4.0, 900.0 / max(1, x1 - x0)))
+        if _scale > 1.01:
+            crop = cv2.resize(crop, None, fx=_scale, fy=_scale,
+                              interpolation=cv2.INTER_NEAREST)
+        crop[0:46] = (crop[0:46].astype("float32") * 0.3).astype("uint8")
+        cv2.putText(
+            crop,
+            f"every detection the sweep had around its best chain - "
+            f"grey = seen, red = kept",
+            (10, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1,
+            cv2.LINE_AA)
+        cv2.putText(
+            crop,
+            f"{len(_near)} detections over f{pts[0]['frame']}-"
+            f"{pts[-1]['frame']} (+/-{_d3.NEAR_DETS_PAD_FRAMES}) - "
+            f"the chain kept {len(pts)}. Grey dots ON the red line that "
+            f"are not red is the TRACKER; no grey dots at all is the "
+            f"DETECTOR.",
+            (10, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (160, 230, 255), 1,
+            cv2.LINE_AA)
+        nm = f"ballscan-{row.id}-dets.jpg"
+        if cv2.imwrite(str(CLIPS_DIR / nm), crop,
+                       [int(cv2.IMWRITE_JPEG_QUALITY), 90]):
+            sweep["dets_image_url"] = _clip_url_for(nm)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("detection zoom image failed on %s: %s", row.id, exc)
+
+
 def _ascent_trim_considered(sweep) -> None:
     """Drop the coordinates once the picture has been drawn from them.
 
@@ -19795,6 +19893,7 @@ def _ball_scan_run(row, src_path, db, progress=None) -> dict:
         log.warning("ball scan: ascent sweep failed on %s: %s", row.id, exc)
         _sweep = {"ok": False, "reason": f"failed: {exc}"}
     _ball_scan_sweep_image(row, src_path, _sweep)
+    _ascent_detection_zoom_image(row, src_path, _sweep)
     rep["sweep"] = _sweep
     _t_sweep = time.perf_counter() - _t
 
@@ -20052,6 +20151,9 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # find them all"; the dialog below is organised per swing, and per
     # swing the other chains are clutter.
     _ascent_swing_images(row, src_path, sweep)
+    # BEFORE the trim: it draws from `considered[0]`'s own points, and
+    # the trim is what takes those away.
+    _ascent_detection_zoom_image(row, src_path, sweep)
     _ascent_trim_considered(sweep)
     rep["sweep"] = sweep
     _asc = list(sweep.get("ascents") or [])

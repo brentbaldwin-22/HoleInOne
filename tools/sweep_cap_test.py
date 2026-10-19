@@ -179,6 +179,40 @@ def main() -> int:
         check("  two-frame sees more, because it sees every ghost too",
               two.get("n_dets", 0) > three.get("n_dets", 0), True)
 
+    # ---- the detections around a chain -------------------------------
+    # Every picture the sweep draws shows what it ASSEMBLED. A ball the
+    # detector never saw and a ball the tracker refused look identical
+    # from outside and need opposite fixes, and five attempts to tell
+    # them apart by simulation failed. The raw detections settle it.
+    chain = {"points": [{"frame": 100, "x": 1360, "y": 460},
+                        {"frame": 104, "x": 1373, "y": 360}]}
+    dets = (
+        [{"frame": f, "x": 1365, "y": 460 - 25 * (f - 100), "area": 9}
+         for f in range(100, 116)]              # the flight, every frame
+        + [{"frame": f, "x": 300, "y": 400, "area": 50}
+           for f in range(90, 130)]             # a tree, far to the left
+        + [{"frame": f, "x": 1360, "y": 200, "area": 9}
+           for f in range(200, 210)]            # something, much later
+    )
+    near = d3._dets_near_chain(dets, chain)
+    _fr = {d["frame"] for d in near}
+    check("the flight's own frames are kept",
+          {f for f in range(100, 105)} <= _fr, True)
+    check("  and the pad reaches past the chain's last point",
+          max(_fr) >= 104 + 10, True)
+    check("the tree, far to the side, is not", 300 in {d["x"] for d in near},
+          False)
+    check("  nor is anything from another part of the clip",
+          any(d["frame"] >= 200 for d in near), False)
+    check("no chain means nothing to show", d3._dets_near_chain(dets, None),
+          [])
+    check("  and a chain with no points is the same",
+          d3._dets_near_chain(dets, {"points": []}), [])
+    # THE WHOLE POINT: more detections come back than the chain kept, or
+    # the picture cannot show a tracker failure at all.
+    check("more is returned than the chain kept",
+          len(near) > len(chain["points"]), True)
+
     print()
     if FAIL:
         print(f"{len(FAIL)} FAILED: " + ", ".join(FAIL))
