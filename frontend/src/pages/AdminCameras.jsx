@@ -7,6 +7,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
+import { fmtDateTime } from "../time.js";
 import { Brand } from "../components/Brand.jsx";
 import { ViewMapModal } from "../components/ViewMapModal.jsx";
 import { DailyMarksModal } from "../components/DailyMarksModal.jsx";
@@ -1856,8 +1857,15 @@ export default function AdminCameras() {
           ? `${src.course_name} · hole ${src.hole}`
           : `hole ${src.hole}`)
           + (src.key_reason ? ` · filed by ${src.key_reason}` : "")
+          // LOCAL TIME, NOT THE RAW STAMP. The backend serializes
+          // naive UTC, so slicing the string printed a pre-dawn capture
+          // as "11:05" -- which reads as late morning and hides the one
+          // thing this label is for: whether the frames were shot in
+          // light you can pick out a bunker corner in.
           + (src.captured_at
-            ? ` · frames from ${src.captured_at.slice(0, 16).replace("T", " ")}`
+            ? ` · frames from ${fmtDateTime(src.captured_at, undefined, {
+              dateStyle: "medium", timeStyle: "short",
+            })}`
             : ""),
       });
     } catch (e) {
