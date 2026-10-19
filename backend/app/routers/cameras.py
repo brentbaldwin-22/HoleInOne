@@ -1769,7 +1769,44 @@ def upload_complete(
 # ---------------------------------------------------------------------
 
 
+# ONE PRODUCE JOB PER EVENT, whoever asks. Three paths start one -- the
+# upload that completes a pair, the Re-process button, and the recovery
+# sweep below -- and they can overlap, because the sweep's whole job is
+# to kick events that LOOK abandoned, and a produce that is merely slow
+# looks exactly like one that is dead (the produce queue serialises, so
+# the Nth event waits N produce durations). Two jobs on one event means
+# two writers on one LongVideoUpload row.
+#
+# A set in memory is the whole truth here because the backend is one
+# uvicorn process (start.sh, no --workers). If that ever becomes
+# several, this guard has to move into the database with it.
+_event_job_inflight: set[int] = set()
+_event_job_lock = threading.Lock()
+
+
 def _process_camera_event_job(event_id: int) -> None:
+    """Produce one camera event — unless it is already being produced.
+
+    The guard lives here rather than at the three call sites so that
+    none of them can forget it, and so a fourth caller cannot quietly
+    reintroduce double-production.
+    """
+    with _event_job_lock:
+        if event_id in _event_job_inflight:
+            log.info(
+                "cameras: event %s is already producing in this process — "
+                "not starting a second job", event_id,
+            )
+            return
+        _event_job_inflight.add(event_id)
+    try:
+        _run_camera_event_job(event_id)
+    finally:
+        with _event_job_lock:
+            _event_job_inflight.discard(event_id)
+
+
+def _run_camera_event_job(event_id: int) -> None:
     """Hand off a fully-uploaded CameraEvent to the long-upload
     pipeline so it benefits from the existing multi-swing auto-detect
     + admin edit-wizard. Creates a LongVideoUpload row pointing at the
@@ -2007,82 +2044,153 @@ def _process_camera_event_job(event_id: int) -> None:
         db.close()
 
 
-# Tee-only fallback ---------------------------------------------------------
-# Events currently being force-produced tee-only, so the periodic sweep
-# doesn't kick the same one twice while it's still running.
-_fallback_inflight: set[int] = set()
-_fallback_lock = threading.Lock()
+# Stalled-event recovery ----------------------------------------------------
+# How many events one sweep may restart. The produce queue serialises,
+# so recovering a backlog all at once puts every stale event AHEAD of
+# the capture somebody is standing on the tee waiting for. Two a minute
+# drains a bad night without ever being the reason a live shot is late.
+_RECOVER_PER_SWEEP = 2
 
 
-def _tee_only_fallback_sweep() -> None:
-    """Produce a TEE-ONLY clip for any paired event whose green half never
-    arrived within the fallback window. _process_camera_event_job already
-    handles a missing green (green_clip_filename is None -> tee-only), so we
-    just kick it. If green shows up later, upload_event flips the event back
-    to paired and re-produces with both."""
-    secs = int(settings.camera_tee_only_fallback_seconds or 0)
-    if secs <= 0:
+def _recoverable_events(db, status: str, cutoff, floor, max_retries: int,
+                        require_tee: bool) -> list[int]:
+    """Event ids stuck in `status`: triggered before `cutoff` (old enough
+    to be a problem) and after `floor` (recent enough to be worth
+    producing). Oldest first, and only those still inside their retry
+    budget.
+
+    Split out from the sweep so the window, the floor and the budget can
+    be tested without a produce pipeline behind them.
+    """
+    q = (db.query(CameraEvent)
+         .filter(CameraEvent.status == status,
+                 CameraEvent.triggered_at < cutoff,
+                 CameraEvent.triggered_at >= floor))
+    if require_tee:
+        q = q.filter(CameraEvent.tee_clip_filename.isnot(None))
+    return [e.id for e in q.order_by(CameraEvent.triggered_at.asc()).all()
+            if int(getattr(e, "produce_retries", 0) or 0) < max_retries]
+
+
+def _camera_event_recovery_sweep() -> None:
+    """Restart camera events that nothing else is going to finish.
+
+    TWO WAYS AN EVENT DIES QUIETLY. Only the first was ever swept.
+
+    `tee_uploaded` — the green half never arrived (dead cellular,
+    unplugged, weak signal). _run_camera_event_job already handles a
+    missing green (green_clip_filename is None -> tee-only), so we just
+    kick it. If green shows up later, upload_event flips the event back
+    to paired and re-produces with both.
+
+    `paired_uploaded` — BOTH clips landed, and the job that was going to
+    finish the event died. Produce runs in a daemon thread owned by the
+    upload request, so a deploy, a restart or an OOM takes it with it.
+    Startup's _reap_orphaned_jobs clears the LongVideoUpload row that
+    thread left behind, but nothing ever looked at the CameraEvent: it
+    sat at 'paired_uploaded' forever, which is the "Both clips in ·
+    STUCK" pill on the Cameras page, with the Re-process button the only
+    way out. Seen on 19 Oct as four consecutive events on Rivertowne
+    hole 8 — every clip uploaded, nothing produced, nobody told.
+
+    THE RETRY BUDGET IS NOT OPTIONAL. The failure being recovered from
+    is a process death, and a clip that kills the process on produce
+    would otherwise be handed back to produce every minute forever: a
+    crash loop built out of a recovery mechanism. The count lives in the
+    database for the same reason -- an in-memory counter is wiped by the
+    very event it is supposed to be counting.
+    """
+    _fallback = int(settings.camera_tee_only_fallback_seconds or 0)
+    _stall = int(settings.camera_paired_stall_seconds or 0)
+    if _fallback <= 0 and _stall <= 0:
         return
-    cutoff = _utcnow_naive() - timedelta(seconds=secs)
+    _budget = int(settings.camera_produce_max_retries or 0)
+    now = _utcnow_naive()
+    # NOTHING OLDER THAN THIS. Without a floor the first deploy carrying
+    # this sweeper re-produces every stalled event the database has ever
+    # held -- weeks of them, ahead of today's golf. A stuck capture is
+    # worth rescuing on the day; last month's is a decision for a human
+    # with the Re-process button.
+    floor = now - timedelta(
+        hours=max(0, int(settings.camera_recover_max_age_hours or 0)))
+    # (event id, what to say about it). Tee-only first: those events are
+    # waiting on a deadline, not on a corpse, and are the older problem.
+    todo: list[tuple[int, str]] = []
     db = SessionLocal()
     try:
-        ids = [
-            e.id
-            for e in db.query(CameraEvent)
-            .filter(
-                CameraEvent.status == "tee_uploaded",
-                CameraEvent.tee_clip_filename.isnot(None),
-                CameraEvent.triggered_at < cutoff,
-            )
-            .all()
-        ]
+        if _fallback > 0:
+            todo += [
+                (eid, "green never arrived — producing from tee alone")
+                for eid in _recoverable_events(
+                    db, "tee_uploaded", now - timedelta(seconds=_fallback),
+                    floor, _budget, require_tee=True)
+            ]
+        if _stall > 0:
+            todo += [
+                (eid, "both clips in but produce never finished — "
+                      "restarting it")
+                for eid in _recoverable_events(
+                    db, "paired_uploaded", now - timedelta(seconds=_stall),
+                    floor, _budget, require_tee=False)
+            ]
     finally:
         db.close()
 
-    for eid in ids:
-        with _fallback_lock:
-            if eid in _fallback_inflight:
+    for eid, why in todo[:_RECOVER_PER_SWEEP]:
+        # Spend the retry BEFORE starting the job, not after it comes
+        # back: a job that kills the process never comes back, and that
+        # is precisely the case the budget exists to bound.
+        db = SessionLocal()
+        try:
+            ev = db.get(CameraEvent, eid)
+            if ev is None:
                 continue
-            _fallback_inflight.add(eid)
+            ev.produce_retries = int(
+                getattr(ev, "produce_retries", 0) or 0) + 1
+            _n = ev.produce_retries
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cameras: could not count a retry for event %s: %s",
+                        eid, exc)
+            continue
+        finally:
+            db.close()
 
-        def _run(event_id: int = eid) -> None:
-            try:
-                log.info(
-                    "cameras: tee-only fallback — green never arrived for "
-                    "event %s, producing from tee alone", event_id,
-                )
-                _process_camera_event_job(event_id)
-            finally:
-                with _fallback_lock:
-                    _fallback_inflight.discard(event_id)
-
+        log.info("cameras: recovery sweep — event %s: %s (attempt %s of %s)",
+                 eid, why, _n, _budget)
         threading.Thread(
-            target=_run, daemon=True, name=f"tee-only-fallback-{eid}"
+            target=_process_camera_event_job, args=(eid,),
+            daemon=True, name=f"event-recovery-{eid}",
         ).start()
 
 
-def start_tee_only_fallback_sweeper(interval_sec: float = 60.0) -> None:
-    """Periodically produce tee-only for events whose green half is overdue.
-    No-op when the fallback is disabled (camera_tee_only_fallback_seconds=0).
-    Idempotent to start."""
-    if int(settings.camera_tee_only_fallback_seconds or 0) <= 0:
+def start_camera_event_recovery_sweeper(interval_sec: float = 60.0) -> None:
+    """Periodically restart camera events nothing is finishing: a paired
+    event whose green half is overdue, and one whose produce died with
+    the process. No-op when both windows are disabled. Idempotent to
+    start."""
+    if (int(settings.camera_tee_only_fallback_seconds or 0) <= 0
+            and int(settings.camera_paired_stall_seconds or 0) <= 0):
         return
-    if getattr(start_tee_only_fallback_sweeper, "_started", False):
+    if getattr(start_camera_event_recovery_sweeper, "_started", False):
         return
-    start_tee_only_fallback_sweeper._started = True  # type: ignore[attr-defined]
+    start_camera_event_recovery_sweeper._started = True  # type: ignore[attr-defined]
 
     def _loop() -> None:
         log.info(
-            "cameras: tee-only fallback sweeper started (%ss window)",
+            "cameras: event recovery sweeper started (tee-only after %ss, "
+            "stalled produce after %ss, %s attempts each)",
             settings.camera_tee_only_fallback_seconds,
+            settings.camera_paired_stall_seconds,
+            settings.camera_produce_max_retries,
         )
         while True:
             try:
-                _tee_only_fallback_sweep()
+                _camera_event_recovery_sweep()
             except Exception as exc:  # noqa: BLE001
-                log.warning("cameras: tee-only fallback sweep failed: %s", exc)
+                log.warning("cameras: event recovery sweep failed: %s", exc)
             time.sleep(interval_sec)
 
     threading.Thread(
-        target=_loop, daemon=True, name="tee-only-fallback-sweeper"
+        target=_loop, daemon=True, name="camera-event-recovery-sweeper"
     ).start()

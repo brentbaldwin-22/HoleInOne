@@ -221,6 +221,18 @@ def _migrate() -> None:
             statements.append(
                 "ALTER TABLE camera_events ADD COLUMN green_recording_started_at TIMESTAMP"
             )
+        if "produce_retries" not in ce_cols:
+            statements.append(
+                "ALTER TABLE camera_events ADD COLUMN produce_retries "
+                "INTEGER DEFAULT 0"
+            )
+            # Belt and braces for any dialect that back-fills NULL
+            # rather than the default: the sweeper reads this as a
+            # budget, and NULL is not a number.
+            statements.append(
+                "UPDATE camera_events SET produce_retries = 0 "
+                "WHERE produce_retries IS NULL"
+            )
 
     # Camera additions — per-camera trigger kill-switch.
     if "cameras" in inspector.get_table_names():
@@ -435,9 +447,11 @@ def _startup() -> None:
     _sweep_d3_previews()
     _seed_default_courses()
     _seed_showcase_slots()
-    # Produce tee-only when a paired event's green half never arrives, so a
-    # green cellular dropout doesn't cost the whole shot.
-    cameras.start_tee_only_fallback_sweeper()
+    # Restart camera events nothing else will finish: a paired event whose
+    # green half never arrived (produce tee-only, so a green dropout costs
+    # the angle and not the shot), and one whose produce died with the
+    # process and left it at "paired_uploaded" for ever.
+    cameras.start_camera_event_recovery_sweeper()
     # Send the thank-you / review email once its delay has elapsed.
     thanks.start_thanks_sweeper()
 

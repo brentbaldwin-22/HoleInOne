@@ -124,9 +124,18 @@ const EVENT_STATES = {
     label: "Both clips in",
     tone: "info",
     ok: "Both clips uploaded. Producing.",
+    // RECOVERABLE NOW, so don't send anyone cranking the handle on
+    // something that is about to fix itself. The backend sweeps stalled
+    // paired events and restarts produce on them a few times
+    // (camera_paired_stall_seconds / camera_produce_max_retries);
+    // before that existed, this pill was a dead end and the only way
+    // out was the button below it.
     stuck:
-      "Produce never picked this up. The queue may be stalled behind a hung " +
-      "job — check Production for a card frozen on one stage.",
+      "Produce never picked this up — usually its job died with a backend " +
+      "restart. The server retries a stalled event on its own a few " +
+      "minutes in, a few times over; Re-process forces one immediately. " +
+      "Still stuck after that, check Production for a card frozen on one " +
+      "stage.",
   },
   processed: {
     label: "Processed",

@@ -122,6 +122,33 @@ class Settings(BaseSettings):
     # re-produces with both. 0 disables the fallback.
     camera_tee_only_fallback_seconds: int = 180
 
+    # Stalled-produce recovery. Both clips land, the event goes to
+    # "paired_uploaded", and the produce job that finishes it runs in a
+    # daemon thread owned by that upload request -- so a deploy, a
+    # restart or an OOM kills it and the event stays at
+    # "paired_uploaded" with nobody coming back for it. That is the
+    # "Both clips in · STUCK" pill on the Cameras page, and until this
+    # existed the only way out was an operator noticing it and pressing
+    # Re-process. After this many seconds in that state, restart the
+    # produce. A job still running in this process is never touched,
+    # whatever its age, so this window does not have to clear a slow
+    # produce -- it only decides how long a DEAD one waits. 0 disables.
+    camera_paired_stall_seconds: int = 600
+
+    # How many times the recovery sweeper may restart one event. A clip
+    # that kills the process on produce is otherwise handed straight
+    # back to produce on the next sweep, for ever: a crash loop made out
+    # of the recovery mechanism. Counted per event in the database (see
+    # CameraEvent.produce_retries). 0 disables recovery entirely.
+    camera_produce_max_retries: int = 3
+
+    # How far back the recovery sweeper will reach. A capture that
+    # stalled this morning is worth rescuing; one from last month is a
+    # decision for a human with the Re-process button, and without a
+    # floor the first deploy carrying the sweeper would re-produce every
+    # stalled event the database has ever held, ahead of today's golf.
+    camera_recover_max_age_hours: int = 24
+
     # "Pull new from prod" — the DEV backend fetches new camera clips from a
     # source (prod) backend and imports them, replacing the manual mirror
     # script. Set these on the DEV deployment only.

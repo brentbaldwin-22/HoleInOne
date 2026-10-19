@@ -615,6 +615,17 @@ class CameraEvent(Base):
         ForeignKey("video_clips.id"), nullable=True,
     )
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # How many times the recovery sweeper has restarted this event's
+    # produce. NOT a count of produce runs: the first one, and anything
+    # an operator asks for with Re-process, are not retries.
+    #
+    # IN THE DATABASE ON PURPOSE. What the sweeper recovers from is a
+    # process death, so a counter held in memory would be wiped by the
+    # exact event it exists to count -- and a clip that kills the
+    # process on produce would be fed back to produce every minute
+    # forever.
+    produce_retries: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False)
 
 
 class DeletedCameraSession(Base):

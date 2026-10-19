@@ -6052,6 +6052,12 @@ def reprocess_camera_event(event_id: int, db: Session = Depends(get_db)):
     # stale last_error gets cleared.
     event.status = "paired_uploaded" if event.green_clip_filename else "tee_uploaded"
     event.last_error = None
+    # A HUMAN ASKING COUNTS AS A FRESH START. The recovery sweeper will
+    # only restart an event camera_produce_max_retries times, so without
+    # this an event that burned its budget during a bad night could
+    # never be auto-recovered again -- and the operator who just pressed
+    # the button has no way of knowing that.
+    event.produce_retries = 0
     db.commit()
 
     threading.Thread(
