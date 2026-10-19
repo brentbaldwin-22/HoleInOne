@@ -2049,6 +2049,26 @@ def detect_movers_by_diff(
     #
     # 0 disables it.
     ghost_px: float = 0.0,
+    # KEEP WHAT LOOKS LIKE A BALL, NOT WHAT IS BIGGEST.
+    #
+    # The per-frame cut is extremal: it keeps the `per_frame` largest
+    # blobs and drops the rest. Inside a ball-sized window the ball IS
+    # the big one, which is where that rule came from. Across a band
+    # with a treeline in it the rule inverts — a leaf edge lit by a
+    # pixel of camera shake is hundreds of pixels of blob, and a ball
+    # at 180 yards is a few — so the cut keeps the trees and throws the
+    # ball away. The bigger the search area, the more certain that is,
+    # and raising the cap only admits more noise above it.
+    #
+    # Measured on #768: the worst frame offered 90 blobs against a keep
+    # of 40, and the operator's own scan finds the flight on thirty
+    # frames at 2x (a small crop, where the ball is the big one) and
+    # loses it at 1x (the whole frame, where it is not).
+    #
+    # Set this to roughly the ball's own blob area and the cut ranks by
+    # NEARNESS to it instead: ball-sized things win, and a tree edge
+    # loses however large it is. 0 keeps the old largest-first rule.
+    prefer_area: float = 0.0,
 ) -> list:
     """Frame-to-frame difference. The detector that actually sees the ball.
 
@@ -2111,7 +2131,15 @@ def detect_movers_by_diff(
                     # speckle is the small one, so keeping the smallest
                     # few of several hundred keeps the speckle and throws
                     # the ball away.
-                    hits.sort(reverse=True)
+                    #
+                    # ...unless a target area says what a ball looks
+                    # like here, in which case rank by nearness to it:
+                    # across a whole band the largest-first rule inverts
+                    # and keeps the treeline. See `prefer_area`.
+                    if prefer_area > 0:
+                        hits.sort(key=lambda h: abs(h[0] - prefer_area))
+                    else:
+                        hits.sort(reverse=True)
                     if stats is not None:
                         stats["frames"] = stats.get("frames", 0) + 1
                         stats["max_hits"] = max(stats.get("max_hits", 0),
@@ -4620,6 +4648,7 @@ def sweep_ascents(
     _three = bool(int(_G["ascent_three_frame"]))
     # Only with two-frame differencing: the AND leaves no ghost behind.
     _ghost = 0.0 if _three else float(_G["ascent_ghost_px"])
+    _prefer = float(_G["ascent_prefer_area"])
     if min_points is None:
         min_points = ASCENT_MIN_POINTS
     out = {"ok": False, "ascents": [], "n_tracks": 0, "n_dets": 0,
@@ -4677,7 +4706,8 @@ def sweep_ascents(
                                      per_frame=_per_frame,
                                      roi=(_x0, 0, _x1 - _x0, band_h),
                                      cap=200000, three_frame=_three,
-                                     ghost_px=_ghost, stats=_stats)
+                                     ghost_px=_ghost, prefer_area=_prefer,
+                                     stats=_stats)
         out["n_dets"] = len(dets)
         # THE ANSWER TO "WHY IS THE BALL NOT IN HERE AT ALL". When the
         # cap binds on most frames the ball is not losing a gate, it is
@@ -4687,6 +4717,7 @@ def sweep_ascents(
         out["per_frame_cap"] = _per_frame
         out["three_frame"] = _three
         out["ghost_px"] = _ghost
+        out["prefer_area"] = _prefer
         out["cap_hit_frames"] = int(_stats.get("capped") or 0)
         out["cap_hit_frac"] = (round(_stats.get("capped", 0) / _fr, 3)
                                if _fr else None)
@@ -4883,6 +4914,16 @@ def sweep_ascents(
         _considered.sort(key=lambda z: (len(z["why"]), -z["n_points"]))
         out["near_dets"] = _dets_near_chain(
             dets, _considered[0] if _considered else None)
+        # WHAT SIZE THINGS ACTUALLY ARE here, so `ascent_prefer_area`
+        # can be chosen off the footage rather than guessed. Computed
+        # after the slice, which is where the sample lives.
+        _areas = sorted(int(d.get("area") or 0) for d in out["near_dets"])
+        out["area_profile"] = {
+            "n": len(_areas),
+            "p10": _areas[len(_areas) // 10] if _areas else None,
+            "median": _areas[len(_areas) // 2] if _areas else None,
+            "p90": _areas[(len(_areas) * 9) // 10] if _areas else None,
+        }
         # A NUMBER EACH, IN THE ORDER THE TABLE SHOWS THEM. The picture
         # and the table have been two lists of the same chains with no
         # way to get from a row to a line -- so "why was THAT one
@@ -6443,6 +6484,11 @@ GATE_SPEC = {
     # be the ball; what it removes is a mover that barely moved, which
     # is a ghost or a leaf. 0 disables.
     "ascent_ghost_px":          (4,                        0,     40, True),
+    # THE BALL'S OWN BLOB AREA, in pixels, or 0 to keep the biggest
+    # blobs instead. See `prefer_area` in detect_movers_by_diff: this
+    # is the number that stops a treeline winning the per-frame cut
+    # against a ball at 180 yards.
+    "ascent_prefer_area":       (0,                        0,  20000, True),
     "ascent_min_points":        (ASCENT_MIN_POINTS,        2,     20, True),
     "ascent_min_rise_frac":     (ASCENT_MIN_RISE_FRAC,  0.01,    0.9, False),
     "ascent_rate_lo":           (ASCENT_RATE_LO,        0.05,   20.0, False),
