@@ -19571,6 +19571,12 @@ def _ascent_trim_considered(sweep) -> None:
     _con = (sweep or {}).get("considered") or []
     for z in _con[_CAP:]:
         z.pop("points", None)
+    # AND THE RAW DETECTIONS, for the same reason and more so: up to
+    # 4000 of them exist only so the zoom picture can be drawn from
+    # them, and that has already happened by the time this runs. Left
+    # in, they ride every poll of a status endpoint the modal hits
+    # repeatedly — ~150KB a time to ship coordinates nothing reads.
+    (sweep or {}).pop("near_dets", None)
 
 
 def _ball_scan_ascent_image(row, src_path, spots, tok, rep) -> None:
@@ -19894,6 +19900,9 @@ def _ball_scan_run(row, src_path, db, progress=None) -> dict:
         _sweep = {"ok": False, "reason": f"failed: {exc}"}
     _ball_scan_sweep_image(row, src_path, _sweep)
     _ascent_detection_zoom_image(row, src_path, _sweep)
+    # Drawn from, so no longer needed — and this path has no
+    # _ascent_trim_considered to drop them for it.
+    _sweep.pop("near_dets", None)
     rep["sweep"] = _sweep
     _t_sweep = time.perf_counter() - _t
 
