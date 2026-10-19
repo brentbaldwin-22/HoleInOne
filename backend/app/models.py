@@ -450,6 +450,16 @@ class Camera(Base):
     # down: the tee markers move every morning, the horizon does not.
     sky_line_frac: Mapped[Optional[float]] = mapped_column(
         Float, nullable=True)
+    # AND THE TWO VERTICAL EDGES, same units, same reason — a treeline
+    # is not horizontal. On Rivertowne 8 the stand at the left reaches
+    # ~190px higher than the trees on the right, so one horizontal cut
+    # either keeps that stand or throws away a third of the useful sky.
+    # A ball from this tee never crosses the far left of the picture,
+    # so the cheapest answer is to refuse to look there.
+    search_left_frac: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True)
+    search_right_frac: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True)
     # GREEN cameras only. Maps this camera's image pixels onto the plane
     # of the green, in feet, so a ball's resting pixel becomes a real
     # position — which is what closest-to-the-pin measures and what lets

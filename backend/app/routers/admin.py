@@ -9437,24 +9437,35 @@ def _pin_for_row(db, row):
     return e, (f"marked {str(_eff)[:16]}" if _eff else "marked (undated)")
 
 
-def _sky_frac_for(db, row) -> float | None:
-    """This upload's TEE camera's skyline, or None.
+def _search_area_for(db, row) -> dict:
+    """This upload's TEE camera's ascent search area, as fractions.
 
-    The tee camera's, always — the ascent sweep runs on tee footage
-    whoever asked for it, and a green's own horizon describes a
-    different picture entirely.
+    {sky_frac, left_frac, right_frac}, any of them None. The tee
+    camera's, always — the ascent sweep runs on tee footage whoever
+    asked for it, and a green's own horizon describes a different
+    picture entirely.
+
+    ONE READER, because three call sites pass this and a hole searched
+    differently by the sweep than by the per-candidate check is a hole
+    whose two reports cannot be compared.
     """
+    out = {"sky_frac": None, "left_frac": None, "right_frac": None}
     try:
         ev = (db.get(CameraEvent, row.camera_event_id)
               if getattr(row, "camera_event_id", None) else None)
         cam = (db.get(Camera, ev.tee_camera_id)
                if ev is not None and ev.tee_camera_id else None)
-        v = getattr(cam, "sky_line_frac", None)
-        return float(v) if v is not None else None
+        if cam is None:
+            return out
+        for _k, _attr in (("sky_frac", "sky_line_frac"),
+                          ("left_frac", "search_left_frac"),
+                          ("right_frac", "search_right_frac")):
+            v = getattr(cam, _attr, None)
+            out[_k] = float(v) if v is not None else None
     except Exception as exc:  # noqa: BLE001
-        log.debug("skyline lookup failed for upload %s: %s",
+        log.debug("search area lookup failed for upload %s: %s",
                   getattr(row, "id", None), exc)
-        return None
+    return out
 
 
 def _recent_upload_for_camera(db, cam):
@@ -9520,6 +9531,8 @@ def get_camera_sky_line(camera_id: int, db: Session = Depends(get_db)):
     return {
         "camera_id": cam.id,
         "sky_line_frac": getattr(cam, "sky_line_frac", None),
+        "search_left_frac": getattr(cam, "search_left_frac", None),
+        "search_right_frac": getattr(cam, "search_right_frac", None),
         "upload_id": row.id,
         "which": which,
         "captured_at": (row.base_captured_at.isoformat()
@@ -9547,24 +9560,41 @@ def set_camera_sky_line(
     cam = db.get(Camera, camera_id)
     if cam is None:
         raise HTTPException(404, "camera not found")
-    raw = payload.get("sky_line_frac")
-    if raw is None:
-        cam.sky_line_frac = None
-    else:
+    # ONLY WHAT WAS SENT. A modal that saves the skyline must not
+    # silently clear the left and right edges it did not mention.
+    for _key, _attr in (("sky_line_frac", "sky_line_frac"),
+                        ("search_left_frac", "search_left_frac"),
+                        ("search_right_frac", "search_right_frac")):
+        if _key not in payload:
+            continue
+        raw = payload.get(_key)
+        if raw is None:
+            setattr(cam, _attr, None)
+            continue
         try:
             v = float(raw)
         except (TypeError, ValueError):
-            raise HTTPException(400, "sky_line_frac must be a number 0-1")
-        # REFUSED, NOT CLAMPED. A line at 0 or 1 is a mis-drag, not a
+            raise HTTPException(400, f"{_key} must be a number 0-1")
+        # REFUSED, NOT CLAMPED. An edge at 0 or 1 is a mis-drag, not a
         # setting, and silently moving it to something legal would hide
         # that from the person who just drew it.
         if not (0.01 <= v <= 0.99):
             raise HTTPException(
-                400, "the skyline must sit between 0.01 and 0.99 of the "
-                     "frame height — that one is off the picture")
-        cam.sky_line_frac = v
+                400, f"{_key} must sit between 0.01 and 0.99 of the "
+                     f"frame — that one is off the picture")
+        setattr(cam, _attr, v)
+    # AND THE TWO EDGES HAVE TO LEAVE SOMETHING BETWEEN THEM.
+    _l, _r = cam.search_left_frac, cam.search_right_frac
+    if _l is not None and _r is not None and _r - _l < 0.05:
+        db.rollback()
+        raise HTTPException(
+            400, "the left and right edges leave less than 5% of the "
+                 "frame to search — a ball cannot be found in that")
     db.commit()
-    return {"camera_id": cam.id, "sky_line_frac": cam.sky_line_frac}
+    return {"camera_id": cam.id,
+            "sky_line_frac": cam.sky_line_frac,
+            "search_left_frac": cam.search_left_frac,
+            "search_right_frac": cam.search_right_frac}
 
 
 @router.get("/cameras/{camera_id}/calibration-source")
@@ -15093,6 +15123,8 @@ def _camera_to_dict(
         "rtsp_substream_url": _rtsp_url_for(c, sub=True),
         "tee_box_roi": c.tee_box_roi,
         "sky_line_frac": getattr(c, "sky_line_frac", None),
+        "search_left_frac": getattr(c, "search_left_frac", None),
+        "search_right_frac": getattr(c, "search_right_frac", None),
         # Normalised for the editor: always a list, whichever shape the
         # column holds.
         "tee_zones": {
@@ -19074,7 +19106,15 @@ def _ball_scan_sweep_image(row, src_path, sweep) -> None:
         im = (im.astype("float32") * 0.7).astype("uint8")
         _band = sweep.get("band")
         if _band:
-            cv2.rectangle(im, (0, 0), (int(_band[2]) - 1, int(_band[3])),
+            # FROM ITS OWN ORIGIN. The band gained left/right edges when
+            # one horizontal skyline turned out not to clear a treeline
+            # that is 190px taller on one side -- and a rectangle drawn
+            # from x=0 regardless would show a search area that is not
+            # the one that ran, which is the one thing this picture
+            # exists to be trusted about.
+            cv2.rectangle(im, (int(_band[0]), int(_band[1])),
+                          (int(_band[0]) + int(_band[2]) - 1,
+                           int(_band[1]) + int(_band[3])),
                           (80, 200, 255), 2)
         _ty = int(sweep.get("tee_line_y") or 0)
         if _ty:
@@ -19260,7 +19300,15 @@ def _ball_scan_considered_image(row, src_path, sweep) -> None:
         im = (im.astype("float32") * 0.55).astype("uint8")
         _band = sweep.get("band")
         if _band:
-            cv2.rectangle(im, (0, 0), (int(_band[2]) - 1, int(_band[3])),
+            # FROM ITS OWN ORIGIN. The band gained left/right edges when
+            # one horizontal skyline turned out not to clear a treeline
+            # that is 190px taller on one side -- and a rectangle drawn
+            # from x=0 regardless would show a search area that is not
+            # the one that ran, which is the one thing this picture
+            # exists to be trusted about.
+            cv2.rectangle(im, (int(_band[0]), int(_band[1])),
+                          (int(_band[0]) + int(_band[2]) - 1,
+                           int(_band[1]) + int(_band[3])),
                           (80, 200, 255), 2)
         _ty = int(sweep.get("tee_line_y") or 0)
         if _ty:
@@ -19692,7 +19740,7 @@ def _ball_scan_run(row, src_path, db, progress=None) -> dict:
             _asc = _d3.find_ascents(src_path, fps, int(_imp),
                                     (_sp["x"], _sp["y"]),
                                     roi=_roi.get("roi"),
-                                    sky_frac=_sky_frac_for(db, row)) or {}
+                                    **_search_area_for(db, row)) or {}
         except Exception as exc:  # noqa: BLE001
             log.warning("ball scan: ascent search failed on %s: %s",
                         row.id, exc)
@@ -19719,7 +19767,7 @@ def _ball_scan_run(row, src_path, db, progress=None) -> dict:
         _sweep = _d3.sweep_ascents(
             src_path, fps, roi=_roi.get("roi"),
             gates=_gate_tuning_for(db, row)[0],
-            sky_frac=_sky_frac_for(db, row)) or {}
+            **_search_area_for(db, row)) or {}
     except Exception as exc:  # noqa: BLE001
         log.warning("ball scan: ascent sweep failed on %s: %s", row.id, exc)
         _sweep = {"ok": False, "reason": f"failed: {exc}"}
@@ -19974,7 +20022,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     rep["gate_key_reason"] = _gt_why
     sweep = _d3.sweep_ascents(src_path, fps, roi=_roi.get("roi"),
                               gates=_gt,
-                              sky_frac=_sky_frac_for(db, row)) or {}
+                              **_search_area_for(db, row)) or {}
     _ball_scan_sweep_image(row, src_path, sweep)
     _ball_scan_considered_image(row, src_path, sweep)
     # AND ONE PER SWING. The whole-clip pictures answer "did the sweep

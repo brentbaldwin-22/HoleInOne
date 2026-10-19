@@ -2014,6 +2014,19 @@ def detect_movers_by_diff(
     # and drops both ghosts. Costs one extra decoded frame in memory,
     # and reports the middle of the three, so results lag by one frame.
     three_frame: bool = False,
+    # WHERE THE CAP BIT, filled in when a dict is passed.
+    #
+    # `per_frame` keeps the biggest N blobs a frame and drops the rest.
+    # That is the right order -- inside a ball-sized window the ball is
+    # the big one -- but it is extremal, and a band with a treeline in
+    # it has plenty of things bigger than a ball at 180 yards. When the
+    # cap binds on most frames, the ball is not being gated out by any
+    # of the chain gates: it is never emitted at all, and no amount of
+    # tuning the gates can reach it.
+    #
+    # That question has been asked of this function three times by
+    # hand. It answers it itself now: {frames, capped, max_hits}.
+    stats: dict | None = None,
 ) -> list:
     """Frame-to-frame difference. The detector that actually sees the ball.
 
@@ -2073,6 +2086,14 @@ def detect_movers_by_diff(
                     # few of several hundred keeps the speckle and throws
                     # the ball away.
                     hits.sort(reverse=True)
+                    if stats is not None:
+                        stats["frames"] = stats.get("frames", 0) + 1
+                        stats["max_hits"] = max(stats.get("max_hits", 0),
+                                                len(hits))
+                        if len(hits) > per_frame:
+                            stats["capped"] = stats.get("capped", 0) + 1
+                            stats["dropped"] = (stats.get("dropped", 0)
+                                                + len(hits) - per_frame)
                     for a, cx, cy in hits[:per_frame]:
                         out.append({"frame": int(f_),
                                     "x": int(round(x0 + cx)),
@@ -3656,6 +3677,40 @@ def _ascent_band(frame_h: int, roi: dict | None,
     return band_h, tee_top
 
 
+def _ascent_x_span(frame_w: int, left_frac: float | None,
+                   right_frac: float | None) -> tuple[int, int]:
+    """(x0, x1) — the columns of the band worth searching.
+
+    THE SKYLINE IS NOT ENOUGH ON ITS OWN, because a treeline is not
+    horizontal. On Rivertowne 8 the stand at the left reaches ~190px
+    higher than the trees on the right, so one horizontal cut either
+    keeps that stand in the band or throws away a third of the useful
+    sky with it. Measured there: a line drawn above the nearer trees
+    left 178 chains in the picture, nearly all of them tree edges, and
+    the ball's own chain was not among them.
+
+    A ball from THIS tee crosses a known part of the picture. Blanking
+    the rest is not a filter on what is found -- it is a refusal to
+    look, which is cheaper and cannot be argued with by a gate.
+
+    Fractions of frame width, either may be None. Reversed or
+    zero-width spans are ignored rather than obeyed: a span that
+    searches nothing finds nothing and says nothing about why.
+    """
+    x0 = 0
+    x1 = int(frame_w)
+    try:
+        if left_frac is not None and 0.0 <= float(left_frac) < 1.0:
+            x0 = int(float(left_frac) * frame_w)
+        if right_frac is not None and 0.0 < float(right_frac) <= 1.0:
+            x1 = int(float(right_frac) * frame_w)
+    except (TypeError, ValueError):
+        return 0, int(frame_w)
+    if x1 - x0 < 40:
+        return 0, int(frame_w)
+    return x0, x1
+
+
 def _band_too_thin(band_h: int, frame_h: int, min_rise_frac: float,
                    tee_top: float) -> str | None:
     """Can anything in a band this thin clear the rise gate? If not, say
@@ -3707,6 +3762,8 @@ def find_ascents(
     # WHERE THE NOISE STOPS, as a fraction of frame height, or None to
     # fall back to the computed guess. See `_ascent_band`.
     sky_frac: float | None = None,
+    left_frac: float | None = None,
+    right_frac: float | None = None,
 ) -> dict:
     """Did a ball rise away from `ball_xy` just after `impact_frame`?
 
@@ -3748,12 +3805,13 @@ def find_ascents(
         # The band: full width, from the top of the frame down to a
         # golfer's height above the tee box.
         band_h, _tee_top = _ascent_band(frame_h, roi, sky_frac)
-        out["band"] = [0, 0, int(frame_w), band_h]
+        _x0, _x1 = _ascent_x_span(frame_w, left_frac, right_frac)
+        out["band"] = [_x0, 0, _x1 - _x0, band_h]
         out["band_warning"] = _band_too_thin(
             band_h, frame_h, ASCENT_MIN_RISE_FRAC, _tee_top)
         dets = detect_movers_by_diff(input_path, f0, f1, sens=2,
                                      per_frame=DESCENT_DIFF_PER_FRAME,
-                                     roi=(0, 0, int(frame_w), band_h),
+                                     roi=(_x0, 0, _x1 - _x0, band_h),
                                      three_frame=True)
         if not dets:
             out["reason"] = (
@@ -4421,6 +4479,10 @@ def sweep_ascents(
     # WHERE THE NOISE STOPS, as a fraction of frame height, or None to
     # fall back to the computed guess. See `_ascent_band`.
     sky_frac: float | None = None,
+    # AND WHICH COLUMNS ARE WORTH SEARCHING, as fractions of frame
+    # width. See `_ascent_x_span`.
+    left_frac: float | None = None,
+    right_frac: float | None = None,
 ) -> dict:
     """Every ball leaving the tee in the WHOLE video, found from above.
 
@@ -4491,7 +4553,6 @@ def sweep_ascents(
             out["reason"] = "the tee video reports no frames"
             return out
         band_h, _tee_top = _ascent_band(frame_h, roi, sky_frac)
-        out["band"] = [0, 0, int(frame_w), band_h]
         out["tee_line_y"] = int(_tee_top)
         # REPORTED, NOT REFUSED. The rise gate is tunable per hole, so
         # "impossible" is only true of the gates in force -- an operator
@@ -4516,12 +4577,27 @@ def sweep_ascents(
         out["hitting_area_px"] = ([int(_span[0]), int(_span[1])]
                                   if _span else None)
         out["n_outside_area"] = 0
+        _x0, _x1 = _ascent_x_span(frame_w, left_frac, right_frac)
+        out["band"] = [_x0, 0, _x1 - _x0, band_h]
+        _stats: dict = {}
         dets = detect_movers_by_diff(input_path, 0, n_frames - 1,
                                      sens=int(sens),
                                      per_frame=SWEEP_PER_FRAME,
-                                     roi=(0, 0, int(frame_w), band_h),
-                                     cap=200000, three_frame=True)
+                                     roi=(_x0, 0, _x1 - _x0, band_h),
+                                     cap=200000, three_frame=True,
+                                     stats=_stats)
         out["n_dets"] = len(dets)
+        # THE ANSWER TO "WHY IS THE BALL NOT IN HERE AT ALL". When the
+        # cap binds on most frames the ball is not losing a gate, it is
+        # never being emitted, and every gate on the page is beside the
+        # point. See `detect_movers_by_diff`'s `stats`.
+        _fr = int(_stats.get("frames") or 0)
+        out["per_frame_cap"] = SWEEP_PER_FRAME
+        out["cap_hit_frames"] = int(_stats.get("capped") or 0)
+        out["cap_hit_frac"] = (round(_stats.get("capped", 0) / _fr, 3)
+                               if _fr else None)
+        out["max_hits_in_a_frame"] = int(_stats.get("max_hits") or 0)
+        out["dropped_to_cap"] = int(_stats.get("dropped") or 0)
         _t_det = time.perf_counter() - _t0
         tracks = build_tracks(dets, 14.0, min_len=int(min_points),
                               max_gap=DESCENT_MAX_GAP,
@@ -4742,7 +4818,19 @@ def sweep_ascents(
                "chain came from was not checked against one; ")
             + f"{len(out['ascents'])} ball(s) seen leaving, from "
             f"{len(tracks)} chain(s) in {len(dets)} detection(s) over "
-            f"{n_frames} frames of the band above the golfers")
+            f"{n_frames} frames of the band above the golfers"
+            # THE CAP, WHENEVER IT IS DOING ANYTHING. A sweep that finds
+            # nothing reads identically whether the gates refused the
+            # ball or the detector never offered it, and only the second
+            # one is unfixable from the gate editor.
+            + (f". THE {SWEEP_PER_FRAME}-BLOB PER-FRAME CAP BOUND ON "
+               f"{out['cap_hit_frac']:.0%} OF FRAMES "
+               f"(worst frame had {out['max_hits_in_a_frame']}; "
+               f"{out['dropped_to_cap']} detections dropped) — a ball "
+               f"smaller than the biggest {SWEEP_PER_FRAME} things in "
+               f"the band is never emitted, so no gate here can reach "
+               f"it. Narrow the search area or raise the cap."
+               if (out.get("cap_hit_frac") or 0) > 0.2 else ""))
     except Exception as exc:  # noqa: BLE001
         out["reason"] = f"sweep failed: {exc}"
     out["seconds"] = round(time.perf_counter() - _t0, 2)

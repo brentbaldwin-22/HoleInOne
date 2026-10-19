@@ -99,6 +99,36 @@ def main() -> int:
     check("  and a sensible one says nothing (control)",
           d3._band_too_thin(_band, H, d3.ASCENT_MIN_RISE_FRAC, _tee), None)
 
+    # ---- the two vertical edges -------------------------------------
+    # A treeline is not horizontal. One horizontal cut on Rivertowne 8
+    # either keeps the tall left stand in the band or throws away the
+    # sky above the short right one; the edges are how a ball-free
+    # column stops being searched at all.
+    W = 1920
+    check("no edges: the whole width is searched",
+          d3._ascent_x_span(W, None, None), (0, W))
+    check("a left edge moves the origin", d3._ascent_x_span(W, 0.30, None),
+          (int(0.30 * W), W))
+    check("a right edge moves the far side",
+          d3._ascent_x_span(W, None, 0.90), (0, int(0.90 * W)))
+    check("  and both together", d3._ascent_x_span(W, 0.30, 0.90),
+          (int(0.30 * W), int(0.90 * W)))
+
+    # Refused, not obeyed — a span that searches nothing finds nothing
+    # and says nothing about why.
+    check("edges crossed over are ignored",
+          d3._ascent_x_span(W, 0.90, 0.30), (0, W))
+    check("  a sliver is ignored", d3._ascent_x_span(W, 0.50, 0.51), (0, W))
+    check("  and junk is ignored", d3._ascent_x_span(W, "x", None), (0, W))
+    check("  0 and 1 mean the frame edges, which is not an error",
+          d3._ascent_x_span(W, 0.0, 1.0), (0, W))
+
+    # The ball on Rivertowne 8 flies at x≈1370 of 1920 — 0.71. An edge
+    # drawn to cut the left-hand stand must not cut the flight with it.
+    _x0, _x1 = d3._ascent_x_span(W, 0.30, None)
+    check("a left edge past the trees still contains the flight",
+          _x0 < 1370 < _x1, True)
+
     print()
     if FAIL:
         print(f"{len(FAIL)} FAILED: " + ", ".join(FAIL))

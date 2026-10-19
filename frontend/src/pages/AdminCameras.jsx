@@ -270,6 +270,14 @@ function SkyLineModal({ cam, adminPassword, onClose, onSaved }) {
   const [src, setSrc] = useState(null);
   const [frame, setFrame] = useState(null);
   const [frac, setFrac] = useState(null);
+  // THE TWO VERTICAL EDGES. A treeline is not horizontal: on
+  // Rivertowne 8 the stand at the left reaches ~190px higher than the
+  // trees on the right, so one horizontal cut either keeps that stand
+  // in the search or throws away a third of the useful sky with it. A
+  // ball from this tee never crosses the far left of the picture.
+  const [lx, setLx] = useState(null);
+  const [rx, setRx] = useState(null);
+  const [drag, setDrag] = useState("sky");   // sky | left | right
   const [err, setErr] = useState(null);
   const [saving, setSaving] = useState(false);
   const boxRef = useRef(null);
@@ -282,6 +290,8 @@ function SkyLineModal({ cam, adminPassword, onClose, onSaved }) {
         if (!live) return;
         setSrc(s);
         setFrac(s.sky_line_frac ?? s.guess_frac ?? 0.4);
+        setLx(s.search_left_frac ?? null);
+        setRx(s.search_right_frac ?? null);
         const f = await api.getLongUploadFrame(
           adminPassword, s.upload_id, 0, s.which);
         if (live) setFrame(f);
@@ -300,7 +310,15 @@ function SkyLineModal({ cam, adminPassword, onClose, onSaved }) {
     if (!el) return;
     const move = (ev) => {
       const r = el.getBoundingClientRect();
-      setFrac(Math.min(0.99, Math.max(0.01, (ev.clientY - r.top) / r.height)));
+      if (drag === "sky") {
+        setFrac(Math.min(0.99, Math.max(0.01,
+          (ev.clientY - r.top) / r.height)));
+      } else {
+        const v = Math.min(0.99, Math.max(0.01,
+          (ev.clientX - r.left) / r.width));
+        if (drag === "left") setLx(v);
+        else setRx(v);
+      }
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -311,11 +329,11 @@ function SkyLineModal({ cam, adminPassword, onClose, onSaved }) {
     move(e);
   }
 
-  async function save(value) {
+  async function save(body) {
     setSaving(true);
     setErr(null);
     try {
-      await api.setCameraSkyLine(adminPassword, cam.id, value);
+      await api.setCameraSkyLine(adminPassword, cam.id, body);
       onSaved?.();
       onClose();
     } catch (e) {
@@ -337,15 +355,47 @@ function SkyLineModal({ cam, adminPassword, onClose, onSaved }) {
         <div className="row" style={{ alignItems: "baseline", gap: 10 }}>
           <b>☁ Skyline — {cam.name || `camera ${cam.id}`}</b>
           <span className="tiny muted" style={{ maxWidth: 620 }}>
-            Drag the line to just ABOVE the treeline — above the trees,
-            the houses and the flag, below anything the ball crosses.
-            The ascent search looks only above it, and everything below
-            is noise it would otherwise spend its budget on. Set once:
-            the camera is bolted down.
+            The ascent search looks ONLY inside the bright area. Put
+            the skyline just above the treeline, and bring the left and
+            right edges in past anything a ball from this tee never
+            crosses — a treeline is rarely level, and one horizontal
+            cut either keeps the tall stand or throws away the sky
+            above the short one. Set once: the camera is bolted down.
           </span>
           <button type="button" className="ghost small"
                   style={{ width: "auto", marginLeft: "auto" }}
                   onClick={onClose}>Close</button>
+        </div>
+
+        {/* WHICH EDGE A DRAG MOVES. Three lines on one picture and no
+            handles to hunt for: pick the edge, then drag anywhere. */}
+        <div className="row" style={{ gap: 6, marginTop: 8,
+                                      alignItems: "center" }}>
+          {[["sky", "☁ Skyline"], ["left", "⇤ Left edge"],
+            ["right", "Right edge ⇥"]].map(([k, label]) => (
+            <button key={k} type="button"
+                    className={drag === k ? "small" : "ghost small"}
+                    style={{ width: "auto" }}
+                    onClick={() => {
+                      setDrag(k);
+                      // First pick of an edge that has never been set
+                      // puts it somewhere visible to drag FROM.
+                      if (k === "left" && lx == null) setLx(0.15);
+                      if (k === "right" && rx == null) setRx(0.85);
+                    }}>
+              {label}
+            </button>
+          ))}
+          {drag === "left" && lx != null && (
+            <button type="button" className="ghost small"
+                    style={{ width: "auto" }}
+                    onClick={() => setLx(null)}>drop the left edge</button>
+          )}
+          {drag === "right" && rx != null && (
+            <button type="button" className="ghost small"
+                    style={{ width: "auto" }}
+                    onClick={() => setRx(null)}>drop the right edge</button>
+          )}
         </div>
 
         {err && <div className="err-text small" style={{ marginTop: 8 }}>{err}</div>}
@@ -375,6 +425,36 @@ function SkyLineModal({ cam, adminPassword, onClose, onSaved }) {
                           top: `${(frac ?? 0.4) * 100}%`, height: 0,
                           borderTop: "2px solid #38bdf8",
                           pointerEvents: "none" }} />
+            {/* THE TWO VERTICAL EDGES, dimmed the same way: the
+                question is always what is being excluded. Drawn only
+                above the skyline, because below it nothing is searched
+                anyway and a full-height curtain would say otherwise. */}
+            {lx != null && (
+              <>
+                <div style={{ position: "absolute", left: 0,
+                              width: `${lx * 100}%`, top: 0,
+                              height: `${(frac ?? 0.4) * 100}%`,
+                              background: "rgba(0,0,0,0.55)",
+                              pointerEvents: "none" }} />
+                <div style={{ position: "absolute", left: `${lx * 100}%`,
+                              top: 0, bottom: 0, width: 0,
+                              borderLeft: "2px solid #38bdf8",
+                              pointerEvents: "none" }} />
+              </>
+            )}
+            {rx != null && (
+              <>
+                <div style={{ position: "absolute", left: `${rx * 100}%`,
+                              right: 0, top: 0,
+                              height: `${(frac ?? 0.4) * 100}%`,
+                              background: "rgba(0,0,0,0.55)",
+                              pointerEvents: "none" }} />
+                <div style={{ position: "absolute", left: `${rx * 100}%`,
+                              top: 0, bottom: 0, width: 0,
+                              borderLeft: "2px solid #38bdf8",
+                              pointerEvents: "none" }} />
+              </>
+            )}
             {/* The guess it replaces, so the change is visible rather
                 than theoretical. */}
             {src?.guess_frac != null && (
@@ -387,7 +467,10 @@ function SkyLineModal({ cam, adminPassword, onClose, onSaved }) {
               position: "absolute", left: 8, top: 8, color: "#fff",
               background: "rgba(0,0,0,0.6)", padding: "2px 8px",
               borderRadius: 4, pointerEvents: "none" }}>
-              searched · {pct} of the frame
+              searched · above {pct}
+              {lx != null || rx != null
+                ? `, x ${((lx ?? 0) * 100).toFixed(0)}–${
+                  ((rx ?? 1) * 100).toFixed(0)}%` : ", full width"}
               {src?.guess_frac != null && (
                 <span style={{ color: "#f59e0b" }}>
                   {"  ·  dashed = the old guess, "}
@@ -406,19 +489,24 @@ function SkyLineModal({ cam, adminPassword, onClose, onSaved }) {
                 dateStyle: "medium", timeStyle: "short" })}`
               : ""}
           </span>
-          {cam.sky_line_frac != null && (
+          {(cam.sky_line_frac != null || cam.search_left_frac != null
+            || cam.search_right_frac != null) && (
             <button type="button" className="ghost small"
                     style={{ width: "auto" }} disabled={saving}
-                    onClick={() => save(null)}
-                    title="Go back to the computed guess — the right move on a camera that has been re-aimed since this was drawn">
+                    onClick={() => save({ sky_line_frac: null,
+                                          search_left_frac: null,
+                                          search_right_frac: null })}
+                    title="Go back to the computed guess and the full frame width — the right move on a camera that has been re-aimed since this was drawn">
               Clear it
             </button>
           )}
           <button type="button" className="small"
                   style={{ width: "auto", marginLeft: "auto", minWidth: 160 }}
                   disabled={saving || frac == null || !frame}
-                  onClick={() => save(frac)}>
-            {saving ? "Saving…" : "Save skyline"}
+                  onClick={() => save({ sky_line_frac: frac,
+                                        search_left_frac: lx,
+                                        search_right_frac: rx })}>
+            {saving ? "Saving…" : "Save search area"}
           </button>
         </div>
       </div>
@@ -1689,7 +1777,7 @@ export default function AdminCameras() {
   const [busy, setBusy] = useState({}); // {camera_id: true}
   const [revealedToken, setRevealedToken] = useState({}); // {camera_id: true}
   const [cal, setCal] = useState(null);  // green→tee calibrator
-  const [skyCam, setSkyCam] = useState(null);   // skyline drawer
+  const [skyCam, setSkyCam] = useState(null);   // search-area drawer
   const [calibratingCam, setCalibratingCam] = useState(null);
   // The pin and the tee box: set daily, from the camera, by whoever is
   // standing there — unlike the calibration above, which is done once.
@@ -3139,8 +3227,12 @@ export default function AdminCameras() {
                       title="Draw the line just above the treeline. The ascent search looks only above it — below is the trees, the houses and the flag, which otherwise spend its per-frame budget before the ball gets a look in."
                     >
                       {cam.sky_line_frac != null
-                        ? `☁ Skyline ✓ (${(cam.sky_line_frac * 100).toFixed(0)}%)`
-                        : "☁ Skyline — not set"}
+                        || cam.search_left_frac != null
+                        || cam.search_right_frac != null
+                        ? `☁ Search area ✓${cam.sky_line_frac != null
+                          ? ` (above ${(cam.sky_line_frac * 100).toFixed(0)}%)`
+                          : ""}`
+                        : "☁ Search area — not set"}
                     </button>
                   )}
                   {/* GREEN PIXELS TO FEET — the only thing that can

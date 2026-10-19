@@ -494,11 +494,13 @@ export const api = {
   // ten-blobs-a-frame budget against a ball at 180 yards.
   getCameraSkyLine: (key, cameraId) =>
     request(`/api/admin/cameras/${cameraId}/sky-line`, { adminPassword: key }),
-  setCameraSkyLine: (key, cameraId, frac) =>
-    // null clears it and the sweep goes back to the computed guess.
+  setCameraSkyLine: (key, cameraId, body) =>
+    // {sky_line_frac, search_left_frac, search_right_frac} — only the
+    // keys present are written, so saving one edge cannot silently
+    // clear the others. null for a key clears that one.
     request(`/api/admin/cameras/${cameraId}/sky-line`, {
       method: "POST",
-      body: { sky_line_frac: frac },
+      body,
       adminPassword: key,
     }),
   cameraCalibrationSource: (key, cameraId) =>
