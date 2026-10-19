@@ -2027,6 +2027,28 @@ def detect_movers_by_diff(
     # That question has been asked of this function three times by
     # hand. It answers it itself now: {frames, capped, max_hits}.
     stats: dict | None = None,
+    # KILL THE "WHERE IT WAS" GHOST WITHOUT THE THREE-FRAME AND.
+    #
+    # A two-frame diff lights a mover twice: where it is, and where it
+    # was. The second one sits exactly on the PREVIOUS frame's real
+    # detection, which is what makes it removable without a third
+    # frame: drop any detection within this many pixels of one in the
+    # frame before.
+    #
+    # Three-frame differencing solves the same problem by ANDing the
+    # diffs either side, which also demands the ball clear threshold in
+    # both at the same pixels — a strictly harder test than either
+    # alone. On #768 that is the difference between a scan finding the
+    # flight on thirty frames and the sweep finding it on four.
+    #
+    # It cannot hurt a ball: anything moving faster than this is
+    # untouched, and an ascent crosses 25-50px a frame. What it does
+    # remove, as a bonus, is a treeline — a leaf edge lit by a pixel of
+    # camera shake sits within a pixel or two of where it was, every
+    # frame, which is precisely the signature being described.
+    #
+    # 0 disables it.
+    ghost_px: float = 0.0,
 ) -> list:
     """Frame-to-frame difference. The detector that actually sees the ball.
 
@@ -2051,6 +2073,9 @@ def detect_movers_by_diff(
     thr, _pf_default, area_max = DIFF_SENS[int(sens)]
     per_frame = int(per_frame) if per_frame else _pf_default
     out: list = []
+    # A one-slot box, because _emit closes over this and rebinding a
+    # plain local inside a nested function would shadow it instead.
+    _last_emitted: list = [[]]
     if not HAS_CV:
         return out
     try:
@@ -2074,6 +2099,7 @@ def detect_movers_by_diff(
                 def _emit(th_, f_):
                     n, _l, st, cen = cv2.connectedComponentsWithStats(th_)
                     hits = []
+                    _prev_pts = _last_emitted[0]
                     for i in range(1, n):
                         a = int(st[i, cv2.CC_STAT_AREA])
                         if 1 <= a <= area_max:
@@ -2094,11 +2120,25 @@ def detect_movers_by_diff(
                             stats["capped"] = stats.get("capped", 0) + 1
                             stats["dropped"] = (stats.get("dropped", 0)
                                                 + len(hits) - per_frame)
+                    _kept = []
                     for a, cx, cy in hits[:per_frame]:
-                        out.append({"frame": int(f_),
-                                    "x": int(round(x0 + cx)),
-                                    "y": int(round(y0 + cy)),
+                        _x, _y = int(round(x0 + cx)), int(round(y0 + cy))
+                        if ghost_px > 0 and any(
+                                abs(_x - px) <= ghost_px
+                                and abs(_y - py) <= ghost_px
+                                for px, py in _prev_pts):
+                            continue
+                        _kept.append((_x, _y))
+                        out.append({"frame": int(f_), "x": _x, "y": _y,
                                     "area": int(a)})
+                    # The REAL detections of this frame, which are the
+                    # next frame's ghosts. Kept before the per-frame cut
+                    # would have thrown some away: a ghost whose
+                    # original lost the cut is still a ghost.
+                    _last_emitted[0] = [
+                        (int(round(x0 + cx)), int(round(y0 + cy)))
+                        for _a, cx, cy in hits[:per_frame]
+                    ] if ghost_px > 0 else []
 
                 if three_frame:
                     _win.append((f, gray))
@@ -4578,6 +4618,8 @@ def sweep_ascents(
     ASCENT_MAX_BACKRUN_SEC = _G["ascent_max_backrun_sec"]
     _per_frame = int(_G["ascent_per_frame"])
     _three = bool(int(_G["ascent_three_frame"]))
+    # Only with two-frame differencing: the AND leaves no ghost behind.
+    _ghost = 0.0 if _three else float(_G["ascent_ghost_px"])
     if min_points is None:
         min_points = ASCENT_MIN_POINTS
     out = {"ok": False, "ascents": [], "n_tracks": 0, "n_dets": 0,
@@ -4635,7 +4677,7 @@ def sweep_ascents(
                                      per_frame=_per_frame,
                                      roi=(_x0, 0, _x1 - _x0, band_h),
                                      cap=200000, three_frame=_three,
-                                     stats=_stats)
+                                     ghost_px=_ghost, stats=_stats)
         out["n_dets"] = len(dets)
         # THE ANSWER TO "WHY IS THE BALL NOT IN HERE AT ALL". When the
         # cap binds on most frames the ball is not losing a gate, it is
@@ -4644,6 +4686,7 @@ def sweep_ascents(
         _fr = int(_stats.get("frames") or 0)
         out["per_frame_cap"] = _per_frame
         out["three_frame"] = _three
+        out["ghost_px"] = _ghost
         out["cap_hit_frames"] = int(_stats.get("capped") or 0)
         out["cap_hit_frac"] = (round(_stats.get("capped", 0) / _fr, 3)
                                if _fr else None)
@@ -6393,6 +6436,13 @@ GATE_SPEC = {
     # costs. A switch, so that can be measured on one clip instead of
     # argued about.
     "ascent_three_frame":       (1,                        0,      1, True),
+    # HOW CLOSE TO THE PREVIOUS FRAME'S DETECTION counts as that
+    # frame's ghost, in pixels, with two-frame differencing. Only read
+    # when ascent_three_frame is 0 — the AND has no ghosts to remove.
+    # An ascent crosses 25-50px a frame, so nothing at this scale can
+    # be the ball; what it removes is a mover that barely moved, which
+    # is a ghost or a leaf. 0 disables.
+    "ascent_ghost_px":          (4,                        0,     40, True),
     "ascent_min_points":        (ASCENT_MIN_POINTS,        2,     20, True),
     "ascent_min_rise_frac":     (ASCENT_MIN_RISE_FRAC,  0.01,    0.9, False),
     "ascent_rate_lo":           (ASCENT_RATE_LO,        0.05,   20.0, False),

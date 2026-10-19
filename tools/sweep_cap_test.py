@@ -169,15 +169,39 @@ def main() -> int:
                                    gates={"ascent_three_frame": want})
             check(f"  a hole set to {want} runs the detector that way",
                   out.get("three_frame"), bool(want))
-        # THE GHOST IS REAL, and it is why the default is on: a
+        # THE GHOST IS REAL, and it is why three-frame exists: a
         # two-frame diff lights a mover twice, where it is and where it
-        # was, so the two runs cannot return the same detections.
+        # was. Compared with ghost suppression OFF, or this measures
+        # the suppressor rather than the ghost — two-frame now ships
+        # with it on, which is what broke this assertion when it was
+        # written against the older default.
         two = d3.sweep_ascents(clip, 60.0, roi={"y": 0.9},
-                               gates={"ascent_three_frame": 0})
+                               gates={"ascent_three_frame": 0,
+                                      "ascent_ghost_px": 0})
         three = d3.sweep_ascents(clip, 60.0, roi={"y": 0.9},
                                  gates={"ascent_three_frame": 1})
         check("  two-frame sees more, because it sees every ghost too",
               two.get("n_dets", 0) > three.get("n_dets", 0), True)
+        # AND SUPPRESSION IS ONLY READ WITH TWO-FRAME. The AND has no
+        # ghost to remove, and running it there would be a second,
+        # unasked-for filter on a detector that is already the strictest
+        # of the two.
+        check("  three-frame reports no ghost radius",
+              three.get("ghost_px"), 0.0)
+        check("  two-frame reports the one it used",
+              d3.sweep_ascents(clip, 60.0, roi={"y": 0.9},
+                               gates={"ascent_three_frame": 0,
+                                      "ascent_ghost_px": 6}
+                               ).get("ghost_px"), 6.0)
+        # REPORTED IS NOT USED. A mutation that reported the radius and
+        # then passed zero to the detector survived the check above,
+        # which is the same hole the per-frame cap had: the only proof
+        # is that the detections themselves change.
+        _wide = d3.sweep_ascents(clip, 60.0, roi={"y": 0.9},
+                                 gates={"ascent_three_frame": 0,
+                                        "ascent_ghost_px": 20})
+        check("  and a wide radius actually removes detections",
+              _wide.get("n_dets", 0) < two.get("n_dets", 0), True)
 
     # ---- the detections around a chain -------------------------------
     # Every picture the sweep draws shows what it ASSEMBLED. A ball the

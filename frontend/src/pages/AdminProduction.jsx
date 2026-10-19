@@ -11285,6 +11285,12 @@ function ImageLightbox({ url, title, onClose }) {
 function AscentProbe({ sweep, uploadId, adminPassword }) {
   const [frame, setFrame] = useState(null);
   const [err, setErr] = useState(null);
+  // WHICH FRAME IS ON SCREEN. Scanning used the chain's own window
+  // whatever the operator had navigated to, so stepping to the real
+  // flight and pressing Scan quietly scanned the chain's frames
+  // instead — and a sweep's best chain is not always the ball, which
+  // is the case that made this matter.
+  const [viewFrame, setViewFrame] = useState(null);
   const chain = (sweep?.considered || [])[0] || null;
   const pts = chain?.points || [];
   const near = sweep?.near_dets || [];
@@ -11319,16 +11325,19 @@ function AscentProbe({ sweep, uploadId, adminPassword }) {
   );
   const scanRegion = useCallback(
     async (region, level) => {
+      // Centred on what is being LOOKED AT, falling back to the
+      // chain's window before a frame has been stepped to.
+      const _c = viewFrame ?? mid;
       const out = await api.scanPlotRegion(adminPassword, uploadId, {
         ...region,
         sensitivity: level,
         which: "tee",
-        start_frame: f0,
-        end_frame: f1,
+        start_frame: Math.max(0, _c - 45),
+        end_frame: _c + 45,
       });
       return out?.dots || [];
     },
-    [adminPassword, uploadId, f0, f1],
+    [adminPassword, uploadId, viewFrame, mid],
   );
 
   if (mid == null) return null;
@@ -11353,14 +11362,21 @@ function AscentProbe({ sweep, uploadId, adminPassword }) {
         onToggleDot={() => {}}
         track={[]}
         loadFrame={loadFrame}
-        frameLo={f0}
-        frameHi={f1}
+        // THE WHOLE CLIP, not the chain's window. The chain the sweep
+        // got furthest with is not necessarily the ball — on #768 it
+        // was a piece of junk 19 seconds away from the flight — so the
+        // probe has to be able to go and look at the real one.
+        frameLo={0}
+        frameHi={sweep?.n_frames || (mid + 600)}
         startFrame={mid}
+        onViewFrame={setViewFrame}
         scanRegion={scanRegion}
-        note={`${near.length} detection(s) the sweep had here, over `
-          + `f${pts[0].frame}-${pts[pts.length - 1].frame}; its chain `
-          + `kept ${pts.length}. Zoom in and press Scan to see what a `
-          + `scan of the same pixels finds.`}
+        note={`the sweep's best chain is f${pts[0].frame}-`
+          + `${pts[pts.length - 1].frame} (${near.length} detections `
+          + `around it, ${pts.length} kept) — but that is only its BEST, `
+          + `not necessarily the ball. Type a frame range above to go to `
+          + `the real flight, then Scan: it covers 45 frames either side `
+          + `of what you are looking at.`}
         noteColour="#67e8f9"
       />
     </div>
