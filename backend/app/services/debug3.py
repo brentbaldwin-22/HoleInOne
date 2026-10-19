@@ -4060,6 +4060,26 @@ def find_ascents(
 # honest way to set it is to look at one.
 SWEEP_PER_FRAME = 40
 
+# HOW FAR OFF ITS OWN LINE a chain may reach, in pixels, when the sweep
+# links detections. The descent search has passed one since the day a
+# ball walked into a bush and jumped 355px across the picture; the
+# ascent sweep passed none, and so ran with the corridor test off AND
+# with the ordering that depends on it off — established tracks picked
+# purely by LENGTH, which hands an ambiguous detection to whatever has
+# been running longest rather than to whatever is actually predicting.
+#
+# Measured on #768: the detector offers the flight on ~20 frames and
+# the chain keeps 4, with its own points unevenly spaced — the
+# signature of a link taken off the line early, a velocity estimate
+# wrecked by it, and every prediction after that aimed at nothing.
+#
+# An ascent is the straightest thing in this file. It is the first
+# third of a second of a struck ball: no gravity curve worth the name,
+# no bounce, no wind yet. If a corridor is right for a descent it is
+# more right here. Same 10px, because that number was measured on this
+# footage and this detector rather than guessed.
+ASCENT_CORRIDOR_PX = 10.0
+
 # HOW LONG A CHAIN IN THE SWEEP MAY RUN, in frames. A ball crosses the
 # band above the golfers in well under a second; at 50fps sixty frames is
 # already generous. Its job is to stop a long-lived speckle track from
@@ -4649,6 +4669,7 @@ def sweep_ascents(
     # Only with two-frame differencing: the AND leaves no ghost behind.
     _ghost = 0.0 if _three else float(_G["ascent_ghost_px"])
     _prefer = float(_G["ascent_prefer_area"])
+    _corridor = float(_G["ascent_corridor_px"])
     if min_points is None:
         min_points = ASCENT_MIN_POINTS
     out = {"ok": False, "ascents": [], "n_tracks": 0, "n_dets": 0,
@@ -4718,6 +4739,7 @@ def sweep_ascents(
         out["three_frame"] = _three
         out["ghost_px"] = _ghost
         out["prefer_area"] = _prefer
+        out["corridor_px"] = _corridor
         out["cap_hit_frames"] = int(_stats.get("capped") or 0)
         out["cap_hit_frac"] = (round(_stats.get("capped", 0) / _fr, 3)
                                if _fr else None)
@@ -4726,7 +4748,8 @@ def sweep_ascents(
         _t_det = time.perf_counter() - _t0
         tracks = build_tracks(dets, 14.0, min_len=int(min_points),
                               max_gap=DESCENT_MAX_GAP,
-                              max_span=SWEEP_MAX_SPAN)
+                              max_span=SWEEP_MAX_SPAN,
+                              corridor_px=_corridor)
         out["n_tracks"] = len(tracks)
         out["timing"] = {"detect": round(_t_det, 2),
                          "linking": round(time.perf_counter()
@@ -6489,6 +6512,10 @@ GATE_SPEC = {
     # is the number that stops a treeline winning the per-frame cut
     # against a ball at 180 yards.
     "ascent_prefer_area":       (0,                        0,  20000, True),
+    # HOW FAR OFF ITS LINE a chain may reach, in pixels. 0 turns the
+    # corridor off and takes the length-ordering back with it, which is
+    # how the ascent sweep ran until 19 Oct.
+    "ascent_corridor_px":       (ASCENT_CORRIDOR_PX,     0.0,  200.0, False),
     "ascent_min_points":        (ASCENT_MIN_POINTS,        2,     20, True),
     "ascent_min_rise_frac":     (ASCENT_MIN_RISE_FRAC,  0.01,    0.9, False),
     "ascent_rate_lo":           (ASCENT_RATE_LO,        0.05,   20.0, False),
