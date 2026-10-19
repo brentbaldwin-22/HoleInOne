@@ -11351,6 +11351,7 @@ function AscentProbe({ sweep, uploadId, adminPassword }) {
         frameH={frame.height}
         marks={{}}
         onToggleDot={() => {}}
+        track={[]}
         loadFrame={loadFrame}
         frameLo={f0}
         frameHi={f1}
@@ -11988,7 +11989,13 @@ function PlotHeatCanvas({
             be clicked off. zIndex keeps them above the amber dots where
             the two overlap, and the hit area has a floor so it stays
             clickable when zoomed in. */}
-        {hasDims && track.map((t, i) => {
+        {/* (track || []) — OPTIONAL, like every other array prop here.
+            The reading of `track` 300 lines above guards it and this
+            one did not, which went unnoticed because every call site
+            until now passed one. The first that did not took the whole
+            admin page down with "Cannot read properties of undefined
+            (reading 'map')". */}
+        {hasDims && (track || []).map((t, i) => {
           const still = marks[t.frame];
           const kept =
             !!still &&
