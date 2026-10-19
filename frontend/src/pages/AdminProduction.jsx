@@ -8860,9 +8860,21 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                           #{z.id ?? i + 1}
                         </td>
                         <td>f{z.first_frame}</td>
+                        {/* TWO TRIMS, NOT ONE, and they mean opposite
+                            things. n_trimmed is everything the tail
+                            trims dropped — "the rising run was shorter
+                            than the chain" — while n_lead_outliers is
+                            the subset that sat off the line, which is
+                            the only one that says a LINK was wrong.
+                            This read the total and called all of it
+                            leading. */}
                         <td title={z.n_trimmed
-                          ? `${z.n_trimmed} leading point(s) trimmed off a ${z.n_raw_points}-point chain`
-                          : ""}>
+                          ? `${z.n_points} of a ${z.n_raw_points}-point chain kept`
+                            + ` — ${z.n_trimmed} trimmed`
+                            + (z.n_lead_outliers
+                              ? `, ${z.n_lead_outliers} of them leading outliers off the line`
+                              : " by the rising-tail cut, none off the line")
+                          : `the detector found ${z.n_points}; nothing was trimmed`}>
                           {z.n_points}
                           {z.n_trimmed > 0 && (
                             <span className="muted"> −{z.n_trimmed}</span>
