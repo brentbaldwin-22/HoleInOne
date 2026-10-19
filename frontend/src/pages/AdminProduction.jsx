@@ -11366,19 +11366,21 @@ function PlotHeatCanvas({
   }, [frameW, frameH, hasDims]);
   // Dense candidates + scanned dots that aren't already represented by
   // a timed dot (same frame within 2px) — no doubled-up targets.
-  const extraDots = [...(denseDots || []), ...scanDots].filter(
-    (c) =>
-      !(dots || []).some(
-        (p) =>
-          p.frame === c.frame &&
-          Math.abs(p.x - c.x) <= 2 &&
-          Math.abs(p.y - c.y) <= 2,
-      ),
-  );
+  const _notAlreadyShown = (c) =>
+    !(dots || []).some(
+      (p) =>
+        p.frame === c.frame &&
+        Math.abs(p.x - c.x) <= 2 &&
+        Math.abs(p.y - c.y) <= 2,
+    );
+  const extraDots = [...(denseDots || []), ...scanDots]
+    .filter(_notAlreadyShown);
+  // What a Scan turned up, on its own. Drawn at any magnification.
+  const scannedExtras = scanDots.filter(_notAlreadyShown);
   const showDense = zoom >= DENSE_DOT_ZOOM;
 
   async function doScan() {
-    if (!scanRegion || scanning || !hasDims || zoom < 1.99) return;
+    if (!scanRegion || scanning || !hasDims) return;
     // Current viewport in native pixels. transform is scale(zoom) with
     // origin (focus%), so the visible span is 1/zoom of the frame
     // starting at origin*(1 - 1/zoom).
@@ -11879,9 +11881,13 @@ function PlotHeatCanvas({
           );
         })}
         {/* Dense candidate layer — smaller, dimmer targets that only
-            appear once zoomed in, so the fit view stays readable. */}
-        {hasDims && showDots && showDense &&
-          extraDots.map((p, i) => {
+            appear once zoomed in, so the fit view stays readable.
+            SCANNED DOTS ARE NOT PART OF THAT BARGAIN. The dense pool
+            arrives on its own and is hidden until asked for; a scan is
+            the asking. Hiding its result behind a zoom threshold reads
+            as a scan that found nothing. */}
+        {hasDims && showDots &&
+          (showDense ? extraDots : scannedExtras).map((p, i) => {
             const q = marks[p.frame];
             const isQueued =
               !!q && Math.abs(q.x - p.x) <= 2 && Math.abs(q.y - p.y) <= 2;
@@ -11992,7 +11998,8 @@ function PlotHeatCanvas({
             );
           })}
       </div>
-      {(note || scanNote || (extraDots.length > 0 && !showDense)) && (
+      {(note || scanNote
+        || (extraDots.length > scannedExtras.length && !showDense)) && (
         <div
           style={{
             position: "absolute", left: 8, bottom: 8,
@@ -12007,7 +12014,9 @@ function PlotHeatCanvas({
           {scanNote
             ? `🔍 ${scanNote}`
             : note
-              || `🔍 zoom to ${DENSE_DOT_ZOOM}×+ to reveal ${extraDots.length} more clickable detections`}
+              || `🔍 zoom to ${DENSE_DOT_ZOOM}×+ to reveal ${
+                extraDots.length - scannedExtras.length
+              } more clickable detections`}
         </div>
       )}
       {/* FLOATING CONTROLS. These used to be a SIBLING above the image
@@ -12134,12 +12143,26 @@ function PlotHeatCanvas({
                 ? "rgba(245,158,11,0.7)"
                 : zoomBtn.background,
             }}
-            disabled={scanning || zoom < 1.99}
+            disabled={scanning}
             onClick={doScan}
             title={
-              zoom < 1.99
-                ? "Zoom to at least 2× first, then Scan finds every motion blob in the visible area"
-                : `Deep-scan the visible area (level ${scanLevel} of 3): frame-diff over the swing window with much looser gates than the tracer — every transient blob in view becomes a clickable dot. Finds nothing? Press again; it steps up a level. Takes a few seconds.`
+              `Deep-scan the visible area (level ${scanLevel} of 3): `
+              + "frame-diff over the swing window with much looser gates "
+              + "than the tracer — every transient blob in view becomes a "
+              + "clickable dot. Finds nothing? Press again; it steps up a "
+              + "level. Takes a few seconds."
+              + (zoom < 1.99
+                // SAY WHAT ZOOMING BUYS, rather than refusing to scan.
+                // The server keeps only the biggest few blobs per frame,
+                // so a wide view spends that budget on whatever else is
+                // moving — the group, the treeline — and a ball three
+                // pixels across loses. Zooming does not make the scan
+                // better; it makes the ball the biggest thing in it.
+                ? " Zoomed out, the per-frame budget goes to the largest"
+                  + " movers in view (the group, the trees) and a small"
+                  + " ball can be crowded out — zoom in on the flight if"
+                  + " this comes back thin."
+                : "")
             }
           >
             {scanning

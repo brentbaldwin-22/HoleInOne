@@ -3599,6 +3599,81 @@ ASCENT_HEAD_ROOM_FRAC = 0.33
 ASCENT_BAND_FALLBACK_FRAC = 0.45
 
 
+# HOW MUCH OF THE BAND A REAL CHAIN CAN ACTUALLY USE.
+#
+# Not all of it, which is what makes `rise > band_h` the wrong test. A
+# chain is built from detections whose centres lie inside the band, and
+# the ball is first seen some way in and last seen some way short of the
+# far edge -- so a chain spanning the whole band edge to edge does not
+# happen. The case this was written for proves the point: a 143px band
+# under a 142.56px gate is not mathematically impossible, it is
+# impossible in the way that matters, and a strict comparison stays
+# silent through exactly the run that needed it.
+_BAND_USABLE_FRAC = 0.9
+
+
+def _ascent_band(frame_h: int, roi: dict | None) -> tuple[int, float]:
+    """(band height, tee line y) — the strip of sky the ascent searches.
+
+    ONE COPY. find_ascents and sweep_ascents each had this arithmetic
+    written out, which is two places for a band to be defined and one
+    of them to be changed. It is also the formula `_band_too_thin`
+    exists to check, and a check that re-derives what it is checking
+    checks nothing.
+
+    The floor is a golfer's height above the tee box, because everything
+    that makes a tee view hard to track -- players walking, a club
+    swinging, shadows -- is below that line, and a ball on its way out
+    crosses above them against plain sky.
+    """
+    tee_top = (float(roi.get("y", 0.0)) * frame_h if roi
+               else (ASCENT_BAND_FALLBACK_FRAC
+                     + ASCENT_HEAD_ROOM_FRAC) * frame_h)
+    band_h = int(max(40, min(frame_h - 1,
+                             tee_top - ASCENT_HEAD_ROOM_FRAC * frame_h)))
+    return band_h, tee_top
+
+
+def _band_too_thin(band_h: int, frame_h: int, min_rise_frac: float,
+                   tee_top: float) -> str | None:
+    """Can anything in a band this thin clear the rise gate? If not, say
+    so in the words that name the fix.
+
+    THE ARITHMETIC NOBODY CHECKS. The band is `tee_top` minus a golfer's
+    height, and the rise gate is a fraction of the WHOLE frame -- two
+    numbers with no relation to each other, so there is nothing stopping
+    the second from being larger than the first. When it is, every chain
+    fails `rise` no matter how good the swing, and the report reads like
+    a tuning problem: "1 chain, failed rise" is the same sentence
+    whether the bar is a little high or the band is physically too short
+    to contain it.
+
+    Seen on hole 8: no hitting area was set for the day, so the ROI fell
+    back to the tee camera's PERSON trigger zones, whose top edge is at
+    a standing golfer's head (0.46 of frame) rather than at the ground
+    (0.79). The band code then subtracted a golfer's height from a box
+    that already started above the golfer -- headroom twice -- leaving a
+    143px band under a 142px rise gate. An hour went into the swing
+    before anyone looked at the geometry.
+    """
+    need = min_rise_frac * frame_h
+    if band_h <= 0 or need <= band_h * _BAND_USABLE_FRAC:
+        return None
+    return (
+        f"THE BAND IS TOO THIN FOR THE RISE GATE: it is {int(band_h)}px "
+        f"and a chain must rise {int(need)}px inside it — "
+        f"{need / band_h:.0%} of the whole band, which no real chain "
+        f"reaches, so nothing in it can pass however good the swing. "
+        f"The band is the tee line "
+        f"({int(tee_top)}px, {tee_top / max(1, frame_h):.2f} of the "
+        f"frame) less a golfer's height. A tee line that high usually "
+        f"means the hitting area is a PERSON box -- drawn round a "
+        f"standing golfer rather than on the ground -- so draw the "
+        f"hitting area on the grass at the tee, or lower "
+        f"ascent_min_rise_frac for this hole. "
+    )
+
+
 def find_ascents(
     input_path: Path,
     fps: float,
@@ -3647,19 +3722,18 @@ def find_ascents(
             return out
         # The band: full width, from the top of the frame down to a
         # golfer's height above the tee box.
-        _tee_top = (float(roi.get("y", 0.0)) * frame_h if roi
-                    else (ASCENT_BAND_FALLBACK_FRAC
-                          + ASCENT_HEAD_ROOM_FRAC) * frame_h)
-        band_h = int(max(40, min(frame_h - 1,
-                                 _tee_top - ASCENT_HEAD_ROOM_FRAC * frame_h)))
+        band_h, _tee_top = _ascent_band(frame_h, roi)
         out["band"] = [0, 0, int(frame_w), band_h]
+        out["band_warning"] = _band_too_thin(
+            band_h, frame_h, ASCENT_MIN_RISE_FRAC, _tee_top)
         dets = detect_movers_by_diff(input_path, f0, f1, sens=2,
                                      per_frame=DESCENT_DIFF_PER_FRAME,
                                      roi=(0, 0, int(frame_w), band_h),
                                      three_frame=True)
         if not dets:
             out["reason"] = (
-                f"nothing moved in the band above the golfers "
+                (out.get("band_warning") or "")
+                + f"nothing moved in the band above the golfers "
                 f"(the top {band_h}px) after the strike")
             return out
         tracks = build_tracks(dets, 14.0, min_len=int(min_points),
@@ -3760,7 +3834,8 @@ def find_ascents(
         if best is None:
             out["considered"] = considered
             out["reason"] = (
-                f"{len(tracks)} track(s) after the strike, none of them a "
+                (out.get("band_warning") or "")
+                + f"{len(tracks)} track(s) after the strike, none of them a "
                 f"ball leaving this spot"
                 + ("; closest: " + "; ".join(
                     f"{c['n_points']}pts {c.get('why', 'not judged')}"
@@ -4387,13 +4462,16 @@ def sweep_ascents(
         if frame_h <= 0 or n_frames <= 1:
             out["reason"] = "the tee video reports no frames"
             return out
-        _tee_top = (float(roi.get("y", 0.0)) * frame_h if roi
-                    else (ASCENT_BAND_FALLBACK_FRAC
-                          + ASCENT_HEAD_ROOM_FRAC) * frame_h)
-        band_h = int(max(40, min(frame_h - 1,
-                                 _tee_top - ASCENT_HEAD_ROOM_FRAC * frame_h)))
+        band_h, _tee_top = _ascent_band(frame_h, roi)
         out["band"] = [0, 0, int(frame_w), band_h]
         out["tee_line_y"] = int(_tee_top)
+        # REPORTED, NOT REFUSED. The rise gate is tunable per hole, so
+        # "impossible" is only true of the gates in force -- an operator
+        # may legitimately answer this by lowering the bar rather than
+        # redrawing the box, and refusing to run would take the picture
+        # that explains it away along with the choice.
+        out["band_warning"] = _band_too_thin(
+            band_h, frame_h, ASCENT_MIN_RISE_FRAC, _tee_top)
         # THE HITTING AREA, if one has been drawn for this hole. Without
         # it there is nothing to be outside of, and the gate below is
         # skipped -- reported, so a run that checked nothing does not
@@ -4618,7 +4696,8 @@ def sweep_ascents(
         out["n_merged"] = _n_raw - len(out["ascents"])
         out["ok"] = True
         out["reason"] = (
-            (f"{out['n_merged']} duplicate chain(s) merged; "
+            (out.get("band_warning") or "")
+            + (f"{out['n_merged']} duplicate chain(s) merged; "
              if out["n_merged"] else "")
             + (f"{out['n_outside_area']} pointed back outside the "
                f"hitting area; " if out["n_outside_area"] else "")
