@@ -4580,6 +4580,173 @@ def _dedupe_ascents(asc: list, gap_px: float = 40.0) -> list:
     return out
 
 
+# ── pulling a flight out of the cloud, instead of walking into it ────
+#
+# WHAT THE OPERATOR'S EYE DOES, AND THE TRACKER CANNOT. build_tracks is
+# sequential: it walks the frames in order and extends each chain by one
+# detection at a time, choosing locally. Every choice is made without
+# knowing how it turns out, so one bad link ends a flight -- and a
+# detection taken by a longer chain is gone whatever it was.
+#
+# Measured on #768 after the detector was fixed: a clean column of
+# detections from f1555 to f1581, and the best chain the tracker built
+# out of it was FOUR points spanning sixteen frames, gaps of four and
+# ten, refused on rate, sparse and gap. The flight is obvious in the
+# picture and the walk cannot see it, because seeing it means looking at
+# all the points at once.
+#
+# So look at them at once. A struck ball is, over the third of a second
+# it spends crossing the band, almost exactly a straight line at
+# constant speed: two numbers of velocity and a starting point. Propose
+# one from a pair of detections, count how many others lie on it, keep
+# the proposals with the most. Nothing sequential, nothing to steal,
+# and a frame the detector missed costs one inlier rather than the rest
+# of the chain.
+
+# How far off the proposed line a detection may sit and still count.
+# Tight: the line is fitted to a ball, and anything that needs more
+# slack than this is a different object.
+FIT_TOL_PX = 7.0
+# The speed band a seed pair must imply, in px/frame upward. Below is a
+# cloud drifting; above is nothing a camera at this distance sees.
+FIT_MIN_STEP = 4.0
+FIT_MAX_STEP = 120.0
+# How far either side of a seed to extend, in frames. A ball crosses
+# the band in well under a second; this is generous at 60fps.
+FIT_WINDOW = 70
+# A runaway guard, not a budget: with ball-sized ranking the band holds
+# few enough detections that this is rarely approached.
+FIT_MAX_SEEDS = 60000
+# Die early. Most seeds are two unrelated specks and prove it within a
+# couple of steps, which is what keeps the whole pass affordable.
+FIT_MAX_MISSES = 4
+
+
+def fit_ascent_chains(dets: list, min_points: int,
+                      tol_px: float = FIT_TOL_PX,
+                      window: int = FIT_WINDOW) -> list:
+    """Chains found by FITTING lines to the detection cloud.
+
+    Returns the same {points, span_px, rise_px} shape build_tracks does,
+    so the gates downstream cannot tell where a chain came from.
+
+    Deliberately additive: these are handed to the gates alongside the
+    tracker's own chains, not instead of them. A fit is better at a
+    straight fast thing in a crowd and has nothing to say about anything
+    else, and the gates are what decide either way.
+    """
+    by_frame: dict = {}
+    for d in dets or []:
+        by_frame.setdefault(int(d["frame"]), []).append(d)
+    frames = sorted(by_frame)
+    if len(frames) < min_points:
+        return []
+
+    found: list = []
+    claimed: set = set()
+    seeds = 0
+
+    def _key(d):
+        return (int(d["frame"]), int(d["x"]), int(d["y"]))
+
+    for f in frames:
+        for a in by_frame[f]:
+            if _key(a) in claimed:
+                continue
+            for df in (1, 2):
+                for b in by_frame.get(f + df, ()):
+                    if _key(b) in claimed:
+                        continue
+                    vy = (b["y"] - a["y"]) / df
+                    vx = (b["x"] - a["x"]) / df
+                    # RISING, AND STEEPLY. A ball leaving a tee climbs
+                    # away; anything crossing the picture on a diagonal
+                    # is going somewhere else, and refusing it here is
+                    # cheaper than fitting it and refusing it later.
+                    if not (FIT_MIN_STEP <= -vy <= FIT_MAX_STEP):
+                        continue
+                    if abs(vx) > abs(vy):
+                        continue
+                    seeds += 1
+                    if seeds > FIT_MAX_SEEDS:
+                        return _dedupe_fits(found)
+                    pts = _grow_fit(by_frame, a, vx, vy, f, tol_px, window)
+                    if len(pts) >= min_points:
+                        found.append(pts)
+                        for q in pts:
+                            claimed.add(_key(q))
+                        break
+                else:
+                    continue
+                break
+    return _dedupe_fits(found)
+
+
+def _grow_fit(by_frame: dict, a: dict, vx: float, vy: float, f0: int,
+              tol_px: float, window: int) -> list:
+    """Every detection lying on the line through `a` with velocity
+    (vx, vy), walked outward in both directions from the seed."""
+    out = [a]
+    for direction in (1, -1):
+        misses = 0
+        for step in range(1, window + 1):
+            g = f0 + direction * step
+            cands = by_frame.get(g)
+            if not cands:
+                misses += 1
+                if misses > FIT_MAX_MISSES:
+                    break
+                continue
+            px = a["x"] + vx * (g - f0)
+            py = a["y"] + vy * (g - f0)
+            best = None
+            best_d = tol_px
+            for c in cands:
+                d = math.hypot(c["x"] - px, c["y"] - py)
+                if d <= best_d:
+                    best, best_d = c, d
+            if best is None:
+                misses += 1
+                if misses > FIT_MAX_MISSES:
+                    break
+                continue
+            misses = 0
+            out.append(best)
+    out.sort(key=lambda q: q["frame"])
+    return out
+
+
+def _dedupe_fits(found: list) -> list:
+    """Longest first, dropping any fit whose points are mostly another's
+    -- one object should yield one chain, the same rule build_tracks
+    works to.
+
+    NO LENGTH FLOOR HERE. It took a `min_points` and ignored it, so I
+    made it enforce one -- and then neither that check nor the one
+    upstream could be killed by a mutation, because each covered for
+    the other. A floor in two places is a floor that cannot be tested
+    in either. It lives where it has an effect: at the point a fit is
+    accepted, before it claims its detections and blocks the flight
+    that needed them.
+    """
+    found.sort(key=len, reverse=True)
+    kept: list = []
+    seen: set = set()
+    for pts in found:
+        ks = {(q["frame"], q["x"], q["y"]) for q in pts}
+        if len(ks & seen) > len(ks) // 2:
+            continue
+        seen |= ks
+        kept.append({
+            "points": pts,
+            "span_px": math.hypot(pts[-1]["x"] - pts[0]["x"],
+                                  pts[-1]["y"] - pts[0]["y"]),
+            "rise_px": float(pts[0]["y"] - pts[-1]["y"]),
+            "from_fit": True,
+        })
+    return kept
+
+
 def sweep_ascents(
     input_path: Path,
     fps: float,
@@ -4670,6 +4837,7 @@ def sweep_ascents(
     _ghost = 0.0 if _three else float(_G["ascent_ghost_px"])
     _prefer = float(_G["ascent_prefer_area"])
     _corridor = float(_G["ascent_corridor_px"])
+    _fit = bool(int(_G["ascent_fit_lines"]))
     if min_points is None:
         min_points = ASCENT_MIN_POINTS
     out = {"ok": False, "ascents": [], "n_tracks": 0, "n_dets": 0,
@@ -4740,6 +4908,7 @@ def sweep_ascents(
         out["ghost_px"] = _ghost
         out["prefer_area"] = _prefer
         out["corridor_px"] = _corridor
+        out["fit_lines"] = _fit
         out["cap_hit_frames"] = int(_stats.get("capped") or 0)
         out["cap_hit_frac"] = (round(_stats.get("capped", 0) / _fr, 3)
                                if _fr else None)
@@ -4750,6 +4919,11 @@ def sweep_ascents(
                               max_gap=DESCENT_MAX_GAP,
                               max_span=SWEEP_MAX_SPAN,
                               corridor_px=_corridor)
+        # AND THE FITS, judged by the same gates. A chain is a chain:
+        # nothing downstream knows or cares which pass produced it.
+        _fits = fit_ascent_chains(dets, int(min_points)) if _fit else []
+        out["n_fits"] = len(_fits)
+        tracks = tracks + _fits
         out["n_tracks"] = len(tracks)
         out["timing"] = {"detect": round(_t_det, 2),
                          "linking": round(time.perf_counter()
@@ -6516,6 +6690,11 @@ GATE_SPEC = {
     # corridor off and takes the length-ordering back with it, which is
     # how the ascent sweep ran until 19 Oct.
     "ascent_corridor_px":       (ASCENT_CORRIDOR_PX,     0.0,  200.0, False),
+    # ALSO FIT LINES TO THE CLOUD (1/0), alongside the sequential
+    # tracker rather than instead of it. See fit_ascent_chains: a walk
+    # chooses locally and one bad link ends a flight, where a fit looks
+    # at every detection at once and a missed frame costs one inlier.
+    "ascent_fit_lines":         (1,                        0,      1, True),
     "ascent_min_points":        (ASCENT_MIN_POINTS,        2,     20, True),
     "ascent_min_rise_frac":     (ASCENT_MIN_RISE_FRAC,  0.01,    0.9, False),
     "ascent_rate_lo":           (ASCENT_RATE_LO,        0.05,   20.0, False),
