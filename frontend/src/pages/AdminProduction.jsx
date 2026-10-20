@@ -15442,6 +15442,38 @@ export default function AdminProduction() {
   // text input; `courseQuery` is the debounced value actually sent to the
   // backend so typing doesn't refetch on every keystroke. `sortKey`
   // combines the sort field and direction into one dropdown value.
+  // THE QUEUE'S OWN STATE, polled because it changes without us: the
+  // camera path queues captures on its own all day.
+  const [queue, setQueue] = useState(null);
+  const [pausing, setPausing] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    const read = async () => {
+      try {
+        const q = await api.produceQueue(adminPassword);
+        if (!dead) setQueue(q);
+      } catch {
+        /* the page has louder ways to report a dead backend */
+      }
+    };
+    read();
+    const t = setInterval(read, 5000);
+    return () => { dead = true; clearInterval(t); };
+  }, [adminPassword]);
+
+  const togglePause = async () => {
+    setPausing(true);
+    try {
+      const next = !(queue?.paused);
+      setQueue(await api.setProduceQueuePaused(adminPassword, next)
+        .then(() => api.produceQueue(adminPassword)));
+    } catch (e) {
+      setError(e.message || "could not change the queue");
+    } finally {
+      setPausing(false);
+    }
+  };
+
   const [courseSearch, setCourseSearch] = useState("");
   const [courseQuery, setCourseQuery] = useState("");
   const [sortKey, setSortKey] = useState("created_desc");
@@ -16287,13 +16319,42 @@ export default function AdminProduction() {
       </div>
 
       <div className="card">
-        <h3 style={{ marginBottom: 4 }}>Production Queue</h3>
-        <p className="small muted" style={{ marginBottom: 0 }}>
-          Every uploaded long video, newest first. Multi-swing rounds
-          auto-produce on upload; one-swing clips wait here until you
-          hit <b>Produce</b>. Produced clips land on{" "}
-          <Link to="/admin/broadcast-clips">Broadcast</Link>.
-        </p>
+        <div className="row" style={{ alignItems: "flex-start", gap: 12 }}>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <h3 style={{ marginBottom: 4 }}>Production Queue</h3>
+            <p className="small muted" style={{ marginBottom: 0 }}>
+              Every uploaded long video, newest first. Multi-swing rounds
+              auto-produce on upload; one-swing clips wait here until you
+              hit <b>Produce</b>. Produced clips land on{" "}
+              <Link to="/admin/broadcast-clips">Broadcast</Link>.
+            </p>
+          </div>
+          {/* PAUSE. Produce serialises and it is the heaviest thing the
+              box does, so a backlog of automatic captures means every
+              button here waits minutes. Pausing holds the automatic work
+              only — Produce, Find Ascents and the wizard still run, and
+              pressing Produce on a held card promotes it. */}
+          <button
+            type="button"
+            onClick={togglePause}
+            disabled={pausing || queue === null}
+            className={queue?.paused ? "" : "secondary"}
+            style={{ whiteSpace: "nowrap" }}
+          >
+            {queue?.paused ? "▶ Resume auto-produce" : "⏸ Pause auto-produce"}
+          </button>
+        </div>
+        {queue?.paused && (
+          <p className="small warn-text" style={{ margin: "10px 0 0" }}>
+            Automatic produce is paused{queue.held
+              ? ` — ${queue.held} capture${queue.held === 1 ? "" : "s"} held`
+              : ""}. Your own Produce / Find Ascents runs still go through,
+            and pressing <b>Produce</b> on a held card jumps it ahead.
+            Nothing is lost; held captures resume in their original order.
+            A backend restart resumes too, so this can&apos;t be left on by
+            accident.
+          </p>
+        )}
       </div>
 
       {error && <div className="card err-text small">{error}</div>}

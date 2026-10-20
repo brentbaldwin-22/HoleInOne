@@ -6034,6 +6034,29 @@ def list_camera_events(
     return out
 
 
+@router.get("/produce-queue")
+def get_produce_queue():
+    """What the produce queue is doing, and whether it is paused."""
+    return produce_queue_status()
+
+
+@router.post("/produce-queue/pause")
+def post_produce_queue_pause(payload: dict = Body(default={})):
+    """Hold automatic produce so the box is free for hands-on work.
+
+    Automatic only: a Produce, Find Ascents or wizard run an operator
+    starts still goes through, and pressing Produce on a held card
+    promotes it out of the hold. Nothing is cancelled -- held jobs go
+    back in their original order on resume.
+
+    In memory, so a restart resumes. That is the right default for a
+    switch whose purpose is "I am working on the box right now": the
+    failure mode of forgetting to un-pause it is a course that quietly
+    stops producing clips.
+    """
+    return set_produce_paused(bool(payload.get("paused", True)))
+
+
 @router.post("/camera-events/{event_id}/reprocess")
 def reprocess_camera_event(event_id: int, db: Session = Depends(get_db)):
     """Re-run the production pipeline for a previously-uploaded
@@ -6073,7 +6096,12 @@ def reprocess_camera_event(event_id: int, db: Session = Depends(get_db)):
 
     threading.Thread(
         target=_process_camera_event_job,
-        args=(event.id,),
+        # A HUMAN ASKING IS THE OTHER WAY A TEE-ONLY PRODUCE IS
+        # LEGITIMATE. The normal path refuses to queue a paired event
+        # whose green is not in yet, which is right for the automatic
+        # case and wrong here: somebody is looking at this event and
+        # has decided a tee-only clip is what they want.
+        args=(event.id, True),
         daemon=True,
         name=f"camera-event-reprocess-{event.id}",
     ).start()
@@ -23654,6 +23682,38 @@ _produce_worker: threading.Thread | None = None
 # starve the health check.
 _produce_gate = workload.heavy_gate
 
+# PAUSE, FOR WHEN A HUMAN NEEDS THE BOX. Produce is the heaviest thing
+# here and it serialises, so a backlog of automatic camera captures
+# means every Produce, Find Ascents or wizard run an operator starts
+# sits behind minutes of other people's golf. Pausing holds the
+# automatic work and leaves the machine to them.
+#
+# It holds AUTOMATIC jobs only. A paused queue that also ignored the
+# button the operator just pressed would be a broken queue, not a
+# paused one -- and the whole reason to pause is to use that button.
+_produce_paused = False
+# Automatic tasks the worker has taken off the queue while paused.
+# Held rather than dropped: they go back in order on resume, and they
+# stay in _produce_pending throughout so a re-queue is still a no-op.
+_produce_deferred: list = []
+
+
+def set_produce_paused(paused: bool) -> dict:
+    """Pause or resume automatic produce. Returns the new state."""
+    global _produce_paused
+    released = 0
+    with _produce_lock:
+        _produce_paused = bool(paused)
+        if not _produce_paused:
+            while _produce_deferred:
+                _produce_q.put(_produce_deferred.pop(0))
+                released += 1
+    if released:
+        _ensure_produce_worker()
+    log.info("produce queue: %s (%d job(s) released)",
+             "PAUSED" if paused else "resumed", released)
+    return {"paused": bool(paused), "released": released}
+
 
 def _heavy_thread(target, *, name: str, args=(), kwargs=None,
                   label: str | None = None) -> threading.Thread:
@@ -23686,6 +23746,16 @@ def _produce_worker_loop() -> None:
         except Exception:  # noqa: BLE001
             continue
         uid = task["upload_id"]
+        # HELD, NOT DROPPED. Taken off the queue so the worker can get
+        # to a manual job behind it, and put back in order on resume.
+        # It stays in _produce_pending while deferred, so re-queuing it
+        # is still the no-op it would be at any other time.
+        if _produce_paused and not task.get("manual"):
+            with _produce_lock:
+                _produce_deferred.append((_key, _seq, task))
+            log.info("produce queue: upload %s held — queue is paused", uid)
+            _produce_q.task_done()
+            continue
         try:
             with _produce_lock:
                 _produce_pending.pop(uid, None)
@@ -23730,6 +23800,10 @@ def enqueue_produce_job(
     debug_artifacts: bool = False,
     wait: bool = False,
     db=None,
+    # DID A PERSON ASK FOR THIS? Default yes, so a new call site is
+    # one a pause does not silently swallow. Only the camera path --
+    # the one caller nobody is waiting on -- says otherwise.
+    manual: bool = True,
 ) -> dict:
     """Queue an upload to be produced. Returns immediately unless `wait`.
 
@@ -23760,6 +23834,15 @@ def enqueue_produce_job(
     with _produce_lock:
         existing = _produce_pending.get(upload_id)
         if existing is not None:
+            # A HELD JOB THE OPERATOR NOW ASKS FOR BY HAND is no longer
+            # automatic: promote it and put it back in the queue, or
+            # pressing Produce on a paused card does nothing at all.
+            if manual and not existing.get("manual"):
+                existing["manual"] = True
+                for i, item in enumerate(_produce_deferred):
+                    if item[2] is existing:
+                        _produce_q.put(_produce_deferred.pop(i))
+                        break
             log.info("produce queue: upload %s already queued", upload_id)
             if wait:
                 pass          # fall through and wait on the existing task
@@ -23774,6 +23857,7 @@ def enqueue_produce_job(
                 "debug_artifacts": debug_artifacts,
                 "done": threading.Event(),
                 "result": None,
+                "manual": bool(manual),
             }
             _produce_pending[upload_id] = task
             _produce_q.put((key, next(_produce_seq), task))
@@ -23798,6 +23882,8 @@ def produce_queue_status() -> dict:
             "running_upload_id": _produce_running,
             "queued_upload_ids": sorted(_produce_pending.keys()),
             "depth": _produce_q.qsize(),
+            "paused": _produce_paused,
+            "held": len(_produce_deferred),
         }
 
 

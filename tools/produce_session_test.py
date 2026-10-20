@@ -62,6 +62,10 @@ class FakeEvent:
     last_error = None
     tee_clip_filename = "tee.mp4"
     green_clip_filename = None
+    # UNPAIRED, so the "wait for the green half" guard does not apply.
+    # A paired event missing its green is not queued at all now, which
+    # would make this test about the guard rather than about sessions.
+    green_camera_id = None
     course_id = 1
     triggered_at = None
     session_id = "s"

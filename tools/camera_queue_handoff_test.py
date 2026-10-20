@@ -152,11 +152,12 @@ class FakeDB:
 
 # ------------------------------------------------- 1 + 2: the handoff
 
-def run_job(event, *, green="g.mp4"):
+def run_job(event, *, allow_tee_only=False):
     """Drive _run_camera_event_job against fakes, reporting what it did."""
     from app.routers import cameras
 
-    seen: dict = {"enqueued": [], "ensure_local": 0, "post_process": 0}
+    seen: dict = {"enqueued": [], "ensure_local": 0,
+                  "post_process": [], "order": []}
 
     # A stub admin module, so the function-level `from .admin import
     # enqueue_produce_job` resolves to ours.
@@ -165,6 +166,7 @@ def run_job(event, *, green="g.mp4"):
     def _enqueue(upload_id, hole_number=None, wait=False, **kw):
         seen["enqueued"].append({"upload_id": upload_id,
                                  "hole_number": hole_number, "wait": wait})
+        seen["order"].append("enqueue")
         return {"queued": True}
 
     admin.enqueue_produce_job = _enqueue
@@ -193,11 +195,28 @@ def run_job(event, *, green="g.mp4"):
 
         cameras.storage = _Storage()
 
-        def _pp(*_a, **_k):
-            seen["post_process"] += 1
+        def _pp(name, *_a, **_k):
+            seen["post_process"].append(name)
+            seen["order"].append("preview")
 
         cameras._post_process_raw_clip = _pp
-        cameras._run_camera_event_job(event.id)
+        # The preview backstop runs in its own thread; join it so the
+        # test sees what it did rather than racing it.
+        _threads = []
+        _real_thread = cameras.threading.Thread
+
+        def _tracked(*a, **kw):
+            t = _real_thread(*a, **kw)
+            _threads.append(t)
+            return t
+
+        cameras.threading.Thread = _tracked
+        try:
+            cameras._run_camera_event_job(event.id, allow_tee_only)
+        finally:
+            cameras.threading.Thread = _real_thread
+            for t in _threads:
+                t.join(timeout=5)
     finally:
         (cameras.SessionLocal, cameras.storage,
          cameras._post_process_raw_clip, cameras.CameraEvent) = saved
@@ -212,6 +231,7 @@ def run_job(event, *, green="g.mp4"):
 def _event(**kw):
     base = dict(id=7, course_id=1, hole_number=8, status="paired_uploaded",
                 tee_clip_filename="t.mp4", green_clip_filename="g.mp4",
+                green_camera_id=2,
                 triggered_at=None, last_error="stale", produced_clip_id=None)
     base.update(kw)
     return Row(**base)
@@ -235,7 +255,15 @@ def test_no_media_work_in_front_of_the_queue():
     ev = _event()
     seen, _db = run_job(ev)
     check("nothing is rehydrated here", seen["ensure_local"], 0)
-    check("and nothing is re-encoded here", seen["post_process"], 0)
+    # The preview transcode is not IN FRONT of the queue -- the enqueue
+    # has already happened by the time it is asked for. Cheap for a
+    # copy-engine tee (a probe and nothing else) and the only thing
+    # that notices when the upload-time hook died on the heavy gate.
+    check("the previews are made AFTER the enqueue",
+          seen["order"].index("enqueue") < seen["order"].index("preview"),
+          True)
+    check("  for both halves", sorted(seen["post_process"]),
+          ["g.mp4", "t.mp4"])
     # CONTROL: the counters are wired to the real call sites, so a zero
     # means "not called" and not "not instrumented".
     from app.routers import cameras
@@ -254,10 +282,36 @@ def test_a_paired_event_queues_as_paired():
     # has_green now comes off the filename rather than a disk probe, and
     # the probe is what used to downgrade a paired event after a
     # redeploy had emptied the local disk.
-    ev2 = _event(id=9, green_clip_filename=None)
+    ev2 = _event(id=9, green_clip_filename=None, green_camera_id=None)
     _s2, db2 = run_job(ev2)
     lvu2 = [r for r in db2.rows if getattr(r, "camera_event_id", None) == 9][0]
     check("control, tee-only stays tee-only", lvu2.green_filename, None)
+
+
+def test_a_paired_event_waits_for_its_green_half():
+    """Half a pair is not ready, however long the tee has been in."""
+    ev = _event(green_clip_filename=None)        # paired, green missing
+    seen, db = run_job(ev)
+    check("a paired event with no green is NOT queued",
+          len(seen["enqueued"]), 0)
+    check("  and no upload row is made for it",
+          [r for r in db.rows if getattr(r, "camera_event_id", None)], [])
+    check("  and it is left where the sweeper can find it",
+          ev.status, "paired_uploaded")
+    # THE DELIBERATE EXCEPTION. The tee-only fallback has waited out
+    # the whole window and a human pressing Re-process has decided for
+    # themselves; both pass the flag, and nothing else can.
+    ev2 = _event(id=11, green_clip_filename=None)
+    seen2, _db2 = run_job(ev2, allow_tee_only=True)
+    check("control, the fallback may force it anyway",
+          len(seen2["enqueued"]), 1)
+    check("  and it goes in tee-only", ev2.status, "queued")
+    # CONTROL: an UNPAIRED camera has no green half to wait for and
+    # must not be caught by the guard.
+    ev3 = _event(id=12, green_clip_filename=None, green_camera_id=None)
+    seen3, _db3 = run_job(ev3)
+    check("control, an unpaired camera queues on its tee alone",
+          len(seen3["enqueued"]), 1)
 
 
 # ------------------------------------------------ 3: derived status
@@ -388,6 +442,7 @@ def test_a_restart_does_not_undo_a_finished_event():
 for fn in (test_it_queues_and_returns,
            test_no_media_work_in_front_of_the_queue,
            test_a_paired_event_queues_as_paired,
+           test_a_paired_event_waits_for_its_green_half,
            test_status_is_derived_from_the_upload,
            test_an_upload_nobody_made_is_left_alone,
            test_a_restart_hands_camera_events_back,

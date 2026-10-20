@@ -302,6 +302,83 @@ def make_vertical_pan(
         tmp_v.unlink(missing_ok=True)
 
 
+def _moov_before_mdat(path: Path, window: int = 1 << 20) -> bool:
+    """Is the moov atom in front of the media data?
+
+    That is what +faststart buys: the player gets the index before the
+    payload and can start on the first bytes instead of the last. There
+    is no ffprobe field for it, but it is plainly visible in the file --
+    whichever of the two box names appears first, wins.
+
+    Read bounded: in a faststart file moov is near the front, so if
+    neither name has turned up inside the first megabyte, the answer we
+    want is "no" anyway.
+    """
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(window)
+    except OSError as exc:
+        log.warning("faststart probe could not read %s: %s", path.name, exc)
+        return False
+    i_moov, i_mdat = head.find(b"moov"), head.find(b"mdat")
+    if i_moov < 0:
+        return False
+    return i_mdat < 0 or i_moov < i_mdat
+
+
+def _already_web_ready(path: Path) -> bool:
+    """Is this file ALREADY what transcode_for_web would produce?
+
+    THE TEE CAMERA MAKES ONE EVERY CAPTURE. The copy engine cuts with
+    `-c copy -movflags +faststart`, so a tee clip arrives as H.264 with
+    the moov atom in front, first-generation from the camera itself --
+    and was then re-encoded into a second-generation copy of itself for
+    nothing, under the heavy gate, on the critical path of every event.
+    The decode engine (green) still writes cv2 mp4v and still needs it.
+
+    FAIL-SAFE BY CONSTRUCTION, which is the whole reason the original
+    chose a marker over a probe: every uncertainty returns False and
+    transcodes. A wrong False costs one needless encode -- exactly what
+    happened before this existed. A wrong True ships a file the browser
+    will not play, so nothing is taken on inference: the codec must say
+    h264, the tag must agree, any audio must already be AAC, and the
+    moov atom must be in front.
+    """
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "stream=codec_type,codec_name,codec_tag_string",
+                "-of", "json", str(path),
+            ],
+            stderr=subprocess.STDOUT,
+            timeout=30,
+        )
+        streams = json.loads(out).get("streams") or []
+    except Exception as exc:  # noqa: BLE001
+        log.warning("web-ready probe failed for %s: %s", path.name, exc)
+        return False
+
+    video = [s for s in streams if s.get("codec_type") == "video"]
+    audio = [s for s in streams if s.get("codec_type") == "audio"]
+    if len(video) != 1:
+        return False
+    # Codec AND tag. cv2's mp4v output has been seen mis-reported, and
+    # the direction that matters is never claiming h264 for something
+    # that is not: requiring the container tag to agree makes that
+    # essentially impossible.
+    if video[0].get("codec_name") != "h264":
+        return False
+    if (video[0].get("codec_tag_string") or "").lower() not in ("avc1", "h264"):
+        return False
+    # Audio is transcoded to AAC by the same pass, so a clip with
+    # anything else in it is not finished either. No audio at all is
+    # fine -- there is nothing to make playable.
+    if any(a.get("codec_name") != "aac" for a in audio):
+        return False
+    return _moov_before_mdat(path)
+
+
 def transcode_for_web(path: Path) -> bool:
     """Re-encode an MP4 in-place to H.264 + faststart for browser
     playback. The Pi-agent writes its captures with the mp4v fourcc
@@ -312,15 +389,35 @@ def transcode_for_web(path: Path) -> bool:
 
     Idempotent via a sibling marker file `<name>.h264-ok`. The first
     call transcodes and writes the marker; later calls find the
-    marker and short-circuit. This is more reliable than probing the
-    codec via ffprobe, which can mis-report cv2-mp4v output as
-    something else and either skip a needed transcode or do a
-    needless one. Marker has zero bytes — its existence is the signal.
+    marker and short-circuit. Marker has zero bytes — its existence is
+    the signal.
+
+    A file that is ALREADY H.264 + faststart gets the marker without
+    the encode — see `_already_web_ready`. That check is deliberately
+    one-directional: this used to refuse to probe at all, because
+    ffprobe can mis-report cv2-mp4v output and a wrong answer either
+    way was unacceptable. Only one direction is unacceptable. Being
+    wrong about "needs transcoding" costs one needless pass, which is
+    what shipped for months; being wrong about "already fine" ships an
+    unplayable file. So the probe may only ever say "skip" on positive
+    agreeing evidence, and says "transcode" for everything else,
+    including its own failure.
     """
     if not have_ffmpeg():
         return False
     marker = path.with_suffix(path.suffix + ".h264-ok")
     if marker.exists():
+        return True
+    # ALREADY DONE BY THE CAMERA. A copy-engine capture is H.264 with
+    # faststart before it ever reaches here; re-encoding it costs a
+    # full pass under the heavy gate and a generation of quality, to
+    # arrive back where it started. Drop the marker and leave the file
+    # alone. See `_already_web_ready` for why this cannot skip a
+    # transcode that was actually needed.
+    if _already_web_ready(path):
+        log.info("transcode_for_web: %s is already H.264 + faststart, "
+                 "skipping the re-encode", path.name)
+        marker.touch()
         return True
     # Unique tmp name per call. Two concurrent transcodes for the
     # same source (upload_event background thread vs the sync call

@@ -1784,7 +1784,8 @@ _event_job_inflight: set[int] = set()
 _event_job_lock = threading.Lock()
 
 
-def _process_camera_event_job(event_id: int) -> None:
+def _process_camera_event_job(event_id: int,
+                              allow_tee_only: bool = False) -> None:
     """Produce one camera event — unless it is already being produced.
 
     The guard lives here rather than at the three call sites so that
@@ -1800,13 +1801,31 @@ def _process_camera_event_job(event_id: int) -> None:
             return
         _event_job_inflight.add(event_id)
     try:
-        _run_camera_event_job(event_id)
+        _run_camera_event_job(event_id, allow_tee_only)
     finally:
         with _event_job_lock:
             _event_job_inflight.discard(event_id)
 
 
-def _run_camera_event_job(event_id: int) -> None:
+def _ensure_previews(filenames) -> None:
+    """Make sure each raw has its browser preview, best-effort.
+
+    Cheap when the upload-time hook already did it -- transcode_for_web
+    short-circuits on its marker, and a copy-engine clip is already
+    H.264 + faststart so it never encodes at all. Worth doing anyway:
+    the upload-time thread can die on the heavy gate during a restart,
+    and nothing else was ever going to notice.
+    """
+    for name in filenames:
+        try:
+            _post_process_raw_clip(name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cameras: preview backstop failed for %s: %s",
+                        name, exc)
+
+
+def _run_camera_event_job(event_id: int,
+                          allow_tee_only: bool = False) -> None:
     """Hand off a fully-uploaded CameraEvent to the long-upload
     pipeline so it benefits from the existing multi-swing auto-detect
     + admin edit-wizard. Creates a LongVideoUpload row pointing at the
@@ -1864,7 +1883,31 @@ def _run_camera_event_job(event_id: int) -> None:
         # not yet on disk, and probing would have quietly downgraded a
         # paired event to tee-only.
         green_filename = event.green_clip_filename
+        event_tee_name = event.tee_clip_filename
         has_green = bool(green_filename)
+
+        # A PAIRED HOLE IS NOT READY ON ONE CLIP. Produced tee-only, it
+        # makes a card with an empty green tile and a composite that
+        # cannot be made -- and when the green lands a minute later the
+        # whole thing is produced again, so the half-answer cost more
+        # than waiting would have.
+        #
+        # Only the tee-only FALLBACK may force it, long after the green
+        # has stopped being plausible, and a human pressing Re-process.
+        # Both say so explicitly; nothing arrives here half-ready by
+        # accident any more.
+        if event.green_camera_id is not None and not has_green:
+            if not allow_tee_only:
+                log.info(
+                    "cameras: event %s is paired and the green clip is not "
+                    "in yet — not queueing (the fallback will force it if "
+                    "the green never arrives)", event_id,
+                )
+                return
+            log.info(
+                "cameras: event %s — producing TEE-ONLY on purpose, the "
+                "green never arrived", event_id,
+            )
 
         # Re-use a previously-linked LongVideoUpload row if any (handles
         # Re-Produce flowing back through this code path).
@@ -1939,6 +1982,10 @@ def _run_camera_event_job(event_id: int) -> None:
         try:
             enqueue_produce_job(
                 upload_id=_lvu_id, hole_number=_hole, wait=False,
+                # Automatic: nobody is sitting watching for this one, so
+                # a paused queue may hold it. Pressing Produce on its
+                # card promotes it.
+                manual=False,
             )
         finally:
             db = SessionLocal()
@@ -1946,6 +1993,22 @@ def _run_camera_event_job(event_id: int) -> None:
             "cameras: event %s queued for produce — lvu=%s hole=%s green=%s",
             event_id, _lvu_id, _hole, bool(has_green),
         )
+
+        # THE PREVIEW, AFTER THE QUEUE AND NEVER IN FRONT OF IT.
+        # upload_event already starts this as each clip lands, but that
+        # thread parks on the heavy gate behind whatever is producing,
+        # and a restart kills it there -- leaving a raw with no poster
+        # and no H.264, which is the "No preview" tile on Production
+        # with the clip itself sitting right there, intact. This used
+        # to be covered because the job did the transcode itself, in
+        # front of the queue; doing it behind, in its own thread, keeps
+        # the backstop without the cost. For a copy-engine tee clip it
+        # is now a probe and nothing else.
+        _names = [n for n in (event_tee_name, green_filename) if n]
+        threading.Thread(
+            target=_ensure_previews, args=(_names,), daemon=True,
+            name=f"preview-backstop-{event_id}",
+        ).start()
     except Exception as exc:  # pragma: no cover
         log.exception("cameras: event %s processing crashed: %s", event_id, exc)
         try:
@@ -2083,6 +2146,12 @@ def _camera_event_recovery_sweep() -> None:
     # point is that it is sharing the queue rather than owning it.
     _urgent = int(settings.camera_recover_urgent_seconds or 0)
     _q = produce_queue_status()
+    # NOT WHILE THE OPERATOR HAS IT PAUSED. The held jobs would be
+    # re-queued and held again, and each attempt SPENDS A RETRY -- so a
+    # long pause would quietly exhaust every stalled event's budget and
+    # leave them unrecoverable the moment work resumed.
+    if _q.get("paused"):
+        return
     _busy = bool(_q.get("depth") or _q.get("running_upload_id") is not None)
     if _busy and _urgent <= 0:
         return
@@ -2107,12 +2176,13 @@ def _camera_event_recovery_sweep() -> None:
         hours=max(0, int(settings.camera_recover_max_age_hours or 0)))
     # (event id, what to say about it). Tee-only first: those events are
     # waiting on a deadline, not on a corpse, and are the older problem.
-    todo: list[tuple[int, str]] = []
+    # (event id, what to say about it, may it produce without a green)
+    todo: list[tuple[int, str, bool]] = []
     db = SessionLocal()
     try:
         if _fallback > 0:
             todo += [
-                (eid, "green never arrived — producing from tee alone")
+                (eid, "green never arrived — producing from tee alone", True)
                 for eid in _recoverable_events(
                     db, "tee_uploaded",
                     now - timedelta(seconds=_cut(_fallback)),
@@ -2123,7 +2193,7 @@ def _camera_event_recovery_sweep() -> None:
         if _stall > 0:
             todo += [
                 (eid, "both clips in but produce never finished — "
-                      "restarting it")
+                      "restarting it", False)
                 for eid in _recoverable_events(
                     db, "paired_uploaded",
                     now - timedelta(seconds=_cut(_stall)),
@@ -2134,7 +2204,7 @@ def _camera_event_recovery_sweep() -> None:
 
     # One at a time while produce is busy: this is sharing the queue,
     # not taking it over.
-    for eid, why in todo[:(1 if _busy else _RECOVER_PER_SWEEP)]:
+    for eid, why, _tee_only in todo[:(1 if _busy else _RECOVER_PER_SWEEP)]:
         # Spend the retry BEFORE starting the job, not after it comes
         # back: a job that kills the process never comes back, and that
         # is precisely the case the budget exists to bound.
@@ -2157,7 +2227,7 @@ def _camera_event_recovery_sweep() -> None:
         log.info("cameras: recovery sweep — event %s: %s (attempt %s of %s)",
                  eid, why, _n, _budget)
         threading.Thread(
-            target=_process_camera_event_job, args=(eid,),
+            target=_process_camera_event_job, args=(eid, _tee_only),
             daemon=True, name=f"event-recovery-{eid}",
         ).start()
 

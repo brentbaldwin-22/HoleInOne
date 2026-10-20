@@ -378,6 +378,14 @@ export const api = {
       `/api/admin/camera-events?limit=${limit}&offset=${offset}`,
       { adminPassword: key },
     ),
+  produceQueue: (key) =>
+    request(`/api/admin/produce-queue`, { adminPassword: key }),
+  setProduceQueuePaused: (key, paused) =>
+    request(`/api/admin/produce-queue/pause`, {
+      method: "POST",
+      adminPassword: key,
+      body: { paused },
+    }),
   reprocessCameraEvent: (key, eventId) =>
     request(`/api/admin/camera-events/${eventId}/reprocess`, {
       method: "POST",
