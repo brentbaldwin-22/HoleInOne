@@ -14,12 +14,20 @@
  * underneath moves while you draw.
  *
  * WHAT IS ACTUALLY TESTED IS ONE POINT. The detector finds people in
- * the whole frame and hands back a single pixel — the centre of the
- * highest-confidence person box — and the zone is a filter on that
- * point, not a search window. So a zone does not have to be big enough
- * to hold a body, and two zones never need to overlap to "fit" one.
- * What it does have to do is sit where the middle of a standing golfer
- * appears, which is chest height and not the turf.
+ * the whole frame and hands back a single pixel — the BOTTOM of the
+ * highest-confidence person box, where they are standing — and the
+ * zone is a filter on that point, not a search window. So a zone does
+ * not have to be big enough to hold a body, and two zones never need
+ * to overlap to "fit" one.
+ *
+ * It used to be the centre of that box, chest height, which made a
+ * zone mean "a region a golfer's chest passes through" — not a thing
+ * anyone draws, and not even constant for one tee, since how far a
+ * chest sits above the ground in pixels depends on how far away the
+ * person is. Feet make a zone the patch of turf it looks like. It
+ * also separates the tees for free: a tee further away appears higher
+ * in the picture, so a zone on near ground excludes it by geometry
+ * rather than by a number somebody tuned.
  *
  * Coordinates are the camera's NATIVE pixels, taken from the image's
  * natural size, and the frame size is saved alongside them. The agent
@@ -240,11 +248,11 @@ export default function TriggerZones({
           move it, its corner to resize. A golfer in <b>any</b> zone
           triggers; the ground between them does not.
           {" "}The camera finds the person anywhere in frame and then asks
-          whether <b>the middle of their body</b> — roughly chest height,
-          not their feet — falls in a zone. So cover where a golfer
-          <i>stands</i>, not just the turf: a box hugging the ground can
-          sit entirely below them and never fire. Overlapping zones are
-          fine.
+          whether <b>their feet</b> are in a zone. So draw the
+          <i>turf they stand on</i> — the mown tee itself — and ignore
+          how tall they look. A tee further away sits higher in the
+          picture, which is what keeps a distant tee out of a near
+          tee&apos;s zone. Overlapping zones are fine.
         </span>
         {boxes.map((b, i) => (
           <button
