@@ -5002,17 +5002,132 @@ def _dedupe_fits(found: list, geometric: bool = False) -> list:
 # smear without admitting a second object that merely crosses.
 ASCENT_STITCH_PX = 12.0
 
-# NO SEPARATE GAP WINDOW FOR THE JOIN. It had one, set to 12 frames,
-# and that was wider than ASCENT_MAX_STEP_FRAMES -- so the join reached
-# across holes the gap gate then refused, and manufactured chains that
-# could not pass. Measured on #768: the flight joined a tail at f1580
-# across a NINE frame hole, and one 22-point chain with a rise of 484px
-# was thrown out where four pieces of it had been accepted. A gain of
-# nothing, in exchange for every ball on the hole.
+# HOW LONG A HOLE THE JOIN MAY REACH ACROSS, in frames.
 #
-# So the join reaches exactly as far as the gates allow a chain to jump
-# and no further, and it reads that from the gates in force rather than
-# keeping its own copy.
+# THIS NUMBER WAS REMOVED ONCE AND IS BACK FOR A REASON. It was 12
+# against a gap gate of 5, so the join reached across holes the gates
+# then refused and built chains that could not pass -- on #768 a flight
+# joined a tail nine frames past its end and one 22-point chain with
+# 484px of rise was thrown out where four pieces of it had been
+# accepted. The conclusion then was that the reach must equal the gate.
+#
+# That was right while nothing could close a hole. The operator then
+# showed that the hole is not real: zoom to 2.7x, scan, and f1572-f1579
+# are all there. The sweep misses them because it runs a THREE-frame
+# difference over the whole band, and up high where the ball is faint
+# that asks it to clear threshold in the diff against the frame before
+# AND the frame after at the same pixels. A two-frame pass in a crop --
+# which is exactly what the operator's own scan is -- finds them.
+#
+# So the reach is wide again, and fill_chain_holes closes what it
+# spans. The guarantee that the result is something the gates can keep
+# has moved to where it belongs: _longest_rising will not step further
+# than the gap gate allows, whatever it was handed. A hole that gets
+# filled is kept; one that does not is trimmed exactly as before.
+ASCENT_STITCH_GAP_FRAMES = 15
+
+# HOW FAR OFF THE LINE between the two ends of a hole to look, in
+# pixels. The ball is somewhere on the segment joining them -- that is
+# what makes this cheap -- and the pad only has to cover how far a real
+# flight bows away from a straight line over a fifth of a second, plus
+# the smear.
+ASCENT_FILL_PAD_PX = 48
+
+# HOW CLOSE TO THE PREDICTED POSITION a re-read point has to land to
+# be taken, in pixels. NOT the same as the crop pad, and much smaller.
+# The crop has to be generous or it clips the ball; acceptance has to
+# be tight or an empty hole fills with whatever noise the two-frame
+# pass turned up inside a generous box -- and a hole filled with noise
+# is worse than a hole, because the walk then bridges it and the gap
+# gate stops meaning anything.
+ASCENT_FILL_TOL_PX = 16.0
+
+# HOW MANY HOLES ONE SWEEP MAY RE-SCAN. Each one seeks into the clip
+# and decodes a run of frames, so this is the difference between a pass
+# that costs a moment and one that costs a minute on a band full of
+# junk chains. Only groups the gates could plausibly accept are worth
+# re-reading at all, which is most of the saving; this is the ceiling
+# behind it.
+ASCENT_FILL_MAX_HOLES = 24
+
+# HOW MANY POINTS A UNION NEEDS before its holes are worth re-reading.
+# A three-point group is noise agreeing with itself.
+ASCENT_FILL_MIN_POINTS = 6
+
+
+def fill_chain_holes(input_path, pts: list, max_hole: int,
+                     sens: int = 3, pad_px: float = ASCENT_FILL_PAD_PX,
+                     tol_px: float = ASCENT_FILL_TOL_PX,
+                     budget: list | None = None) -> list:
+    """Re-read the holes in a chain, the way an operator zooms and scans.
+
+    THE HOLE IS A DETECTION HOLE, NOT A GAP IN THE FLIGHT. The sweep
+    runs a three-frame difference, which is the right default -- it
+    kills the "where it was" ghost that otherwise measures a ball's
+    velocity as zero -- but it is strictly harder than a two-frame one,
+    and a faint ball high in the band fails it. The operator's own scan
+    is two-frame in a crop, and it finds those frames every time.
+
+    So for each hole: take the straight line between the two points
+    either side of it, crop to that segment plus a pad, and run the
+    two-frame pass over just those frames. The ball is the only thing
+    in a box that size that is moving along that line.
+
+    No ghost handling, because the match is to a PREDICTED position
+    rather than to whatever is nearest: a two-frame ghost sits at the
+    previous frame's position, a whole step away from where the ball is
+    predicted to be, and loses.
+
+    THE CROP IS GENEROUS AND THE ACCEPTANCE IS NOT. `pad_px` only has
+    to avoid clipping the ball out of the box; `tol_px` is what decides
+    whether what turned up in the box is the ball. An empty hole must
+    come back empty, or the walk bridges everything and the gap gate
+    stops meaning anything.
+
+    Returns the extra points, in the same shape the detector emits.
+    """
+    out: list = []
+    if not HAS_CV or len(pts) < 2:
+        return out
+    for a, b in zip(pts, pts[1:]):
+        fa, fb = int(a["frame"]), int(b["frame"])
+        if fb - fa < 2 or fb - fa > max_hole:
+            continue
+        if budget is not None:
+            if budget[0] <= 0:
+                break
+            budget[0] -= 1
+        x0 = int(min(a["x"], b["x"]) - pad_px)
+        x1 = int(max(a["x"], b["x"]) + pad_px)
+        y0 = int(min(a["y"], b["y"]) - pad_px)
+        y1 = int(max(a["y"], b["y"]) + pad_px)
+        x0, y0 = max(0, x0), max(0, y0)
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            continue
+        # One frame either side, because a two-frame difference has
+        # nothing to say about the first frame it is given.
+        dets = detect_movers_by_diff(
+            input_path, fa, fb, sens=int(sens),
+            roi=(x0, y0, x1 - x0, y1 - y0),
+            per_frame=8, three_frame=False, cap=4000,
+            merge_px=ASCENT_MERGE_PX)
+        by_frame: dict = {}
+        for d in dets:
+            by_frame.setdefault(int(d["frame"]), []).append(d)
+        for f in range(fa + 1, fb):
+            cands = by_frame.get(f)
+            if not cands:
+                continue
+            # Where the ball should be, if it kept going.
+            t = (f - fa) / float(fb - fa)
+            px = float(a["x"]) + t * (float(b["x"]) - float(a["x"]))
+            py = float(a["y"]) + t * (float(b["y"]) - float(a["y"]))
+            best = min(cands, key=lambda q: math.hypot(q["x"] - px,
+                                                       q["y"] - py))
+            if math.hypot(best["x"] - px, best["y"] - py) <= tol_px:
+                out.append(best)
+    return out
+
 
 
 def _chain_axis(pts: list):
@@ -5127,7 +5242,26 @@ def _longest_rising(pts: list, max_step: int) -> list:
 
 
 def stitch_ascent_chains(chains: list, tol_px: float = ASCENT_STITCH_PX,
-                         gap_frames: int = ASCENT_MAX_STEP_FRAMES) -> list:
+                         gap_frames: int = ASCENT_MAX_STEP_FRAMES,
+                         # HOW FAR THE GROUPING MAY REACH, which is not
+                         # the same question as how far the walk may
+                         # step. See ASCENT_STITCH_GAP_FRAMES: the
+                         # grouping reaches across a hole a re-read
+                         # might close, and the walk is what guarantees
+                         # the result is something the gates can keep.
+                         join_frames: int | None = None,
+                         # GIVEN THE POINTS OF A JOINED GROUP, RETURN
+                         # MORE. fill_chain_holes, when the sweep has a
+                         # video to re-read; None leaves the holes as
+                         # they are and the walk trims them.
+                         fill=None,
+                         # WHAT THE RE-READ FOUND, filled in when a
+                         # dict is passed: {groups, points}. The same
+                         # idiom as detect_movers_by_diff's `stats`,
+                         # and for the same reason -- "it ran" and "it
+                         # found something" are different answers, and
+                         # the second one is the interesting one.
+                         stats: dict | None = None) -> list:
     """Join the chains that are one flight, and report it once.
 
     THE LAST PLACE THE FLIGHT COMES APART. The detector now finds it --
@@ -5148,6 +5282,7 @@ def stitch_ascent_chains(chains: list, tol_px: float = ASCENT_STITCH_PX,
     rows = [c for c in chains if (c.get("points") or [])]
     if tol_px <= 0 or len(rows) < 2:
         return list(chains)
+    _join = int(join_frames if join_frames is not None else gap_frames)
     # LONGEST FIRST, for a settled answer rather than a better one.
     # Grouping is greedy, so a chain joins the FIRST group it matches,
     # and two passes feed this -- the tracker's chains and the fitter's
@@ -5164,7 +5299,7 @@ def stitch_ascent_chains(chains: list, tol_px: float = ASCENT_STITCH_PX,
     for c in rows:
         for g in groups:
             if any(_one_flight(c["points"], m["points"], tol_px,
-                               gap_frames) for m in g):
+                               _join) for m in g):
                 g.append(c)
                 break
         else:
@@ -5191,6 +5326,21 @@ def stitch_ascent_chains(chains: list, tol_px: float = ASCENT_STITCH_PX,
         # frame -- and dropping those is the point of this pass, not a
         # failure of it. A guard here fired on nothing and could be
         # removed by any mutation without a test noticing.
+        # AND READ THE HOLES AGAIN BEFORE WALKING IT. A hole that is
+        # only a hole in the three-frame pass closes here, and the walk
+        # then keeps what it bridges instead of trimming it off.
+        if fill is not None and len(union) >= ASCENT_FILL_MIN_POINTS:
+            if stats is not None:
+                stats["groups"] = stats.get("groups", 0) + 1
+            _seen = {(int(q["frame"]), int(q["x"]), int(q["y"]))
+                     for q in union}
+            for q in fill(sorted(union, key=lambda z: int(z["frame"]))):
+                k = (int(q["frame"]), int(q["x"]), int(q["y"]))
+                if k not in _seen:
+                    _seen.add(k)
+                    union.append(q)
+                    if stats is not None:
+                        stats["points"] = stats.get("points", 0) + 1
         pts = _longest_rising(union, gap_frames)
         out.append({
             "points": pts,
@@ -5395,10 +5545,27 @@ def sweep_ascents(
         # between the two ends of one smear frame by frame. See
         # stitch_ascent_chains.
         _n_before = len(tracks)
-        tracks = stitch_ascent_chains(tracks, _stitch,
-                                      int(ASCENT_MAX_STEP_FRAMES))
+        _fill_stats: dict = {}
+        # ONE BUDGET FOR THE WHOLE SWEEP, shared across every group it
+        # re-reads: each hole is a seek into the clip and a run of
+        # decoded frames, and a band full of junk chains has no
+        # shortage of holes.
+        _fill_budget = [ASCENT_FILL_MAX_HOLES]
+        tracks = stitch_ascent_chains(
+            tracks, _stitch, int(ASCENT_MAX_STEP_FRAMES),
+            join_frames=ASCENT_STITCH_GAP_FRAMES,
+            fill=lambda pts: fill_chain_holes(
+                input_path, pts, int(ASCENT_STITCH_GAP_FRAMES),
+                sens=int(sens), budget=_fill_budget),
+            stats=_fill_stats)
         out["stitch_px"] = _stitch
         out["n_stitched"] = _n_before - len(tracks)
+        # WHAT THE RE-READ FOUND. "8 points in 2 holes" says the
+        # three-frame pass was the only reason they were missing; zero
+        # says the hole was really empty and the walk was right to trim
+        # it. See fill_chain_holes.
+        out["n_refilled"] = int(_fill_stats.get("points") or 0)
+        out["n_holes_read"] = (ASCENT_FILL_MAX_HOLES - _fill_budget[0])
         out["n_tracks"] = len(tracks)
         out["timing"] = {"detect": round(_t_det, 2),
                          "linking": round(time.perf_counter()

@@ -333,9 +333,11 @@ def test_the_sweep_hands_the_gate_s_reach_to_the_join():
     seen: dict = {}
     _real = d3.stitch_ascent_chains
 
-    def spy(chains, tol_px=d3.ASCENT_STITCH_PX, gap_frames=None):
+    def spy(chains, tol_px=d3.ASCENT_STITCH_PX, gap_frames=None, **kw):
         seen["gap_frames"] = gap_frames
-        return _real(chains, tol_px, gap_frames)
+        seen["join_frames"] = kw.get("join_frames")
+        seen["fill"] = kw.get("fill") is not None
+        return _real(chains, tol_px, gap_frames, **kw)
 
     with tempfile.TemporaryDirectory() as td:
         clip = Path(td) / "a.mp4"
@@ -358,6 +360,14 @@ def test_the_sweep_hands_the_gate_s_reach_to_the_join():
           d3.ASCENT_MAX_STEP_FRAMES == 7, False)
     check("and the sweep reports the join ran",
           out.get("n_stitched") is not None, True)
+    # AND THE GROUPING REACH IS THE OTHER NUMBER, not this one: it
+    # reaches across a hole the re-read might close, where the walk may
+    # only step as far as the gates keep.
+    check("the grouping reaches further than the walk",
+          seen.get("join_frames"), d3.ASCENT_STITCH_GAP_FRAMES)
+    check("and a re-reader is handed in", seen.get("fill"), True)
+    check("control, the two reaches are not the same number",
+          d3.ASCENT_STITCH_GAP_FRAMES == d3.ASCENT_MAX_STEP_FRAMES, False)
 
 
 def test_off_by_default_is_not_how_this_ships():

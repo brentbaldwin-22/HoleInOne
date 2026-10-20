@@ -19188,6 +19188,13 @@ def _ball_scan_sweep_image(row, src_path, sweep) -> None:
             # swing 0.14s apart; "joined 3" is that not happening.
             + (f", joined {sweep.get('n_stitched')}"
                if sweep.get("n_stitched") else "")
+            # AND WHAT THE RE-READ FOUND IN THE HOLES. "refilled 6 in
+            # 2 holes" says the ball was there all along and the
+            # three-frame pass was the only reason it was missing;
+            # nothing says the hole was really empty.
+            + (f", refilled {sweep.get('n_refilled')}"
+               f" in {sweep.get('n_holes_read')} hole(s)"
+               if sweep.get("n_holes_read") else "")
             + f"  |  band x{int(_b[0])}-{int(_b[0]) + int(_b[2])}"
             f" y0-{int(_b[3])}",
             (12, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 230, 255), 1,
