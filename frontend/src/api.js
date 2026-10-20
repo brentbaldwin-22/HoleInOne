@@ -378,6 +378,12 @@ export const api = {
       `/api/admin/camera-events?limit=${limit}&offset=${offset}`,
       { adminPassword: key },
     ),
+  sweepMissingPreviews: (key, opts = {}) =>
+    request(`/api/admin/previews/sweep`, {
+      method: "POST",
+      adminPassword: key,
+      body: opts,
+    }),
   produceQueue: (key) =>
     request(`/api/admin/produce-queue`, { adminPassword: key }),
   setProduceQueuePaused: (key, paused) =>

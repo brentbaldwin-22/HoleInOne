@@ -15461,6 +15461,28 @@ export default function AdminProduction() {
     return () => { dead = true; clearInterval(t); };
   }, [adminPassword]);
 
+  // THE BACKLOG BUTTON. Captures stranded before the upload-time
+  // transcode had a backstop still show "No preview" with the clip
+  // itself sitting right there. One press goes and makes them.
+  const [sweeping, setSweeping] = useState(false);
+  const [sweepNote, setSweepNote] = useState("");
+  const sweepPreviews = async () => {
+    setSweeping(true);
+    setSweepNote("");
+    try {
+      const r = await api.sweepMissingPreviews(adminPassword, {});
+      setSweepNote(
+        `Started on up to ${r.limit} clip(s) from the last ${r.max_age_hours}h. ` +
+        "It shares the box with everything else, so give it a few minutes " +
+        "and reload.",
+      );
+    } catch (e) {
+      setError(e.message || "could not start the preview sweep");
+    } finally {
+      setSweeping(false);
+    }
+  };
+
   const togglePause = async () => {
     setPausing(true);
     try {
@@ -16334,16 +16356,35 @@ export default function AdminProduction() {
               button here waits minutes. Pausing holds the automatic work
               only — Produce, Find Ascents and the wizard still run, and
               pressing Produce on a held card promotes it. */}
-          <button
-            type="button"
-            onClick={togglePause}
-            disabled={pausing || queue === null}
-            className={queue?.paused ? "" : "secondary"}
-            style={{ whiteSpace: "nowrap" }}
-          >
-            {queue?.paused ? "▶ Resume auto-produce" : "⏸ Pause auto-produce"}
-          </button>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={togglePause}
+              disabled={pausing || queue === null}
+              className={queue?.paused ? "" : "secondary"}
+              style={{ whiteSpace: "nowrap" }}
+            >
+              {queue?.paused
+                ? "▶ Resume auto-produce"
+                : "⏸ Pause auto-produce"}
+            </button>
+            <button
+              type="button"
+              onClick={sweepPreviews}
+              disabled={sweeping}
+              className="secondary"
+              style={{ whiteSpace: "nowrap" }}
+              title="Make the missing poster/H.264 previews for raws that never got one"
+            >
+              {sweeping ? "Starting…" : "⟳ Fix missing previews"}
+            </button>
+          </div>
         </div>
+        {sweepNote && (
+          <p className="small muted" style={{ margin: "10px 0 0" }}>
+            {sweepNote}
+          </p>
+        )}
         {queue?.paused && (
           <p className="small warn-text" style={{ margin: "10px 0 0" }}>
             Automatic produce is paused{queue.held

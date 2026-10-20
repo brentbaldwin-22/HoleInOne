@@ -6034,6 +6034,35 @@ def list_camera_events(
     return out
 
 
+@router.post("/previews/sweep")
+def post_preview_sweep(payload: dict = Body(default={})):
+    """Make the previews for raws that never got one.
+
+    For the backlog stranded before the upload-time transcode had a
+    backstop: the clip is intact on its Production card with "No
+    preview" where its tile should be, and nothing was ever coming back
+    for it. New captures are covered automatically.
+
+    Runs in the background and takes the heavy gate per file, so it
+    shares the box rather than owning it. Bounded by `limit` files and
+    `max_age_hours`, because the alternative is re-encoding every raw
+    the database has ever held.
+    """
+    from .cameras import sweep_missing_previews
+
+    limit = int(payload.get("limit") or 60)
+    hours = int(payload.get("max_age_hours") or 72)
+
+    def _run() -> None:
+        try:
+            sweep_missing_previews(limit=limit, max_age_hours=hours)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("preview sweep crashed: %s", exc)
+
+    threading.Thread(target=_run, daemon=True, name="preview-sweep").start()
+    return {"started": True, "limit": limit, "max_age_hours": hours}
+
+
 @router.get("/produce-queue")
 def get_produce_queue():
     """What the produce queue is doing, and whether it is paused."""

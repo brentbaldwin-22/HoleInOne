@@ -1807,6 +1807,93 @@ def _process_camera_event_job(event_id: int,
             _event_job_inflight.discard(event_id)
 
 
+def _preview_is_missing(name: str) -> bool:
+    """Does this raw still need its browser preview made?
+
+    Two artefacts, and either one absent means the tile on Production
+    is broken: the poster JPG the card shows, and the H.264 the browser
+    will actually play. Checks the bucket as well as local disk, or a
+    redeploy that emptied the ephemeral disk would look like a course
+    full of missing previews and redo every one of them.
+    """
+    from ..services.video import _already_web_ready
+
+    src = CLIPS_DIR / name
+    if not src.exists():
+        return False              # nothing local to inspect or to fix
+
+    # PLAYABLE? The marker is local-only by design (the storage sweeper
+    # skips it), so after a redeploy its absence says nothing at all --
+    # ask the file itself before deciding there is work to do.
+    if not (src.with_suffix(src.suffix + ".h264-ok").exists()
+            or _already_web_ready(src)):
+        return True
+
+    # POSTER? Checked in the bucket too, or a redeploy looks like a
+    # course full of missing thumbnails and redoes every one of them.
+    thumb = Path(name).with_suffix(".jpg").name
+    return not ((CLIPS_DIR / thumb).exists() or storage.exists(thumb))
+
+
+def sweep_missing_previews(limit: int = 60, max_age_hours: int = 72) -> dict:
+    """Make the previews for raws that never got one.
+
+    THE BACKLOG THIS EXISTS FOR. The transcode runs from upload_event
+    in its own thread, parked on the heavy gate behind whatever is
+    producing -- and a restart kills it there. The clip itself is
+    untouched and sits on the Production card perfectly intact, with
+    "No preview" where its tile should be, and until now nothing ever
+    came back for it.
+
+    New captures are covered by the backstop in _run_camera_event_job.
+    This is for the ones stranded before that existed, so it is a
+    button rather than a timer: bounded, oldest-reasonable-window only,
+    and it reports what it found rather than running silently.
+    """
+    from ..models import CameraEvent as _CE
+
+    done, failed, scanned = [], [], 0
+    cutoff = _utcnow_naive() - timedelta(hours=max(1, int(max_age_hours)))
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(_CE)
+            .filter(_CE.triggered_at >= cutoff)
+            .order_by(_CE.triggered_at.desc())
+            .limit(500)
+            .all()
+        )
+        names = []
+        for r in rows:
+            for n in (r.tee_clip_filename, r.green_clip_filename):
+                if n:
+                    names.append(n)
+    finally:
+        db.close()
+
+    for name in names:
+        if len(done) >= max(1, int(limit)):
+            break
+        scanned += 1
+        try:
+            # Pull it back from the bucket first: after a redeploy the
+            # file is there and not here, and a preview cannot be made
+            # from a file that is not on disk.
+            storage.ensure_local(CLIPS_DIR, name)
+            if not _preview_is_missing(name):
+                continue
+            _post_process_raw_clip(name)
+            done.append(name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("preview sweep: %s failed: %s", name, exc)
+            failed.append(name)
+
+    log.info("preview sweep: %d scanned, %d made, %d failed",
+             scanned, len(done), len(failed))
+    return {"scanned": scanned, "made": len(done),
+            "failed": len(failed), "files": done}
+
+
 def _ensure_previews(filenames) -> None:
     """Make sure each raw has its browser preview, best-effort.
 
