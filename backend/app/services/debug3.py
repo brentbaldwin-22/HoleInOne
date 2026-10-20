@@ -3787,6 +3787,136 @@ ASCENT_BAND_FALLBACK_FRAC = 0.45
 _BAND_USABLE_FRAC = 0.9
 
 
+# OVER HOW MANY FRAMES AN ASCENT'S SPEED IS WORTH MEASURING, for the
+# back-trace to the tee. Same three frames and the same reason as
+# DESCENT_RATE_SPAN_FRAMES: between adjacent detections the number is
+# dominated by which end of the ball's smear the centroid landed on,
+# and over three frames it is the ball.
+IMPACT_RATE_SPAN_FRAMES = 3
+
+# HOW MANY SPEED SAMPLES THE DRAG FIT NEEDS. Two points define a line
+# and say nothing about whether it is one.
+IMPACT_MIN_RATE_SAMPLES = 3
+
+
+def _impact_frame(pts: list, tee_y: float,
+                  span: int = IMPACT_RATE_SPAN_FRAMES):
+    """When the ball was struck, from how it is slowing down.
+
+    Returns (frame, model) or (None, None).
+
+    WHY NOT A STRAIGHT LINE BACK. A struck ball is fastest the instant
+    it leaves and slows the whole way up, so its speed across the band
+    is lower than its speed below it -- and running the band's speed
+    back over the gap to the tee puts the strike EARLIER than it
+    happened. Measured on #768: the chain's first four points average
+    17px/frame, 351px of gap over that is 20.6 frames, and the answer
+    comes out f1525 where the ball was actually struck at f1536.
+    Eleven frames, all of it the model and none of it the detector.
+
+    The error is in FRAMES and grows with the frame rate, which is why
+    it got worse when these cameras went to 60fps: the same gap takes
+    twice as many frames to cross, so the same proportional error is
+    twice as many frames of it.
+
+    TWO THINGS WERE WRONG, and they are worth separating because they
+    are different sizes. Measured on #768 against the true f1536:
+
+        four-point slope (what it did)    f1525.4    -10.6
+        speed fitted to the whole chain   f1532.2     -3.8
+        and then the drag term            f1536.2     +0.2
+
+    So 6.8 frames of it was the SPEED ESTIMATE -- four points at the
+    bottom of a chain, two of which were the same smear reported
+    twice, giving 17px/frame where the chain's own fit says 25.4 --
+    and 4.0 frames was the model. Fixing only the second would have
+    left most of it.
+
+    WHAT IS ACTUALLY HAPPENING. A ball in flight is slowed by drag,
+    which goes as the square of speed: du/dt = -k*u*u. That integrates
+    to 1/u being LINEAR in time -- a straight-line fit, just not of the
+    thing anyone fits first.
+
+    AND IT IS A LOOSE FIT, stated plainly because the answer it gives
+    is a good one and that is easy to over-read: R-squared is 0.70 on
+    #768's speed samples, with the worst residual a quarter of the
+    range they span. The scatter is the smear again -- which end of it
+    the centroid landed on -- and the trend survives it. What carries
+    the result is u0 and the shape, not a tight fit.
+
+    Given 1/u = 1/u0 + k*t, the distance covered is (1/k)*ln(1 + k*u0*t),
+    and setting that to the gap below the chain gives the strike
+    directly. Two properties worth having: with k at zero it reduces
+    exactly to distance over speed, so there is no discontinuity
+    between this and a straight line; and going backwards it is
+    BOUNDED -- it can never say more than 1/(k*u0) frames ago, whatever
+    the gap -- where a straight line is unbounded in the one direction
+    that matters.
+
+    Measured on #768, both of the chains the sweep produced for it, on
+    separate builds: f1536.2 and f1535.9 against a true f1536. That is
+    ONE swing. The model is physics and the span comes from
+    DESCENT_RATE_SPAN_FRAMES, so neither was chosen to fit it -- but a
+    second known impact frame would be worth more than anything else
+    that could be done to this function.
+    """
+    if len(pts) < 2:
+        return None, None
+    y0 = float(pts[0]["y"])
+    f0 = float(pts[0]["frame"])
+    # Already at or below the tee line: there is nothing to run back.
+    if y0 >= tee_y:
+        return None, None
+    rate: list = []
+    j = 0
+    for i in range(len(pts)):
+        j = max(j, i + 1)
+        while (j < len(pts)
+               and int(pts[j]["frame"]) - int(pts[i]["frame"]) < span):
+            j += 1
+        if j >= len(pts):
+            break
+        _df = int(pts[j]["frame"]) - int(pts[i]["frame"])
+        _u = (float(pts[i]["y"]) - float(pts[j]["y"])) / _df
+        if _u > 0.5:
+            rate.append(((int(pts[i]["frame"]) + int(pts[j]["frame"]))
+                         / 2.0 - f0, _u))
+    if len(rate) < IMPACT_MIN_RATE_SAMPLES:
+        return None, None
+    n = float(len(rate))
+    _sx = sum(t for t, _ in rate)
+    _sy = sum(1.0 / u for _, u in rate)
+    _sxx = sum(t * t for t, _ in rate)
+    _sxy = sum(t / u for t, u in rate)
+    _det = n * _sxx - _sx * _sx
+    if abs(_det) < 1e-9:
+        return None, None
+    k = (n * _sxy - _sx * _sy) / _det
+    inv_u0 = (_sy - k * _sx) / n
+    if inv_u0 <= 0:
+        return None, None
+    u0 = 1.0 / inv_u0
+    gap = y0 - tee_y            # negative: the tee is BELOW the chain
+    _straight = gap / u0
+    # NO DECELERATION WORTH THE NAME, which is a short chain, or one
+    # the noise went the other way on, or a ball that really is not
+    # slowing much over the band. Not a failure: fall through to
+    # distance over speed -- but over the speed fitted to the WHOLE
+    # chain, which is six of the eleven frames on its own.
+    #
+    # The second half of this test is what keeps the label honest.
+    # With k near zero the drag form IS distance over speed, to as
+    # many decimal places as you like, and reporting "drag" for a
+    # number a straight line would have given is a claim the run did
+    # not earn.
+    if k <= 0:
+        return f0 + _straight, "constant speed"
+    _bent = (math.exp(k * gap) - 1.0) / (k * u0)
+    if abs(_bent - _straight) < 0.5:
+        return f0 + _straight, "constant speed"
+    return f0 + _bent, "drag"
+
+
 def _ascent_band(frame_h: int, roi: dict | None,
                  sky_frac: float | None = None) -> tuple[int, float]:
     """(band height, tee line y) — the strip of sky the ascent searches.
@@ -5659,17 +5789,28 @@ def sweep_ascents(
             if _tilt > ASCENT_MAX_TILT_DEG:
                 _why.append("tilt")
             _from_x = _from_f = None
+            _from_model = None
             if _vy < -0.5:
-                # SOLVE FOR THE TEE LINE, minding the sign. y(t) = y0 +
-                # vy*t with vy negative, so reaching a LOWER point on the
-                # screen (larger y) needs t negative -- going back in
-                # time, which is the whole point. Written the other way
-                # round it steps forward by the same amount and reports
-                # the ball arriving at the tee line five frames AFTER it
-                # left, from 40px the wrong side of where it started.
-                _steps = (_tee_top - float(pts[0]["y"])) / _vy
-                _from_x = int(round(float(pts[0]["x"]) + _vx * _steps))
-                _from_f = int(round(float(pts[0]["frame"]) + _steps))
+                # WHERE, AND WHEN, ARE DIFFERENT QUESTIONS, and they
+                # were being answered with one number.
+                #
+                # WHERE depends only on the chain's HEADING: run back
+                # along dx/dy until the tee line, no time involved.
+                # That is why the spot this reports has always been
+                # right even while the frame was eleven out.
+                _gap = _tee_top - float(pts[0]["y"])
+                _from_x = int(round(float(pts[0]["x"])
+                                    + (_vx / _vy) * _gap))
+                # WHEN depends on SPEED, and a struck ball does not
+                # hold one. See _impact_frame.
+                _f, _from_model = _impact_frame(pts, _tee_top)
+                if _f is None:
+                    # Not enough of a chain to measure a speed on.
+                    # Back to the heading's own, which is what this
+                    # did for every chain before.
+                    _f = float(pts[0]["frame"]) + _gap / _vy
+                    _from_model = "heading"
+                _from_f = int(round(_f))
             # TOO LONG AGO TO HAVE BEEN A TEE SHOT. See the constant.
             if (_from_f is None
                     or (int(pts[0]["frame"]) - _from_f)
@@ -5719,6 +5860,12 @@ def sweep_ascents(
                 "from_sec": (round(_from_f / float(fps or 30.0), 2)
                              if _from_f is not None else None),
                 "from_is_approx": True,
+                # WHICH MODEL PUT IT THERE. "drag" is the fitted one
+                # and lands within a frame; the others are what is
+                # left when a chain is too short to fit anything, and
+                # they run early. A number that does not say which it
+                # is cannot be read.
+                "from_model": _from_model,
                 "points": [{"frame": int(q["frame"]), "x": int(q["x"]),
                             "y": int(q["y"])} for q in pts],
                 "tilt_deg": round(_tilt, 1),

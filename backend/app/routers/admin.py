@@ -20216,11 +20216,13 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     _n_spot = sum(1 for c in rep["clips"] if c.get("ball"))
     _stage(2, "Tee spot and impact frame",
            "Each chain is run back along its own heading to the tee line. "
-           "Where it crosses is the tee spot and when it crosses is the "
-           "impact frame. Both are estimates and both are early -- the "
-           "run back is linear where a struck ball decelerates -- which "
-           "is the harmless direction for the frame the tracer starts "
-           "on. The resting-ball scan that used to run here is gone: it "
+           "Where it crosses is the tee spot; WHEN it crosses is a "
+           "separate question, and used to be answered with the same "
+           "number -- which is why the spot was right while the frame "
+           "was eleven early on #768. The spot needs only the heading. "
+           "The frame needs a speed, and a struck ball does not hold "
+           "one, so it is now solved through the deceleration fitted to "
+           "the chain itself. The resting-ball scan that used to run here is gone: it "
            "found nothing whenever a playing partner stood in the line, "
            "its watch often failed to conclude on a tee that stays "
            "bright after the ball has left, and it was the most "
@@ -21105,13 +21107,21 @@ def _ascent_spot_from_chain(out: dict, ascent: dict, seen,
     sweep computed both while it was judging the chain; nothing here is
     a second search.
 
-    Marked `estimated` throughout, and it means what it says: the run
-    back is linear where a struck ball decelerates, so the frame lands
-    EARLY -- 8 to 23 frames on real ascents, capped by
-    ASCENT_MAX_BACKRUN_SEC. Early is the harmless direction. It is
-    where the drawn line begins, and a tracer that starts a fraction
-    before the ball moves reads as a tracer; one that starts after it
-    has gone reads as a bug.
+    Still marked `estimated`, but it no longer means what it used to.
+    The run back was LINEAR, where a struck ball slows the whole way
+    up, so the frame landed early -- eleven frames on #768, which was
+    measured against a known impact of f1536. It now fits the chain's
+    own deceleration and solves for the tee line through that; see
+    _impact_frame in debug3. On that swing it lands on f1536.
+
+    Early is still the harmless direction when it is wrong, and that
+    has not changed: this is where the drawn line begins, and a tracer
+    that starts a fraction before the ball moves reads as a tracer
+    where one that starts after it has gone reads as a bug.
+
+    `from_model` says which model produced the frame. "drag" is the
+    fitted one; the others are what is left when a chain is too short
+    to fit anything, and they still run early.
 
     `why` is prepended when a caller has something to add about how it
     got here. Empty is the normal case now that this is the only path.
@@ -21132,12 +21142,18 @@ def _ascent_spot_from_chain(out: dict, ascent: dict, seen,
     out["impact_frame"] = max(0, _imp)
     out["estimated"] = True
     out["watch_concluded"] = False
+    _model = ascent.get("from_model")
+    out["from_model"] = _model
     out["reason"] = (
         ((why + " — ") if why else "")
         + f"traced back along its own heading to {int(_x)},{int(_y)} on the "
-          f"tee line at f{out['impact_frame']}. The run back is linear and a "
-          f"struck ball slows as it climbs, so this is early rather than "
-          f"exact.")
+          f"tee line at f{out['impact_frame']}"
+        + (", with the frame solved through the chain's own deceleration"
+           if _model == "drag" else
+           f", with the frame run back at a steady speed ({_model})"
+           if _model else "")
+        + ". The spot comes from the heading alone; the frame is the "
+          "estimate.")
     return out
 
 
