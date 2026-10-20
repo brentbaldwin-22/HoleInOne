@@ -98,7 +98,7 @@ def main() -> int:
     # passed the gates as separate swings 40ms apart, four were refused
     # on `rise` for being too short, and all six were the same shot.
     _slow = flight(decel=0.45)
-    _got = d3.fit_ascent_chains(_slow, 4)
+    _got = d3.fit_ascent_chains(_slow, 4, refine=True)
     check("a decelerating flight still comes back whole",
           on_ball(_got), NF)
     check("  as ONE chain, not a handful of fragments",
@@ -166,11 +166,11 @@ def main() -> int:
     _a = flight()
     _overlap = [list(_a), _a[2:], _a[:-3]]
     check("overlapping fits of one object collapse to one",
-          len(d3._dedupe_fits([list(x) for x in _overlap])), 1)
+          len(d3._dedupe_fits([list(x) for x in _overlap], True)), 1)
     check("  and two genuinely separate ones both survive (control)",
           len(d3._dedupe_fits(
               [list(_a), [{"frame": q["frame"], "x": q["x"] + 600,
-                           "y": q["y"], "area": 100} for q in _a]])), 2)
+                           "y": q["y"], "area": 100} for q in _a]], True)), 2)
     check("one flight yields one chain", len(d3.fit_ascent_chains(_a, 4)), 1)
 
     # ---- and a seed in the MIDDLE recovers both halves ----------------
@@ -224,7 +224,7 @@ def main() -> int:
                 real.append({"frame": _f, "x": _x, "y": _y, "area": 100})
     real.sort(key=lambda d: (d["frame"], d["y"]))
 
-    _out = d3.fit_ascent_chains(real, 4)
+    _out = d3.fit_ascent_chains(real, 4, refine=True)
     check("the real #768 detections make ONE chain, not six", len(_out), 1)
     _p = _out[0]["points"]
     check("  spanning the whole flight", (_p[0]["frame"], _p[-1]["frame"]),

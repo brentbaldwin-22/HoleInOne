@@ -4624,7 +4624,22 @@ FIT_MAX_MISSES = 4
 
 def fit_ascent_chains(dets: list, min_points: int,
                       tol_px: float = FIT_TOL_PX,
-                      window: int = FIT_WINDOW) -> list:
+                      window: int = FIT_WINDOW,
+                      # CURVE REFINEMENT AND GEOMETRIC DEDUPE, OFF BY
+                      # DEFAULT AFTER A REGRESSION. Together they turned
+                      # six fragments of one flight into a single
+                      # fourteen-point chain on the real detections from
+                      # #768 — and on the WHOLE cloud took the sweep
+                      # from two accepted chains to none. A quadratic
+                      # fitted to five noisy points can curve hard
+                      # enough to collect unrelated detections within
+                      # tolerance, and three passes of ten frames'
+                      # reach compounds it.
+                      #
+                      # Kept, because the 29-point regression test it
+                      # was built from still holds, and opt-in until it
+                      # can be made safe on a full band.
+                      refine: bool = False) -> list:
     """Chains found by FITTING lines to the detection cloud.
 
     Returns the same {points, span_px, rise_px} shape build_tracks does,
@@ -4669,12 +4684,13 @@ def fit_ascent_chains(dets: list, min_points: int,
                         continue
                     seeds += 1
                     if seeds > FIT_MAX_SEEDS:
-                        return _dedupe_fits(found)
+                        return _dedupe_fits(found, refine)
                     pts = _grow_fit(by_frame, a, vx, vy, f, tol_px, window)
                     # A LINE GETS IT STARTED; A CURVE KEEPS IT. See
                     # _refine_fit: a struck ball is not at constant
                     # velocity for long enough to matter here.
-                    pts = _refine_fit(by_frame, pts, tol_px)
+                    if refine:
+                        pts = _refine_fit(by_frame, pts, tol_px)
                     if len(pts) >= min_points:
                         found.append(pts)
                         for q in pts:
@@ -4683,7 +4699,7 @@ def fit_ascent_chains(dets: list, min_points: int,
                 else:
                     continue
                 break
-    return _dedupe_fits(found)
+    return _dedupe_fits(found, refine)
 
 
 def _grow_fit(by_frame: dict, a: dict, vx: float, vy: float, f0: int,
@@ -4830,7 +4846,7 @@ def _same_object(pts: list, kept: list) -> bool:
     return hit > len(pts) // 2
 
 
-def _dedupe_fits(found: list) -> list:
+def _dedupe_fits(found: list, geometric: bool = False) -> list:
     """Longest first, dropping any fit that mostly retraces one already
     kept -- one object should yield one chain, the same rule
     build_tracks works to.
@@ -4846,10 +4862,20 @@ def _dedupe_fits(found: list) -> list:
     found.sort(key=len, reverse=True)
     kept: list = []
     _paths: list = []
+    seen: set = set()
     for pts in found:
-        if _same_object(pts, _paths):
-            continue
-        _paths.append(pts)
+        if geometric:
+            if _same_object(pts, _paths):
+                continue
+            _paths.append(pts)
+        else:
+            # The original rule: identity, not geometry. Blind to a
+            # flight reported at the same spot on two frames, but it
+            # cannot merge two chains that are genuinely different.
+            ks = {(q["frame"], q["x"], q["y"]) for q in pts}
+            if len(ks & seen) > len(ks) // 2:
+                continue
+            seen |= ks
         kept.append({
             "points": pts,
             "span_px": math.hypot(pts[-1]["x"] - pts[0]["x"],
@@ -4951,6 +4977,7 @@ def sweep_ascents(
     _prefer = float(_G["ascent_prefer_area"])
     _corridor = float(_G["ascent_corridor_px"])
     _fit = bool(int(_G["ascent_fit_lines"]))
+    _curve = bool(int(_G["ascent_fit_curve"]))
     if min_points is None:
         min_points = ASCENT_MIN_POINTS
     out = {"ok": False, "ascents": [], "n_tracks": 0, "n_dets": 0,
@@ -5022,6 +5049,7 @@ def sweep_ascents(
         out["prefer_area"] = _prefer
         out["corridor_px"] = _corridor
         out["fit_lines"] = _fit
+        out["fit_curve"] = _curve
         out["cap_hit_frames"] = int(_stats.get("capped") or 0)
         out["cap_hit_frac"] = (round(_stats.get("capped", 0) / _fr, 3)
                                if _fr else None)
@@ -5034,7 +5062,8 @@ def sweep_ascents(
                               corridor_px=_corridor)
         # AND THE FITS, judged by the same gates. A chain is a chain:
         # nothing downstream knows or cares which pass produced it.
-        _fits = fit_ascent_chains(dets, int(min_points)) if _fit else []
+        _fits = (fit_ascent_chains(dets, int(min_points), refine=_curve)
+                 if _fit else [])
         out["n_fits"] = len(_fits)
         tracks = tracks + _fits
         out["n_tracks"] = len(tracks)
@@ -6808,6 +6837,12 @@ GATE_SPEC = {
     # chooses locally and one bad link ends a flight, where a fit looks
     # at every detection at once and a missed frame costs one inlier.
     "ascent_fit_lines":         (1,                        0,      1, True),
+    # REFINE EACH FIT AGAINST A CURVE, and dedupe by geometry rather
+    # than by point identity (1/0). Merges the fragments one flight
+    # comes back as — proven on #768's own detections — but on the
+    # whole band it took the sweep from two accepted chains to none,
+    # so it is off until that is understood.
+    "ascent_fit_curve":         (0,                        0,      1, True),
     "ascent_min_points":        (ASCENT_MIN_POINTS,        2,     20, True),
     "ascent_min_rise_frac":     (ASCENT_MIN_RISE_FRAC,  0.01,    0.9, False),
     "ascent_rate_lo":           (ASCENT_RATE_LO,        0.05,   20.0, False),
