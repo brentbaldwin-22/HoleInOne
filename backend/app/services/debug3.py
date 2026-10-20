@@ -5371,6 +5371,156 @@ def _longest_rising(pts: list, max_step: int) -> list:
     return out[::-1]
 
 
+# HOW MANY FRAMES AT A TIME the extension reads ahead. Small enough
+# that a constant-velocity guess has not drifted past the tolerance by
+# the end of it, large enough that the seek is amortised.
+ASCENT_EXTEND_CHUNK_FRAMES = 5
+
+# HOW FAR OFF THE PREDICTED POSITION an extension point may land. Wider
+# than the hole fill's, because a hole is bounded at BOTH ends and an
+# extension is a guess running forward: a ball decelerating 20% over
+# five frames falls about ten pixels short of a constant-velocity
+# prediction, and the tolerance has to swallow that without swallowing
+# the sky.
+ASCENT_EXTEND_TOL_PX = 24.0
+
+# HOW MANY CHAINS ONE SWEEP MAY FOLLOW. Each chunk is a seek and a
+# short decode, and a band full of junk has no shortage of chains that
+# stop. The ball's is among the longest; the rest are not worth the
+# read.
+ASCENT_EXTEND_MAX_CHAINS = 4
+
+
+def _chain_velocity(pts: list, span: int = 4):
+    """Pixels per frame, from the last few points of a chain."""
+    if len(pts) < 2:
+        return None
+    a = pts[max(0, len(pts) - span)]
+    b = pts[-1]
+    df = int(b["frame"]) - int(a["frame"])
+    if df <= 0:
+        return None
+    return ((float(b["x"]) - float(a["x"])) / df,
+            (float(b["y"]) - float(a["y"])) / df)
+
+
+def extend_chain(input_path, pts: list, max_frames: int,
+                 sens: int = 3, pad_px: float = ASCENT_FILL_PAD_PX,
+                 tol_px: float = ASCENT_EXTEND_TOL_PX,
+                 chunk: int = ASCENT_EXTEND_CHUNK_FRAMES,
+                 budget: list | None = None) -> list:
+    """Follow a chain PAST its last point, the way an operator does.
+
+    THE HOLE FILL DOES NOT COVER THIS, and the difference cost a real
+    ascent. fill_chain_holes re-reads the gaps BETWEEN a chain's
+    points; it has nothing to say about a chain that simply stops. On
+    event 815 the sweep found the first seven frames of a ball leaving
+    the tee -- f3763 to f3769, climbing 78px, passing every gate it was
+    judged on except one -- and ended there. The flight carried on for
+    another forty frames and roughly four hundred pixels, which the
+    operator's own 2x scan shows in full. 78px fails ASCENT_MIN_RISE_FRAC
+    (142px at 1080p). 400px does not even come close to failing it.
+
+    Nothing was wrong with the chain. The sweep just stopped looking,
+    and because there was no chain above it to join to, the stitcher
+    had nothing to work with either.
+
+    So: take the chain's own heading, predict where the ball goes next,
+    crop to that path and read it again two-frame -- the same trick as
+    the hole fill and the same reason it works, that inside a box the
+    size of a ball's next few positions the ball is the only thing
+    moving along that line.
+
+    WHY THE BOX IS HONEST. It spans from the last known point to the
+    CONSTANT-VELOCITY prediction, plus a pad. A real ball decelerates,
+    so it falls SHORT of that prediction -- inside the box, always.
+    Only something speeding up could leave it, and a struck ball
+    climbing away from a camera does not.
+
+    Walks in chunks so each one costs a single seek, re-fitting the
+    heading at every chunk boundary so the deceleration is tracked
+    rather than fought. Stops at the first chunk that finds nothing.
+
+    Returns the extra points, oldest first.
+    """
+    out: list = []
+    if not HAS_CV or len(pts) < 2 or max_frames <= 0:
+        return out
+    cur = list(pts)
+    while len(out) < max_frames:
+        v = _chain_velocity(cur)
+        if v is None:
+            break
+        vx, vy = v
+        # Not rising any more: whatever this is, the ascent is over.
+        if vy >= -0.5:
+            break
+        if budget is not None:
+            if budget[0] <= 0:
+                break
+            budget[0] -= 1
+        last = cur[-1]
+        f0 = int(last["frame"])
+        f1 = f0 + int(chunk)
+        x_end = float(last["x"]) + vx * chunk
+        y_end = float(last["y"]) + vy * chunk
+        x0 = int(min(float(last["x"]), x_end) - pad_px)
+        x1 = int(max(float(last["x"]), x_end) + pad_px)
+        y0 = int(min(float(last["y"]), y_end) - pad_px)
+        y1 = int(max(float(last["y"]), y_end) + pad_px)
+        x0, y0 = max(0, x0), max(0, y0)
+        if x1 - x0 < 8 or y1 - y0 < 8 or y1 <= 0:
+            break
+        dets = detect_movers_by_diff(
+            input_path, f0, f1, sens=int(sens),
+            roi=(x0, y0, x1 - x0, y1 - y0),
+            per_frame=8, three_frame=False, cap=4000,
+            merge_px=ASCENT_MERGE_PX)
+        by_frame: dict = {}
+        for d in dets:
+            by_frame.setdefault(int(d["frame"]), []).append(d)
+        added = 0
+        for f in range(f0 + 1, f1 + 1):
+            cands = by_frame.get(f)
+            if not cands:
+                continue
+            _df = f - int(last["frame"])
+            px = float(last["x"]) + vx * _df
+            py = float(last["y"]) + vy * _df
+            best = min(cands, key=lambda q: math.hypot(q["x"] - px,
+                                                       q["y"] - py))
+            if math.hypot(best["x"] - px, best["y"] - py) > tol_px:
+                continue
+            # AND IT MUST STILL BE GOING UP. A match that sits level
+            # with or below the point before it is not the next
+            # position of a climbing ball, whatever else it is.
+            #
+            # NO TEST KILLS THIS LINE, and it is kept anyway. Said
+            # plainly because this file has twice carried a check that
+            # nothing could reach, and both times the honest answer was
+            # to delete it.
+            #
+            # Here the reason is coverage, not redundancy. The case it
+            # exists for is a candidate inside `tol_px` of the
+            # prediction that is nevertheless not above the last point
+            # -- which needs the per-frame step to be SHORTER than the
+            # tolerance, i.e. a ball near its apex. Every fixture built
+            # for it so far has been defeated by the chunked walk: the
+            # last accepted point is usually two frames back, so the
+            # stray still rises against it and is taken legitimately.
+            # The guard's promise is asserted (no accepted point ever
+            # sits at or below the one before it); the branch itself is
+            # not exercised.
+            if int(best["y"]) >= int(cur[-1]["y"]):
+                continue
+            cur.append(best)
+            out.append(best)
+            added += 1
+        if added == 0:
+            break
+    return out
+
+
 def stitch_ascent_chains(chains: list, tol_px: float = ASCENT_STITCH_PX,
                          gap_frames: int = ASCENT_MAX_STEP_FRAMES,
                          # HOW FAR THE GROUPING MAY REACH, which is not
@@ -5696,6 +5846,36 @@ def sweep_ascents(
         # it. See fill_chain_holes.
         out["n_refilled"] = int(_fill_stats.get("points") or 0)
         out["n_holes_read"] = (ASCENT_FILL_MAX_HOLES - _fill_budget[0])
+        # AND FOLLOW THE ONES THAT JUST STOPPED. A chain that ends
+        # mid-flight is the failure the hole fill cannot see: there is
+        # no gap to fill and nothing above it to join to, so it is
+        # judged on however much of the ascent the detector happened to
+        # get. On event 815 that was seven frames and 78px of a 400px
+        # flight, refused for rise. See extend_chain.
+        #
+        # Only the chains long enough to be a candidate, longest first,
+        # and out of the same budget as the hole reads -- the rest are
+        # junk and following them is a seek each.
+        _ext = 0
+        for _c in sorted(tracks, key=lambda c: -len(c.get("points") or []))[
+                :ASCENT_EXTEND_MAX_CHAINS]:
+            _p = _c.get("points") or []
+            if len(_p) < int(min_points) or _fill_budget[0] <= 0:
+                continue
+            _more = extend_chain(
+                input_path, _p,
+                max_frames=max(0, SWEEP_MAX_SPAN
+                               - (int(_p[-1]["frame"]) - int(_p[0]["frame"]))),
+                sens=int(sens), budget=_fill_budget)
+            if _more:
+                _p.extend(_more)
+                _c["rise_px"] = round(float(_p[0]["y"] - _p[-1]["y"]), 1)
+                _c["span_px"] = round(math.hypot(_p[-1]["x"] - _p[0]["x"],
+                                                 _p[-1]["y"] - _p[0]["y"]), 1)
+                _ext += len(_more)
+        # HOW MUCH FURTHER THE FLIGHTS WENT than the sweep had them
+        # going. Zero means every chain really did end where it ended.
+        out["n_extended"] = _ext
         out["n_tracks"] = len(tracks)
         out["timing"] = {"detect": round(_t_det, 2),
                          "linking": round(time.perf_counter()
