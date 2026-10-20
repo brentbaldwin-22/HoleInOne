@@ -139,9 +139,11 @@ except Exception:  # pragma: no cover
 # ---------------------------------------------------------------------
 
 class MediaPipePersonDetector:
-    """MediaPipe Pose wrapper. Returns the person's bounding-box
-    center in native-frame pixel coords on each detect() call, or
-    None if no person is found."""
+    """MediaPipe Pose wrapper. Returns where the person is STANDING in
+    native-frame pixel coords on each detect() call, or None if no
+    person is found -- the x of their landmarks' centre and the y of
+    the LOWEST one, which on a standing person is a foot. See
+    `_in_roi` for why the feet and not the middle."""
 
     def __init__(self, detect_width: int = 320):
         self.detect_width = detect_width
@@ -166,7 +168,11 @@ class MediaPipePersonDetector:
         xs = [lm.x for lm in result.pose_landmarks.landmark]
         ys = [lm.y for lm in result.pose_landmarks.landmark]
         cx = (sum(xs) / len(xs)) * sw / scale
-        cy = (sum(ys) / len(ys)) * sh / scale
+        # The lowest landmark, which on a standing person is a foot.
+        # Pose gives ankles, heels and toes; taking the maximum needs no
+        # knowledge of which index is which and degrades sensibly when
+        # the feet are out of shot, to whatever IS lowest.
+        cy = max(ys) * sh / scale
         return int(round(cx)), int(round(cy))
 
     def close(self):
@@ -178,6 +184,9 @@ class MediaPipePersonDetector:
 
 class YoloPersonDetector:
     """YOLOv8n person detector running on OpenCV's built-in DNN module.
+
+    Reports the bottom-centre of the person's box -- where they are
+    STANDING, not where their middle is. See `_in_roi`.
 
     This is the production detector. It loads a pre-exported ONNX model
     (shipped in the repo at pi-agent/models/) and runs it with cv2.dnn —
@@ -249,10 +258,12 @@ class YoloPersonDetector:
         if idxs is None or len(idxs) == 0:
             return None
         idxs = np.array(idxs).flatten()
-        # Among surviving boxes, return the most confident person's center.
+        # Among surviving boxes, the most confident person -- reported at
+        # their FEET. See _in_roi for why it is the feet and not the
+        # middle.
         best = max(idxs, key=lambda i: confs[i])
         x, y, bw_px, bh_px = boxes[best]
-        return int(x + bw_px / 2), int(y + bh_px / 2)
+        return int(x + bw_px / 2), int(y + bh_px)
 
     def close(self):
         pass
@@ -260,8 +271,8 @@ class YoloPersonDetector:
 
 class MotionFallbackDetector:
     """Fallback when MediaPipe isn't installed: per-frame absolute
-    difference against a running background mean, then the centroid
-    of the high-motion mask. Much noisier than pose detection but
+    difference against a running background mean, then the bottom of
+    the high-motion mask. Much noisier than pose detection but
     keeps the rest of the loop testable on a stock Pi OS without
     the heavy ML deps."""
 
@@ -314,7 +325,15 @@ class MotionFallbackDetector:
         if m["m00"] == 0:
             return None
         cx = m["m10"] / m["m00"]
-        cy = m["m01"] / m["m00"]
+        # THE BOTTOM OF THE BLOB, not its middle, to match what the
+        # other two detectors report. Cruder here by nature: this has
+        # no body model, so the bottom of a motion blob is the lowest
+        # thing that moved rather than a foot -- a shadow or a club at
+        # the bottom of its arc will drag it down. It is the last
+        # resort detector and this keeps it answering the same question
+        # as the others rather than a different one.
+        _bx, _by, _bw, _bh = cv2.boundingRect(biggest)
+        cy = _by + _bh
         return int(round(cx / scale)), int(round(cy / scale))
 
     def close(self):
@@ -322,7 +341,24 @@ class MotionFallbackDetector:
 
 
 def _in_roi(pt: tuple[int, int], roi) -> bool:
-    """Is the golfer on A tee? Any zone counts.
+    """Is the golfer standing on A tee? Any zone counts.
+
+    `pt` IS THE PERSON'S FEET, and used to be the middle of their
+    bounding box. The difference is the whole usability of this
+    feature.
+
+    With a waist-height point, a zone has to be drawn around BODIES,
+    and how far a body extends above the ground in pixels depends on
+    how far away it is -- so the same tee needs a different box
+    depending on where the camera sits, and an operator drawing the
+    obvious thing (the mown rectangle people stand on) gets a zone that
+    fires on nobody. Measured on hole 8: zones drawn around two tee
+    surfaces would have caught neither tee, while the previous box,
+    drawn generously enough to catch waists, also contained the green,
+    the bunkers and the tees 60 yards further out.
+
+    Feet are where someone IS. A zone becomes "this patch of ground",
+    which is what people draw anyway and what the word zone means.
 
     A par 3 is played from a back tee and a middle tee, and the camera
     is given one box per tee rather than one box spanning both — a
@@ -330,6 +366,10 @@ def _in_roi(pt: tuple[int, int], roi) -> bool:
     them, and somebody walking that path is a recording nobody asked
     for. tee_roi accepts either shape, so a rig still running one box
     behaves exactly as it did.
+
+    NOTE FOR ANY RIG UPDATED PAST THIS CHANGE: zones drawn for the old
+    waist test sit too high and will under-trigger. They need redrawing
+    onto the ground. The agent says so once at startup.
     """
     return tee_roi.contains(pt, roi)
 
@@ -574,6 +614,16 @@ class TeeAgent:
                 tracker.set_zones(boxes, size[0], size[1])
             except Exception as exc:  # noqa: BLE001
                 log.debug("swing select: could not adopt zones (%s)", exc)
+        # SAY WHAT THE BOX MEANS, every time they change. A zone is
+        # tested against the golfer's FEET, and a rig updated past that
+        # change is carrying zones drawn for a waist-height point --
+        # which sit too high and quietly stop triggering. One line
+        # beside the zones themselves is where somebody reading the log
+        # to find out why nothing records will actually see it.
+        log.info(
+            "zones are matched against where a person is STANDING (their "
+            "feet). A box drawn around a golfer rather than around the "
+            "ground they stand on will under-trigger.")
         log.info(
             "trigger zones updated from the backend: %s",
             ", ".join(
@@ -927,10 +977,10 @@ class TeeAgent:
                 # Sharpness, off the frame we already have. No-op except
                 # every few seconds; rides out on the heartbeat.
                 _focus.sample(frame)
-                centroid = detector.detect(frame)
+                stance = detector.detect(frame)
                 with self._roi_lock:
                     _roi_now = self.roi
-                in_roi = centroid is not None and _in_roi(centroid, _roi_now)
+                in_roi = stance is not None and _in_roi(stance, _roi_now)
                 # Manual trigger, for testing the record+upload path
                 # without anyone walking into frame:
                 #     touch /tmp/golfreelz-trigger
@@ -951,7 +1001,8 @@ class TeeAgent:
                     if in_roi:
                         if person_first_seen is None:
                             person_first_seen = now
-                            log.info("person entered ROI at %s", centroid)
+                            log.info("person standing in a zone at %s "
+                                     "(their feet)", stance)
                     else:
                         if person_first_seen is not None:
                             log.debug("person left ROI before dwell threshold")
@@ -1190,10 +1241,10 @@ class TeeAgent:
                 # No frames is not "nobody is there" — it is a camera
                 # problem, and ending the clip early would hide it.
                 return None
-            centroid = detector.detect(snap[-1][1])
+            stance = detector.detect(snap[-1][1])
             with self._roi_lock:
                 _roi = self.roi
-            if centroid is not None and _in_roi(centroid, _roi):
+            if stance is not None and _in_roi(stance, _roi):
                 state["in_roi"] += 1
                 state["last_seen"] = now
                 # AND REMEMBER THAT WE SAW THEM, which this did not do
@@ -1366,12 +1417,12 @@ class TeeAgent:
                 # strict trigger confidence already gated starting the clip.
                 # Fall back for detectors that don't take the override.
                 try:
-                    centroid = detector.detect(
+                    stance = detector.detect(
                         current[-1][1], conf_override=self.keepalive_conf
                     )
                 except TypeError:
-                    centroid = detector.detect(current[-1][1])
-                if centroid is not None:
+                    stance = detector.detect(current[-1][1])
+                if stance is not None:
                     last_person_seen = now
                     # NOTHING SWINGS WITHOUT A PERSON. Kept so the
                     # swing finder can throw out peaks with nobody
