@@ -1,31 +1,36 @@
 #!/usr/bin/env python3
-"""Is a DB session held open across the media work?
+"""Is a DB session held open across the slow part?
 
-If it is, the transaction sits IDLE for minutes while ffmpeg re-encodes
-a clip, Postgres kills the connection on idle_in_transaction_timeout,
-and the next query dies with "SSL connection has been closed
-unexpectedly". Observed in the field on 11 Oct, and duration-dependent,
-which is what made it look random:
+If it is, the transaction sits IDLE for minutes, Postgres kills the
+connection on idle_in_transaction_timeout, and the next query dies with
+"SSL connection has been closed unexpectedly". Observed in the field on
+11 Oct, and duration-dependent, which is what made it look random:
 
     36 s, 79 s     -> processed
     114 s, 126 s   -> FAILED
 
-Both of those failures were clips that had already survived the whole
-cellular link — 50.2 MB and 55.4 MB landed on the server and the
-backend threw them away.
+Both failures were clips that had already survived the whole cellular
+link — 50.2 MB and 55.4 MB landed on the server and the backend threw
+them away.
 
-The same rule was already applied further down the same function, for
-the produce wait, with the reason spelled out in a comment. The
-rehydrate and the re-encode above it were missed. So this test is not
-about ffmpeg or Postgres: it asserts the ONE property that matters —
-no session is checked out while slow media work runs.
+WHAT THE SLOW PART IS HAS CHANGED. This test used to watch the
+rehydrate and the re-encode inside _run_camera_event_job. Those are
+gone from it: produce rehydrates its own sources, upload_event already
+kicks the transcode as each clip lands, and doing them here only put
+two ffmpeg-scale jobs in front of the produce queue. That they stay
+gone is camera_queue_handoff_test's job.
+
+What is left in this function that can block at all is the enqueue, so
+that is what this watches now. The rule is the same one, and it is the
+rule rather than the call site that matters: no session is checked out
+while something slow runs.
 
     python3 tools/produce_session_test.py
 """
 from __future__ import annotations
 
 import sys
-import tempfile
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,7 +51,7 @@ def check(name, got, want):
 class Tracker:
     def __init__(self):
         self.open = 0
-        self.peak_during_media = []
+        self.held_during_enqueue = []
         self.event = None
 
 
@@ -63,8 +68,12 @@ class FakeEvent:
     produced_clip_id = None
 
 
-class Stop(RuntimeError):
-    """Ends the run once the interesting part is over."""
+class FakeQuery:
+    def filter(self, *_a):
+        return self
+
+    def first(self):
+        return None            # no linked upload yet: make a new one
 
 
 def make_session_factory(tracker):
@@ -78,14 +87,17 @@ def make_session_factory(tracker):
                 self._closed = True
                 tracker.open -= 1
 
-        def get(self, model, pk):
+        def get(self, _model, _pk):
             return tracker.event
 
-        def query(self, *a, **k):
-            # Everything past the media work needs a real database.
-            # Stop here: the property under test has already been
-            # observed, and the function's own except clause handles it.
-            raise Stop("far enough")
+        def query(self, *_a, **_k):
+            return FakeQuery()
+
+        def add(self, obj):
+            obj.id = 501
+
+        def refresh(self, _obj):
+            pass
 
         def commit(self):
             pass
@@ -93,72 +105,74 @@ def make_session_factory(tracker):
         def rollback(self):
             pass
 
-        def add(self, obj):
-            pass
-
-        def refresh(self, obj):
-            pass
-
     return FakeSession
+
+
+def run(tracker):
+    """Drive the job with a stub admin module and count open sessions."""
+    admin = types.ModuleType("app.routers.admin")
+
+    def _enqueue(upload_id, hole_number=None, wait=False, **_k):
+        # THE SLOW CALL, as far as this function is concerned. Even with
+        # wait=False the queue takes a lock, and the rule does not
+        # depend on how slow "slow" turns out to be.
+        tracker.held_during_enqueue.append(tracker.open)
+        return {"queued": True}
+
+    admin.enqueue_produce_job = _enqueue
+
+    class _LVUMeta(type):
+        def __getattr__(cls, name):
+            return _Col(name)
+
+    class _Col:
+        def __init__(self, name):
+            self.name = name
+
+        def __eq__(self, other):
+            return lambda r: getattr(r, self.name, None) == other
+
+    class FakeLVU(metaclass=_LVUMeta):
+        def __new__(cls, **kw):
+            obj = types.SimpleNamespace(**kw)
+            obj.id = None
+            return obj
+
+    models = types.ModuleType("app.models")
+    models.LongVideoUpload = FakeLVU
+
+    saved_mods = {k: sys.modules.get(k)
+                  for k in ("app.routers.admin", "app.models")}
+    saved = cameras.SessionLocal
+    sys.modules["app.routers.admin"] = admin
+    sys.modules["app.models"] = models
+    try:
+        cameras.SessionLocal = make_session_factory(tracker)
+        cameras._process_camera_event_job(77)
+    finally:
+        cameras.SessionLocal = saved
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
 
 
 def main() -> int:
     tracker = Tracker()
     tracker.event = FakeEvent()
+    run(tracker)
 
-    with tempfile.TemporaryDirectory() as td:
-        clips = Path(td)
-        (clips / "tee.mp4").write_bytes(b"\0" * 1024)
-
-        def probe(name):
-            """Stand-in for the re-encode; records sessions held."""
-            tracker.peak_during_media.append(tracker.open)
-
-        def probe_fetch(d, name):
-            tracker.peak_during_media.append(tracker.open)
-
-        saved = (cameras.SessionLocal, cameras._post_process_raw_clip,
-                 cameras.CLIPS_DIR, cameras.storage.ensure_local)
-        cameras.SessionLocal = make_session_factory(tracker)
-        cameras._post_process_raw_clip = probe
-        cameras.CLIPS_DIR = clips
-        cameras.storage.ensure_local = probe_fetch
-        try:
-            cameras._process_camera_event_job(77)
-        finally:
-            (cameras.SessionLocal, cameras._post_process_raw_clip,
-             cameras.CLIPS_DIR, cameras.storage.ensure_local) = saved
-
-    check("the media work actually ran (control)",
-          len(tracker.peak_during_media) >= 2, True)
-    check("NO session is held while rehydrating or re-encoding",
-          max(tracker.peak_during_media) if tracker.peak_during_media
-          else -1, 0)
-    check("and every session is closed when the job ends",
-          tracker.open, 0)
-
-    # ---- the missing-clip path still reports, with a fresh session ----
-    tracker2 = Tracker()
-    tracker2.event = FakeEvent()
-    tracker2.event.status = "paired_uploaded"
-    with tempfile.TemporaryDirectory() as td:
-        clips = Path(td)              # deliberately empty: no tee.mp4
-        saved = (cameras.SessionLocal, cameras._post_process_raw_clip,
-                 cameras.CLIPS_DIR, cameras.storage.ensure_local)
-        cameras.SessionLocal = make_session_factory(tracker2)
-        cameras._post_process_raw_clip = lambda n: None
-        cameras.CLIPS_DIR = clips
-        cameras.storage.ensure_local = lambda d, n: None
-        try:
-            cameras._process_camera_event_job(77)
-        finally:
-            (cameras.SessionLocal, cameras._post_process_raw_clip,
-             cameras.CLIPS_DIR, cameras.storage.ensure_local) = saved
-    check("a missing tee clip is still marked failed",
-          tracker2.event.status, "failed")
-    check("  with the reason", tracker2.event.last_error,
-          "tee clip missing on disk")
-    check("  and no session left open", tracker2.open, 0)
+    # CONTROL FIRST. Without it, a function that never reached the
+    # enqueue at all scores a perfect zero sessions held.
+    check("the enqueue actually ran (control)",
+          len(tracker.held_during_enqueue), 1)
+    check("NO session is held across it",
+          max(tracker.held_during_enqueue, default=-1), 0)
+    check("and every session is closed when the job ends", tracker.open, 0)
+    # ...and the event did reach the queue, so this is the real path and
+    # not an early return that happens to hold nothing.
+    check("  having marked the event queued", tracker.event.status, "queued")
 
     print()
     if FAIL:
@@ -169,4 +183,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

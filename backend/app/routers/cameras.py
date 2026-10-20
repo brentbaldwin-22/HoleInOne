@@ -1811,9 +1811,13 @@ def _run_camera_event_job(event_id: int) -> None:
     pipeline so it benefits from the existing multi-swing auto-detect
     + admin edit-wizard. Creates a LongVideoUpload row pointing at the
     raw files the Pis already saved, links it back via
-    LongVideoUpload.camera_event_id, then kicks off the standard
-    background job. The Production page reads it as a long-upload —
-    same card, same buttons (Edit, Re-Produce, Broadcast, Delete).
+    LongVideoUpload.camera_event_id, queues it and RETURNS. The
+    Production page reads it as a long-upload — same card, same buttons
+    (Edit, Re-Produce, Broadcast, Delete).
+
+    Short-lived by design: no media work, no waiting on produce. The
+    event's terminal status is derived from the upload row afterwards
+    (`_sync_camera_event_from_upload`), not stamped by this thread.
 
     Idempotent: if the event already has a linked LongVideoUpload, we
     re-use it instead of creating a duplicate.
@@ -1827,10 +1831,6 @@ def _run_camera_event_job(event_id: int) -> None:
     from .admin import enqueue_produce_job
     from ..models import LongVideoUpload
 
-    # Own thread, and everything below it is media work: the rehydrate,
-    # the re-encodes, and the produce it waits on.
-    workload.deprioritize()
-
     db = SessionLocal()
     try:
         event = db.get(CameraEvent, event_id)
@@ -1838,63 +1838,33 @@ def _run_camera_event_job(event_id: int) -> None:
             log.warning("cameras: event %s vanished before processing", event_id)
             return
 
-        # SAME RULE AS THE PRODUCE WAIT BELOW, and for the same reason:
-        # read what we need, then RELEASE THE POOLED CONNECTION before
-        # doing media work. Rehydrating a 50 MB raw from object storage
-        # and re-encoding it are minutes, not milliseconds, and a
-        # session held across them is a transaction sitting IDLE for
-        # minutes. Postgres kills it on idle_in_transaction_timeout and
-        # the next query dies with "SSL connection has been closed
-        # unexpectedly" -- which is how this presented: clips that had
-        # survived the whole cellular link, discarded by the backend.
+        # NOTHING IN FRONT OF THE QUEUE. This used to rehydrate both
+        # raws from object storage and re-encode them to H.264, in this
+        # thread, before the event was queued at all -- two ffmpeg-scale
+        # jobs under the heavy gate, on the critical path of every
+        # capture. Both were already being done elsewhere:
         #
-        # It was duration-dependent, which is what made it look random:
+        #   - produce rehydrates its own sources under its own gate and
+        #     times it as its own stage (admin.py `_debugx_job`), and
+        #     fails the row with "tee source missing on disk" if they
+        #     are not there -- which now reaches the event through
+        #     `_sync_camera_event_from_upload`;
+        #   - upload_event already starts `_post_process_raw_clip` for
+        #     each clip as it lands, and that transcode is for the admin
+        #     PREVIEW, not for production: produce reads via cv2, which
+        #     is perfectly happy with the Pi's mp4v.
         #
-        #     36 s, 79 s   -> processed
-        #     114 s, 126 s -> failed
+        # So the work was duplicated, and the minutes it took were
+        # exactly the window in which a restart stranded the event at
+        # 'paired_uploaded' with nobody holding it. An uploaded pair is
+        # queued now, immediately, and shows up on Production as queued.
         #
-        # The wait below was already fixed this way. The rehydrate and
-        # the re-encode above it were not.
-        _tee_name = event.tee_clip_filename
-        _green_name = event.green_clip_filename
-        missing = True
-        db.close()
-        try:
-            # Rehydrate raws from object storage if the ephemeral disk
-            # lost them (e.g. reprocessing an event after a redeploy).
-            if _tee_name:
-                storage.ensure_local(CLIPS_DIR, _tee_name)
-            if _green_name:
-                storage.ensure_local(CLIPS_DIR, _green_name)
-
-            tee_path = CLIPS_DIR / _tee_name if _tee_name else None
-            missing = tee_path is None or not tee_path.exists()
-
-            # Re-encode the raws to browser-friendly H.264 + extract a
-            # thumbnail in this thread before production opens them.
-            # Cheap no-op when the upload-time hook already did it.
-            if not missing:
-                if _tee_name:
-                    _post_process_raw_clip(_tee_name)
-                if _green_name:
-                    _post_process_raw_clip(_green_name)
-        finally:
-            db = SessionLocal()
-
-        event = db.get(CameraEvent, event_id)
-        if event is None:
-            log.warning("cameras: event %s vanished during media work",
-                        event_id)
-            return
-        if missing:
-            event.status = "failed"
-            event.last_error = "tee clip missing on disk"
-            db.commit()
-            return
-
+        # has_green comes off the FILENAME rather than a disk probe: on
+        # a re-process after a redeploy the file is in the bucket and
+        # not yet on disk, and probing would have quietly downgraded a
+        # paired event to tee-only.
         green_filename = event.green_clip_filename
-        green_path = CLIPS_DIR / green_filename if green_filename else None
-        has_green = green_path is not None and green_path.exists()
+        has_green = bool(green_filename)
 
         # Re-use a previously-linked LongVideoUpload row if any (handles
         # Re-Produce flowing back through this code path).
@@ -1942,92 +1912,39 @@ def _run_camera_event_job(event_id: int) -> None:
             event.id, lvu.id,
         )
 
-        # Status flips to 'processed' (or 'failed') from inside the
-        # produce job's LongVideoUpload bookkeeping; mirror that onto the
-        # CameraEvent at the end. We block this thread on the job so the
-        # camera-event row gets its terminal status set in one pass.
-        try:
-            # THE produce path — the same one Debug3 and Re-Produce run.
-            # This used to call _run_long_upload_job with motion-only
-            # audio+motion detection; swings come from the pose detector
-            # now, and the flight from Debug3, so a capture behaves
-            # identically however it was started. A camera covers one
-            # par-3, so its hole is passed through rather than inferred.
-            # wait=True: produce is queued and serialised with every
-            # other upload, but this thread blocks until its turn is
-            # done so the CameraEvent's terminal status is stamped from
-            # the actual outcome rather than from "we started it".
-            # Read what we need, then RELEASE THE POOLED CONNECTION
-            # before blocking. The produce queue serialises jobs, so
-            # this wait grows with queue depth — the Nth camera event
-            # waits N produce durations. Holding a session across it
-            # exhausts the pool (SQLAlchemy defaults to 5 + 10
-            # overflow), and once it is dry EVERY endpoint 500s:
-            # heartbeat, poll-trigger, upload-event, the admin UI. A
-            # camera politely waiting its turn took the whole backend
-            # down, which is how it presented in the field.
-            _lvu_id = lvu.id
-            _hole = int(event.hole_number)
-            db.close()
-            try:
-                enqueue_produce_job(
-                    upload_id=_lvu_id, hole_number=_hole, wait=True,
-                )
-            finally:
-                db = SessionLocal()
-        except Exception as exc:
-            log.exception(
-                "cameras: event %s produce job crashed: %s", event_id, exc,
-            )
-            try:
-                db.close()
-            except Exception:  # noqa: BLE001
-                pass
-            db = SessionLocal()
-
-        # Fresh session, so no stale identity map to expire.
-        event = db.get(CameraEvent, event_id)
-        lvu = db.get(LongVideoUpload, _lvu_id)
-        if event is None or lvu is None:
-            return
-
-        # The auto-swing detector treats "no paired audio+motion peaks"
-        # as a hard failure, which is right for the long-upload UI but
-        # wrong for the camera path: the Pi already captured + uploaded
-        # the raws (visible on the production page), there just wasn't
-        # an actual swing to produce a clip from. Treat this as a
-        # successful capture so the event isn't flagged red.
-        no_swings = (
-            lvu.processing_status == "failed"
-            and (lvu.last_error or "").startswith("no swings detected")
-        )
-
-        if lvu.processing_status == "completed" or no_swings:
-            event.status = "processed"
-            event.last_error = None
-            # Pick the first produced clip for the back-compat
-            # produced_clip_id pointer (the listing surfaces the full
-            # set via the linked long-upload).
-            from ..models import VideoClip
-            first_clip = (
-                db.query(VideoClip)
-                .filter(VideoClip.long_upload_id == lvu.id)
-                .order_by(VideoClip.captured_at.asc().nulls_last())
-                .first()
-            )
-            if first_clip is not None:
-                event.produced_clip_id = first_clip.id
-        else:
-            event.status = "failed"
-            event.last_error = (lvu.last_error or "long-upload job did not complete")[:2000]
+        # HANDED OVER, NOT WAITED ON. This used to pass wait=True and
+        # block this thread through the queue wait AND the whole
+        # produce -- tens of minutes behind a deep queue -- purely so it
+        # could stamp the event's terminal status from the outcome. That
+        # made a daemon thread in the web process the only record that
+        # the work existed: a deploy, an OOM or a health-check bounce
+        # killed it and the event sat at 'paired_uploaded' for good,
+        # which is the "Both clips in - STUCK" pill. Worse, the deeper
+        # the queue the longer the exposure, so a backlog made each of
+        # its members MORE likely to be lost, and one restart took the
+        # whole parked set at once -- hence stuck events arriving in
+        # runs of consecutive ids.
+        #
+        # The status is derived now instead of stamped: the upload row
+        # is durable, it is already linked by camera_event_id, and
+        # `_finish_wizard_produce` -- which every exit path from produce
+        # goes through -- mirrors its outcome onto this event. Nothing
+        # has to survive anything.
+        _lvu_id = lvu.id
+        _hole = int(event.hole_number)
+        event.status = "queued"
+        event.last_error = None
         db.commit()
+        db.close()
+        try:
+            enqueue_produce_job(
+                upload_id=_lvu_id, hole_number=_hole, wait=False,
+            )
+        finally:
+            db = SessionLocal()
         log.info(
-            "cameras: event %s done — status=%s lvu=%s segs=%s produced=%s",
-            event.id,
-            event.status,
-            lvu.id,
-            lvu.last_n_segments,
-            lvu.last_n_succeeded,
+            "cameras: event %s queued for produce — lvu=%s hole=%s green=%s",
+            event_id, _lvu_id, _hole, bool(has_green),
         )
     except Exception as exc:  # pragma: no cover
         log.exception("cameras: event %s processing crashed: %s", event_id, exc)

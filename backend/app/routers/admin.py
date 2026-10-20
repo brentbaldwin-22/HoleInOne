@@ -24040,6 +24040,63 @@ def run_wizard_produce_job(
         db.close()
 
 
+def _sync_camera_event_from_upload(db, upload_id: int) -> None:
+    """Mirror a finished upload's outcome onto the camera event it came
+    from. No-op for an upload nobody's camera made.
+
+    THE CAMERA EVENT'S STATUS IS DERIVED, NOT STAMPED. It used to be
+    written by the thread that kicked produce off, which therefore had
+    to block for the whole job -- so a restart anywhere in those minutes
+    left the event frozen at 'paired_uploaded' with both clips sitting
+    right there, which is the "Both clips in - STUCK" pill nobody could
+    explain. The upload row survives a restart; the thread did not. So
+    the outcome is read off the row that lasts.
+    """
+    from ..models import CameraEvent, VideoClip
+
+    try:
+        lvu = db.get(LongVideoUpload, upload_id)
+        if lvu is None or not getattr(lvu, "camera_event_id", None):
+            return
+        event = db.get(CameraEvent, lvu.camera_event_id)
+        if event is None:
+            return
+
+        # A CAPTURE WITH NO SWING IN IT IS NOT A FAILURE. The auto
+        # detector calls it one, which is right for the long-upload UI
+        # and wrong here: the Pi triggered, captured and uploaded
+        # exactly as asked, and there simply was no golf in the frame.
+        # Flagging those red trains the operator to ignore red.
+        no_swings = (
+            lvu.processing_status == "failed"
+            and (lvu.last_error or "").startswith("no swings detected")
+        )
+        if lvu.processing_status == "completed" or no_swings:
+            event.status = "processed"
+            event.last_error = None
+            # Back-compat pointer; the listing surfaces the full set
+            # through the linked upload.
+            first_clip = (
+                db.query(VideoClip)
+                .filter(VideoClip.long_upload_id == lvu.id)
+                .order_by(VideoClip.captured_at.asc().nulls_last())
+                .first()
+            )
+            if first_clip is not None:
+                event.produced_clip_id = first_clip.id
+        else:
+            event.status = "failed"
+            event.last_error = (
+                lvu.last_error or "produce did not complete")[:2000]
+        db.commit()
+        log.info("cameras: event %s -> %s (from upload %s)",
+                 event.id, event.status, lvu.id)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        log.warning("cameras: could not sync event from upload %s: %s",
+                    upload_id, exc)
+
+
 def _finish_wizard_produce(db, upload_id: int, ok: bool, n_ok: int,
                            error=None) -> None:
     """Release the row the wizard's produce claimed.
@@ -24064,6 +24121,10 @@ def _finish_wizard_produce(db, upload_id: int, ok: bool, n_ok: int,
         db.rollback()
         log.warning("wizard produce: could not release upload %s: %s",
                     upload_id, exc)
+    # OUTSIDE THE TRY, so an event still gets its status even if the
+    # release above partly failed -- and after the commit, so the sync
+    # reads the terminal row rather than the one in flight.
+    _sync_camera_event_from_upload(db, upload_id)
 
 
 def _wizard_ball_side(db, row) -> str | None:
@@ -24136,6 +24197,10 @@ def run_produce_job(
                 db.commit()
             except Exception:  # noqa: BLE001
                 db.rollback()
+            # This path returns without going through
+            # _finish_wizard_produce, so it has to mirror for itself or
+            # a camera event whose raw went missing stays 'queued'.
+            _sync_camera_event_from_upload(db, upload_id)
             return {"ok": False, "error": _err}
         # Report the same stages Debug3's panel shows, so an auto-produce
         # card can say "Finding swing candidates" instead of just going

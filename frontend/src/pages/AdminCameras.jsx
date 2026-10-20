@@ -94,6 +94,21 @@ function offlineReason(cam) {
 // a chance to work before we call anything wrong.
 const STUCK_AFTER_SEC = 300;
 
+// ...and the longer one for an event that HAS been handed to produce.
+// 'queued' means the upload row exists and is in the produce queue, so
+// the only way it is really stuck is a process death — which the
+// startup reaper already hands back to the sweeper. What it usually
+// means is a deep queue, and a capture can legitimately sit behind
+// several minutes of other people's golf without anything being wrong.
+// Calling that STUCK at five minutes is how a page teaches people to
+// ignore it.
+const QUEUED_STUCK_AFTER_SEC = 2700;
+
+/** How long THIS event may sit before the page calls it stuck. */
+function stuckAfter(ev) {
+  return ev?.status === "queued" ? QUEUED_STUCK_AFTER_SEC : STUCK_AFTER_SEC;
+}
+
 // What each status means, and — the part that matters when you're
 // standing on a course wondering why no clips appeared — what it means
 // when an event SITS there. A camera event that never reaches 'processed'
@@ -119,6 +134,18 @@ const EVENT_STATES = {
     tone: "warn",
     ok: "One clip in. Waiting on the other half.",
     stuck: "Only one of the two clips arrived.",
+  },
+  queued: {
+    label: "Queued",
+    tone: "info",
+    ok:
+      "Both clips in and handed to the produce queue. It produces in " +
+      "turn — check Production for its place in the line.",
+    stuck:
+      "Queued for produce a long time ago and still not finished. Either " +
+      "the queue is very deep (check Production) or the job died with a " +
+      "backend restart; the next restart hands it back to the sweeper " +
+      "automatically, and Re-process forces one now.",
   },
   paired_uploaded: {
     label: "Both clips in",
@@ -1247,7 +1274,7 @@ function CameraEventsPanel({ adminPassword }) {
     if (!onlyProblems) return true;
     const age = ageSeconds(ev.triggered_at) ?? 0;
     const terminal = ev.status === "processed" || ev.status === "failed";
-    return ev.status === "failed" || (!terminal && age > STUCK_AFTER_SEC);
+    return ev.status === "failed" || (!terminal && age > stuckAfter(ev));
   });
 
   return (
@@ -1287,7 +1314,7 @@ function CameraEventsPanel({ adminPassword }) {
       {shown.map((ev) => {
         const age = ageSeconds(ev.triggered_at);
         const terminal = ev.status === "processed" || ev.status === "failed";
-        const isStuck = !terminal && (age ?? 0) > STUCK_AFTER_SEC;
+        const isStuck = !terminal && (age ?? 0) > stuckAfter(ev);
         const meta = EVENT_STATES[ev.status] || {
           label: ev.status || "unknown", tone: "info", ok: "",
         };
