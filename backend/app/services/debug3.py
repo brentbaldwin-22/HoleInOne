@@ -1980,6 +1980,50 @@ DIFF_SENS = {
 }
 
 
+def _merge_blobs(hits: list, merge_px: float,
+                 prefer_area: float = 0.0) -> list:
+    """Collapse one frame's co-located blobs into one detection each.
+
+    `hits` is [(area, cx, cy)] for a single frame; returns the same
+    shape. See `merge_px` in detect_movers_by_diff for why.
+
+    LEADER CLUSTERING, not single-link. Single-link would chain: a
+    treeline of components each `merge_px` from the next walks into one
+    cluster spanning the frame, whose centroid is nowhere in particular.
+    Seeding with the most ball-like blob and admitting a member only
+    when it is within `merge_px` of the cluster's CENTROID bounds every
+    cluster to roughly a ball's own reach, which is the whole claim
+    being made about what belongs together.
+    """
+    # NO GUARD ON merge_px OR ON len(hits) HERE. The leader loop below
+    # is already correct for both -- a reach of zero admits only blobs
+    # that coincide exactly, and one blob makes one cluster. The caller
+    # skips the call entirely in those cases, which is a speed
+    # shortcut, and a second copy of the same test here was a condition
+    # no test could reach: each copy covered for the other.
+    #
+    # Most ball-like first, so a ball seeds its own cluster rather than
+    # being admitted into a tree's.
+    order = (sorted(hits, key=lambda h: abs(h[0] - prefer_area))
+             if prefer_area > 0 else sorted(hits, reverse=True))
+    # Each cluster carries its running weighted centroid and the biggest
+    # component in it.
+    clusters: list = []  # [sum_a, sum_ax, sum_ay, max_a]
+    for a, cx, cy in order:
+        _w = float(a) if a > 0 else 1.0
+        for c in clusters:
+            _cx, _cy = c[1] / c[0], c[2] / c[0]
+            if abs(cx - _cx) <= merge_px and abs(cy - _cy) <= merge_px:
+                c[0] += _w
+                c[1] += _w * cx
+                c[2] += _w * cy
+                c[3] = max(c[3], int(a))
+                break
+        else:
+            clusters.append([_w, _w * cx, _w * cy, int(a)])
+    return [(c[3], c[1] / c[0], c[2] / c[0]) for c in clusters]
+
+
 def detect_movers_by_diff(
     input_path: Path,
     f0: int,
@@ -2069,6 +2113,38 @@ def detect_movers_by_diff(
     # NEARNESS to it instead: ball-sized things win, and a tree edge
     # loses however large it is. 0 keeps the old largest-first rule.
     prefer_area: float = 0.0,
+    # ONE BALL, ONE POINT. The operator's observation, and the thing
+    # every fit downstream has been fighting:
+    #
+    #   "the moving ball creates a 2 or 3 spots/points per frame. so the
+    #    trailing dot in one frame could be lower than the leading dot
+    #    in the previous frame (making it look like it's decelerating)."
+    #
+    # A ball crossing 26px during one exposure is a SMEAR, and a
+    # threshold across a smear breaks into two or three components. Each
+    # is reported as its own detection at its own centroid, so a flight
+    # that is one object arrives as a cloud three deep -- and then:
+    #
+    #   - the sequential tracker has three candidates a frame and can
+    #     link leading-to-trailing, which reads as a step of 8px where
+    #     the ball moved 26;
+    #   - y stops being monotonic between adjacent frames, which is what
+    #     made a straight flight look like it was decelerating and sent
+    #     the line fitter after a curve;
+    #   - each ball costs three of the `per_frame` slots instead of one.
+    #
+    # Merging them is a per-FRAME operation, so it cannot join a ball to
+    # itself in the next frame however large this is. Within a frame the
+    # only thing this close to a ball is the rest of that ball -- or, on
+    # a two-frame diff, its ghost one full step away, which is why this
+    # stays well under a step and why the ghost drop runs anyway.
+    #
+    # Position is the area-weighted centroid of the cluster, which is
+    # the middle of the smear. Area is its LARGEST member, not the sum:
+    # `prefer_area` is calibrated against what a ball's own component
+    # measures, and summing would make every merged ball look like a
+    # tree. 0 disables.
+    merge_px: float = 0.0,
 ) -> list:
     """Frame-to-frame difference. The detector that actually sees the ball.
 
@@ -2136,6 +2212,16 @@ def detect_movers_by_diff(
                     # like here, in which case rank by nearness to it:
                     # across a whole band the largest-first rule inverts
                     # and keeps the treeline. See `prefer_area`.
+                    # ONE BALL, ONE POINT -- before the ranking and
+                    # before the cut, so a ball's smear competes as one
+                    # thing and wins one slot. See `merge_px`.
+                    if merge_px > 0 and len(hits) > 1:
+                        _n_in = len(hits)
+                        hits = _merge_blobs(hits, merge_px,
+                                            prefer_area=prefer_area)
+                        if stats is not None:
+                            stats["merged"] = (stats.get("merged", 0)
+                                               + _n_in - len(hits))
                     if prefer_area > 0:
                         hits.sort(key=lambda h: abs(h[0] - prefer_area))
                     else:
@@ -4080,6 +4166,30 @@ SWEEP_PER_FRAME = 40
 # footage and this detector rather than guessed.
 ASCENT_CORRIDOR_PX = 10.0
 
+# HOW CLOSE TWO BLOBS IN ONE FRAME ARE ONE BALL, in pixels. See
+# `merge_px` in detect_movers_by_diff for the whole argument; this is
+# where the number comes from.
+#
+# The constraint is two-sided, and the lower bound is set by the thing
+# being merged. A ball travelling 26px during one exposure leaves a
+# streak 26px long, so the pieces of ONE ball can sit a full step
+# apart end to end -- and a reach that only covers half of that leaves
+# the smear in two pieces, which is the failure being fixed. Admission
+# is against the cluster's running centroid, so a reach of R takes a
+# streak of roughly 2R when the seed is in the middle of it and R plus
+# a component when the seed is at one end. 20 covers a 26px streak
+# either way.
+#
+# The upper bound is a ball and ITS OWN GHOST, which a two-frame diff
+# puts one step behind it. That is what keeps this from being set to
+# anything: averaging those together would halve every measured step
+# and put the rate gate on the wrong side of its floor. It is also why
+# three-frame differencing is the default -- when the smear is as long
+# as the step, the ball and its ghost are one contiguous streak in the
+# source pixels and no merge rule can separate what the detector
+# already joined.
+ASCENT_MERGE_PX = 20.0
+
 # HOW LONG A CHAIN IN THE SWEEP MAY RUN, in frames. A ball crosses the
 # band above the golfers in well under a second; at 50fps sixty frames is
 # already generous. Its job is to stop a long-lived speckle track from
@@ -4975,6 +5085,7 @@ def sweep_ascents(
     # Only with two-frame differencing: the AND leaves no ghost behind.
     _ghost = 0.0 if _three else float(_G["ascent_ghost_px"])
     _prefer = float(_G["ascent_prefer_area"])
+    _merge = float(_G["ascent_merge_px"])
     _corridor = float(_G["ascent_corridor_px"])
     _fit = bool(int(_G["ascent_fit_lines"]))
     _curve = bool(int(_G["ascent_fit_curve"]))
@@ -5036,7 +5147,7 @@ def sweep_ascents(
                                      roi=(_x0, 0, _x1 - _x0, band_h),
                                      cap=200000, three_frame=_three,
                                      ghost_px=_ghost, prefer_area=_prefer,
-                                     stats=_stats)
+                                     merge_px=_merge, stats=_stats)
         out["n_dets"] = len(dets)
         # THE ANSWER TO "WHY IS THE BALL NOT IN HERE AT ALL". When the
         # cap binds on most frames the ball is not losing a gate, it is
@@ -5047,6 +5158,11 @@ def sweep_ascents(
         out["three_frame"] = _three
         out["ghost_px"] = _ghost
         out["prefer_area"] = _prefer
+        out["merge_px"] = _merge
+        # HOW MANY BLOBS TURNED OUT TO BE SOMETHING ELSE'S HALF. The
+        # number that says whether the smear was real: zero means every
+        # detection stood alone and this changed nothing.
+        out["merged_away"] = int(_stats.get("merged") or 0)
         out["corridor_px"] = _corridor
         out["fit_lines"] = _fit
         out["fit_curve"] = _curve
@@ -6828,6 +6944,16 @@ GATE_SPEC = {
     # is the number that stops a treeline winning the per-frame cut
     # against a ball at 180 yards.
     "ascent_prefer_area":       (0,                        0,  20000, True),
+    # HOW CLOSE TWO BLOBS IN THE SAME FRAME have to be to be one thing,
+    # in pixels. A ball crossing 26px during one exposure thresholds
+    # into two or three components, each reported at its own centroid:
+    # three candidates a frame for the tracker to link wrongly, and a
+    # y that stops being monotonic between adjacent frames. See
+    # `merge_px` in detect_movers_by_diff. An ascent crosses 25-50px a
+    # frame, so this stays under a step and cannot join one frame's
+    # ball to the next frame's -- and it is per-frame anyway. 0
+    # disables.
+    "ascent_merge_px":          (ASCENT_MERGE_PX,        0.0,   60.0, False),
     # HOW FAR OFF ITS LINE a chain may reach, in pixels. 0 turns the
     # corridor off and takes the length-ordering back with it, which is
     # how the ascent sweep ran until 19 Oct.

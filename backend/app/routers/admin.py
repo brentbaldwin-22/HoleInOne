@@ -19174,7 +19174,16 @@ def _ball_scan_sweep_image(row, src_path, sweep) -> None:
                f"(worst {sweep.get('max_hits_in_a_frame', '?')})"
                if _cf is not None else "")
             + f"  |  {'3-frame' if sweep.get('three_frame', True) else '2-frame'}"
-            f" diff  |  band x{int(_b[0])}-{int(_b[0]) + int(_b[2])}"
+            f" diff"
+            # WHETHER THE SMEAR WAS REAL. A ball crossing 26px in one
+            # exposure thresholds into two or three blobs, each its own
+            # detection -- and "merged 1,840" next to the detection
+            # count says how much of that cloud was one object twice.
+            + (f"  |  merged {sweep.get('merged_away'):,} at "
+               f"{sweep.get('merge_px'):g}px"
+               if sweep.get("merged_away") is not None
+               and sweep.get("merge_px") else "")
+            + f"  |  band x{int(_b[0])}-{int(_b[0]) + int(_b[2])}"
             f" y0-{int(_b[3])}",
             (12, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 230, 255), 1,
             cv2.LINE_AA)
