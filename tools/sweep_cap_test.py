@@ -149,18 +149,21 @@ def main() -> int:
               (lo.get("cap_hit_frames", 0) > 0,
                hi.get("cap_hit_frames", 0)), (True, 0))
 
-    # ---- three-frame differencing is a switch now --------------------
-    # The last real difference between this sweep and the scan an
-    # operator runs by hand. The AND kills the "where it was" ghost
-    # that otherwise reads a ball's velocity as zero — but it also asks
-    # the ball to clear threshold in both diffs at the same pixels, and
-    # what that costs on a real flight has never been measured. The
-    # switch is so it can be, on one clip, instead of argued about.
-    check("three-frame differencing defaults on",
-          d3.GATE_DEFAULTS["ascent_three_frame"], 1)
-    check("  and can be turned off per hole",
-          d3.resolve_gates({"ascent_three_frame": 0})["ascent_three_frame"],
-          0)
+    # ---- three-frame differencing is a switch, and it is off --------
+    # The AND kills the "where it was" ghost that otherwise reads a
+    # ball's velocity as zero, but it also asks the ball to clear
+    # threshold in the diff against the frame before AND the frame
+    # after, at the same pixels. What that costs got measured on hole 8
+    # on 20 Oct: with the AND on, 3 chains weighed and 0 accepted; with
+    # it off, 18 weighed and 2 accepted, and the flight at f3763 went
+    # from 5 points over 78px of rise to 22 points over 504px. So the
+    # default is off and the ghost is handled by ascent_ghost_px
+    # instead; the switch stays so a hole can put the AND back.
+    check("three-frame differencing defaults off",
+          d3.GATE_DEFAULTS["ascent_three_frame"], 0)
+    check("  and can be turned back on per hole",
+          d3.resolve_gates({"ascent_three_frame": 1})["ascent_three_frame"],
+          1)
     with tempfile.TemporaryDirectory() as td:
         clip = Path(td) / "sw.mp4"
         synth(clip, 20, 6)

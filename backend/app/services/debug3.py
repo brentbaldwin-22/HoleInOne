@@ -5644,12 +5644,14 @@ def sweep_ascents(
     # again.
     #
     # What level 3 changes here is the diff threshold (8 -> 5) and the
-    # blob area cap (900 -> 1400). Neither costs what it would on the
-    # green view, because this sweep runs `three_frame=True`: a blob has
-    # to appear in the SAME place in the diff against the frame before
-    # AND the frame after, which is a condition random sensor and
-    # compression noise almost never meets. A lower threshold on an AND
-    # of two diffs buys dim balls without buying speckle.
+    # blob area cap (900 -> 1400). This used to be affordable because
+    # the sweep ANDed the diffs either side of a frame, a condition
+    # sensor and compression noise almost never meet -- but that AND
+    # also refused faint balls, which is what a ball is by the top of
+    # its climb, and it is off by default now. See ascent_three_frame
+    # for the measurement. What holds the speckle back instead is
+    # ascent_ghost_px, which drops anything sitting where the last
+    # detection was, plus the chain gates downstream.
     #
     # The one thing to watch is SWEEP_PER_FRAME, which stays at 10 at
     # every level: if level 3 puts more than ten qualifying blobs in the
@@ -7630,22 +7632,40 @@ GATE_SPEC = {
     # exists to be refused -- which made the one knob that could have
     # helped the one knob nobody could reach.
     "ascent_per_frame":         (SWEEP_PER_FRAME,          4,    200, True),
-    # THREE-FRAME DIFFERENCING, ON OR OFF (1/0). The other knob here
-    # that is not a filter on chains, and the last real difference
-    # between this sweep and the scan an operator runs by hand: the
-    # scan diffs against the previous frame only, this ANDs that with
-    # the diff against the NEXT one. The AND kills the "where it was"
-    # ghost that otherwise measures a ball's velocity as zero -- on a
-    # synthetic ascent, eight frames of perfect detections yielded ZERO
-    # tracks without it. But it also asks the ball to clear threshold
-    # in both diffs at the same pixels, which is a harder test than
-    # either alone, and on a real flight nobody has measured what it
-    # costs. A switch, so that can be measured on one clip instead of
-    # argued about.
-    "ascent_three_frame":       (1,                        0,      1, True),
+    # THREE-FRAME DIFFERENCING, ON OR OFF (1/0). OFF, NOW MEASURED.
+    #
+    # The scan an operator runs by hand diffs against the previous
+    # frame only; this sweep used to AND that with the diff against the
+    # NEXT one. The AND kills the "where it was" ghost that otherwise
+    # measures a ball's velocity as zero -- on a synthetic ascent,
+    # eight frames of perfect detections yielded ZERO tracks without
+    # it -- so it shipped on, with a note that nobody had measured what
+    # it cost on a real flight.
+    #
+    # IT COST THE FLIGHTS. Hole 8, 20 Oct, one clip, one gate changed:
+    #
+    #     three_frame=1    3 chains weighed,  0 accepted
+    #     three_frame=0   18 chains weighed,  2 accepted
+    #
+    # and the chain that had been five points and 78px of rise --
+    # refused for `rise` while passing every other gate -- came back as
+    # twenty-two points and 504px. The same clip, the same thresholds,
+    # the same everything else. Asking the ball to clear threshold in
+    # BOTH diffs at the same pixels is simply too much to ask of a
+    # faint one, which is what a ball is by the top of its climb.
+    #
+    # The ghost it was there to kill is handled by ascent_ghost_px
+    # below, which drops a detection sitting where the last one was --
+    # cheaper, and it cannot refuse a ball for being dim.
+    #
+    # Still a switch, because the argument that put it on was a real
+    # one and a different camera may yet want it.
+    "ascent_three_frame":       (0,                        0,      1, True),
     # HOW CLOSE TO THE PREVIOUS FRAME'S DETECTION counts as that
     # frame's ghost, in pixels, with two-frame differencing. Only read
-    # when ascent_three_frame is 0 — the AND has no ghosts to remove.
+    # when ascent_three_frame is 0 — the AND has no ghosts to remove —
+    # which since 20 Oct is the default, so this is now the ghost
+    # handling rather than a fallback for it.
     # An ascent crosses 25-50px a frame, so nothing at this scale can
     # be the ball; what it removes is a mover that barely moved, which
     # is a ghost or a leaf. 0 disables.

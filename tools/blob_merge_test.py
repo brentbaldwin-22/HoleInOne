@@ -183,6 +183,31 @@ def clip(path):
     vw.release()
 
 
+# A SECOND FIXTURE, because the one above only fragments under the
+# AND. `clip` draws a continuous streak; a plain two-frame diff lights
+# the whole of it, plus the whole of the previous frame's, and the two
+# arrive as one component each, 33px apart -- further than merge_px, so
+# nothing merges and nothing is proved. These are three separate
+# specks, 10px apart, which fragment whichever differencing runs.
+DOT_STEP, DOT_R = 10, 2
+
+
+def dotty(path):
+    import numpy as np
+    import cv2
+
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"),
+                         60.0, (W, H))
+    for f in range(N):
+        im = np.full((H, W, 3), 115, dtype="uint8")
+        y = Y0 + VY * f
+        for k in range(3):
+            cv2.circle(im, (BX, int(y + k * DOT_STEP)), DOT_R,
+                       (248, 248, 248), -1)
+        vw.write(im)
+    vw.release()
+
+
 def per_frame_counts(dets):
     by_f: dict = {}
     for d in dets:
@@ -287,22 +312,33 @@ def test_the_sweep_passes_it():
     _real = d3.detect_movers_by_diff
 
     def spy(*a, **kw):
-        seen["merge_px"] = kw.get("merge_px")
+        # The sweep calls the detector several times now: the main pass,
+        # then fill_chain_holes and extend_chain on every chain that
+        # survives, and those two pass ASCENT_MERGE_PX rather than the
+        # hole's value. Only the first call is the one under test, so
+        # record that one and let the later ones through untouched.
+        seen.setdefault("merge_px", kw.get("merge_px"))
         return _real(*a, **kw)
 
     with tempfile.TemporaryDirectory() as td:
-        p = Path(td) / "smear.mp4"
-        clip(p)
+        p = Path(td) / "dots.mp4"
+        dotty(p)
         d3.detect_movers_by_diff = spy
         try:
             out = d3.sweep_ascents(p, 60.0, sens=3,
                                    gates={"ascent_merge_px": 22.0})
+            off = d3.sweep_ascents(p, 60.0, sens=3,
+                                   gates={"ascent_merge_px": 0.0})
         finally:
             d3.detect_movers_by_diff = _real
     check("the sweep hands it to the detector", seen.get("merge_px"), 22.0)
     check("and reports what it used", out.get("merge_px"), 22.0)
     check("and how many blobs it absorbed",
           (out.get("merged_away") or 0) > 0, True)
+    # CONTROL: the count is the merge's work and not a constant. With
+    # the hole's merge turned off the same clip absorbs nothing.
+    check("control, merging off absorbs none",
+          int(off.get("merged_away") or 0), 0)
 
 
 for fn in (test_collapses_a_smear,
