@@ -298,6 +298,71 @@ def test_a_polygon_drawn_at_another_size_is_rescaled():
     check("control, unscaled it misses", raw["best"], None)
 
 
+def test_the_plates_can_be_placed_by_time():
+    """Because the default is wrong whenever the group got there first.
+
+    A green capture runs well past the shot. On a short hole the group
+    can be up and marking the ball before the clip stops, and the after
+    plate then shows a green with nothing new on it — which reads
+    exactly like a miss. Being able to pull that plate back to just
+    after the ball settled is the difference between an answer and a
+    mystery.
+
+    NOT A DEPARTURE, note. A departure is something that was in the
+    BEFORE plate and is gone from the after one; this ball arrived
+    after that plate was taken, so from the comparison's point of view
+    it was never there at all. The default run has nothing whatever to
+    report, which is exactly why a silent default would be so bad.
+    """
+    import cv2 as _cv2
+    LONG = 1200                       # 20s, so the end is well clear
+    HERE, GONE = 430, 700             # the ball's life on the green
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "g.mp4"
+        vw = _cv2.VideoWriter(str(p), _cv2.VideoWriter_fourcc(*"mp4v"),
+                              float(FPS), (W, H))
+        for f in range(LONG):
+            im = np.full((H, W, 3), 95, np.uint8)
+            im[200:, :] = 120
+            if HERE <= f < GONE:
+                _cv2.circle(im, (300, 300), 3, (250, 250, 250), -1)
+            vw.write(im)
+        vw.release()
+
+        late = G.find_rest_spot(p, polygon=GREEN_POLY, drawn_at=[W, H])
+        early = G.find_rest_spot(p, polygon=GREEN_POLY, drawn_at=[W, H],
+                                 before_sec=2.0, after_sec=9.5)
+    check("the default plate misses a ball already picked up",
+          late["best"], None)
+    check("  and says so rather than failing quietly",
+          any("Nothing new is on the green" in n for n in late["notes"]),
+          True)
+    # Asked at the right moment, the same clip answers.
+    check("placed by time, the ball is found",
+          near(early["best"], (300, 300)), True)
+    check("  and the plates are where they were asked for",
+          (round(early["before_frame"] / FPS),
+           round(early["after_frame"] / FPS)), (2, 10))
+    # CONTROL: the ball is genuinely gone by the end, so the None above
+    # is the pickup and not a detector that stopped working.
+    check("  control, the ball really was there in between",
+          early["best"]["persist"], 1.0)
+
+
+def test_a_plate_asked_for_at_the_very_edge_is_clamped():
+    """"Two seconds in" should not need to know the plate span."""
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "g.mp4"
+        clip(p)
+        out = G.find_rest_spot(p, polygon=GREEN_POLY, drawn_at=[W, H],
+                               before_sec=0.0, after_sec=9999.0)
+    check("it still runs", out["ok"], True)
+    check("  with the first plate pulled in off frame 0",
+          out["before_frame"] >= 2, True)
+    check("  and the last pulled in off the end",
+          out["after_frame"] <= N - 2, True)
+
+
 def test_an_empty_green_says_so():
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "g.mp4"
@@ -327,6 +392,8 @@ for fn in (test_it_finds_a_ball_at_rest,
            test_the_plate_is_a_median_and_not_a_mean,
            test_the_outline_is_what_bounds_it,
            test_a_polygon_drawn_at_another_size_is_rescaled,
+           test_the_plates_can_be_placed_by_time,
+           test_a_plate_asked_for_at_the_very_edge_is_clamped,
            test_an_empty_green_says_so):
     print(f"\n-- {fn.__name__}")
     fn()

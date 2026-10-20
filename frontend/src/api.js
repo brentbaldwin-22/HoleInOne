@@ -506,10 +506,11 @@ export const api = {
       body: fd,
     });
   },
-  greenRestTest: (key, cameraId) =>
+  greenRestTest: (key, cameraId, opts = {}) =>
     request(`/api/admin/cameras/${cameraId}/green-rest-test`, {
       method: "POST",
       adminPassword: key,
+      body: opts,          // {before_sec, after_sec} — blank = each end
     }),
   stopFocusMode: (key, cameraId) =>
     request(`/api/admin/cameras/${cameraId}/focus-mode/stop`, {

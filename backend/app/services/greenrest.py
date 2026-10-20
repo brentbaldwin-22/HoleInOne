@@ -193,13 +193,21 @@ def _persistence(cap, blob, plate_before, centre, fps, mask_shape):
 
 def find_rest_spot(input_path, polygon=None, drawn_at=None,
                    before_frame: int | None = None,
-                   after_frame: int | None = None) -> dict:
+                   after_frame: int | None = None,
+                   before_sec: float | None = None,
+                   after_sec: float | None = None) -> dict:
     """What arrived on the green, and what left it.
 
-    `before_frame` / `after_frame` are the CENTRES of the two plates.
-    Left unset they default to near the start and near the end of the
-    clip, which is the question "where did it end up" asked of the
-    whole capture.
+    The two plates are centred on `before_frame` / `after_frame`, or on
+    `before_sec` / `after_sec` if you would rather say when than which
+    — converted here, against the clip's OWN frame rate, because a
+    caller that assumes 60 is wrong the first time a camera is
+    recaptured and wrong silently.
+
+    Unset, they default to near each end of the clip: the question
+    "where did it end up" asked of the whole capture. That default is
+    worth overriding when the group reached the green before the clip
+    stopped, because the ball is in their pocket by then.
     """
     path = Path(input_path)
     cap = cv2.VideoCapture(str(path))
@@ -211,8 +219,18 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
         if total < 10:
             return {"ok": False, "error": "clip too short to plate"}
         pad = int(round(PLATE_SPAN_SEC * fps / 2.0)) + 1
+        if before_frame is None and before_sec is not None:
+            before_frame = int(round(float(before_sec) * fps))
+        if after_frame is None and after_sec is not None:
+            after_frame = int(round(float(after_sec) * fps))
         b = int(before_frame if before_frame is not None else pad)
         a = int(after_frame if after_frame is not None else total - 1 - pad)
+        # A PLATE NEEDS ROOM EITHER SIDE OF ITS CENTRE. Asked for one at
+        # the very first or very last frame, clamp rather than refuse:
+        # "2 seconds in" is a reasonable thing to ask for and the
+        # operator should not have to know the span to say it.
+        b = max(pad, min(b, total - 1 - pad))
+        a = max(pad, min(a, total - 1 - pad))
         if a <= b:
             return {"ok": False,
                     "error": "the after plate must come after the before one"}

@@ -48,6 +48,12 @@ export default function GreenOutline({
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState(null);
+  // WHEN THE TWO PLATES ARE TAKEN, in seconds from the start of the
+  // clip. Blank means each end, which is right until the group reaches
+  // the green before the capture stops — then the after plate shows a
+  // green with nothing new on it, which reads exactly like a miss.
+  const [beforeSec, setBeforeSec] = useState("");
+  const [afterSec, setAfterSec] = useState("");
   const [note, setNote] = useState(null);
   const [err, setErr] = useState(null);
   const svgRef = useRef(null);
@@ -93,7 +99,9 @@ export default function GreenOutline({
     setErr(null);
     setResult(null);
     try {
-      setResult(await api.greenRestTest(adminPassword, cam.id));
+      setResult(await api.greenRestTest(adminPassword, cam.id, {
+        before_sec: beforeSec, after_sec: afterSec,
+      }));
     } catch (ex) {
       setErr(ex.message || "could not run the finder");
     } finally {
@@ -194,6 +202,24 @@ export default function GreenOutline({
                 style={{ width: "auto" }} disabled={testing} onClick={test}>
           {testing ? "Looking…" : "🔍 Test on last clip"}
         </button>
+        <label className="tiny muted"
+               style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+               title="Seconds from the start of the clip. Blank = near the start.">
+          before
+          <input type="number" min="0" step="0.5" value={beforeSec}
+                 placeholder="auto"
+                 onChange={(e) => setBeforeSec(e.target.value)}
+                 style={{ width: 62, padding: "3px 6px", fontSize: 12 }} />
+        </label>
+        <label className="tiny muted"
+               style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+               title="Seconds from the start of the clip. Blank = near the end — pull it back if the group reached the green before the capture stopped.">
+          after
+          <input type="number" min="0" step="0.5" value={afterSec}
+                 placeholder="auto"
+                 onChange={(e) => setAfterSec(e.target.value)}
+                 style={{ width: 62, padding: "3px 6px", fontSize: 12 }} />
+        </label>
         {pts.length > 0 && (
           <button type="button" className="ghost small"
                   style={{ width: "auto" }}
@@ -228,7 +254,9 @@ export default function GreenOutline({
                   + `${Math.round((result.best.persist || 0) * 100)}% of the `
                   + "after frames)"
                 : "Nothing new found on the green."}
-              {" · "}plates at f{result.before_frame} and f{result.after_frame}
+              {" · "}plates at {(result.before_frame / (result.fps || 60))
+                .toFixed(1)}s and {(result.after_frame / (result.fps || 60))
+                .toFixed(1)}s
               {result.clip ? ` · ${result.clip}` : ""}
             </div>
             {(result.notes || []).map((n, i) => (

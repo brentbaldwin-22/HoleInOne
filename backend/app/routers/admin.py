@@ -16141,11 +16141,22 @@ def set_green_outline(
 
 
 @router.post("/cameras/{camera_id}/green-rest-test")
-def green_rest_test(camera_id: int, db: Session = Depends(get_db)):
+def green_rest_test(camera_id: int,
+                    payload: dict = Body(default={}),
+                    db: Session = Depends(get_db)):
     """Run the rest-spot finder on this camera's most recent clip.
 
     So the outline can be drawn and checked in one place, against real
     footage, before anything downstream depends on it.
+
+    `before_sec` and `after_sec` move the two plates. They default to
+    near each end of the clip, and the default is wrong often enough to
+    be worth a control: a green capture runs well past the shot, and on
+    a short hole the group can be up and marking the ball before the
+    clip stops. The after plate then contains a green with nothing new
+    on it, which reads exactly like a miss. Being able to pull that
+    plate back to just after the ball settled is the difference between
+    an answer and a mystery.
     """
     from ..services import greenrest
 
@@ -16169,10 +16180,24 @@ def green_rest_test(camera_id: int, db: Session = Depends(get_db)):
             404, f"clip missing on disk: {ev.green_clip_filename}")
     roi = cam.green_roi or {}
     frame = roi.get("frame") or {}
+
+    def _secs(key):
+        v = payload.get(key)
+        if v in (None, ""):
+            return None
+        try:
+            return max(0.0, float(v))
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{key} must be a number of seconds")
+
     out = greenrest.find_rest_spot(
         path,
         polygon=roi.get("points"),
         drawn_at=[frame.get("w"), frame.get("h")] if frame else None,
+        # Seconds, not frames: the clip knows its own rate and this
+        # endpoint should not have an opinion about it.
+        before_sec=_secs("before_sec"),
+        after_sec=_secs("after_sec"),
     )
     out["event_id"] = ev.id
     out["clip"] = ev.green_clip_filename
