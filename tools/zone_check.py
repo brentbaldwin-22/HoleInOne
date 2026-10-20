@@ -28,10 +28,41 @@ sys.path.insert(0, str(ROOT / "pi-agent"))
 DEFAULT_CONFIG = "/opt/golfreelz-agent/config.yaml"
 
 
+def _parse_zone(text: str) -> dict:
+    """'Back 943,889 776x100' -> a box, the way the agent logs it."""
+    parts = text.split()
+    if len(parts) == 3:
+        label, xy, wh = parts
+    elif len(parts) == 2:
+        label, (xy, wh) = "zone", parts
+    else:
+        raise SystemExit(f"cannot read zone {text!r} — want "
+                         f"'Name X,Y WxH' as the agent log prints it")
+    x, _, y = xy.partition(",")
+    w, _, h = wh.lower().partition("x")
+    return {"label": label, "x": int(x), "y": int(y),
+            "w": int(w), "h": int(h)}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("clip")
     ap.add_argument("--config", default=DEFAULT_CONFIG)
+    # THE ZONES LIVE ON THE BACKEND, not in config.yaml -- the file is
+    # only the bootstrap a fresh agent uses before its first poll. So
+    # the usual way to get them is to copy what the agent logged when
+    # they arrived, which is this exact shape:
+    #
+    #   trigger zones updated from the backend: Back 943,889 776x100
+    #
+    # hence --zone 'Back 943,889 776x100', repeatable.
+    ap.add_argument("--zone", action="append", default=[],
+                    metavar="'NAME X,Y WxH'",
+                    help="a zone as the agent log prints it; repeatable. "
+                         "Overrides --config when given.")
+    ap.add_argument("--frame", default="1920x1080",
+                    help="frame size the zones were drawn against "
+                         "(default 1920x1080)")
     ap.add_argument("--every", type=int, default=15,
                     help="check every Nth frame (default 15)")
     ap.add_argument("--max-frames", type=int, default=0,
@@ -46,17 +77,24 @@ def main() -> int:
 
     cfg = yaml.safe_load(open(args.config)) or {}
     det_cfg = (cfg.get("detection") or {})
-    roi = cfg.get("roi") or cfg.get("trigger_zones") or {}
+    if args.zone:
+        fw_s, _, fh_s = args.frame.partition("x")
+        roi = {"frame": {"w": int(fw_s), "h": int(fh_s)},
+               "boxes": [_parse_zone(z) for z in args.zone]}
+    else:
+        roi = cfg.get("roi") or cfg.get("trigger_zones") or {}
 
     # THE ZONES THE AGENT IS ACTUALLY USING come from the backend, not
     # the file -- the file is only the bootstrap. Say which was read,
     # because a check against the wrong rectangle is worse than none.
     boxes = tee_roi.boxes(roi)
     if not boxes:
-        print(f"no zones in {args.config} — the agent takes its zones from "
-              f"the backend on first poll, so this file may never have "
-              f"held them. Draw them on the Cameras page and read them "
-              f"back from the agent log, or pass a config that has them.")
+        print(f"no zones in {args.config} — the agent takes its zones "
+              f"from the backend on first poll, so this file may never "
+              f"have held them. Copy them off the agent log instead:\n"
+              f"  sudo journalctl -u golfreelz-agent "
+              f"| grep 'trigger zones updated' | tail -1\n"
+              f"then pass each one as --zone 'Back 943,889 776x100'.")
         return 2
 
     cap = cv2.VideoCapture(args.clip)
