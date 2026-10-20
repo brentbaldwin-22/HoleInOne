@@ -194,7 +194,7 @@ def main() -> int:
     started = []
     release = threading.Event()
 
-    def slow_job(event_id, allow_tee_only=False):
+    def slow_job(event_id, allow_tee_only=False, manual=False):
         started.append(event_id)
         release.wait(5)
 
@@ -234,7 +234,7 @@ def main() -> int:
             Ev(13, "paired_uploaded", 3400)]
     seen: list[tuple[int, int]] = []
 
-    def record(event_id, allow_tee_only=False):
+    def record(event_id, allow_tee_only=False, manual=False):
         ev = next(r for r in rows if r.id == event_id)
         seen.append((event_id, ev.produce_retries))
 

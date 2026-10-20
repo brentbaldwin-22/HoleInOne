@@ -104,9 +104,17 @@ const STUCK_AFTER_SEC = 300;
 // ignore it.
 const QUEUED_STUCK_AFTER_SEC = 2700;
 
-/** How long THIS event may sit before the page calls it stuck. */
-function stuckAfter(ev) {
-  return ev?.status === "queued" ? QUEUED_STUCK_AFTER_SEC : STUCK_AFTER_SEC;
+/** How long THIS event may sit before the page calls it stuck.
+ *
+ * Infinity while the operator has produce paused and the event is
+ * queued: it is not finishing because they asked for it not to finish,
+ * and a page that calls that STUCK is sending someone to debug their
+ * own switch. The other statuses are unaffected — a clip that never
+ * uploaded is just as stuck whatever the queue is doing.
+ */
+function stuckAfter(ev, paused) {
+  if (ev?.status !== "queued") return STUCK_AFTER_SEC;
+  return paused ? Infinity : QUEUED_STUCK_AFTER_SEC;
 }
 
 // What each status means, and — the part that matters when you're
@@ -141,6 +149,11 @@ const EVENT_STATES = {
     ok:
       "Both clips in and handed to the produce queue. It produces in " +
       "turn — check Production for its place in the line.",
+    // Shown instead of `ok` when the operator has produce paused.
+    held:
+      "Both clips in and waiting — automatic produce is PAUSED, so this " +
+      "is held on purpose. Resume on Production to let it run, or hit " +
+      "Produce on its card there to jump it ahead of the hold.",
     stuck:
       "Queued for produce a long time ago and still not finished. Either " +
       "the queue is very deep (check Production) or the job died with a " +
@@ -1186,6 +1199,24 @@ function GreenCalibrationModal({ adminPassword, cam, onClose }) {
 
 function CameraEventsPanel({ adminPassword }) {
   const [events, setEvents] = useState(null);
+  // WHETHER THE QUEUE IS PAUSED, because it changes what 'queued'
+  // means here. Cheap next to the events poll: no files are read.
+  const [queue, setQueue] = useState(null);
+  useEffect(() => {
+    if (!adminPassword) return undefined;
+    let dead = false;
+    const read = async () => {
+      try {
+        const q = await api.produceQueue(adminPassword);
+        if (!dead) setQueue(q);
+      } catch {
+        /* the events poll reports a dead backend loudly enough */
+      }
+    };
+    read();
+    const t = setInterval(read, 10000);
+    return () => { dead = true; clearInterval(t); };
+  }, [adminPassword]);
   const [err, setErr] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [onlyProblems, setOnlyProblems] = useState(false);
@@ -1274,7 +1305,7 @@ function CameraEventsPanel({ adminPassword }) {
     if (!onlyProblems) return true;
     const age = ageSeconds(ev.triggered_at) ?? 0;
     const terminal = ev.status === "processed" || ev.status === "failed";
-    return ev.status === "failed" || (!terminal && age > stuckAfter(ev));
+    return ev.status === "failed" || (!terminal && age > stuckAfter(ev, queue?.paused));
   });
 
   return (
@@ -1314,7 +1345,7 @@ function CameraEventsPanel({ adminPassword }) {
       {shown.map((ev) => {
         const age = ageSeconds(ev.triggered_at);
         const terminal = ev.status === "processed" || ev.status === "failed";
-        const isStuck = !terminal && (age ?? 0) > stuckAfter(ev);
+        const isStuck = !terminal && (age ?? 0) > stuckAfter(ev, queue?.paused);
         const meta = EVENT_STATES[ev.status] || {
           label: ev.status || "unknown", tone: "info", ok: "",
         };
@@ -1325,7 +1356,10 @@ function CameraEventsPanel({ adminPassword }) {
             <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <b>#{ev.id}</b>
               <span className={`pill small ${toneClass}`}>
-                {meta.label}{isStuck ? " · STUCK" : ""}
+                {meta.label}
+                {isStuck
+                  ? " · STUCK"
+                  : (queue?.paused && ev.status === "queued" ? " · HELD" : "")}
               </span>
               <span className="small muted">
                 {ev.course_name || `course ${ev.course_id}`}
@@ -1359,17 +1393,33 @@ function CameraEventsPanel({ adminPassword }) {
               )}
             </div>
 
-            {(isStuck ? stuckMessage(ev, inFlight[`cam${ev.tee_camera_id}-${ev.session_id}`]) : meta.ok) && (
-              <div
-                className="small"
-                style={{
-                  marginTop: 8, padding: "8px 10px", borderRadius: 8,
-                  background: isStuck ? "rgba(239,68,68,0.08)" : "rgba(127,127,127,0.08)",
-                }}
-              >
-                {isStuck ? stuckMessage(ev, inFlight[`cam${ev.tee_camera_id}-${ev.session_id}`]) : meta.ok}
-              </div>
-            )}
+            {(() => {
+              // A HELD EVENT GETS ITS OWN LINE. Not the stuck copy,
+              // which would send someone to debug the switch they just
+              // pressed, and not the ordinary "producing in turn"
+              // either, which is a lie while the queue is paused.
+              const body = isStuck
+                ? stuckMessage(
+                    ev,
+                    inFlight[`cam${ev.tee_camera_id}-${ev.session_id}`],
+                  )
+                : (queue?.paused && ev.status === "queued" && meta.held)
+                  || meta.ok;
+              if (!body) return null;
+              return (
+                <div
+                  className="small"
+                  style={{
+                    marginTop: 8, padding: "8px 10px", borderRadius: 8,
+                    background: isStuck
+                      ? "rgba(239,68,68,0.08)"
+                      : "rgba(127,127,127,0.08)",
+                  }}
+                >
+                  {body}
+                </div>
+              );
+            })()}
 
             {ev.last_error && (
               <div className="err-text small" style={{ marginTop: 8 }}>

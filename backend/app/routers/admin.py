@@ -6130,7 +6130,9 @@ def reprocess_camera_event(event_id: int, db: Session = Depends(get_db)):
         # whose green is not in yet, which is right for the automatic
         # case and wrong here: somebody is looking at this event and
         # has decided a tee-only clip is what they want.
-        args=(event.id, True),
+        # (allow_tee_only, manual): a human is asking, so a paired
+        # event may go tee-only AND a paused queue must not hold it.
+        args=(event.id, True, True),
         daemon=True,
         name=f"camera-event-reprocess-{event.id}",
     ).start()

@@ -1785,7 +1785,8 @@ _event_job_lock = threading.Lock()
 
 
 def _process_camera_event_job(event_id: int,
-                              allow_tee_only: bool = False) -> None:
+                              allow_tee_only: bool = False,
+                              manual: bool = False) -> None:
     """Produce one camera event — unless it is already being produced.
 
     The guard lives here rather than at the three call sites so that
@@ -1801,7 +1802,7 @@ def _process_camera_event_job(event_id: int,
             return
         _event_job_inflight.add(event_id)
     try:
-        _run_camera_event_job(event_id, allow_tee_only)
+        _run_camera_event_job(event_id, allow_tee_only, manual)
     finally:
         with _event_job_lock:
             _event_job_inflight.discard(event_id)
@@ -1912,7 +1913,12 @@ def _ensure_previews(filenames) -> None:
 
 
 def _run_camera_event_job(event_id: int,
-                          allow_tee_only: bool = False) -> None:
+                          allow_tee_only: bool = False,
+                          # DID A PERSON PRESS RE-PROCESS? Then a paused
+                          # queue must not hold it: the button says it
+                          # forces one now, and a button that quietly
+                          # does nothing is worse than no button.
+                          manual: bool = False) -> None:
     """Hand off a fully-uploaded CameraEvent to the long-upload
     pipeline so it benefits from the existing multi-swing auto-detect
     + admin edit-wizard. Creates a LongVideoUpload row pointing at the
@@ -2069,10 +2075,11 @@ def _run_camera_event_job(event_id: int,
         try:
             enqueue_produce_job(
                 upload_id=_lvu_id, hole_number=_hole, wait=False,
-                # Automatic: nobody is sitting watching for this one, so
-                # a paused queue may hold it. Pressing Produce on its
-                # card promotes it.
-                manual=False,
+                # Automatic unless a person asked for this one by
+                # name. A paused queue holds the automatic ones; a
+                # Re-process is the operator in front of the machine
+                # and goes through.
+                manual=manual,
             )
         finally:
             db = SessionLocal()

@@ -143,7 +143,7 @@ def sweep(rows, queue_state, urgent=URGENT):
     # (event id, may it produce without a green). The fallback is the
     # one caller allowed to say yes; the stall path must not.
     cameras._run_camera_event_job = (
-        lambda eid, allow_tee_only=False: seen.append(eid))
+        lambda eid, allow_tee_only=False, manual=False: seen.append(eid))
     admin.produce_queue_status = lambda: queue_state
     try:
         cameras._camera_event_recovery_sweep()

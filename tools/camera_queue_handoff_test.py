@@ -152,7 +152,7 @@ class FakeDB:
 
 # ------------------------------------------------- 1 + 2: the handoff
 
-def run_job(event, *, allow_tee_only=False):
+def run_job(event, *, allow_tee_only=False, manual=False):
     """Drive _run_camera_event_job against fakes, reporting what it did."""
     from app.routers import cameras
 
@@ -165,7 +165,8 @@ def run_job(event, *, allow_tee_only=False):
 
     def _enqueue(upload_id, hole_number=None, wait=False, **kw):
         seen["enqueued"].append({"upload_id": upload_id,
-                                 "hole_number": hole_number, "wait": wait})
+                                 "hole_number": hole_number, "wait": wait,
+                                 "manual": kw.get("manual")})
         seen["order"].append("enqueue")
         return {"queued": True}
 
@@ -212,7 +213,8 @@ def run_job(event, *, allow_tee_only=False):
 
         cameras.threading.Thread = _tracked
         try:
-            cameras._run_camera_event_job(event.id, allow_tee_only)
+            cameras._run_camera_event_job(
+                event.id, allow_tee_only, manual)
         finally:
             cameras.threading.Thread = _real_thread
             for t in _threads:
@@ -249,6 +251,56 @@ def test_it_queues_and_returns():
           seen["enqueued"][0]["wait"], False)
     check("the event is marked queued", ev.status, "queued")
     check("  and its stale error is cleared", ev.last_error, None)
+    # AUTOMATIC BY DEFAULT, so a paused queue may hold it. Nobody is
+    # watching a capture that arrived on its own.
+    check("and it goes in as automatic work",
+          seen["enqueued"][0]["manual"], False)
+
+
+def test_re_process_is_not_held_by_a_pause():
+    """The card says Re-process forces one now, so it has to.
+
+    A button that quietly does nothing while paused is worse than no
+    button: the operator presses it, watches nothing happen, and goes
+    looking for a bug in the queue.
+    """
+    ev = _event()
+    seen, _db = run_job(ev, manual=True)
+    check("a human's re-process goes in as manual",
+          seen["enqueued"][0]["manual"], True)
+    # CONTROL: the same path with nobody asking is still automatic, so
+    # the True above is the flag and not a constant.
+    ev2 = _event(id=13)
+    seen2, _db2 = run_job(ev2)
+    check("control, the automatic path is unchanged",
+          seen2["enqueued"][0]["manual"], False)
+
+
+def test_the_dedupe_wrapper_forwards_both_flags():
+    """_process_camera_event_job is what every caller actually calls.
+
+    It exists to stop one event producing twice, and it is also the
+    only place the flags pass through -- so a dropped argument there
+    silently turns every human's Re-process back into automatic work
+    that a pause will hold.
+    """
+    from app.routers import cameras
+
+    got: list = []
+    saved = cameras._run_camera_event_job
+    try:
+        cameras._run_camera_event_job = (
+            lambda eid, allow=False, manual=False: got.append(
+                (eid, allow, manual)))
+        cameras._process_camera_event_job(5, True, True)
+        check("both flags arrive", got, [(5, True, True)])
+        got.clear()
+        # CONTROL: the defaults are the automatic case, so the Trues
+        # above came from the call and are not just what it always says.
+        cameras._process_camera_event_job(6)
+        check("control, the defaults are automatic", got, [(6, False, False)])
+    finally:
+        cameras._run_camera_event_job = saved
 
 
 def test_no_media_work_in_front_of_the_queue():
@@ -440,6 +492,8 @@ def test_a_restart_does_not_undo_a_finished_event():
 
 
 for fn in (test_it_queues_and_returns,
+           test_re_process_is_not_held_by_a_pause,
+           test_the_dedupe_wrapper_forwards_both_flags,
            test_no_media_work_in_front_of_the_queue,
            test_a_paired_event_queues_as_paired,
            test_a_paired_event_waits_for_its_green_half,
