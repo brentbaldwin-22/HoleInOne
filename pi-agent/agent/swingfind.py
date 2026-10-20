@@ -237,6 +237,17 @@ def find_swings(
             "min_ratio": min_ratio,
             "above_threshold": sum(1 for v in ratio if v >= min_ratio),
             "rejected_no_person": 0, "rejected_too_wide": 0,
+            # HOW MANY SIGHTINGS THE GATE HAD TO WORK WITH. None means
+            # the caller passed nothing and the gate is off; 0 means it
+            # was handed an empty list and will therefore refuse every
+            # peak. Those two look identical from outside and are
+            # completely different, and the second one hid a bug on
+            # every copy-engine rig for months -- the sightings list
+            # was never being filled, so a perfectly good swing was
+            # rejected for having nobody near it. Reported so that
+            # "0 sighting(s)" is on the same line as the refusals it
+            # caused.
+            "n_person_times": None if people is None else len(people),
         })
 
     peaks.sort(reverse=True)

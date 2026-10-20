@@ -1196,6 +1196,31 @@ class TeeAgent:
             if centroid is not None and _in_roi(centroid, _roi):
                 state["in_roi"] += 1
                 state["last_seen"] = now
+                # AND REMEMBER THAT WE SAW THEM, which this did not do
+                # for as long as the copy engine has existed.
+                #
+                # swing_select rejects any motion peak with nobody near
+                # it -- on a camera aimed down the hole, moving cloud
+                # scored a 4.72 "swing" in footage with no golfer in
+                # it. The sightings it checks against come from
+                # `_person_seen_at`, and only the DECODE loop was
+                # filling it. On a copy-engine rig the list stayed
+                # empty for the life of the process, and an empty list
+                # does not mean "no information" to find_swings -- it
+                # means "we looked and nobody was there", which is a
+                # distinction it is right to make and was being told
+                # wrongly. So every peak that cleared the ratio was
+                # thrown out, and swing_select could never return a
+                # swing on a copy rig.
+                #
+                # Measured on hole 8, 20 Oct: 17 sessions, 0 swings,
+                # and in the five where peaks did clear the threshold
+                # ALL of them were rejected for nobody in the ROI --
+                # during sessions a person standing in that same ROI
+                # had triggered.
+                _seen = getattr(self, "_person_seen_at", None)
+                if _seen is not None:
+                    _seen.append(now)
                 return None
             if now - state["last_seen"] >= no_person_timeout:
                 return "no_person"

@@ -541,13 +541,16 @@ class CopyEngine:
                 log.info(
                     "copy: no swing found in %.0fs for session=%s — "
                     "uploading whole (nothing is discarded). Best peak was "
-                    "%.2f at t=%.1fs against a threshold of %.1f; %d peak(s) "
-                    "cleared it, %d rejected for nobody in the ROI, %d for "
+                    "%.2f at t=%.1fs against a threshold of %.1f; %d "
+                    "sample(s) cleared it, %d rejected for nobody in the "
+                    "ROI (%s sighting(s) to check against), %d for "
                     "too wide a burst%s. %d samples at %.1f Hz.",
                     clip_secs, session_id, dbg.get("best_ratio", 0),
                     dbg.get("best_at") or -1, dbg.get("min_ratio", 0),
                     dbg.get("above_threshold", 0),
                     dbg.get("rejected_no_person", 0),
+                    ("gate off" if dbg.get("n_person_times") is None
+                     else dbg.get("n_person_times")),
                     dbg.get("rejected_too_wide", 0),
                     (" (widest %.1fs)" % dbg["widest_rejected_sec"]
                      if dbg.get("widest_rejected_sec") else ""),
