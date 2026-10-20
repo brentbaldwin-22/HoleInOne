@@ -476,6 +476,21 @@ class Camera(Base):
     # yards and the scale changes across the frame, so nothing downstream
     # may guess a conversion without this.
     green_homography: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # GREEN cameras only. The putting surface, as a polygon clicked on a
+    # still: {"points": [[x,y], ...], "frame": {"w":..., "h":...}}.
+    #
+    # What it bounds is the rest-spot search, and the thing it rejects is
+    # not clutter -- a median plate handles the brush on its own -- but a
+    # ball that is genuinely there and genuinely not on the green. A
+    # white dot short of the surface is identical to one on it in every
+    # respect except position, so position is the only thing that can
+    # tell them apart, and an outline is the only way to say where the
+    # surface is.
+    #
+    # Drawn at whatever size the still was, and the size is stored with
+    # it, because the capture resolution changes and a polygon in bare
+    # pixels silently means somewhere else afterwards.
+    green_roi: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # TEE cameras only. Which side of the golfer's feet the ball sits on,
     # in the camera's own view: 'left' | 'right' | None.
     #

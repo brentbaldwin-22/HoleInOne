@@ -494,6 +494,23 @@ export const api = {
       body: fd,
     });
   },
+  // The putting surface, as a polygon on the green camera's own picture.
+  setGreenOutline: (key, cameraId, points, frameW, frameH) => {
+    const fd = new FormData();   // Form(...) endpoint — see setTeeZones
+    fd.append("points", JSON.stringify(points));
+    fd.append("frame_w", String(frameW));
+    fd.append("frame_h", String(frameH));
+    return request(`/api/admin/cameras/${cameraId}/green-outline`, {
+      method: "POST",
+      adminPassword: key,
+      body: fd,
+    });
+  },
+  greenRestTest: (key, cameraId) =>
+    request(`/api/admin/cameras/${cameraId}/green-rest-test`, {
+      method: "POST",
+      adminPassword: key,
+    }),
   stopFocusMode: (key, cameraId) =>
     request(`/api/admin/cameras/${cameraId}/focus-mode/stop`, {
       method: "POST",

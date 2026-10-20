@@ -15202,6 +15202,10 @@ def _camera_to_dict(
             "frame": (lambda f: {"w": f[0], "h": f[1]} if f else None)(
                 tee_roi.frame_size(c.tee_box_roi)),
         },
+        # The putting surface, for the outline editor. Null until an
+        # operator traces one; the rest-spot finder says so loudly
+        # rather than quietly searching the whole frame.
+        "green_roi": getattr(c, "green_roi", None),
         "ball_side": c.ball_side,
         "last_seen_at": c.last_seen_at.isoformat() if c.last_seen_at else None,
         "firmware_version": c.firmware_version,
@@ -16065,6 +16069,114 @@ def get_tee_zones(camera_id: int, db: Session = Depends(get_db)):
         "union": tee_roi.union(cam.tee_box_roi),
         "max_boxes": tee_roi.MAX_BOXES,
     }
+
+
+@router.get("/cameras/{camera_id}/green-outline")
+def get_green_outline(camera_id: int, db: Session = Depends(get_db)):
+    """The putting surface this camera is looking at, if it is drawn."""
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    return {"camera_id": cam.id, "green_roi": cam.green_roi}
+
+
+@router.post("/cameras/{camera_id}/green-outline")
+def set_green_outline(
+    camera_id: int,
+    points: str = Form(...),      # JSON [[x, y], ...]
+    frame_w: int = Form(...),
+    frame_h: int = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Replace this camera's green outline.
+
+    A POLYGON, NOT A BOX. Greens are not rectangles, and the thing the
+    outline has to exclude is usually the apron and the fairway beyond
+    it -- a bounding box around a green includes exactly the ground a
+    ball most often finishes on when it misses.
+
+    The frame size is stored with it for the same reason the trigger
+    zones store theirs: these are native pixels, and a polygon drawn at
+    1080p quietly means somewhere else if the camera is recaptured at
+    720p.
+    """
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    try:
+        parsed = json.loads(points)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "points must be JSON")
+    if not isinstance(parsed, list):
+        raise HTTPException(400, "points must be a list of [x, y]")
+    # CLEARING IS A REAL REQUEST, not an error: an outline drawn on the
+    # wrong camera has to be removable without a database console.
+    if not parsed:
+        cam.green_roi = None
+        db.commit()
+        return {"ok": True, "green_roi": None, "cleared": True}
+    # A POLYGON NEEDS THREE CORNERS. Two points enclose no area at all,
+    # and the mask built from them is empty -- which downstream reads as
+    # "nothing is on the green, ever", a far more confusing failure than
+    # being told now.
+    if len(parsed) < 3:
+        raise HTTPException(
+            400, "a green outline needs at least 3 points")
+    pts = []
+    for pt in parsed:
+        if not isinstance(pt, (list, tuple)) or len(pt) != 2:
+            raise HTTPException(400, "each point must be [x, y]")
+        try:
+            pts.append([int(round(float(pt[0]))), int(round(float(pt[1])))])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "point coordinates must be numbers")
+    if int(frame_w) <= 0 or int(frame_h) <= 0:
+        raise HTTPException(400, "frame size must be positive")
+    cam.green_roi = {"points": pts,
+                     "frame": {"w": int(frame_w), "h": int(frame_h)}}
+    db.commit()
+    log.info("cameras: green outline set on %s — %d point(s) at %dx%d",
+             cam.id, len(pts), frame_w, frame_h)
+    return {"ok": True, "green_roi": cam.green_roi}
+
+
+@router.post("/cameras/{camera_id}/green-rest-test")
+def green_rest_test(camera_id: int, db: Session = Depends(get_db)):
+    """Run the rest-spot finder on this camera's most recent clip.
+
+    So the outline can be drawn and checked in one place, against real
+    footage, before anything downstream depends on it.
+    """
+    from ..services import greenrest
+
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    ev = (
+        db.query(CameraEvent)
+        .filter(CameraEvent.green_camera_id == camera_id)
+        .filter(CameraEvent.green_clip_filename.isnot(None))
+        .order_by(CameraEvent.triggered_at.desc())
+        .first()
+    )
+    if ev is None:
+        raise HTTPException(
+            404, "no clip from this camera yet — capture one first")
+    storage.ensure_local(CLIPS_DIR, ev.green_clip_filename)
+    path = CLIPS_DIR / ev.green_clip_filename
+    if not path.exists():
+        raise HTTPException(
+            404, f"clip missing on disk: {ev.green_clip_filename}")
+    roi = cam.green_roi or {}
+    frame = roi.get("frame") or {}
+    out = greenrest.find_rest_spot(
+        path,
+        polygon=roi.get("points"),
+        drawn_at=[frame.get("w"), frame.get("h")] if frame else None,
+    )
+    out["event_id"] = ev.id
+    out["clip"] = ev.green_clip_filename
+    return out
 
 
 @router.post("/cameras/{camera_id}/tee-zones")

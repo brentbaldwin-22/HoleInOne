@@ -12,6 +12,7 @@ import { Brand } from "../components/Brand.jsx";
 import { ViewMapModal } from "../components/ViewMapModal.jsx";
 import { DailyMarksModal } from "../components/DailyMarksModal.jsx";
 import TriggerZones from "../components/TriggerZones.jsx";
+import GreenOutline from "../components/GreenOutline.jsx";
 
 const ADMIN_PW_STORAGE = "golfreelz.adminPassword";
 const LEGACY_ADMIN_PW_STORAGE = "parone.adminPassword";
@@ -1909,6 +1910,7 @@ export default function AdminCameras() {
   // honest source for it, and the unit the trigger zones are stored in.
   const [liveNatural, setLiveNatural] = useState(null);
   const [zoningCamId, setZoningCamId] = useState(null);
+  const [outliningCamId, setOutliningCamId] = useState(null);
   // The element the picture is painted in. The zone editor portals its
   // drawing surface into it, so the surface covers the PICTURE and not
   // the controls underneath — only one camera is ever watched, so one
@@ -3153,6 +3155,18 @@ export default function AdminCameras() {
                             />
                           )}
 
+                          {outliningCamId === cam.id && (
+                            <GreenOutline
+                              cam={cam}
+                              adminPassword={adminPassword}
+                              frameW={liveNatural?.w}
+                              frameH={liveNatural?.h}
+                              portalTarget={pictureEl}
+                              onSaved={() => load()}
+                              onClose={() => setOutliningCamId(null)}
+                            />
+                          )}
+
                           {zoningCamId === cam.id && (
                             <TriggerZones
                               cam={cam}
@@ -3302,6 +3316,33 @@ export default function AdminCameras() {
                         : `Trigger zones${
                             (cam.tee_zones?.boxes || []).length
                               ? ` (${cam.tee_zones.boxes.length})` : " — none"}`}
+                    </button>
+                  )}
+                  {cam.assigned_role === "green" && (
+                    <button
+                      type="button"
+                      className={outliningCamId === cam.id
+                        ? "small" : "secondary small"}
+                      disabled={isBusy || offline}
+                      title={
+                        offlineWhy
+                          ? offlineWhy
+                          : watchingCamId === cam.id
+                          ? "Trace the putting surface. It bounds the rest-spot search: a ball short of the green looks exactly like one on it, and only the outline knows the difference"
+                          : "Watch this camera first: the outline is drawn on its live picture"
+                      }
+                      onClick={() => {
+                        if (watchingCamId !== cam.id) startWatch(cam);
+                        setOutliningCamId(
+                          outliningCamId === cam.id ? null : cam.id);
+                      }}
+                    >
+                      {outliningCamId === cam.id
+                        ? "Done with the green"
+                        : `Green outline${
+                            (cam.green_roi?.points || []).length
+                              ? ` (${cam.green_roi.points.length} pts)`
+                              : " — none"}`}
                     </button>
                   )}
                   {/* GREEN PIXELS TO TEE PIXELS — the only thing that
