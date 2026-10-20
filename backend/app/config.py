@@ -120,7 +120,21 @@ class Settings(BaseSettings):
     # tee half, produce a TEE-ONLY clip so a green dropout costs you the
     # green angle, not the shot. If green shows up later, the event
     # re-produces with both. 0 disables the fallback.
-    camera_tee_only_fallback_seconds: int = 180
+    # HOW LONG TO WAIT FOR THE GREEN before producing from the tee
+    # alone. Was 180, which is not long enough to upload anything: a
+    # two-minute tee clip is 56 MB, and the green has one of its own to
+    # push over the same kind of link. Three minutes guaranteed that a
+    # paired hole produced tee-only and then produced AGAIN when the
+    # green landed -- twice the work for a worse first answer.
+    camera_tee_only_fallback_seconds: int = 900
+    # ...unless the green rig is plainly still alive, in which case its
+    # clip is probably still climbing the wire and there is nothing to
+    # recover from. A camera seen this recently counts as alive.
+    camera_green_alive_seconds: int = 240
+    # The ceiling on that patience. A green that heartbeats happily
+    # while its upload is dead would otherwise hold the event forever,
+    # and a tee-only clip is worth more than no clip.
+    camera_tee_only_max_wait_seconds: int = 3600
 
     # Stalled-produce recovery. Both clips land, the event goes to
     # "paired_uploaded", and the produce job that finishes it runs in a

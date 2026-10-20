@@ -2053,14 +2053,30 @@ _RECOVER_PER_SWEEP = 2
 
 
 def _recoverable_events(db, status: str, cutoff, floor, max_retries: int,
-                        require_tee: bool) -> list[int]:
+                        require_tee: bool,
+                        # DON'T GIVE UP ON A GREEN THAT IS STILL THERE.
+                        # When set, a PAIRED event whose green camera
+                        # has been seen since this moment is left alone:
+                        # its clip is most likely still on the wire, and
+                        # producing tee-only now means producing again
+                        # when it lands -- twice the work for a worse
+                        # first answer. Unpaired events are untouched by
+                        # this; they were never waiting for anything.
+                        green_alive_since=None,
+                        # ...and the ceiling on that patience. An event
+                        # older than this produces from the tee however
+                        # healthy the green looks, because a rig can
+                        # heartbeat perfectly while its upload is dead,
+                        # and a tee-only clip beats no clip.
+                        wait_floor=None) -> list[int]:
     """Event ids stuck in `status`: triggered before `cutoff` (old enough
     to be a problem) and after `floor` (recent enough to be worth
     producing). Oldest first, and only those still inside their retry
     budget.
 
-    Split out from the sweep so the window, the floor and the budget can
-    be tested without a produce pipeline behind them.
+    Split out from the sweep so the window, the floor, the budget and
+    the green-still-coming rule can be tested without a produce
+    pipeline behind them.
     """
     q = (db.query(CameraEvent)
          .filter(CameraEvent.status == status,
@@ -2068,8 +2084,27 @@ def _recoverable_events(db, status: str, cutoff, floor, max_retries: int,
                  CameraEvent.triggered_at >= floor))
     if require_tee:
         q = q.filter(CameraEvent.tee_clip_filename.isnot(None))
-    return [e.id for e in q.order_by(CameraEvent.triggered_at.asc()).all()
+    rows = [e for e in q.order_by(CameraEvent.triggered_at.asc()).all()
             if int(getattr(e, "produce_retries", 0) or 0) < max_retries]
+    if green_alive_since is None:
+        return [e.id for e in rows]
+    out: list[int] = []
+    for e in rows:
+        _gid = getattr(e, "green_camera_id", None)
+        _past_ceiling = (wait_floor is not None
+                         and e.triggered_at < wait_floor)
+        if _gid is not None and not _past_ceiling:
+            _cam = db.get(Camera, _gid)
+            _seen = getattr(_cam, "last_seen_at", None) if _cam else None
+            if _seen is not None and _seen >= green_alive_since:
+                log.info(
+                    "cameras: event %s waiting on green camera %s, seen "
+                    "%.0fs ago — not producing tee-only yet",
+                    e.id, _gid,
+                    (_utcnow_naive() - _seen).total_seconds())
+                continue
+        out.append(e.id)
+    return out
 
 
 def _camera_event_recovery_sweep() -> None:
@@ -2103,6 +2138,8 @@ def _camera_event_recovery_sweep() -> None:
     from .admin import produce_queue_status
 
     _fallback = int(settings.camera_tee_only_fallback_seconds or 0)
+    _alive = int(settings.camera_green_alive_seconds or 0)
+    _ceiling = int(settings.camera_tee_only_max_wait_seconds or 0)
     _stall = int(settings.camera_paired_stall_seconds or 0)
     if _fallback <= 0 and _stall <= 0:
         return
@@ -2138,7 +2175,9 @@ def _camera_event_recovery_sweep() -> None:
                 (eid, "green never arrived — producing from tee alone")
                 for eid in _recoverable_events(
                     db, "tee_uploaded", now - timedelta(seconds=_fallback),
-                    floor, _budget, require_tee=True)
+                    floor, _budget, require_tee=True,
+                    green_alive_since=now - timedelta(seconds=_alive),
+                    wait_floor=now - timedelta(seconds=_ceiling))
             ]
         if _stall > 0:
             todo += [
