@@ -44,12 +44,22 @@ def check(name, got, want):
 BX, BY, VX, VY, F0, NF = 1360, 500, 2.0, -15.0, 1550, 30
 
 
-def flight(drop=()):
+def flight(drop=(), decel=0.0):
     """The ball, optionally missing on some frames — the detector does
-    miss a few, and a fit must not care."""
-    return [{"frame": F0 + i, "x": int(BX + VX * i), "y": int(BY + VY * i),
-             "area": 100}
-            for i in range(NF) if i not in drop]
+    miss a few, and a fit must not care.
+
+    `decel` slows it as it climbs, which is what a real one does: the
+    y-steps measured on #768 run 26, 24, 25, 23, 22, 19, 21, 18, 17, 18
+    over the first twenty frames, from perspective as much as physics.
+    """
+    out = []
+    y = float(BY)
+    for i in range(NF):
+        if i not in drop:
+            out.append({"frame": F0 + i, "x": int(BX + VX * i),
+                        "y": int(round(y)), "area": 100})
+        y += VY + decel * i
+    return out
 
 
 def clutter(per_frame, seed=11):
@@ -69,10 +79,30 @@ def on_ball(chains):
     return best
 
 
+def fragments(chains, lo=4):
+    """How many separate chains of any length the pass returned on the
+    ball's own line. One flight should be one chain; six was the bug."""
+    return sum(1 for c in chains
+               if len(c["points"]) >= lo
+               and all(abs(q["x"] - (BX + VX * (q["frame"] - F0))) <= 9
+                       for q in c["points"]))
+
+
 def main() -> int:
     # ---- a clean flight -----------------------------------------------
     check("a clean flight comes back whole",
           on_ball(d3.fit_ascent_chains(flight(), 4)), NF)
+
+    # ---- A REAL ONE DECELERATES, and a line is the wrong shape -------
+    # On #768 this split ONE flight into six overlapping fragments: two
+    # passed the gates as separate swings 40ms apart, four were refused
+    # on `rise` for being too short, and all six were the same shot.
+    _slow = flight(decel=0.45)
+    _got = d3.fit_ascent_chains(_slow, 4)
+    check("a decelerating flight still comes back whole",
+          on_ball(_got), NF)
+    check("  as ONE chain, not a handful of fragments",
+          fragments(_got), 1)
 
     # ---- with frames missing ------------------------------------------
     # A walk can survive this too; the point is that a fit does not even
@@ -158,6 +188,54 @@ def main() -> int:
           len(_grown), NF)
     check("  including frames BEFORE it (control)",
           _grown[0]["frame"] < _mid["frame"], True)
+
+    # ---- THE REAL THING, from #768 -----------------------------------
+    # Every point the considered table printed on 20 Oct, verbatim. The
+    # sweep returned SIX overlapping fragments of this one flight: two
+    # passed the gates as separate swings 40ms apart (9pts and 6pts),
+    # and four were refused on `rise` for being too short. Field data
+    # beats any fixture I can invent — five of mine failed to reproduce
+    # a failure this one contains.
+    #
+    # Note (1370,393) appearing at BOTH f1550 and f1551, and (1378,313)
+    # at f1554 and f1555: the detector reports the ball twice, a frame
+    # apart, which is what defeats a dedupe that compares point
+    # identity rather than geometry.
+    real_rows = [
+        [(1549, 1367, 416), (1550, 1370, 393), (1555, 1378, 313),
+         (1556, 1379, 296), (1557, 1380, 278), (1559, 1384, 245),
+         (1561, 1386, 215), (1563, 1391, 176), (1564, 1391, 163)],
+        [(1547, 1362, 491), (1548, 1364, 465), (1549, 1366, 440),
+         (1550, 1368, 416), (1551, 1370, 393), (1554, 1378, 313)],
+        [(1550, 1370, 393), (1551, 1372, 371), (1552, 1373, 352),
+         (1554, 1378, 313), (1555, 1378, 296), (1556, 1380, 278)],
+        [(1546, 1362, 491), (1547, 1364, 465), (1548, 1366, 441),
+         (1549, 1367, 416), (1550, 1370, 393)],
+        [(1555, 1374, 331), (1557, 1380, 278), (1558, 1384, 245),
+         (1559, 1385, 231)],
+        [(1563, 1387, 202), (1564, 1391, 176), (1565, 1391, 163),
+         (1566, 1395, 138)],
+    ]
+    _seen, real = set(), []
+    for _row in real_rows:
+        for _f, _x, _y in _row:
+            if (_f, _x, _y) not in _seen:
+                _seen.add((_f, _x, _y))
+                real.append({"frame": _f, "x": _x, "y": _y, "area": 100})
+    real.sort(key=lambda d: (d["frame"], d["y"]))
+
+    _out = d3.fit_ascent_chains(real, 4)
+    check("the real #768 detections make ONE chain, not six", len(_out), 1)
+    _p = _out[0]["points"]
+    check("  spanning the whole flight", (_p[0]["frame"], _p[-1]["frame"]),
+          (1546, 1565))
+    # The gates that refused every fragment, applied to the whole:
+    _rise = _p[0]["y"] - _p[-1]["y"]
+    _rate = _rise / (_p[-1]["frame"] - _p[0]["frame"]) * 60.0 / 1080.0
+    _dens = len(_p) / (_p[-1]["frame"] - _p[0]["frame"] + 1)
+    check("  rising far enough for the rise gate (142px)", _rise >= 142, True)
+    check("  fast enough for the rate gate (0.7)", _rate >= 0.7, True)
+    check("  dense enough for the sparse gate (0.35)", _dens >= 0.35, True)
 
     # ---- and the sweep asks for them ----------------------------------
     seen: list = []

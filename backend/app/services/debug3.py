@@ -4671,6 +4671,10 @@ def fit_ascent_chains(dets: list, min_points: int,
                     if seeds > FIT_MAX_SEEDS:
                         return _dedupe_fits(found)
                     pts = _grow_fit(by_frame, a, vx, vy, f, tol_px, window)
+                    # A LINE GETS IT STARTED; A CURVE KEEPS IT. See
+                    # _refine_fit: a struck ball is not at constant
+                    # velocity for long enough to matter here.
+                    pts = _refine_fit(by_frame, pts, tol_px)
                     if len(pts) >= min_points:
                         found.append(pts)
                         for q in pts:
@@ -4716,10 +4720,120 @@ def _grow_fit(by_frame: dict, a: dict, vx: float, vy: float, f0: int,
     return out
 
 
+# How far past a fit's own ends to look for more of it, in frames. A
+# curve fitted to twenty points says little about where the thing was
+# fifty frames earlier, so this is deliberately short and applied
+# repeatedly rather than once and far.
+REFINE_REACH = 10
+REFINE_PASSES = 3
+
+
+def _refine_fit(by_frame: dict, pts: list, tol_px: float) -> list:
+    """Re-collect a fit's inliers against a CURVE through its points.
+
+    A LINE IS THE WRONG SHAPE, and the fragments say so. Measured on
+    #768: the flight's own y-steps run 26, 24, 25, 23, 22, 19, 21, 18,
+    17, 18 — the ball decelerates, from perspective as much as physics.
+    A constant-velocity line holds about eight frames inside a 7px
+    tolerance and then walks off the ball, so one flight came back as
+    SIX overlapping fragments, two of which passed the gates as
+    separate swings 40ms apart and four of which were refused on `rise`
+    for being too short. All six were the same shot.
+
+    A quadratic in frame absorbs that exactly, and costs one polyfit.
+    The line still does the finding: it only has to survive long enough
+    to collect the handful of points a curve can be fitted to.
+
+    Grows in short reaches rather than one long extrapolation, because
+    a curve is only trustworthy near the points that made it.
+    """
+    import numpy as np
+
+    for _ in range(REFINE_PASSES):
+        if len(pts) < 5:
+            return pts
+        fs = [float(p["frame"]) for p in pts]
+        try:
+            cx = np.polyfit(fs, [float(p["x"]) for p in pts], 2)
+            cy = np.polyfit(fs, [float(p["y"]) for p in pts], 2)
+        except Exception:  # noqa: BLE001 - degenerate fit, keep the line
+            return pts
+        lo = int(min(fs)) - REFINE_REACH
+        hi = int(max(fs)) + REFINE_REACH
+        grown: list = []
+        for g in range(lo, hi + 1):
+            cands = by_frame.get(g)
+            if not cands:
+                continue
+            px = float(np.polyval(cx, g))
+            py = float(np.polyval(cy, g))
+            best = None
+            best_d = tol_px
+            for c in cands:
+                d = math.hypot(c["x"] - px, c["y"] - py)
+                if d <= best_d:
+                    best, best_d = c, d
+            if best is not None:
+                grown.append(best)
+        # NEVER SHORTER. A pass that loses points means the curve is a
+        # worse description than what it was fitted to, so keep what we
+        # had; it is also what stops the loop once nothing more is
+        # being found.
+        #
+        # UNREACHABLE IN PRACTICE, as far as I can make it go: an
+        # outlier 600px off the line still drags the quadratic only far
+        # enough that every original point is re-collected. Left in as
+        # the loop's terminator and a guard against a fit shape that is
+        # less forgiving than this one.
+        if len(grown) <= len(pts):
+            return pts
+        pts = grown
+    return pts
+
+
+# How near a kept chain a point has to pass to count as the same
+# object, and how far either side in frames to look for it. Both are
+# loose on purpose: this is asking "is this the same flight", not "is
+# this the same detection".
+DEDUPE_NEAR_PX = 14.0
+DEDUPE_NEAR_DF = 2
+
+
+def _same_object(pts: list, kept: list) -> bool:
+    """Is this fit mostly retracing one already kept?
+
+    GEOMETRY, NOT IDENTITY. Comparing point-keys fails exactly where it
+    matters: the detector reports the ball at (1370,393) on f1550 AND
+    on f1551, so two fits of the same flight can share not one key
+    while tracing the same line a pixel apart. Measured on #768 — three
+    "separate" chains over the same twenty frames, two of which the
+    gates passed as swings 40 milliseconds apart.
+
+    WHY THE SAME SPOT TWICE: a moving ball is a smear, and the
+    difference lights two or three blobs across it — leading edge,
+    trailing edge, sometimes the middle. So the trailing blob of one
+    frame can sit below the leading blob of the previous one, which is
+    also why a flight's apparent step shortens as it climbs. Some of
+    that "deceleration" is which end of the smear got picked, not the
+    ball slowing down. Hence a radius and a frame window here, rather
+    than an equality.
+    """
+    hit = 0
+    for q in pts:
+        for k in kept:
+            if any(abs(r["frame"] - q["frame"]) <= DEDUPE_NEAR_DF
+                   and math.hypot(r["x"] - q["x"], r["y"] - q["y"])
+                   <= DEDUPE_NEAR_PX
+                   for r in k):
+                hit += 1
+                break
+    return hit > len(pts) // 2
+
+
 def _dedupe_fits(found: list) -> list:
-    """Longest first, dropping any fit whose points are mostly another's
-    -- one object should yield one chain, the same rule build_tracks
-    works to.
+    """Longest first, dropping any fit that mostly retraces one already
+    kept -- one object should yield one chain, the same rule
+    build_tracks works to.
 
     NO LENGTH FLOOR HERE. It took a `min_points` and ignored it, so I
     made it enforce one -- and then neither that check nor the one
@@ -4731,12 +4845,11 @@ def _dedupe_fits(found: list) -> list:
     """
     found.sort(key=len, reverse=True)
     kept: list = []
-    seen: set = set()
+    _paths: list = []
     for pts in found:
-        ks = {(q["frame"], q["x"], q["y"]) for q in pts}
-        if len(ks & seen) > len(ks) // 2:
+        if _same_object(pts, _paths):
             continue
-        seen |= ks
+        _paths.append(pts)
         kept.append({
             "points": pts,
             "span_px": math.hypot(pts[-1]["x"] - pts[0]["x"],
