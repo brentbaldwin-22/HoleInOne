@@ -340,6 +340,85 @@ class MotionFallbackDetector:
         pass
 
 
+class Dwell:
+    """How long has somebody been standing in a zone, and is that long
+    enough to start recording?
+
+    Pulled out of the loop so it can be tested without a camera, a
+    detector and a capture thread — and so there is ONE copy of the
+    rule rather than one in the agent and another in a test that
+    agrees with it by hand.
+
+    TWO THINGS MAKE IT MORE THAN A STOPWATCH.
+
+    A BLINK IS NOT A DEPARTURE. Detection runs at `detection.fps` (5),
+    so a dwell of N seconds asks for N*5 consecutive sightings, and
+    this project's own config notes that "a golfer bending to tee up,
+    turning away, or stepping aside briefly makes the person detector
+    drop out for a few seconds". The stop condition was built generous
+    for exactly that; the start condition reset on a single miss. At
+    two seconds it survived on luck. At ten it does not survive at
+    all: measured on the model of this loop, a two-second blink four
+    seconds in means the dwell is NEVER met in the sixteen seconds the
+    golfer is actually there.
+
+    AND THE CLOCK MUST NOT OUTLIVE THE PERSON. Once a blink is
+    forgiven, elapsed time alone would let somebody who crossed the
+    zone for a second trigger three seconds later, on an empty tee.
+    So firing also requires them to be in a zone right now.
+    """
+
+    def __init__(self, dwell_seconds: float, grace_seconds: float):
+        self.dwell = float(dwell_seconds)
+        self.grace = float(grace_seconds)
+        self.first_seen: Optional[float] = None
+        self.last_seen: float = 0.0
+        self.restarts = 0
+
+    def reset(self) -> None:
+        self.first_seen = None
+
+    def arm(self, now: float) -> None:
+        """Treat the dwell as ALREADY SERVED, as of `now`.
+
+        For the length-cap split, where a clip ends at the cap with the
+        golfer still standing there. They have been in the zone for two
+        minutes; making them serve the dwell again is not a filter, it
+        is a hole. And it is a hole that grows with the setting: at a
+        two-second dwell the next clip opens inside the five-second
+        pre-roll and the two overlap, which is what keeps a swing on
+        the boundary from being cut in half. At ten seconds the pre-roll
+        no longer covers it and five seconds of golf are simply missing.
+
+        So the split re-arms rather than restarts, and the next clip
+        opens on the following tick whatever the dwell is set to. The
+        guard against this running away is `_splits` and the cooldown,
+        which is a separate mechanism and still applies.
+        """
+        self.first_seen = now - self.dwell
+        self.last_seen = now
+
+    def update(self, now: float, in_roi: bool) -> bool:
+        """Advance to `now`. True means trigger."""
+        if in_roi:
+            if self.first_seen is None:
+                self.first_seen = now
+            self.last_seen = now
+        elif (self.first_seen is not None
+                and now - self.last_seen > self.grace):
+            self.first_seen = None
+            self.restarts += 1
+        return (in_roi
+                and self.first_seen is not None
+                and now - self.first_seen >= self.dwell)
+
+    def waiting_for(self, now: float) -> Optional[float]:
+        """Seconds still to go, or None when nobody is being timed."""
+        if self.first_seen is None:
+            return None
+        return max(0.0, self.dwell - (now - self.first_seen))
+
+
 def _in_roi(pt: tuple[int, int], roi) -> bool:
     """Is the golfer standing on A tee? Any zone counts.
 
@@ -862,6 +941,17 @@ class TeeAgent:
         _splits = 0                 # consecutive length-cap splits
         _cooldown_until = 0.0       # automatic triggers paused until this
         dwell_seconds = float(self.det_cfg.get("trigger_dwell_seconds", 2))
+        # HOW LONG THE DETECTOR MAY LOSE THEM without the dwell starting
+        # over. See the dwell loop below: without this the clock resets
+        # on a SINGLE missed detection, and at 5 Hz a ten-second dwell
+        # is fifty consecutive sightings with no gaps -- which this
+        # config's own notes say does not happen, because "a golfer
+        # bending to tee up, turning away, or stepping aside briefly
+        # makes the person detector drop out for a few seconds". The
+        # STOP condition was built generous for exactly that; the start
+        # condition was not.
+        dwell_grace = float(
+            self.det_cfg.get("trigger_dwell_grace_seconds", 3))
         no_person_timeout = float(self.det_cfg.get("no_person_timeout_seconds", 5))
 
         detector = self._build_detector(det_width)
@@ -954,7 +1044,7 @@ class TeeAgent:
         )
         capture_thread.start()
 
-        person_first_seen: Optional[float] = None
+        dwell = Dwell(dwell_seconds, dwell_grace)
         prime_force_trigger()
         log.info(
             "tee agent running: roi=%s buffer=%.1fs dwell=%.1fs",
@@ -993,25 +1083,21 @@ class TeeAgent:
                     # Paused after a runaway. An explicit Capture or a
                     # touched sentinel still gets through — the pause is
                     # for the automatic trigger, not for the operator.
-                    person_first_seen = None
+                    dwell.reset()
                     time.sleep(det_period)
                     continue
 
-                if not forced:
-                    if in_roi:
-                        if person_first_seen is None:
-                            person_first_seen = now
-                            log.info("person standing in a zone at %s "
-                                     "(their feet)", stance)
-                    else:
-                        if person_first_seen is not None:
-                            log.debug("person left ROI before dwell threshold")
-                        person_first_seen = None
-
-                dwell_met = (
-                    person_first_seen is not None
-                    and now - person_first_seen >= dwell_seconds
-                )
+                _was = dwell.first_seen
+                _restarts = dwell.restarts
+                dwell_met = dwell.update(now, in_roi) if not forced else False
+                if dwell.first_seen is not None and _was is None:
+                    log.info("person standing in a zone at %s (their feet)"
+                             " — recording in %.1fs if they stay",
+                             stance, dwell.dwell)
+                elif dwell.restarts != _restarts:
+                    log.debug("nobody in a zone for over %.1fs before the "
+                              "dwell was met — starting the clock over",
+                              dwell.grace)
                 if forced or dwell_met:
                     session_id = str(uuid.uuid4())
                     log.info(
@@ -1155,7 +1241,7 @@ class TeeAgent:
                             _splits = 0
                             _cooldown_until = now + self.split_cooldown
                             self.buffer.clear()
-                            person_first_seen = None
+                            dwell.reset()
                         elif _why == "length_cap":
                             _splits += 1
                             # A SPLIT, not an ending. Keep the ring buffer
@@ -1163,14 +1249,18 @@ class TeeAgent:
                             # and OVERLAPS this one — otherwise a swing
                             # that happens to land on the boundary is cut
                             # in half and neither clip can be produced.
-                            # The golfer is still in the ROI, so re-arm the
-                            # dwell from now and the next clip starts in
-                            # about two seconds.
-                            person_first_seen = now
+                            # The golfer is still in the ROI and has
+                            # been for two minutes, so the dwell is
+                            # re-armed as already served and the next
+                            # clip opens on the following tick. See
+                            # Dwell.arm: making them serve it again
+                            # would put a hole the length of the dwell
+                            # between two clips of the same golfer.
+                            dwell.arm(now)
                         else:
                             _splits = 0
                             self.buffer.clear()
-                            person_first_seen = None
+                            dwell.reset()
                 time.sleep(det_period)
         finally:
             self.stopping.set()

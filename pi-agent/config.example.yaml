@@ -192,7 +192,30 @@ detection:
   fps: 5
   # Person must be inside the ROI for this many seconds before we
   # consider it a real address-position (filters cart drive-bys).
+  #
+  # WORTH RAISING WELL ABOVE 2 on a busy tee. Nobody walks onto a tee
+  # and hits inside ten seconds, so a long dwell costs no swings and
+  # throws out everything that merely crosses the zone — a cart, a
+  # player fetching a ball, somebody walking to the next tee. It also
+  # starts the clip nearer the shot: the recording begins at the
+  # trigger minus the pre-roll, so a ten-second dwell is roughly five
+  # fewer seconds of standing about at the front of every clip.
+  #
+  # It does NOT help with a group genuinely waiting on the tee. They
+  # are there for minutes and will trigger whatever this says.
   trigger_dwell_seconds: 2
+  # HOW LONG THE DETECTOR MAY LOSE THEM without the dwell starting
+  # over. Detection runs at `fps` above, so a dwell of N seconds is
+  # N*fps consecutive sightings — and this config already notes, a few
+  # lines down, that "a golfer bending to tee up, turning away, or
+  # stepping aside briefly makes the person detector drop out for a
+  # few seconds". With no grace at all a 2-second dwell survives that
+  # by luck and a 10-second one does not survive it at all.
+  #
+  # The trigger still requires them to be visible in the zone at the
+  # moment it fires, so this cannot let something that has left
+  # trigger on its way out.
+  trigger_dwell_grace_seconds: 3
   # After the trigger, keep recording until no person is seen for
   # this many seconds, then stop. This is the "group window": a golfer
   # bending to tee up, turning away, or stepping aside briefly makes the
