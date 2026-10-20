@@ -130,6 +130,11 @@ const EVENT_STATES = {
     // (camera_paired_stall_seconds / camera_produce_max_retries);
     // before that existed, this pill was a dead end and the only way
     // out was the button below it.
+    // WRITTEN IN THE PRESENT TENSE AND THEN NOT TRUE. This used to say
+    // the server retries a stalled event on its own, a few times over
+    // -- correct for the first few attempts and a lie after them, at
+    // exactly the moment somebody is reading it to decide whether to
+    // wait. `stuckFor` takes the retry count and says which it is.
     stuck:
       "Produce never picked this up — usually its job died with a backend " +
       "restart. The server retries a stalled event on its own a few " +
@@ -763,6 +768,31 @@ function stuckMessage(ev, teeInFlight) {
           + "link comes back.")
     );
   }
+  // GIVEN UP, OR STILL TRYING? Different answers, and the operator is
+  // reading this to decide whether to wait. The budget is spent BEFORE
+  // each attempt, so retries === budget means the last one has already
+  // been made and nothing further is coming.
+  if (ev.status === "paired_uploaded") {
+    const used = ev.produce_retries || 0;
+    const budget = ev.produce_retry_budget || 0;
+    if (budget > 0 && used >= budget) {
+      return (
+        `Produce never picked this up, and the server has stopped trying — ` +
+        `${used} of ${budget} automatic attempts used. It will not retry ` +
+        `again on its own. Re-process to force one; that also resets the ` +
+        `count. If it stalls again straight away the clip itself is the ` +
+        `problem, not the timing — check Production for a card frozen on ` +
+        `one stage.`
+      );
+    }
+    if (budget > 0 && used > 0) {
+      return (
+        `Produce never picked this up — usually its job died with a ` +
+        `backend restart. The server has tried ${used} of ${budget} ` +
+        `times and will try again; Re-process forces one immediately.`
+      );
+    }
+  }
   if (ev.status !== "tee_uploaded") return meta?.stuck || "";
   const haveTee = !!ev.tee_clip_filename;
   const haveGreen = !!ev.green_clip_filename;
@@ -778,9 +808,10 @@ function stuckMessage(ev, teeInFlight) {
   }
   if (haveTee && !haveGreen) {
     return (
-      "The green clip never arrived. The tee-only fallback should have " +
-      "produced from the tee alone after 3 min — if it hasn't, that sweeper " +
-      "isn't running."
+      "The green clip never arrived yet. The server waits up to 15 min for " +
+      "it — longer while the green camera is still checking in, since its " +
+      "clip is probably still uploading — and then produces from the tee " +
+      "alone. Re-process forces that now."
     );
   }
   return "Neither clip arrived.";

@@ -160,21 +160,31 @@ function addSeconds(iso, sec) {
 // LANDING_TAIL_SEC on the backend, which is what actually cuts.
 const LANDING_TAIL_SEC = 1.5;
 
+// WHAT THE CARD IS ACTUALLY DOING. "queued" used to be the catch-all
+// here -- the value returned for anything that was not producing and
+// had no clips -- and it rendered a grey "Queued" pill. So an upload
+// that FAILED, one that produced nothing, and one that was never
+// enqueued at all each told the operator it was waiting its turn.
+// Three different problems, one reassuring word, and the only one of
+// them that resolves itself on its own is the rare one.
+//
+// `queue_state` is the worker's own answer and is the only thing
+// entitled to say "queued".
 function uploadState(row, busy) {
   // The optimistic flag first: the POST returns before the worker flips
   // processing_status, and without this the card un-greys in that gap.
   if (busy) return "processing";
   // Anything mid-production blocks every action until it finishes.
   if (row.processing_status === "processing") return "processing";
+  if (row.queue_state === "running") return "processing";
   // Anything that finished a run (clips emitted) is "produced".
-  if (
-    row.processing_status === "completed" &&
-    (row.last_n_succeeded || 0) > 0
-  ) {
-    return "produced";
-  }
   if ((row.last_n_succeeded || 0) > 0) return "produced";
-  return "queued";
+  // Genuinely in the worker's queue, with a position to prove it.
+  if (row.queue_state === "queued") return "queued";
+  if (row.processing_status === "failed") return "failed";
+  // Nothing has happened to this and nothing is going to until
+  // somebody asks. Not the same as waiting.
+  return "idle";
 }
 
 // What a producing card says about itself. Sits on top of the greyed
@@ -16697,8 +16707,21 @@ export default function AdminProduction() {
                   </span>
                 )}
                 {state === "queued" && (
+                  <span className="pill warn small">
+                    Queued{row.queue_position
+                      ? ` · ${row.queue_position} of ${row.queue_depth}`
+                      : ""}
+                  </span>
+                )}
+                {state === "failed" && (
+                  <span className="pill bad small"
+                        title={row.last_error || ""}>
+                    Produce failed
+                  </span>
+                )}
+                {state === "idle" && (
                   <span className="pill small">
-                    Queued
+                    Not produced
                   </span>
                 )}
                 {/* Edit moved under Produced Video, where the clip it
@@ -16714,7 +16737,9 @@ export default function AdminProduction() {
                     Re-produce
                   </button>
                 ) : (
-                  state === "queued" && (
+                  // Queued, failed or never started: all three want the
+                  // same button, and only one of them used to get it.
+                  ["queued", "failed", "idle"].includes(state) && (
                     <button
                       className="btn small"
                       onClick={() => handleProduce(row)}

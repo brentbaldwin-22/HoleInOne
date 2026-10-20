@@ -243,6 +243,12 @@ def main() -> int:
         camera_paired_stall_seconds = 600
         camera_produce_max_retries = 3
         camera_recover_max_age_hours = 24
+        camera_green_alive_seconds = 0
+        camera_tee_only_max_wait_seconds = 3600
+        # This suite is about the IDLE-QUEUE rule, so the urgent
+        # override is off here and tested on its own in
+        # tools/recover_urgent_test.py.
+        camera_recover_urgent_seconds = 0
 
     import app.routers.admin as admin           # noqa: E402
 

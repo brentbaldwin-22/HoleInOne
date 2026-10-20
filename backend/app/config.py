@@ -135,6 +135,17 @@ class Settings(BaseSettings):
     # while its upload is dead would otherwise hold the event forever,
     # and a tee-only clip is worth more than no clip.
     camera_tee_only_max_wait_seconds: int = 3600
+    # WHEN A STUCK EVENT STOPS WAITING ITS TURN. The recovery sweep
+    # refuses to run while produce is busy, because the produce queue
+    # sorts oldest-first and feeding it recovery work puts this
+    # morning's backlog in front of the group on the tee. Right, until
+    # the queue is never idle -- and then nothing is ever recovered and
+    # an event sits at "Both clips in - STUCK" until somebody presses
+    # Re-process. Past this age an event is recovered anyway, one at a
+    # time, because half an hour of both-clips-in and nothing happening
+    # is worth a slot ahead of a fresh capture. 0 restores the old
+    # wait-for-quiet behaviour.
+    camera_recover_urgent_seconds: int = 1800
 
     # Stalled-produce recovery. Both clips land, the event goes to
     # "paired_uploaded", and the produce job that finishes it runs in a

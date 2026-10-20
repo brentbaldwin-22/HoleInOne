@@ -2153,11 +2153,34 @@ def _camera_event_recovery_sweep() -> None:
     #
     # Recovery is never urgent. Let it have the gaps instead: one quiet
     # queue, two events, and the next quiet queue after that.
+    #
+    # EXCEPT THAT A QUEUE CAN STOP BEING QUIET. On a busy morning the
+    # produce queue has something in it all day, so "wait for a gap"
+    # became "never", and events sat at "Both clips in - STUCK" with
+    # nothing coming for them -- which is not what this gate was for.
+    # It was protecting live golf from a backlog, not protecting the
+    # backlog from ever being cleared.
+    #
+    # So past camera_recover_urgent_seconds an event is taken anyway,
+    # ONE at a time rather than _RECOVER_PER_SWEEP, because the whole
+    # point is that it is sharing the queue rather than owning it.
+    _urgent = int(settings.camera_recover_urgent_seconds or 0)
     _q = produce_queue_status()
-    if _q.get("depth") or _q.get("running_upload_id") is not None:
+    _busy = bool(_q.get("depth") or _q.get("running_upload_id") is not None)
+    if _busy and _urgent <= 0:
         return
     _budget = int(settings.camera_produce_max_retries or 0)
     now = _utcnow_naive()
+
+    def _cut(window: int) -> int:
+        """How old an event has to be, given how busy produce is.
+
+        Quiet: its own window. Busy: the urgent age, which is longer --
+        so a busy queue narrows recovery to the events that have really
+        been abandoned rather than stopping it.
+        """
+        return max(window, _urgent) if _busy else window
+
     # NOTHING OLDER THAN THIS. Without a floor the first deploy carrying
     # this sweeper re-produces every stalled event the database has ever
     # held -- weeks of them, ahead of today's golf. A stuck capture is
@@ -2174,7 +2197,8 @@ def _camera_event_recovery_sweep() -> None:
             todo += [
                 (eid, "green never arrived — producing from tee alone")
                 for eid in _recoverable_events(
-                    db, "tee_uploaded", now - timedelta(seconds=_fallback),
+                    db, "tee_uploaded",
+                    now - timedelta(seconds=_cut(_fallback)),
                     floor, _budget, require_tee=True,
                     green_alive_since=now - timedelta(seconds=_alive),
                     wait_floor=now - timedelta(seconds=_ceiling))
@@ -2184,13 +2208,16 @@ def _camera_event_recovery_sweep() -> None:
                 (eid, "both clips in but produce never finished — "
                       "restarting it")
                 for eid in _recoverable_events(
-                    db, "paired_uploaded", now - timedelta(seconds=_stall),
+                    db, "paired_uploaded",
+                    now - timedelta(seconds=_cut(_stall)),
                     floor, _budget, require_tee=False)
             ]
     finally:
         db.close()
 
-    for eid, why in todo[:_RECOVER_PER_SWEEP]:
+    # One at a time while produce is busy: this is sharing the queue,
+    # not taking it over.
+    for eid, why in todo[:(1 if _busy else _RECOVER_PER_SWEEP)]:
         # Spend the retry BEFORE starting the job, not after it comes
         # back: a job that kills the process never comes back, and that
         # is precisely the case the budget exists to bound.

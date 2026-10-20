@@ -5978,6 +5978,17 @@ def list_camera_events(
                 ),
                 "status": r.status,
                 "last_error": r.last_error,
+                # HAS THE SERVER GIVEN UP ON THIS ONE. The stuck card
+                # told the operator "the server retries a stalled event
+                # on its own, a few times over" in the present tense --
+                # true for the first three attempts and a lie after
+                # them, at exactly the moment somebody is reading it to
+                # find out whether to wait. These two let the card say
+                # which it is.
+                "produce_retries": int(
+                    getattr(r, "produce_retries", 0) or 0),
+                "produce_retry_budget": int(
+                    settings.camera_produce_max_retries or 0),
                 # WHEN EACH CAMERA'S FIRST FRAME ACTUALLY IS, as the Pi
                 # reported it. The trigger time is close but not equal --
                 # the two Pis start a fraction of a second apart, which
