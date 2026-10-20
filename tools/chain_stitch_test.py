@@ -108,6 +108,74 @@ def test_the_joined_chain_is_a_flight():
           True)
 
 
+# THE SAME FLIGHT, ONE BUILD LATER, with the join switched on. It came
+# back as ONE chain -- and refused, because the join had reached nine
+# frames past the end of the flight to a tail at f1580 that is on the
+# same line and is not part of it.
+#
+#   22 point(s) across 36 frame(s) - 61% of them - biggest gap 9 frames
+#   rise 484  rate 0.768/0.7  bend 2.06/6  density 0.61  -> GAP
+#
+# Four accepted pieces turned into nothing. Split here as the sweep had
+# them: the flight, and a chain running past its end.
+RUN2 = [(1546, 1362, 491), (1547, 1364, 465), (1548, 1366, 441),
+        (1549, 1366, 440), (1550, 1368, 416), (1551, 1372, 371),
+        (1552, 1372, 362), (1554, 1378, 313), (1555, 1378, 296),
+        (1556, 1380, 285), (1558, 1384, 245), (1559, 1385, 235),
+        (1560, 1386, 215), (1563, 1391, 176), (1564, 1391, 168),
+        (1565, 1391, 163), (1566, 1395, 138), (1569, 1398, 108),
+        (1570, 1400, 102), (1571, 1401, 98)]
+TAIL = [(1580, 1414, 15), (1581, 1415, 7)]
+
+
+def _holes(pts):
+    return [pts[i + 1]["frame"] - pts[i]["frame"]
+            for i in range(len(pts) - 1)]
+
+
+def test_the_walk_may_not_step_further_than_the_gates_allow():
+    """The reach is the gap gate's limit, not a number of its own.
+
+    Straight at the walk, because that is where the reach is spent --
+    the union of the flight and the tail is what the sweep actually
+    held, and the two reaches give the two chains it actually
+    reported.
+    """
+    union = chain(RUN2 + TAIL)["points"]
+    kept = d3._longest_rising(union, d3.ASCENT_MAX_STEP_FRAMES)
+    check("it stops at the end of the flight", kept[-1]["frame"], 1571)
+    check("twenty points", len(kept), 20)
+    check("no hole the gap gate would refuse",
+          max(_holes(kept)) <= d3.ASCENT_MAX_STEP_FRAMES, True)
+    # CONTROL, and it is the chain the field reported: with the reach
+    # the join first shipped with, the walk takes the tail and comes
+    # back with exactly the 22 points over a nine-frame hole that the
+    # gap gate then threw away.
+    wide = d3._longest_rising(union, 12)
+    check("control, a wider reach takes the tail", len(wide), 22)
+    check("control, running to the tail's own last frame",
+          wide[-1]["frame"], 1581)
+    check("control, over the hole that refused it", max(_holes(wide)), 9)
+
+
+def test_and_the_join_end_to_end_stops_there_too():
+    """The same thing through stitch_ascent_chains, on two pieces."""
+    out = d3.stitch_ascent_chains(
+        [chain(RUN2[:14]), chain(RUN2[6:] + TAIL)])
+    check("one chain", len(out), 1)
+    pts = out[0]["points"]
+    check("ending where the flight does", pts[-1]["frame"], 1571)
+    check("with no refusable hole",
+          max(_holes(pts)) <= d3.ASCENT_MAX_STEP_FRAMES, True)
+    check("and longer than either piece", len(pts), 20)
+
+
+def test_the_reach_follows_the_gate_and_is_not_its_own_number():
+    check("the join reaches exactly as far as a chain may jump",
+          d3.stitch_ascent_chains.__defaults__[1], d3.ASCENT_MAX_STEP_FRAMES)
+    check("and that is not a long way", d3.ASCENT_MAX_STEP_FRAMES, 5)
+
+
 def test_a_second_swing_is_not_joined_to_the_first():
     """The one thing this must never do.
 
@@ -249,6 +317,49 @@ def test_the_answer_does_not_depend_on_the_order_in():
     check("and it is the whole flight", len(want[1]), 16)
 
 
+def test_the_sweep_hands_the_gate_s_reach_to_the_join():
+    """The hole that has opened five times: resolved, but not passed.
+
+    The gap limit is tunable per hole, so the join has to read the one
+    in force rather than the module default -- otherwise tuning the
+    gate moves what the gates accept and not what the join builds, and
+    the two disagree exactly where this went wrong.
+    """
+    import tempfile
+
+    import cv2  # type: ignore
+    import numpy as np
+
+    seen: dict = {}
+    _real = d3.stitch_ascent_chains
+
+    def spy(chains, tol_px=d3.ASCENT_STITCH_PX, gap_frames=None):
+        seen["gap_frames"] = gap_frames
+        return _real(chains, tol_px, gap_frames)
+
+    with tempfile.TemporaryDirectory() as td:
+        clip = Path(td) / "a.mp4"
+        vw = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"),
+                             60.0, (640, 360))
+        for f in range(20):
+            im = np.full((360, 640, 3), 118, dtype="uint8")
+            cv2.circle(im, (300, 300 - 8 * f), 4, (245, 245, 245), -1)
+            vw.write(im)
+        vw.release()
+        d3.stitch_ascent_chains = spy
+        try:
+            out = d3.sweep_ascents(clip, 60.0, roi={"y": 0.95},
+                                   gates={"ascent_max_step_frames": 7})
+        finally:
+            d3.stitch_ascent_chains = _real
+    check("the join is given the gate in force", seen.get("gap_frames"), 7)
+    # CONTROL: 7 is not the default, so this cannot pass by accident.
+    check("control, and that is not the default",
+          d3.ASCENT_MAX_STEP_FRAMES == 7, False)
+    check("and the sweep reports the join ran",
+          out.get("n_stitched") is not None, True)
+
+
 def test_off_by_default_is_not_how_this_ships():
     check("the join is on", d3.ASCENT_STITCH_PX > 0, True)
     check("and the gate carries it",
@@ -257,12 +368,16 @@ def test_off_by_default_is_not_how_this_ships():
 
 for fn in (test_the_four_become_one,
            test_the_joined_chain_is_a_flight,
+           test_the_walk_may_not_step_further_than_the_gates_allow,
+           test_and_the_join_end_to_end_stops_there_too,
+           test_the_reach_follows_the_gate_and_is_not_its_own_number,
            test_a_second_swing_is_not_joined_to_the_first,
            test_a_different_line_is_not_joined,
            test_something_crossing_the_flight_is_not_part_of_it,
            test_a_mostly_on_the_line_stray_is_not_joined,
            test_one_stray_point_does_not_swing_the_line,
            test_the_answer_does_not_depend_on_the_order_in,
+           test_the_sweep_hands_the_gate_s_reach_to_the_join,
            test_off_by_default_is_not_how_this_ships):
     print(f"\n-- {fn.__name__}")
     fn()

@@ -5002,12 +5002,17 @@ def _dedupe_fits(found: list, geometric: bool = False) -> list:
 # smear without admitting a second object that merely crosses.
 ASCENT_STITCH_PX = 12.0
 
-# HOW LONG A HOLE BETWEEN TWO PIECES may be and still be one flight, in
-# frames. The pieces of #768 overlap each other outright, so this only
-# has to cover a run of frames where the ball was missed entirely. The
-# ceiling that matters is a SECOND SWING down the same line, and that is
-# seconds away, not a third of one.
-ASCENT_STITCH_GAP_FRAMES = 12
+# NO SEPARATE GAP WINDOW FOR THE JOIN. It had one, set to 12 frames,
+# and that was wider than ASCENT_MAX_STEP_FRAMES -- so the join reached
+# across holes the gap gate then refused, and manufactured chains that
+# could not pass. Measured on #768: the flight joined a tail at f1580
+# across a NINE frame hole, and one 22-point chain with a rise of 484px
+# was thrown out where four pieces of it had been accepted. A gain of
+# nothing, in exchange for every ball on the hole.
+#
+# So the join reaches exactly as far as the gates allow a chain to jump
+# and no further, and it reads that from the gates in force rather than
+# keeping its own copy.
 
 
 def _chain_axis(pts: list):
@@ -5047,8 +5052,11 @@ def _one_flight(a: list, b: list, tol_px: float, gap_frames: int) -> bool:
     """
     af0, af1 = a[0]["frame"], a[-1]["frame"]
     bf0, bf1 = b[0]["frame"], b[-1]["frame"]
-    # In time: overlapping, or separated by a hole small enough to be a
-    # run of missed frames rather than a different swing.
+    # In time: overlapping, or separated by a hole the gates would
+    # accept inside one chain. Joining across a longer one can only
+    # produce a chain the walk below then trims back, so the far piece
+    # is lost rather than kept separately -- which is how a second
+    # swing down the same line would disappear.
     if max(af0, bf0) - min(af1, bf1) > gap_frames:
         return False
     ax, bx = _chain_axis(a), _chain_axis(b)
@@ -5056,7 +5064,7 @@ def _one_flight(a: list, b: list, tol_px: float, gap_frames: int) -> bool:
             and all(_off_axis(bx, q) <= tol_px for q in a))
 
 
-def _longest_rising(pts: list) -> list:
+def _longest_rising(pts: list, max_step: int) -> list:
     """The longest run through these points that only ever goes up.
 
     ONE POINT A FRAME, AND NO STEPPING BACK DOWN, in one operation --
@@ -5074,6 +5082,13 @@ def _longest_rising(pts: list) -> list:
     leading and a trailing end it keeps whichever leaves more of the
     flight intact. Measured on #768: four chains of 6-8 points become
     one of 16 over 25 frames, rise 389px.
+
+    AND NO STEP LONGER THAN `max_step` FRAMES, which is the gap gate's
+    own limit. Without it the walk reaches across a hole the gates will
+    refuse and takes the whole chain down with it -- on #768 a tail at
+    f1580, nine frames past the end of the flight and collinear with
+    it, turned four accepted pieces into one chain refused for `gap`.
+    The join is not allowed to build what the gates cannot keep.
     """
     if not pts:
         return []
@@ -5098,6 +5113,8 @@ def _longest_rising(pts: list) -> list:
     for i in range(len(order)):
         for j in range(i):
             if (int(order[j]["y"]) > int(order[i]["y"])
+                    and (int(order[i]["frame"]) - int(order[j]["frame"])
+                         <= max_step)
                     and best[j] + 1 > best[i]):
                 best[i] = best[j] + 1
                 prev[i] = j
@@ -5110,7 +5127,7 @@ def _longest_rising(pts: list) -> list:
 
 
 def stitch_ascent_chains(chains: list, tol_px: float = ASCENT_STITCH_PX,
-                         gap_frames: int = ASCENT_STITCH_GAP_FRAMES) -> list:
+                         gap_frames: int = ASCENT_MAX_STEP_FRAMES) -> list:
     """Join the chains that are one flight, and report it once.
 
     THE LAST PLACE THE FLIGHT COMES APART. The detector now finds it --
@@ -5174,7 +5191,7 @@ def stitch_ascent_chains(chains: list, tol_px: float = ASCENT_STITCH_PX,
         # frame -- and dropping those is the point of this pass, not a
         # failure of it. A guard here fired on nothing and could be
         # removed by any mutation without a test noticing.
-        pts = _longest_rising(union)
+        pts = _longest_rising(union, gap_frames)
         out.append({
             "points": pts,
             "span_px": round(math.hypot(pts[-1]["x"] - pts[0]["x"],
@@ -5378,7 +5395,8 @@ def sweep_ascents(
         # between the two ends of one smear frame by frame. See
         # stitch_ascent_chains.
         _n_before = len(tracks)
-        tracks = stitch_ascent_chains(tracks, _stitch)
+        tracks = stitch_ascent_chains(tracks, _stitch,
+                                      int(ASCENT_MAX_STEP_FRAMES))
         out["stitch_px"] = _stitch
         out["n_stitched"] = _n_before - len(tracks)
         out["n_tracks"] = len(tracks)
