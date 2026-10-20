@@ -22,6 +22,7 @@ import { Component, useCallback, useEffect, useMemo, useRef, useState }
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import { Brand } from "../components/Brand.jsx";
+import GreenRestModal from "../components/GreenRestModal.jsx";
 import { useInfiniteList } from "../hooks/useInfiniteList.js";
 
 /**
@@ -15444,6 +15445,7 @@ export default function AdminProduction() {
   // combines the sort field and direction into one dropdown value.
   // THE QUEUE'S OWN STATE, polled because it changes without us: the
   // camera path queues captures on its own all day.
+  const [restModal, setRestModal] = useState(null);
   const [queue, setQueue] = useState(null);
   const [pausing, setPausing] = useState(false);
   useEffect(() => {
@@ -16676,6 +16678,7 @@ export default function AdminProduction() {
                   recordingStartedAt={row.dual_camera ? row.green_recording_started_at : null}
                   onOpenViewer={openViewer}
                   footer={(
+                    <>
                     <button
                       className="small ghost"
                       style={{ width: "100%" }}
@@ -16686,7 +16689,19 @@ export default function AdminProduction() {
                         : "No green camera on this upload"}
                     >
                       ⚑ Set flagstick
-                    </button>
+                      </button>
+                      <button
+                        className="small ghost"
+                        style={{ width: "100%", marginTop: 4 }}
+                        disabled={!row.green_filename}
+                        onClick={() => setRestModal({ row })}
+                        title={row.green_filename
+                          ? "Compare the green before the shot with the green after it, and ring whatever is newly on it. Needs a green outline on the camera to be worth much."
+                          : "No green clip on this upload"}
+                      >
+                        ◎ Find ball on green
+                      </button>
+                    </>
                   )}
                 />
                 <ProducedTile
@@ -17283,6 +17298,14 @@ export default function AdminProduction() {
           onSaved={() => { setGreenCal(null); refreshAll(); }}
         />
       ))}
+      {restModal && (
+        <GreenRestModal
+          row={restModal.row}
+          adminPassword={adminPassword}
+          onClose={() => setRestModal(null)}
+        />
+      )}
+
       {pinModal && (
         <FlagstickModal
           row={pinModal.row}

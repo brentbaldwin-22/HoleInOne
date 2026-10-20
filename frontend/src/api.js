@@ -506,6 +506,14 @@ export const api = {
       body: fd,
     });
   },
+  // The same finder, aimed at ONE capture's green clip rather than at
+  // whatever the camera recorded last — which is a lottery.
+  greenRestForUpload: (key, uploadId, opts = {}) =>
+    request(`/api/admin/long-uploads/${uploadId}/green-rest`, {
+      method: "POST",
+      adminPassword: key,
+      body: opts,
+    }),
   greenRestTest: (key, cameraId, opts = {}) =>
     request(`/api/admin/cameras/${cameraId}/green-rest-test`, {
       method: "POST",

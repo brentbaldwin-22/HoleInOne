@@ -363,6 +363,48 @@ def test_a_plate_asked_for_at_the_very_edge_is_clamped():
           out["after_frame"] <= N - 2, True)
 
 
+def test_it_hands_back_a_picture():
+    """Coordinates are not an answer.
+
+    "1247, 638" says nothing about whether the thing found is a ball,
+    and the only way to judge a run of this is to look at the same
+    picture it looked at. Before on the left, after on the right.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "g.mp4"
+        clip(p, partner=(180, 320), partner_leaves_at=380)
+        shot = Path(td) / "pair.jpg"
+        out = G.find_rest_spot(p, polygon=GREEN_POLY, drawn_at=[W, H],
+                               debug_path=shot)
+        # Inside the block: the directory goes away when it closes, and
+        # a check outside it tests the cleanup, not the render.
+        check("a picture is written", shot.exists(), True)
+        check("  and its path is reported", out["image_path"], str(shot))
+        img = cv2.imread(str(shot))
+        check("  two panels wide", img.shape[1], W * 2)
+        check("  and one frame tall", img.shape[0], H)
+    # CONTROL: no debug_path, no file and no path — the render is
+    # opt-in, because every produce run would otherwise write one.
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "g.mp4"
+        clip(p)
+        quiet = G.find_rest_spot(p, polygon=GREEN_POLY, drawn_at=[W, H])
+    check("control, it is opt-in", quiet["image_path"], None)
+
+
+def test_a_bad_render_does_not_lose_the_answer():
+    """The picture is a convenience; the coordinates are the result."""
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "g.mp4"
+        clip(p)
+        out = G.find_rest_spot(
+            p, polygon=GREEN_POLY, drawn_at=[W, H],
+            debug_path=Path(td) / "no-such-dir" / "x.jpg")
+    check("the run still succeeds", out["ok"], True)
+    check("  and still found the ball", near(out["best"], (300, 300)), True)
+    check("  with no picture claimed", out["image_path"], None)
+
+
 def test_an_empty_green_says_so():
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "g.mp4"
@@ -394,6 +436,8 @@ for fn in (test_it_finds_a_ball_at_rest,
            test_a_polygon_drawn_at_another_size_is_rescaled,
            test_the_plates_can_be_placed_by_time,
            test_a_plate_asked_for_at_the_very_edge_is_clamped,
+           test_it_hands_back_a_picture,
+           test_a_bad_render_does_not_lose_the_answer,
            test_an_empty_green_says_so):
     print(f"\n-- {fn.__name__}")
     fn()

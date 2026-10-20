@@ -123,21 +123,85 @@ def _plate(cap, centre: int, fps: float, n: int = PLATE_FRAMES,
     return np.median(np.stack(frames), axis=0).astype(np.uint8)
 
 
-def polygon_mask(polygon, shape, drawn_at=None):
-    """A filled mask from [[x,y], ...], rescaled if it was drawn on a
-    differently-sized frame. None polygon means the whole frame."""
+def scaled_polygon(polygon, shape, drawn_at=None):
+    """[[x,y], ...] in THIS frame's pixels, or None for no polygon.
+
+    Rescaled when it was drawn on a differently-sized still, which it
+    usually was: the editor works on whatever the live view is serving
+    and the capture may be another resolution entirely.
+    """
     h, w = shape[:2]
     if not polygon:
-        return np.full((h, w), 255, np.uint8)
+        return None
     pts = np.array(polygon, dtype=np.float64)
     if drawn_at:
         dw, dh = float(drawn_at[0] or w), float(drawn_at[1] or h)
         if dw > 0 and dh > 0:
             pts[:, 0] *= w / dw
             pts[:, 1] *= h / dh
+    return pts.round().astype(np.int32)
+
+
+def polygon_mask(polygon, shape, drawn_at=None):
+    """A filled mask from [[x,y], ...]. None polygon means everything."""
+    h, w = shape[:2]
+    pts = scaled_polygon(polygon, shape, drawn_at)
+    if pts is None:
+        return np.full((h, w), 255, np.uint8)
     mask = np.zeros((h, w), np.uint8)
-    cv2.fillPoly(mask, [pts.round().astype(np.int32)], 255)
+    cv2.fillPoly(mask, [pts], 255)
     return mask
+
+
+def _render(plate_b, plate_a, poly, arrivals, departures, out_path,
+            caption=""):
+    """The two plates side by side, with what was found ringed.
+
+    COORDINATES ARE NOT AN ANSWER. "1247, 638" tells an operator
+    nothing about whether the thing found is a ball, and the only way
+    to judge a run of this is to look at the same picture it looked at.
+    Before on the left, after on the right, so the comparison the
+    detector made is the comparison the eye makes.
+    """
+    h, w = plate_a.shape[:2]
+    pair = np.zeros((h, w * 2, 3), np.uint8)
+    pair[:, :w] = cv2.cvtColor(plate_b, cv2.COLOR_GRAY2BGR)
+    pair[:, w:] = cv2.cvtColor(plate_a, cv2.COLOR_GRAY2BGR)
+    u = max(1, int(round(max(w, h) / 500.0)))
+
+    if poly is not None:
+        for dx in (0, w):
+            shifted = poly.copy()
+            shifted[:, 0] += dx
+            cv2.polylines(pair, [shifted], True, (120, 230, 170), u)
+
+    # Rings go on the AFTER panel, which is where the thing is.
+    for i, a in enumerate(arrivals):
+        c = (60, 170, 250) if i == 0 else (90, 200, 255)
+        cv2.circle(pair, (a["x"] + w, a["y"]), 11 * u, c, u + 1)
+        cv2.putText(pair, "at rest" if i == 0 else f"#{i + 1}",
+                    (a["x"] + w + 14 * u, a["y"] - 10 * u),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45 * u, c, u)
+    # ...and departures on the BEFORE panel, because that is the only
+    # panel they are in. Ringing them on the right would point at bare
+    # grass and look like a miss.
+    for d in departures:
+        cv2.circle(pair, (d["x"], d["y"]), 9 * u, (170, 170, 170), u)
+
+    cv2.line(pair, (w, 0), (w, h), (40, 40, 40), max(1, u))
+    for label, x in (("BEFORE", 10 * u), ("AFTER", w + 10 * u)):
+        cv2.putText(pair, label, (x, 24 * u), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6 * u, (255, 255, 255), u + 1)
+    if caption:
+        cv2.putText(pair, caption, (10 * u, h - 12 * u),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45 * u, (255, 255, 255), u)
+    # imwrite SIGNALS FAILURE BY RETURNING FALSE, and does not raise.
+    # An unwritable path would otherwise come back as a reported image
+    # that is not there, which is worse than no image: the caller links
+    # to it and the operator gets a broken tile.
+    if not cv2.imwrite(str(out_path), pair):
+        raise OSError(f"could not write {out_path}")
+    return out_path
 
 
 def _blobs(diff_mask, diff, mask):
@@ -195,7 +259,8 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
                    before_frame: int | None = None,
                    after_frame: int | None = None,
                    before_sec: float | None = None,
-                   after_sec: float | None = None) -> dict:
+                   after_sec: float | None = None,
+                   debug_path=None) -> dict:
     """What arrived on the green, and what left it.
 
     The two plates are centred on `before_frame` / `after_frame`, or on
@@ -240,6 +305,7 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
         if plate_b is None or plate_a is None:
             return {"ok": False, "error": "not enough frames to build a plate"}
 
+        poly = scaled_polygon(polygon, plate_a.shape, drawn_at)
         mask = polygon_mask(polygon, plate_a.shape, drawn_at)
         diff = plate_a.astype(np.int16) - plate_b.astype(np.int16)
         pos = (diff >= DIFF_THRESHOLD).astype(np.uint8) * 255
@@ -278,8 +344,20 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
                 "Nothing new is on the green. Either the shot missed it, or "
                 "the ball came to rest outside the outline.")
 
+        image = None
+        if debug_path is not None:
+            try:
+                cap_txt = (
+                    f"{len(arrivals)} arrival(s), {len(departures)} "
+                    f"departure(s) - plates {b / fps:.1f}s and {a / fps:.1f}s")
+                image = str(_render(plate_b, plate_a, poly, arrivals,
+                                    departures, Path(debug_path), cap_txt))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("rest-spot debug render failed: %s", exc)
+
         return {
             "ok": True,
+            "image_path": image,
             "best": arrivals[0] if arrivals else None,
             "arrivals": arrivals,
             "departures": departures,

@@ -16140,6 +16140,74 @@ def set_green_outline(
     return {"ok": True, "green_roi": cam.green_roi}
 
 
+@router.post("/long-uploads/{upload_id}/green-rest")
+def long_upload_green_rest(upload_id: int,
+                           payload: dict = Body(default={}),
+                           db: Session = Depends(get_db)):
+    """Find the ball at rest on THIS capture's green clip.
+
+    Per upload rather than "the camera's most recent clip", because the
+    most recent clip is a lottery: it may hold no shot at all, or have
+    been taken at dusk. The operator knows which capture had a ball
+    land on the green and should be able to say so.
+
+    Returns a BEFORE/AFTER picture as well as coordinates. "1247, 638"
+    says nothing about whether the thing found is a ball, and the only
+    way to judge a run of this is to look at what it looked at.
+    """
+    from ..services import greenrest
+
+    row = db.get(LongVideoUpload, upload_id)
+    if row is None:
+        raise HTTPException(404, "upload not found")
+    if not row.green_filename:
+        raise HTTPException(409, "this capture has no green clip")
+    storage.ensure_local(CLIPS_DIR, row.green_filename)
+    path = CLIPS_DIR / row.green_filename
+    if not path.exists():
+        raise HTTPException(404, f"green clip missing: {row.green_filename}")
+
+    # The outline belongs to the CAMERA, found through the event this
+    # upload came from. No event (a hand-uploaded pair) means no
+    # outline, and the finder says so rather than searching the frame
+    # silently.
+    cam = None
+    if getattr(row, "camera_event_id", None):
+        ev = db.get(CameraEvent, row.camera_event_id)
+        if ev is not None and ev.green_camera_id:
+            cam = db.get(Camera, ev.green_camera_id)
+    roi = (cam.green_roi if cam else None) or {}
+    frame = roi.get("frame") or {}
+
+    def _secs(key):
+        v = payload.get(key)
+        if v in (None, ""):
+            return None
+        try:
+            return max(0.0, float(v))
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{key} must be a number of seconds")
+
+    out_name = f"green-rest-{upload_id}.jpg"
+    out = greenrest.find_rest_spot(
+        path,
+        polygon=roi.get("points"),
+        drawn_at=[frame.get("w"), frame.get("h")] if frame else None,
+        before_sec=_secs("before_sec"),
+        after_sec=_secs("after_sec"),
+        debug_path=CLIPS_DIR / out_name,
+    )
+    img = CLIPS_DIR / out_name
+    out["image_url"] = (
+        f"{settings.app_base_url}/uploads/clips/{out_name}"
+        f"?v={int(img.stat().st_mtime)}" if img.exists() else None
+    )
+    out["camera_id"] = cam.id if cam else None
+    out["has_outline"] = bool(roi.get("points"))
+    out["clip"] = row.green_filename
+    return out
+
+
 @router.post("/cameras/{camera_id}/green-rest-test")
 def green_rest_test(camera_id: int,
                     payload: dict = Body(default={}),
