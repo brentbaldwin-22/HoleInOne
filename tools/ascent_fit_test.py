@@ -273,8 +273,18 @@ def main() -> int:
     # AND ITS CHAINS REACH THE GATES. Running the fit and then dropping
     # its results on the floor passed every check above — the same
     # "resolved but not used" hole, now on its fifth outing.
+    #
+    # BEFORE THE JOIN, because the join is the other half of this. The
+    # fit's chain and the tracker's are the same flight, so
+    # stitch_ascent_chains now merges them and n_tracks comes back the
+    # same either way — which is the join working, not the fit being
+    # dropped. n_stitched is how many it absorbed, so the two added
+    # back together is what the gates were handed.
+    def _found(r):
+        return (r.get("n_tracks") or 0) + (r.get("n_stitched") or 0)
+
     check("the fit's chains are judged alongside the tracker's",
-          (on.get("n_tracks") or 0) > (off.get("n_tracks") or 0), True)
+          _found(on) > _found(off), True)
     check("  and the sweep counts them", (on.get("n_fits") or 0) > 0, True)
 
     print()

@@ -4996,6 +4996,196 @@ def _dedupe_fits(found: list, geometric: bool = False) -> list:
     return kept
 
 
+# HOW FAR OFF THE JOINT LINE a chain may sit and still be the same
+# flight, in pixels. Measured on #768's own four chains, which lie
+# within 4px of one line over 389px of rise; 12 leaves room for the
+# smear without admitting a second object that merely crosses.
+ASCENT_STITCH_PX = 12.0
+
+# HOW LONG A HOLE BETWEEN TWO PIECES may be and still be one flight, in
+# frames. The pieces of #768 overlap each other outright, so this only
+# has to cover a run of frames where the ball was missed entirely. The
+# ceiling that matters is a SECOND SWING down the same line, and that is
+# seconds away, not a third of one.
+ASCENT_STITCH_GAP_FRAMES = 12
+
+
+def _chain_axis(pts: list):
+    """The line through a chain, as (x0, y0, ux, uy) with (ux, uy) unit.
+
+    Least squares through the centroid, which is the right fit for a
+    thing that is nearly vertical -- y = mx + c is not, and a ball
+    leaving a tee is within a few degrees of straight up.
+    """
+    n = float(len(pts))
+    cx = sum(float(q["x"]) for q in pts) / n
+    cy = sum(float(q["y"]) for q in pts) / n
+    sxx = sum((float(q["x"]) - cx) ** 2 for q in pts)
+    syy = sum((float(q["y"]) - cy) ** 2 for q in pts)
+    sxy = sum((float(q["x"]) - cx) * (float(q["y"]) - cy) for q in pts)
+    # The principal axis: the eigenvector of the scatter matrix with the
+    # larger eigenvalue, which for a flight is the direction of travel.
+    theta = 0.5 * math.atan2(2.0 * sxy, sxx - syy)
+    return cx, cy, math.cos(theta), math.sin(theta)
+
+
+def _off_axis(axis, q) -> float:
+    """How far a point sits off a chain's line, in pixels."""
+    cx, cy, ux, uy = axis
+    dx, dy = float(q["x"]) - cx, float(q["y"]) - cy
+    return abs(dx * uy - dy * ux)
+
+
+def _one_flight(a: list, b: list, tol_px: float, gap_frames: int) -> bool:
+    """Are these two chains pieces of the same ball leaving the tee?
+
+    BOTH WAYS, because one chain's line is only as good as its spread:
+    a six-point piece covering a fifth of the flight can have any
+    number of longer chains lying along it by accident, and asking the
+    long one whether the short one is on ITS line is the test that
+    catches that.
+    """
+    af0, af1 = a[0]["frame"], a[-1]["frame"]
+    bf0, bf1 = b[0]["frame"], b[-1]["frame"]
+    # In time: overlapping, or separated by a hole small enough to be a
+    # run of missed frames rather than a different swing.
+    if max(af0, bf0) - min(af1, bf1) > gap_frames:
+        return False
+    ax, bx = _chain_axis(a), _chain_axis(b)
+    return (all(_off_axis(ax, q) <= tol_px for q in b)
+            and all(_off_axis(bx, q) <= tol_px for q in a))
+
+
+def _longest_rising(pts: list) -> list:
+    """The longest run through these points that only ever goes up.
+
+    ONE POINT A FRAME, AND NO STEPPING BACK DOWN, in one operation --
+    because they are the same question. The detector reports a ball two
+    or three times a frame (the smear) and sometimes at the same place
+    on two frames, so a union of overlapping chains holds both the
+    leading and the trailing end of the same ball and, here and there,
+    yesterday's position again. Choosing per frame first and then
+    pruning what goes backwards gets the order wrong: the right point
+    for a frame is the one the REST of the flight agrees with.
+
+    So: the longest subsequence with strictly increasing frame and
+    strictly decreasing y. It cannot take two points from one frame,
+    cannot take a point that steps back down, and when a frame offers a
+    leading and a trailing end it keeps whichever leaves more of the
+    flight intact. Measured on #768: four chains of 6-8 points become
+    one of 16 over 25 frames, rise 389px.
+    """
+    if not pts:
+        return []
+    # BY FRAME, AND WITHIN A FRAME THE LEADING END FIRST. This ordering
+    # carries two of the three rules, which is why there is no frame
+    # comparison in the loop below:
+    #
+    #   - j < i implies frame[j] <= frame[i], so the walk can only ever
+    #     go forward in time;
+    #   - within one frame the smaller y sorts first, and the test
+    #     below wants y to DECREASE, so two points from the same frame
+    #     can never both be taken.
+    #
+    # A `frame[j] < frame[i]` test as well reads like a third rule and
+    # is unreachable: no mutation of it changes any result. The leading
+    # end first is the part that does work -- it is what makes a tie in
+    # length resolve towards the ball rather than its tail, and
+    # reversing it changes the chain #768 comes back with.
+    order = sorted(pts, key=lambda q: (int(q["frame"]), int(q["y"])))
+    best = [1] * len(order)
+    prev = [-1] * len(order)
+    for i in range(len(order)):
+        for j in range(i):
+            if (int(order[j]["y"]) > int(order[i]["y"])
+                    and best[j] + 1 > best[i]):
+                best[i] = best[j] + 1
+                prev[i] = j
+    i = max(range(len(order)), key=lambda k: best[k])
+    out: list = []
+    while i >= 0:
+        out.append(order[i])
+        i = prev[i]
+    return out[::-1]
+
+
+def stitch_ascent_chains(chains: list, tol_px: float = ASCENT_STITCH_PX,
+                         gap_frames: int = ASCENT_STITCH_GAP_FRAMES) -> list:
+    """Join the chains that are one flight, and report it once.
+
+    THE LAST PLACE THE FLIGHT COMES APART. The detector now finds it --
+    #768 offers the ball on nearly every frame of f1546-f1570 -- and the
+    sweep still returned FOUR chains of six to eight points, each
+    traced back to the tee as its own swing, 0.14s apart. Reported to
+    an operator as four swings of one ball.
+
+    They come apart because at every frame the tracker chooses between
+    the leading and the trailing end of the same smear, and two chains
+    that choose differently diverge by a step and never come back. No
+    amount of tuning the choice fixes that; what fixes it is noticing
+    afterwards that the pieces are one line.
+
+    Replaces the group with the joined chain rather than adding to it,
+    because the whole point is that there was only ever one ball.
+    """
+    rows = [c for c in chains if (c.get("points") or [])]
+    if tol_px <= 0 or len(rows) < 2:
+        return list(chains)
+    # LONGEST FIRST, for a settled answer rather than a better one.
+    # Grouping is greedy, so a chain joins the FIRST group it matches,
+    # and two passes feed this -- the tracker's chains and the fitter's
+    # -- in whatever order they happen to come out. Without an order of
+    # its own the join would depend on that, and the same clip could
+    # answer differently between runs.
+    #
+    # Longest first is the sensible choice of order and not a measured
+    # one: no fixture here tells it from shortest first, because the
+    # two-way line test already refuses the bad joins an order could
+    # otherwise let through. Claimed no higher than that.
+    rows.sort(key=lambda c: -len(c["points"]))
+    groups: list = []
+    for c in rows:
+        for g in groups:
+            if any(_one_flight(c["points"], m["points"], tol_px,
+                               gap_frames) for m in g):
+                g.append(c)
+                break
+        else:
+            groups.append([c])
+    out: list = []
+    for g in groups:
+        if len(g) == 1:
+            out.append(g[0])
+            continue
+        seen: set = set()
+        union: list = []
+        for c in g:
+            for q in c["points"]:
+                k = (int(q["frame"]), int(q["x"]), int(q["y"]))
+                if k not in seen:
+                    seen.add(k)
+                    union.append(q)
+        # NO "DID THE JOIN LOSE POINTS" CHECK HERE, because it cannot.
+        # Every piece is a subset of the union, so the longest rising
+        # run through the union is at least as long as the longest
+        # rising run through any piece. The only way the joined chain
+        # comes back shorter than a piece's raw length is if that piece
+        # was not strictly rising -- it held a flat step or a repeated
+        # frame -- and dropping those is the point of this pass, not a
+        # failure of it. A guard here fired on nothing and could be
+        # removed by any mutation without a test noticing.
+        pts = _longest_rising(union)
+        out.append({
+            "points": pts,
+            "span_px": round(math.hypot(pts[-1]["x"] - pts[0]["x"],
+                                        pts[-1]["y"] - pts[0]["y"]), 1),
+            "rise_px": round(float(pts[0]["y"] - pts[-1]["y"]), 1),
+            "stitched_from": len(g),
+        })
+    out.sort(key=lambda c: -len(c["points"]))
+    return out
+
+
 def sweep_ascents(
     input_path: Path,
     fps: float,
@@ -5089,6 +5279,7 @@ def sweep_ascents(
     _corridor = float(_G["ascent_corridor_px"])
     _fit = bool(int(_G["ascent_fit_lines"]))
     _curve = bool(int(_G["ascent_fit_curve"]))
+    _stitch = float(_G["ascent_stitch_px"])
     if min_points is None:
         min_points = ASCENT_MIN_POINTS
     out = {"ok": False, "ascents": [], "n_tracks": 0, "n_dets": 0,
@@ -5182,6 +5373,14 @@ def sweep_ascents(
                  if _fit else [])
         out["n_fits"] = len(_fits)
         tracks = tracks + _fits
+        # AND THEN ONE FLIGHT, ONCE. Both passes cut the same flight
+        # into pieces at the same places, because both are choosing
+        # between the two ends of one smear frame by frame. See
+        # stitch_ascent_chains.
+        _n_before = len(tracks)
+        tracks = stitch_ascent_chains(tracks, _stitch)
+        out["stitch_px"] = _stitch
+        out["n_stitched"] = _n_before - len(tracks)
         out["n_tracks"] = len(tracks)
         out["timing"] = {"detect": round(_t_det, 2),
                          "linking": round(time.perf_counter()
@@ -6969,6 +7168,12 @@ GATE_SPEC = {
     # whole band it took the sweep from two accepted chains to none,
     # so it is off until that is understood.
     "ascent_fit_curve":         (0,                        0,      1, True),
+    # HOW FAR OFF ONE LINE two chains may sit and still be the same
+    # flight, in pixels, for the pass that joins them back together.
+    # See stitch_ascent_chains: without it #768 comes back as four
+    # chains of one ball, each traced to the tee as its own swing a
+    # tenth of a second apart. 0 turns the join off.
+    "ascent_stitch_px":         (ASCENT_STITCH_PX,       0.0,  120.0, False),
     "ascent_min_points":        (ASCENT_MIN_POINTS,        2,     20, True),
     "ascent_min_rise_frac":     (ASCENT_MIN_RISE_FRAC,  0.01,    0.9, False),
     "ascent_rate_lo":           (ASCENT_RATE_LO,        0.05,   20.0, False),

@@ -19183,6 +19183,11 @@ def _ball_scan_sweep_image(row, src_path, sweep) -> None:
                f"{sweep.get('merge_px'):g}px"
                if sweep.get("merged_away") is not None
                and sweep.get("merge_px") else "")
+            # HOW MANY CHAINS WERE ONE FLIGHT. #768 came back as four
+            # chains of one ball, each traced to the tee as its own
+            # swing 0.14s apart; "joined 3" is that not happening.
+            + (f", joined {sweep.get('n_stitched')}"
+               if sweep.get("n_stitched") else "")
             + f"  |  band x{int(_b[0])}-{int(_b[0]) + int(_b[2])}"
             f" y0-{int(_b[3])}",
             (12, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 230, 255), 1,
