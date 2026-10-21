@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.routers import admin  # noqa: E402
+from app.services import greenrest as G  # noqa: E402
 
 FAIL: list[str] = []
 
@@ -208,6 +209,72 @@ def test_two_things_arriving_is_not_an_answer():
           run_finder([(240, 200)])["source"], "plates")
 
 
+def test_the_after_plate_is_never_earlier_than_the_default():
+    """Anchoring it purely on impact looked right and was not.
+
+    Rivertowne 8 event 1161: the impact resolved to -0.4s of the green
+    clip, so impact+14 put the after plate at 13.6s — and the same clip
+    asked at 25s by hand found the ball. A plate taken too early
+    catches a ball still rolling, or not yet down. Later is the safe
+    direction, and the 30-second default is already the latest it is
+    safe to be.
+    """
+    seen = {}
+    real = G.find_rest_spot
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real(*a, **kw)
+
+    class Cam:
+        green_roi = OUTLINE
+
+    class DB:
+        def get(self, _model, _pk):
+            return Cam()
+
+    class Store:
+        @staticmethod
+        def ensure_local(*_a, **_k):
+            return True
+
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        green_clip(d / "g.mp4", [BALL])
+        saved = (admin.CLIPS_DIR, admin.storage, G.find_rest_spot)
+        try:
+            admin.CLIPS_DIR = d
+            admin.storage = Store()
+            G.find_rest_spot = spy
+            # An impact that resolves EARLY, as the field case did.
+            admin._rest_spot_at(DB(), Row(SWING), d / "g.mp4", -0.4, 20)
+        finally:
+            (admin.CLIPS_DIR, admin.storage,
+             G.find_rest_spot) = saved
+
+    check("the after plate is not dragged early by the impact",
+          seen.get("after_sec"), G.DEFAULT_AFTER_SEC)
+    # CONTROL: a LATE impact does move it — the rule is "never earlier",
+    # not "always the default", or a two-minute capture with a late
+    # swing would plate itself before the ball was struck.
+    seen.clear()
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        green_clip(d / "g.mp4", [BALL])
+        saved = (admin.CLIPS_DIR, admin.storage, G.find_rest_spot)
+        try:
+            admin.CLIPS_DIR = d
+            admin.storage = Store()
+            G.find_rest_spot = spy
+            admin._rest_spot_at(DB(), Row(SWING), d / "g.mp4", 50.0, 20)
+        finally:
+            (admin.CLIPS_DIR, admin.storage,
+             G.find_rest_spot) = saved
+    check("control, a late impact pushes it later", seen.get("after_sec"), 64.0)
+    check("  and the before plate still follows the impact",
+          seen.get("before_sec"), 44.0)
+
+
 def test_without_an_outline_it_will_not_measure():
     """Unbounded it cannot tell the green from the ground short of it.
 
@@ -270,6 +337,7 @@ for fn in (test_a_human_outranks_a_measurement,
            test_a_swing_with_nothing_at_all_answers_nothing,
            test_it_finds_one_ball_on_a_real_clip,
            test_two_things_arriving_is_not_an_answer,
+           test_the_after_plate_is_never_earlier_than_the_default,
            test_without_an_outline_it_will_not_measure,
            test_the_plate_finder_refuses_without_an_outline):
     print(f"\n-- {fn.__name__}")

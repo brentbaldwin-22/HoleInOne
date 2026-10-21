@@ -8494,24 +8494,43 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
     _marks = ([{"xy": [int(landing_xy[0]), int(landing_xy[1])],
                 "label": "landed", "colour": (235, 190, 90)}]
               if landing_xy else [])
+    # THE AFTER PLATE IS NEVER EARLIER THAN THE DEFAULT, only later.
+    #
+    # Anchoring it purely on impact looked right and was not. On
+    # Rivertowne 8 event 1161 the impact resolved to -0.4s of the green
+    # clip, so impact+14 put the after plate at 13.6s — and the same
+    # clip, asked at 25s by hand, found the ball. A plate taken too
+    # early catches a ball still rolling, or not yet down.
+    #
+    # Later is the safe direction and the 30-second default is already
+    # the latest it is safe to be, because past that the group starts
+    # arriving. So take whichever is LATER, and let find_rest_spot clamp
+    # it to what the clip actually holds. Impact only has to place the
+    # BEFORE plate, where being early is harmless.
+    _after = max(green_impact_sec + REST_PLATE_AFTER_SEC,
+                 greenrest.DEFAULT_AFTER_SEC)
     out = greenrest.find_rest_spot(
         green_path, polygon=pts, drawn_at=drawn_at,
         before_sec=max(0.0, green_impact_sec - REST_PLATE_BEFORE_SEC),
-        after_sec=green_impact_sec + REST_PLATE_AFTER_SEC,
+        after_sec=_after,
         marks_path=marks_path, marks=_marks,
     )
     if not out.get("ok"):
         return None, (out.get("error") or "the plates could not be built")
     arrivals = out.get("arrivals") or []
+    _when = (f" (plates at "
+             f"{out['before_frame'] / (out.get('fps') or 60):.1f}s and "
+             f"{out['after_frame'] / (out.get('fps') or 60):.1f}s, impact "
+             f"{green_impact_sec:.1f}s)")
     if not arrivals:
-        return None, "nothing new was on the green afterwards"
+        return None, "nothing new was on the green afterwards" + _when
     # MORE THAN ONE THING ARRIVED is not an answer. A partner who also
     # hit in, or shade that moved, leaves this with no way to know which
     # blob was the shot -- and a prize measured off a guess is worse
     # than no measurement.
     if len(arrivals) > 1:
         return None, (f"{len(arrivals)} things arrived on the green — no way "
-                      "to tell which was this shot")
+                      "to tell which was this shot" + _when)
     best = arrivals[0]
     return (
         {"xy": [float(best["x"]), float(best["y"])],
@@ -8520,7 +8539,10 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
          "image": out.get("marks_path")},
         (f"came to rest at {best['x']},{best['y']} — {best.get('area')}px, "
          f"in {round((best.get('persist') or 0) * 100)}% of the after "
-         f"frames, plates {out['before_frame']}/{out['after_frame']}"),
+         f"frames. Plates at "
+         f"{out['before_frame'] / (out.get('fps') or 60):.1f}s and "
+         f"{out['after_frame'] / (out.get('fps') or 60):.1f}s of the green "
+         f"clip, from an impact at {green_impact_sec:.1f}s"),
     )
 
 
