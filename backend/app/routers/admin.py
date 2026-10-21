@@ -8441,6 +8441,96 @@ def _finalize_green_comet(upload_id, swing_no, green_path, green_cut,
         return None
 
 
+# WHERE THE PLATES GO, relative to the swing's impact, in seconds of
+# the GREEN clip. The green cut runs from impact + CLIP_SECONDS_TEE_
+# AFTER_IMPACT for about eight seconds, so the ball arrives and settles
+# inside that window: before it, the green is empty; a few seconds
+# after it, the ball is down and still and the group is a hundred and
+# fifty yards away, which is the one moment on the whole capture when
+# nothing else is moving on the putting surface.
+REST_PLATE_BEFORE_SEC = 6.0
+REST_PLATE_AFTER_SEC = 14.0
+
+
+def _rest_from_plates(db, row, swing: dict, green_camera_id: int):
+    """Where the ball actually stopped, measured off the green clip.
+
+    The third source, and the only one that answers the question the
+    prize asks. `operator` is a human who watched the ball and stopped
+    clicking where it stopped; `descent` is where it stopped FALLING,
+    which is the pitch mark and not the finish. This compares the green
+    before the shot with the green once the ball is down, and reports
+    what is newly on it.
+
+    REQUIRES AN OUTLINE, and refuses without one. Unbounded, the finder
+    searches the whole frame and cannot tell a white dot on the putting
+    surface from an identical one ten yards short of it -- fine when an
+    operator is looking at the picture and judging, not fine when the
+    answer becomes a measured distance on somebody's prize.
+    """
+    from ..models import CameraEvent
+    from ..services import greenrest
+
+    try:
+        if not row.green_filename:
+            return None
+        cam = db.get(Camera, int(green_camera_id))
+        roi = (cam.green_roi if cam else None) or {}
+        if not roi.get("points"):
+            log.info("rest plates: green camera %s has no outline — not "
+                     "measuring automatically", green_camera_id)
+            return None
+
+        fps = float(swing.get("fps") or 0) or 60.0
+        impact_frame = swing.get("impact_frame")
+        if impact_frame is None:
+            return None
+        tee_impact_sec = float(impact_frame) / fps
+
+        # The green camera starts at its own wall-clock moment, so the
+        # same instant sits elsewhere in its clip. Same delta the
+        # composite cut uses, derived the same way.
+        green_delta = 0.0
+        if getattr(row, "camera_event_id", None):
+            ev = db.get(CameraEvent, row.camera_event_id)
+            if (ev is not None and ev.tee_recording_started_at is not None
+                    and ev.green_recording_started_at is not None):
+                green_delta = (ev.tee_recording_started_at
+                               - ev.green_recording_started_at).total_seconds()
+        green_impact = tee_impact_sec + green_delta
+
+        storage.ensure_local(CLIPS_DIR, row.green_filename)
+        path = CLIPS_DIR / row.green_filename
+        if not path.exists():
+            return None
+        frame = roi.get("frame") or {}
+        out = greenrest.find_rest_spot(
+            path,
+            polygon=roi.get("points"),
+            drawn_at=[frame.get("w"), frame.get("h")] if frame else None,
+            before_sec=max(0.0, green_impact - REST_PLATE_BEFORE_SEC),
+            after_sec=green_impact + REST_PLATE_AFTER_SEC,
+        )
+        if not out.get("ok") or not out.get("best"):
+            return None
+        # MORE THAN ONE THING ARRIVED is not an answer. A partner who
+        # also hit in, or a shadow that moved, leaves this with no way
+        # to know which blob was the shot -- and a prize measured off a
+        # guess is worse than no measurement.
+        if len(out.get("arrivals") or []) > 1:
+            log.info("rest plates: %d arrivals on upload %s swing %s — not "
+                     "guessing which was the shot",
+                     len(out["arrivals"]), row.id, swing.get("idx"))
+            return None
+        best = out["best"]
+        return {"xy": [float(best["x"]), float(best["y"])],
+                "camera_id": int(green_camera_id), "source": "plates"}
+    except Exception as exc:  # noqa: BLE001
+        log.debug("rest plates for upload %s swing %s: %s",
+                  getattr(row, "id", None), swing.get("idx"), exc)
+        return None
+
+
 def _green_rest_for_swing(db, row, slot: int):
     """Where the ball finished on the GREEN camera, and which camera saw it.
 
@@ -8475,20 +8565,43 @@ def _green_rest_for_swing(db, row, slot: int):
             if not isinstance(_s, dict) or int(_s.get("idx", -1)) != int(slot):
                 continue
             _src = "descent" if _s.get("descent_auto") else "operator"
-            _gt = [q for q in (_s.get("green_track") or [])
-                   if isinstance(q, dict) and q.get("x") is not None]
-            if _gt:
-                _last = max(_gt, key=lambda q: int(q.get("frame") or 0))
-                return {"xy": [float(_last["x"]), float(_last["y"])],
-                        "camera_id": int(g_id), "source": _src}
-            _ls = _s.get("landing_spot")
-            if _ls:
-                _x = _ls.get("x") if isinstance(_ls, dict) else _ls[0]
-                _y = _ls.get("y") if isinstance(_ls, dict) else _ls[1]
-                if _x is not None and _y is not None:
-                    return {"xy": [float(_x), float(_y)],
+
+            def _from_track():
+                _gt = [q for q in (_s.get("green_track") or [])
+                       if isinstance(q, dict) and q.get("x") is not None]
+                if _gt:
+                    _last = max(_gt, key=lambda q: int(q.get("frame") or 0))
+                    return {"xy": [float(_last["x"]), float(_last["y"])],
                             "camera_id": int(g_id), "source": _src}
-            return None
+                _ls = _s.get("landing_spot")
+                if _ls:
+                    _x = _ls.get("x") if isinstance(_ls, dict) else _ls[0]
+                    _y = _ls.get("y") if isinstance(_ls, dict) else _ls[1]
+                    if _x is not None and _y is not None:
+                        return {"xy": [float(_x), float(_y)],
+                                "camera_id": int(g_id), "source": _src}
+                return None
+
+            # A HUMAN WHO WATCHED THE BALL OUTRANKS EVERYTHING. They saw
+            # it stop and clicked where it stopped; nothing measured can
+            # improve on that, and overruling it would make the operator's
+            # own correction disappear.
+            if _src == "operator":
+                _hand = _from_track()
+                if _hand:
+                    return _hand
+
+            # ...and the plates outrank the descent chain, because they
+            # answer a different question. A descent chain ends where the
+            # ball stopped FALLING -- the pitch mark -- and a ball
+            # bounces and rolls from there. The plates compare the green
+            # before the shot with the green once everything has settled,
+            # so what they find is where it finished. The difference
+            # decides prizes.
+            _plates = _rest_from_plates(db, row, _s, int(g_id))
+            if _plates:
+                return _plates
+            return _from_track()
         return None
     except Exception as exc:  # noqa: BLE001
         log.debug("green rest for upload %s slot %s: %s",
