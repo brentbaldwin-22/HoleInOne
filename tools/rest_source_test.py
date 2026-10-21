@@ -339,11 +339,95 @@ def test_the_picker_is_not_consulted_when_there_is_one_arrival():
     check("  and the answer is the plates alone", got["source"], "plates")
 
 
-def test_without_an_outline_it_will_not_measure():
-    """Unbounded it cannot tell the green from the ground short of it.
+# ---- AI first, and no outline needed ------------------------------
 
-    Fine when an operator is looking at the picture and judging. Not
-    fine when the answer becomes a measured distance on a prize.
+def run_with_ai(ai_result, outline=None, balls=(BALL,)):
+    """_rest_spot_at with find_ball_at_rest stubbed."""
+    class Cam:
+        green_roi = outline
+
+    class DB:
+        def get(self, _model, _pk):
+            return Cam()
+
+    class Store:
+        @staticmethod
+        def ensure_local(*_a, **_k):
+            return True
+
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        green_clip(d / "g.mp4", list(balls))
+        saved = (admin.CLIPS_DIR, admin.storage,
+                 admin.ai_tracer.find_ball_at_rest
+                 if hasattr(admin, "ai_tracer") else None)
+        from app.services import ai_tracer as _ai
+        _real = _ai.find_ball_at_rest
+        try:
+            admin.CLIPS_DIR = d
+            admin.storage = Store()
+            _ai.find_ball_at_rest = lambda *a, **k: ai_result
+            return admin._rest_spot_at(DB(), Row(SWING), d / "g.mp4",
+                                       10.0, 20)
+        finally:
+            admin.CLIPS_DIR, admin.storage = saved[0], saved[1]
+            _ai.find_ball_at_rest = _real
+
+
+AI_FOUND = {"xy": [161, 171], "on_green": True, "confidence": 0.9,
+            "why": "small white ball", "snapped": True, "snap_px": 12,
+            "error": None, "image": None, "before_sec": 4.0,
+            "after_sec": 24.0}
+AI_BLANK = {"xy": None, "on_green": False, "confidence": 0.0, "why": "",
+            "snapped": False, "snap_px": None,
+            "error": "model did not find a ball", "image": None,
+            "before_sec": 4.0, "after_sec": 24.0}
+
+
+def test_the_model_answers_and_no_outline_is_needed():
+    """The outline was the price of the plates. The model does not ask."""
+    got, why = run_with_ai(AI_FOUND, outline=None)
+    check("an answer with no outline at all", got and got["source"], "ai")
+    check("  at the model's point", got["xy"], [161.0, 171.0])
+    check("  carrying whether it is on the green", got["on_green"], True)
+    check("  and the reason says so", "90% confident" in why, True)
+
+
+def test_a_ball_off_the_green_is_reported_as_such():
+    """The outline's old job, done by the model.
+
+    Still measured — where it finished is worth knowing even when it
+    missed — but flagged, because the distance only counts on the green.
+    """
+    off = dict(AI_FOUND, on_green=False)
+    got, why = run_with_ai(off, outline=None)
+    check("it still comes back", got and got["xy"], [161.0, 171.0])
+    check("  flagged off the surface", got["on_green"], False)
+    check("  and said out loud", "NOT on the putting surface" in why, True)
+
+
+def test_the_plates_are_the_fallback_and_still_need_one():
+    # Model declines, outline present: the plates answer.
+    got, _why = run_with_ai(AI_BLANK, outline=OUTLINE)
+    check("the plates pick it up", got and got["source"], "plates")
+    # Model declines, no outline: nothing to fall back to, said plainly.
+    none, why = run_with_ai(AI_BLANK, outline=None)
+    check("  with no outline there is nowhere to go", none, None)
+    check("  and the reason names both halves",
+          "model did not find a ball" in why and "no fallback" in why, True)
+
+
+def test_the_plate_fallback_still_needs_an_outline():
+    """It is the PLATES that need one, not the measurement.
+
+    Unbounded, the plate comparison cannot tell the green from the
+    ground short of it — fine when an operator is looking at the
+    picture and judging, not fine when the answer becomes a measured
+    distance on a prize. The model has no such problem: it is asked
+    whether the ball is on the putting surface and it can see.
+
+    (These runs reach the plates because no AI is configured in a test
+    environment, which is itself the fallback working.)
     """
     check("no outline at all, no automatic answer",
           run_finder([BALL], outline=None), None)
@@ -425,7 +509,10 @@ for fn in (test_the_descent_search_is_off_by_default,
            test_the_after_plate_follows_the_impact_and_is_not_pushed_later,
            test_the_picker_resolves_two_arrivals_or_leaves_the_refusal,
            test_the_picker_is_not_consulted_when_there_is_one_arrival,
-           test_without_an_outline_it_will_not_measure,
+           test_the_model_answers_and_no_outline_is_needed,
+           test_a_ball_off_the_green_is_reported_as_such,
+           test_the_plates_are_the_fallback_and_still_need_one,
+           test_the_plate_fallback_still_needs_an_outline,
            test_the_plate_finder_refuses_without_an_outline):
     print(f"\n-- {fn.__name__}")
     fn()

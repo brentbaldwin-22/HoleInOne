@@ -12135,3 +12135,247 @@ def pick_ball_among(jpeg: bytes, n_candidates: int,
         return info
     info["index"] = _idx
     return info
+
+
+# ── the ball at rest, straight from two colour frames ──────────────────
+#
+# WHY THIS REPLACED A WORKING PIPELINE. The plate comparison that came
+# before it is a careful piece of machinery -- median plates, exposure
+# matching, persistence, an operator-traced outline -- and on this green
+# it kept producing an answer that needed explaining. The operator's
+# verdict was blunt and correct: "if i ask claude ai or chatgpt, it can
+# identify the ball on the green every time."
+#
+# It can, because a ball at rest on mown grass is one of the things a
+# vision model is genuinely good at, and because the question "what is
+# in the second picture that was not in the first" is a question about
+# meaning rather than about pixel arithmetic. A median plate has to be
+# told what counts as the green; a model can see it.
+#
+# THE ONE THING IT IS NOT GOOD AT is exactly where it lands. This file
+# already records it: a claimed rest position can be off by 50-100px
+# after the downscale, which on a green is tens of feet. So the model is
+# asked for the ball and the answer is then SNAPPED to the real bright
+# blob nearest it. The model says which object; the pixels say where.
+BALL_AT_REST_PROMPT = (
+    "You are looking at two colour frames from a fixed camera pointed "
+    "at a golf green. BEFORE was taken a moment before a shot was "
+    "played. AFTER was taken once the ball had landed and come to "
+    "rest.\n\n"
+    "Find the golf ball: the small white ball that is present in AFTER "
+    "and was NOT present in BEFORE. Compare the two frames carefully — "
+    "the difference between them is what identifies it. Other white "
+    "things in the scene (sprinkler heads, the flagstick, distant "
+    "markers, a cart, balls that were already there in BEFORE) are not "
+    "the answer.\n\n"
+    "Give its position in the AFTER frame, in pixels, with (0,0) at the "
+    "top-left. Also say whether it finished on the putting surface — "
+    "the smooth mown green itself, not the fringe, the apron, the "
+    "bunker or the rough around it.\n\n"
+    "Reply with JSON only:\n"
+    '  {\"x\": <int>, \"y\": <int>, \"on_green\": <true|false>, '
+    '\"confidence\": <0..1>, \"why\": \"<one short sentence>\"}\n'
+    "If you cannot find a ball that arrived between the two frames, "
+    'reply {\"x\": null, \"y\": null, \"on_green\": false, '
+    '\"confidence\": 0, \"why\": \"...\"}. Saying you cannot see it is '
+    "a useful answer: this feeds a closest-to-the-pin measurement, and "
+    "a confident wrong position is far more damaging than an admitted "
+    "miss."
+)
+
+# Below this the answer is not taken; the caller falls back.
+BALL_AT_REST_MIN_CONFIDENCE = 0.5
+
+# HOW FAR THE SNAP MAY REACH, in pixels at 1080p. Sized from this
+# file's own measurement of vision localisation error (50-100px) with
+# room over it. Wider and the snap starts finding the flagstick.
+SNAP_RADIUS_PX = 110
+
+# The ball, in pixels of area at 1080p. Generous at the top end because
+# the front of a green is a great deal closer than the back of it.
+SNAP_MIN_AREA = 2
+SNAP_MAX_AREA = 400
+
+# A BALL IS ROUND, AND A FLAGSTICK IS NOT. Area alone does not separate
+# them: a stick two pixels wide and sixty long is 120px, comfortably
+# inside the ball range, and it is the brightest thing on most greens.
+# Without this the snap walks the answer onto the pin -- caught by the
+# test that puts a flagstick in the frame and aims the model near it.
+SNAP_MAX_ASPECT = 3.0
+
+
+def _grab_colour_frame(path, sec: float):
+    """One BGR frame at `sec`, or None."""
+    cap = cv2.VideoCapture(str(path))
+    try:
+        if not cap.isOpened():
+            return None
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 60.0)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        idx = max(0, int(round(float(sec) * fps)))
+        if total:
+            idx = min(idx, total - 1)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ok, frame = cap.read()
+        return frame if ok else None
+    finally:
+        cap.release()
+
+
+def _snap_to_nearest_blob(frame_bgr, x: int, y: int,
+                          radius: int = SNAP_RADIUS_PX):
+    """The ball-sized bright blob nearest (x, y), or None.
+
+    THE MODEL SAYS WHICH OBJECT, THE PIXELS SAY WHERE. A vision answer
+    is reliably the right thing and unreliably the right place, and the
+    two are separable: having been told roughly where to look, finding
+    a small bright cluster is arithmetic.
+    """
+    h, w = frame_bgr.shape[:2]
+    x0, x1 = max(0, x - radius), min(w, x + radius + 1)
+    y0, y1 = max(0, y - radius), min(h, y + radius + 1)
+    if x1 - x0 < 3 or y1 - y0 < 3:
+        return None
+    crop = cv2.cvtColor(frame_bgr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+    thr = max(float(crop.mean()) + 22.0, float(np.percentile(crop, 96)))
+    _, mask = cv2.threshold(crop, thr, 255, cv2.THRESH_BINARY)
+    n, _lbl, stats, cent = cv2.connectedComponentsWithStats(
+        mask.astype("uint8"))
+    best, best_d = None, None
+    for i in range(1, n):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if not (SNAP_MIN_AREA <= area <= SNAP_MAX_AREA):
+            continue
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        if max(bw, bh) / max(1, min(bw, bh)) > SNAP_MAX_ASPECT:
+            continue
+        cx, cy = float(cent[i][0]) + x0, float(cent[i][1]) + y0
+        d = (cx - x) ** 2 + (cy - y) ** 2
+        if best_d is None or d < best_d:
+            best, best_d = (int(round(cx)), int(round(cy))), d
+    return best
+
+
+def find_ball_at_rest(green_path, before_sec: float, after_sec: float,
+                      model_override: str | None = None,
+                      debug_path=None) -> dict:
+    """Where the ball finished on the green, from two colour frames.
+
+    No outline, no plates, no tracking: two pictures and a question.
+    Returns {"xy", "on_green", "confidence", "why", "snapped",
+    "snap_px", "error", "image"}. Never raises.
+    """
+    info: dict = {"xy": None, "on_green": None, "confidence": 0.0,
+                  "why": "", "snapped": False, "snap_px": None,
+                  "error": None, "model": None, "image": None,
+                  "before_sec": round(float(before_sec), 1),
+                  "after_sec": round(float(after_sec), 1)}
+    if not have_ai_tracer():
+        info["error"] = "no AI configured"
+        return info
+    client = _anthropic_client()
+    if client is None:
+        info["error"] = "anthropic SDK not installed"
+        return info
+
+    before = _grab_colour_frame(green_path, before_sec)
+    after = _grab_colour_frame(green_path, after_sec)
+    if before is None or after is None:
+        info["error"] = "could not read both frames from the green clip"
+        return info
+    h, w = after.shape[:2]
+    info["frame_size"] = [int(w), int(h)]
+
+    def _jpeg(img):
+        ok, buf = cv2.imencode(".jpg", img,
+                               [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        return buf.tobytes() if ok else None
+
+    jb, ja = _jpeg(before), _jpeg(after)
+    if not jb or not ja:
+        info["error"] = "could not encode the frames"
+        return info
+
+    model = _resolve_model(model_override)
+    info["model"] = model
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=300,
+            system=[{
+                "type": "text",
+                "text": BALL_AT_REST_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": f"BEFORE ({before_sec:.1f}s):"},
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/jpeg",
+                    "data": base64.standard_b64encode(jb).decode("ascii")}},
+                {"type": "text", "text": f"AFTER ({after_sec:.1f}s):"},
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/jpeg",
+                    "data": base64.standard_b64encode(ja).decode("ascii")}},
+                {"type": "text", "text": (
+                    f"Both frames are {w}x{h} pixels. Where is the golf "
+                    "ball in the AFTER frame? JSON only.")},
+            ]}],
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ai_tracer: ball-at-rest call failed: %s", exc)
+        info["error"] = f"api_failed: {exc}"
+        return info
+
+    parsed = _extract_json("\n".join(
+        b.text for b in resp.content
+        if getattr(b, "type", None) == "text" and getattr(b, "text", None)))
+    if not parsed:
+        info["error"] = "no_json_in_response"
+        return info
+    info["why"] = str(parsed.get("why") or "")[:200]
+    info["on_green"] = bool(parsed.get("on_green"))
+    try:
+        info["confidence"] = max(0.0, min(1.0, float(
+            parsed.get("confidence") or 0.0)))
+    except (TypeError, ValueError):
+        info["confidence"] = 0.0
+    if parsed.get("x") is None or parsed.get("y") is None:
+        info["error"] = "model did not find a ball"
+        return info
+    try:
+        x, y = int(round(float(parsed["x"]))), int(round(float(parsed["y"])))
+    except (TypeError, ValueError):
+        info["error"] = f"unusable position {parsed.get('x')!r},{parsed.get('y')!r}"
+        return info
+    # OFF THE PICTURE IS NOT A POSITION. Clamping it would turn a clear
+    # failure into a plausible answer on the frame edge.
+    if not (0 <= x < w and 0 <= y < h):
+        info["error"] = f"position {x},{y} is outside the {w}x{h} frame"
+        return info
+    if info["confidence"] < BALL_AT_REST_MIN_CONFIDENCE:
+        info["error"] = (f"confidence {info['confidence']:.2f} below "
+                         f"{BALL_AT_REST_MIN_CONFIDENCE}")
+        return info
+
+    snapped = _snap_to_nearest_blob(after, x, y)
+    if snapped:
+        info["snap_px"] = int(round(
+            ((snapped[0] - x) ** 2 + (snapped[1] - y) ** 2) ** 0.5))
+        info["snapped"] = True
+        x, y = snapped
+    info["xy"] = [x, y]
+
+    if debug_path is not None:
+        try:
+            from . import greenrest as _gr
+            _gr.render_marks(
+                cv2.cvtColor(after, cv2.COLOR_BGR2GRAY), None,
+                [{"xy": [x, y], "label": "at rest", "colour": (60, 170, 250)}],
+                Path(str(debug_path)),
+                f"AI, {before_sec:.1f}s vs {after_sec:.1f}s"
+                + (f", snapped {info['snap_px']}px" if info["snapped"] else ""))
+            info["image"] = str(debug_path)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ai_tracer: ball-at-rest render failed: %s", exc)
+    return info

@@ -8508,12 +8508,55 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
     operator is looking at the picture and judging, not fine when the
     answer becomes a measured distance on somebody's prize.
     """
-    from ..services import greenrest
+    from ..services import ai_tracer, greenrest
 
+    # ── ask the model first ─────────────────────────────────────────
+    #
+    # NO OUTLINE, NO PLATES, NO TRACKING. Two colour frames and a
+    # question. The plate comparison below is a careful piece of
+    # machinery and on this green it kept producing an answer that
+    # needed explaining; a ball at rest on mown grass is one of the
+    # things a vision model is genuinely good at, and "what is in the
+    # second picture that was not in the first" is a question about
+    # meaning rather than pixel arithmetic. A median plate has to be
+    # told what counts as the green. A model can see it.
+    #
+    # The model's answer is snapped to the real bright blob nearest it
+    # — it says which object, the pixels say where. See
+    # `find_ball_at_rest`.
+    _ai = ai_tracer.find_ball_at_rest(
+        green_path,
+        before_sec=max(0.0, green_impact_sec - REST_PLATE_BEFORE_SEC),
+        after_sec=green_impact_sec + REST_PLATE_AFTER_SEC,
+        debug_path=marks_path)
+    if _ai.get("xy"):
+        _x, _y = _ai["xy"]
+        return (
+            {"xy": [float(_x), float(_y)],
+             "camera_id": int(green_camera_id), "source": "ai",
+             "on_green": _ai.get("on_green"),
+             "confidence": _ai.get("confidence"),
+             "image": _ai.get("image")},
+            (f"came to rest at {_x},{_y}"
+             + ("" if _ai.get("on_green") else " — NOT on the putting "
+                                               "surface, by the model's "
+                                               "reading")
+             + f" ({_ai.get('confidence', 0):.0%} confident"
+             + (f", snapped {_ai['snap_px']}px to the nearest blob"
+                if _ai.get("snapped") else ", no blob to snap to")
+             + f"). {_ai.get('why') or ''} Frames at "
+             f"{_ai['before_sec']}s and {_ai['after_sec']}s."),
+        )
+    _ai_why = _ai.get("error") or "the model found no ball"
+
+    # ── and fall back to the plates ─────────────────────────────────
+    #
+    # Free, deterministic, and already written. It needs the outline
+    # the model does not, so without one this is where the road ends.
     pts, drawn_at = _green_outline_for(db, green_camera_id)
     if not pts:
-        return None, ("the green camera has no outline drawn — trace one "
-                      "on the Cameras page and this measures itself")
+        return None, (f"{_ai_why}; and with no green outline drawn there "
+                      "is no fallback to try")
     # THE PITCH MARK GOES ON THE SAME PICTURE when the descent search
     # found one. The two numbers that matter -- where it came down and
     # where it stopped -- only mean something next to each other, and a
@@ -8555,7 +8598,8 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
              f"{out['after_frame'] / (out.get('fps') or 60):.1f}s, impact "
              f"{green_impact_sec:.1f}s)")
     if not arrivals:
-        return None, "nothing new was on the green afterwards" + _when
+        return None, (f"{_ai_why}; the plates found nothing new on the "
+                      "green either" + _when)
     # MORE THAN ONE THING ARRIVED. A partner who also hit in, shade that
     # crawled, a towel somebody dropped. The plates cannot tell which
     # was the shot, and a prize measured off a guess is worse than no
