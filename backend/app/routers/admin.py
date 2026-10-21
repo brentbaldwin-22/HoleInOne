@@ -8494,25 +8494,23 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
     _marks = ([{"xy": [int(landing_xy[0]), int(landing_xy[1])],
                 "label": "landed", "colour": (235, 190, 90)}]
               if landing_xy else [])
-    # THE AFTER PLATE IS NEVER EARLIER THAN THE DEFAULT, only later.
+    # ANCHORED ON IMPACT, AND NOT PUSHED LATER. I briefly made this
+    # take whichever was later of impact+14 and the 30-second default,
+    # on the reasoning that a later plate is a more settled ball. It is
+    # not, and the field says so: on Rivertowne 8 event 1161 the
+    # impact-anchored window (2.0s/13.6s) and the operator's own
+    # 2s/13s run agree on the same point to three pixels, while the
+    # same clip at 2s/25s picks a DIFFERENT one.
     #
-    # Anchoring it purely on impact looked right and was not. On
-    # Rivertowne 8 event 1161 the impact resolved to -0.4s of the green
-    # clip, so impact+14 put the after plate at 13.6s — and the same
-    # clip, asked at 25s by hand, found the ball. A plate taken too
-    # early catches a ball still rolling, or not yet down.
-    #
-    # Later is the safe direction and the 30-second default is already
-    # the latest it is safe to be, because past that the group starts
-    # arriving. So take whichever is LATER, and let find_rest_spot clamp
-    # it to what the clip actually holds. Impact only has to place the
-    # BEFORE plate, where being early is harmless.
-    _after = max(green_impact_sec + REST_PLATE_AFTER_SEC,
-                 greenrest.DEFAULT_AFTER_SEC)
+    # Later is not safer on a green in partial shade. Every extra
+    # second is more shadow travel, and shadow travel is a real
+    # difference between two plates -- so a later after plate competes
+    # the ball against more clutter, not less. The impact knows when
+    # the ball arrived; nothing else here does.
     out = greenrest.find_rest_spot(
         green_path, polygon=pts, drawn_at=drawn_at,
         before_sec=max(0.0, green_impact_sec - REST_PLATE_BEFORE_SEC),
-        after_sec=_after,
+        after_sec=green_impact_sec + REST_PLATE_AFTER_SEC,
         marks_path=marks_path, marks=_marks,
     )
     if not out.get("ok"):

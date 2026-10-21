@@ -209,15 +209,20 @@ def test_two_things_arriving_is_not_an_answer():
           run_finder([(240, 200)])["source"], "plates")
 
 
-def test_the_after_plate_is_never_earlier_than_the_default():
-    """Anchoring it purely on impact looked right and was not.
+def test_the_after_plate_follows_the_impact_and_is_not_pushed_later():
+    """And a note on why, because I got this wrong once.
 
-    Rivertowne 8 event 1161: the impact resolved to -0.4s of the green
-    clip, so impact+14 put the after plate at 13.6s — and the same clip
-    asked at 25s by hand found the ball. A plate taken too early
-    catches a ball still rolling, or not yet down. Later is the safe
-    direction, and the 30-second default is already the latest it is
-    safe to be.
+    I made this take whichever was later of impact+14 and the
+    30-second default, reasoning that a later plate is a more settled
+    ball. The field disagrees: on Rivertowne 8 event 1161 the
+    impact-anchored window (2.0s/13.6s) and the operator's own 2s/13s
+    run agree on the same point to three pixels, while the same clip at
+    2s/25s picks a DIFFERENT one.
+
+    Later is not safer on a green in partial shade. Every extra second
+    is more shadow travel, and shadow travel is a real difference
+    between two plates — so a later after plate competes the ball
+    against more clutter, not less.
     """
     seen = {}
     real = G.find_rest_spot
@@ -252,11 +257,10 @@ def test_the_after_plate_is_never_earlier_than_the_default():
             (admin.CLIPS_DIR, admin.storage,
              G.find_rest_spot) = saved
 
-    check("the after plate is not dragged early by the impact",
-          seen.get("after_sec"), G.DEFAULT_AFTER_SEC)
-    # CONTROL: a LATE impact does move it — the rule is "never earlier",
-    # not "always the default", or a two-minute capture with a late
-    # swing would plate itself before the ball was struck.
+    check("an early impact keeps an early after plate",
+          seen.get("after_sec"), -0.4 + 14.0)
+    # CONTROL: a late impact moves it late, so the number above is the
+    # impact and not a constant.
     seen.clear()
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
@@ -270,7 +274,8 @@ def test_the_after_plate_is_never_earlier_than_the_default():
         finally:
             (admin.CLIPS_DIR, admin.storage,
              G.find_rest_spot) = saved
-    check("control, a late impact pushes it later", seen.get("after_sec"), 64.0)
+    check("control, a late impact gives a late one",
+          seen.get("after_sec"), 64.0)
     check("  and the before plate still follows the impact",
           seen.get("before_sec"), 44.0)
 
@@ -337,7 +342,7 @@ for fn in (test_a_human_outranks_a_measurement,
            test_a_swing_with_nothing_at_all_answers_nothing,
            test_it_finds_one_ball_on_a_real_clip,
            test_two_things_arriving_is_not_an_answer,
-           test_the_after_plate_is_never_earlier_than_the_default,
+           test_the_after_plate_follows_the_impact_and_is_not_pushed_later,
            test_without_an_outline_it_will_not_measure,
            test_the_plate_finder_refuses_without_an_outline):
     print(f"\n-- {fn.__name__}")
