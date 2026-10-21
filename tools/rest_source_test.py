@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.routers import admin  # noqa: E402
 from app.services import greenrest as G  # noqa: E402
+from app.services import debug3 as D3  # noqa: E402
 
 FAIL: list[str] = []
 
@@ -336,7 +337,28 @@ def test_the_plate_finder_refuses_without_an_outline():
           None)
 
 
-for fn in (test_a_human_outranks_a_measurement,
+def test_the_descent_search_is_off_by_default():
+    """And a switch, not a deletion.
+
+    On a green ringed with wind-blown brush the descent search does not
+    merely fail, it answers WRONGLY: event 1161 put the landing up in
+    the fairway well above the green, which then draws a comet along a
+    path the ball never took and offers a pitch mark that is not one.
+    The resting-ball search needs none of it.
+    """
+    check("off unless a hole asks for it",
+          D3.GATE_DEFAULTS["ascent_descent_search"], 0)
+    check("  and a hole can ask",
+          D3.resolve_gates({"ascent_descent_search": 1})
+          ["ascent_descent_search"], 1)
+    # CONTROL: it is a real gate with a real range, not a stray key
+    # that resolve_gates happens to echo back.
+    check("  bounded 0..1",
+          tuple(D3.GATE_SPEC["ascent_descent_search"][1:3]), (0, 1))
+
+
+for fn in (test_the_descent_search_is_off_by_default,
+           test_a_human_outranks_a_measurement,
            test_the_plates_outrank_a_descent_chain,
            test_a_stored_measurement_is_not_measured_again,
            test_a_swing_with_nothing_at_all_answers_nothing,

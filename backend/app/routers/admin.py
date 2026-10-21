@@ -21176,7 +21176,14 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     _tally: dict = {}
     _reasons: list = []
     _sweep: dict = {}
-    for i, (_flo, _fhi) in enumerate(_wins):
+    # TRACKING THE FALL IS OPTIONAL NOW, and off by default. See
+    # `ascent_descent_search`: on a green ringed with wind-blown brush
+    # the search does not merely fail, it answers wrongly -- a landing
+    # in the fairway above the green, a comet along a path the ball
+    # never took. The resting-ball pass below needs none of it.
+    _do_descent = bool(int(_gates.get("ascent_descent_search", 1)))
+    out["descent_search"] = _do_descent
+    for i, (_flo, _fhi) in enumerate(_wins if _do_descent else []):
         if progress:
             progress(f"Looking for the ball coming down, window {i + 1} "
                      f"of {len(_wins)}", i, len(_wins))
@@ -21399,6 +21406,25 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                          _tee_start, _green_start)
     out.pop("dets_all", None)
     out["ok"] = out["n_matched"] > 0 or out.get("n_rest", 0) > 0
+    if not _do_descent:
+        out["descent_skipped_reason"] = (
+            "The descent search is off for this hole — the ball is found "
+            "where it came to REST instead, which needs no tracking. There "
+            "is no pitch mark and no comet on the green half; turn "
+            "ascent_descent_search back on to get them.")
+    if not _do_descent:
+        # NO CLOCK WARNING HERE. That warning is about the three-second
+        # flight window, and with the descent search off there is no
+        # flight window -- the resting-ball pass compares two plates
+        # seconds apart and a few seconds of offset does not move the
+        # ball on the grass.
+        out["reason"] = (
+            f"{out.get('n_rest', 0)} of {len(_clips)} swing(s) found at "
+            "rest on the green. The descent search is off for this hole, "
+            "so nothing was tracked through the fall — see the note "
+            "below. The two clocks are "
+            f"{out['delta_sec']}s apart ({out['delta_source']})")
+        return out
     out["reason"] = (
         ("" if out["delta_measured"] else
          "⚠ THE TWO CLOCKS WERE NOT MEASURED — the offset below is a "
@@ -21409,7 +21435,8 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         f"{len(_events)} ball(s) coming down, from "
         f"{out['n_frames_searched']} of {out['n_frames_green']} green "
         f"frame(s) — only the flight windows were searched; the two "
-        f"clocks are {out['delta_sec']}s apart ({out['delta_source']})")
+        f"clocks are {out['delta_sec']}s apart ({out['delta_source']}). "
+        f"{out.get('n_rest', 0)} also found at rest")
     return out
 
 

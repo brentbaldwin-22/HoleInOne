@@ -9007,6 +9007,12 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                 {" "}— {rep.descents.reason || "…"}
               </span>
             </summary>
+            {rep.descents.descent_skipped_reason && (
+              <div className="tiny" style={{ margin: "4px 0",
+                                             color: "#fbbf24" }}>
+                {rep.descents.descent_skipped_reason}
+              </div>
+            )}
             {rep.descents.rest_reason && (
               <div className="tiny muted" style={{ margin: "4px 0" }}>
                 {rep.descents.rest_reason}

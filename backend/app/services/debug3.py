@@ -7661,6 +7661,31 @@ GATE_SPEC = {
     # Still a switch, because the argument that put it on was a real
     # one and a different camera may yet want it.
     "ascent_three_frame":       (0,                        0,      1, True),
+    # HUNT THE BALL COMING DOWN, OR NOT (1/0). OFF.
+    #
+    # The descent search tracks the ball through its fall on the green
+    # camera, and on a green ringed with wind-blown brush it is the
+    # hardest thing this system does -- more of the frame moves than
+    # the ball does. On Rivertowne 8 it does not merely fail, it
+    # answers WRONGLY: event 1161 put the landing up in the fairway
+    # well above the green, which then draws a comet along a path the
+    # ball never took and offers a pitch mark that is not one.
+    #
+    # The resting-ball search needs none of it. It compares the green
+    # before the shot with the green once the ball is down and still,
+    # and what is newly on the putting surface is the answer -- no
+    # tracking, no linking, no chain to lose. Measured against the
+    # operator's own runs it agrees to three pixels.
+    #
+    # WHAT TURNING IT OFF COSTS, stated plainly: there is no comet on
+    # the green half of the composite and no pitch mark, so "where it
+    # landed" is gone and only "where it finished" remains. The green
+    # half of the clip is unaffected -- that cut is placed by the tee's
+    # own clock, not by the descent.
+    #
+    # A switch rather than a deletion: a green without brush behind it
+    # is a different proposition, and this is the hole that has one.
+    "ascent_descent_search":    (0,                        0,      1, True),
     # HOW CLOSE TO THE PREVIOUS FRAME'S DETECTION counts as that
     # frame's ghost, in pixels, with two-frame differencing. Only read
     # when ascent_three_frame is 0 — the AND has no ghosts to remove —
@@ -7740,6 +7765,7 @@ GATE_SPEC = {
 GATE_VERDICT = {
     "ascent_min_points": "points", "ascent_min_rise_frac": "rise",
     "ascent_rate_lo": "rate", "ascent_rate_hi": "rate",
+    "ascent_descent_search": "descent",
     "ascent_bend_base_px": "bend", "ascent_bend_per_point_px": "bend",
     "ascent_max_bend_px": "bend", "ascent_min_straight": "wander",
     "ascent_max_tilt_deg": "tilt", "ascent_min_density": "sparse",
