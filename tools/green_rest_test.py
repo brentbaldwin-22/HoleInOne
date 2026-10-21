@@ -58,7 +58,8 @@ LANDS_AT = 430                # frame the shot's ball appears
 
 def clip(path, *, partner=None, partner_leaves_at=None,
          second_ball=None, walker=True, outside_ball=None,
-         stander=None, stripe=False, before_stander=None, ball_grey=250):
+         stander=None, stripe=False, before_stander=None, ball_grey=250,
+         exposure_gain=1.0, before_vehicle=False):
     """A green with wind in the brush and whatever balls we ask for.
 
     `partner` is a ball already at rest when the clip opens — the case
@@ -75,6 +76,21 @@ def clip(path, *, partner=None, partner_leaves_at=None,
     for f in range(N):
         im = np.full((H, W, 3), 95, np.uint8)          # turf
         im[200:, :] = 120                               # the green, lighter
+        # TEXTURE ON IT, because a uniform surface cannot show the
+        # failure this fixture is for: with nothing to be brighter or
+        # dimmer than before, a change of exposure produces no blobs at
+        # all and the test passes on a detector that does nothing.
+        im[200:, :] = np.clip(
+            im[200:, :].astype(np.int16)
+            + rng.integers(-14, 15, size=(H - 200, W, 1)), 0, 255
+        ).astype(np.uint8)
+        # SHADE ACROSS PART OF IT, which is the normal state of a green
+        # late in the day and the reason the correction has to be a
+        # GAIN and not merely an offset: sunlit turf and shaded turf do
+        # not move together when the light changes, so one number added
+        # to everything cannot put them both back.
+        im[250:300, :] = (im[250:300, :].astype(np.float64)
+                          * 0.55).astype(np.uint8)
         # WIND. The brush slides back and forth several pixels; over
         # PLATE_SPAN_SEC it visits both ends of its arc.
         off = int(round(14 * np.sin(f / 23.0))) + 20
@@ -115,6 +131,13 @@ def clip(path, *, partner=None, partner_leaves_at=None,
         # before plate at exactly those pixels, and the ball that lands
         # there later has to out-shine a plate that already contains a
         # third of a golfer.
+        # A MOWER PARKED ON THE EDGE for the before window only. Big
+        # and bright: it drags a MEAN by most of the detection
+        # threshold on its own and leaves a MEDIAN where it was, which
+        # is the whole argument for matching on robust statistics. Too
+        # large to be mistaken for a ball, so not a departure either.
+        if before_vehicle and f < 260:
+            cv2.rectangle(im, (70, 205), (300, 245), (240, 240, 240), -1)
         if before_stander is not None and 60 <= f < 150:
             cv2.rectangle(im, (before_stander[0] - 6, before_stander[1] - 36),
                           (before_stander[0] + 6, before_stander[1] + 4),
@@ -122,6 +145,14 @@ def clip(path, *, partner=None, partner_leaves_at=None,
         if f >= LANDS_AT:
             cv2.circle(im, (300, 300), 3,
                        (ball_grey, ball_grey, ball_grey), -1)
+        # AUTO-EXPOSURE MOVING, which is what happened on Rivertowne 8:
+        # plates at 2s and 25s, the whole frame dimmer in the second,
+        # and 932 patches of turf reported as things that left.
+        # MULTIPLICATIVE, because that is what a camera does: gain and
+        # iris scale the signal, they do not add a constant to it.
+        if exposure_gain != 1.0 and f > LANDS_AT - 60:
+            im = np.clip(im.astype(np.float64) * exposure_gain,
+                         0, 255).astype(np.uint8)
         vw.write(im)
     vw.release()
 
@@ -243,13 +274,76 @@ def test_the_plate_is_a_median_and_not_a_mean():
     check("a dull ball is still found", near(out["best"], (300, 300)), True)
     # CONTROL ONE: the ball really is faint, so this is the thin-margin
     # case and not the easy one in disguise.
+    # Against the threshold itself, not a hardcoded band: the point is
+    # that the margin is THIN, and a number that has to be re-tuned
+    # every time the fixture gains texture is testing the fixture.
     check("  control, it is only just above threshold",
-          25 <= out["best"]["strength"] <= 45, True)
+          G.DIFF_THRESHOLD <= out["best"]["strength"]
+          <= G.DIFF_THRESHOLD * 2.5, True)
     # CONTROL TWO: with nobody standing there, the same dull ball is
     # found either way — so the test above is about the before plate.
     clean = run(ball_grey=150)
     check("  control, the dull ball alone is easy",
           near(clean["best"], (300, 300)), True)
+
+
+def test_a_change_of_exposure_is_not_a_hundred_golf_balls():
+    """THE FIELD FAILURE, Rivertowne 8, 21 Oct.
+
+    Plates at 2s and 25s on a real green. Auto-exposure moved between
+    them, the whole frame came back dimmer, and every textured patch
+    was duly "darker than before" by more than the threshold: the run
+    reported 932 things leaving the green. Not a near miss — hundreds
+    of confident wrong answers, and no reason to trust the arrivals
+    either.
+    """
+    out = run(exposure_gain=0.72)
+    check("the ball is still found", near(out["best"], (300, 300)), True)
+    check("  and the turf is not reported as leaving",
+          len(out["departures"]), 0)
+    check("  nor as arriving", len(out["arrivals"]), 1)
+    check("  with the correction reported",
+          abs(out["exposure_shift"]) >= 4, True)
+    check("  and said out loud",
+          any("exposure moved" in n for n in out["notes"]), True)
+    check("  corrected as a gain", out["exposure_gain"] < 0.95, True)
+
+
+def test_the_match_is_not_dragged_by_the_biggest_thing_in_frame():
+    """Median and MAD, not mean and standard deviation.
+
+    A mower parked on the edge of the green for the before window is
+    bright enough to move a MEAN by most of the detection threshold on
+    its own. A median does not notice it, which is the entire reason to
+    prefer one.
+    """
+    out = run(exposure_gain=0.72, before_vehicle=True)
+    check("the ball is found with a vehicle in the before plate",
+          near(out["best"], (300, 300)), True)
+    check("  and the turf is not reported as leaving",
+          len(out["departures"]), 0)
+    check("  nor as arriving", len(out["arrivals"]), 1)
+    # CONTROL ONE: the drift is real and bigger than the threshold a
+    # raw difference would trip on, so this is the failing case.
+    check("control, the drift exceeds the detection threshold",
+          abs(out["exposure_shift"]) > G.DIFF_THRESHOLD, True)
+    # CONTROL TWO: an undrifted clip behaves identically, so the
+    # correction is not simply suppressing everything.
+    steady = run()
+    check("control, an undrifted clip finds the same ball",
+          near(steady["best"], (300, 300)), True)
+    check("  and reports no correction worth mentioning",
+          abs(steady["exposure_shift"]) < 4, True)
+
+
+def test_a_departure_has_to_be_gone():
+    """Not merely dimmer in the median — the same rule as an arrival."""
+    out = run(partner=(180, 320), partner_leaves_at=380)
+    check("a ball picked up is still reported", len(out["departures"]), 1)
+    check("  and it is the partner's",
+          near(out["departures"][0], (180, 320)), True)
+    check("  measured over the after frames",
+          out["departures"][0]["persist"] >= G.PERSIST_FRAC, True)
 
 
 def test_the_outline_is_what_bounds_it():
@@ -432,6 +526,9 @@ for fn in (test_it_finds_a_ball_at_rest,
            test_a_partners_ball_that_is_picked_up_is_reported,
            test_two_balls_landing_are_both_reported,
            test_the_plate_is_a_median_and_not_a_mean,
+           test_a_change_of_exposure_is_not_a_hundred_golf_balls,
+           test_the_match_is_not_dragged_by_the_biggest_thing_in_frame,
+           test_a_departure_has_to_be_gone,
            test_the_outline_is_what_bounds_it,
            test_a_polygon_drawn_at_another_size_is_rescaled,
            test_the_plates_can_be_placed_by_time,

@@ -180,6 +180,53 @@ def polygon_mask(polygon, shape, drawn_at=None):
     return mask
 
 
+# HOW BIG A GLOBAL SHIFT IS WORTH MENTIONING, in grey levels. Below
+# this the match is housekeeping; above it the operator should be told,
+# because an exposure change is the one failure here that produces
+# hundreds of confident, wrong answers rather than none.
+EXPOSURE_NOTE_LEVELS = 4.0
+
+# HOW FAR THE MATCH MAY STRETCH THE PLATE. Beyond this the two plates
+# are not the same scene under different light, they are a camera that
+# re-aimed or an iris that slammed, and silently rescaling one onto the
+# other would invent a comparison rather than correct one.
+MATCH_GAIN_LIMIT = (0.5, 2.0)
+
+# HOW MANY RINGS ARE WORTH DRAWING. 932 of them painted the before
+# panel solid grey and told the operator nothing at all.
+MAX_DRAWN = 12
+
+
+def _match_exposure(plate_b, plate_a, mask):
+    """Put the before plate on the after plate's exposure.
+
+    THE FAILURE THIS EXISTS FOR, seen on Rivertowne 8: plates two
+    seconds and twenty-five seconds in, auto-exposure moved between
+    them, and the whole frame arrived dimmer. Every textured patch on
+    the green was then "darker than before" by more than the threshold,
+    and the run reported NINE HUNDRED AND THIRTY-TWO things leaving the
+    green. Not a near miss -- hundreds of confident wrong answers, and
+    the arrivals were no more trustworthy.
+
+    Matched on the median and the MAD rather than the mean and the
+    standard deviation, so that a ball, a golfer, or a hundred of them
+    cannot drag the correction: they are a tiny minority of a green's
+    pixels and robust statistics ignore minorities. Returns the
+    rescaled plate and the shift it took out, which the caller reports.
+    """
+    m = mask > 0
+    if int(m.sum()) < 100:
+        return plate_b, 0.0, 1.0
+    b = plate_b[m].astype(np.float64)
+    a = plate_a[m].astype(np.float64)
+    mb, ma = float(np.median(b)), float(np.median(a))
+    sb = float(np.median(np.abs(b - mb))) or 1.0
+    sa = float(np.median(np.abs(a - ma))) or 1.0
+    gain = sa / sb
+    out = (plate_b.astype(np.float64) - mb) * gain + ma
+    return np.clip(out, 0, 255).astype(np.uint8), ma - mb, gain
+
+
 def _render(plate_b, plate_a, poly, arrivals, departures, out_path,
             caption=""):
     """The two plates side by side, with what was found ringed.
@@ -212,8 +259,12 @@ def _render(plate_b, plate_a, poly, arrivals, departures, out_path,
     # ...and departures on the BEFORE panel, because that is the only
     # panel they are in. Ringing them on the right would point at bare
     # grass and look like a miss.
-    for d in departures:
+    for d in departures[:MAX_DRAWN]:
         cv2.circle(pair, (d["x"], d["y"]), 9 * u, (170, 170, 170), u)
+    if len(departures) > MAX_DRAWN:
+        cv2.putText(pair, f"+{len(departures) - MAX_DRAWN} more",
+                    (10 * u, 46 * u), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5 * u, (170, 170, 170), u)
 
     cv2.line(pair, (w, 0), (w, h), (40, 40, 40), max(1, u))
     for label, x in (("BEFORE", 10 * u), ("AFTER", w + 10 * u)):
@@ -254,7 +305,7 @@ def _blobs(diff_mask, diff, mask):
     return out
 
 
-def _persistence(frames, blob, plate_before):
+def _persistence(frames, blob, reference, sign: int = 1):
     """In how many of the after frames is this blob actually there?
 
     The median's blind spot: something that sat still for half the
@@ -270,12 +321,13 @@ def _persistence(frames, blob, plate_before):
     h, w = frames[0].shape[:2]
     y0, y1 = max(0, y - r), min(h, y + r + 1)
     x0, x1 = max(0, x - r), min(w, x + r + 1)
-    base = float(plate_before[y0:y1, x0:x1].mean())
+    base = float(reference[y0:y1, x0:x1].mean())
     step = max(1, len(frames) // PERSIST_SAMPLES)
     sampled = frames[::step] or frames
     hits = sum(
         1 for g in sampled
-        if float(g[y0:y1, x0:x1].mean()) - base >= DIFF_THRESHOLD * PERSIST_REL
+        if sign * (float(g[y0:y1, x0:x1].mean()) - base)
+        >= DIFF_THRESHOLD * PERSIST_REL
     )
     return hits / len(sampled)
 
@@ -340,7 +392,11 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
 
         poly = scaled_polygon(polygon, plate_a.shape, drawn_at)
         mask = polygon_mask(polygon, plate_a.shape, drawn_at)
-        diff = plate_a.astype(np.int16) - plate_b.astype(np.int16)
+        # MATCHED FIRST. Without this a shift in auto-exposure between
+        # the two plates makes every textured patch on the green either
+        # an arrival or a departure. See `_match_exposure`.
+        matched_b, shift, gain = _match_exposure(plate_b, plate_a, mask)
+        diff = plate_a.astype(np.int16) - matched_b.astype(np.int16)
         pos = (diff >= DIFF_THRESHOLD).astype(np.uint8) * 255
         neg = (diff <= -DIFF_THRESHOLD).astype(np.uint8) * 255
 
@@ -348,14 +404,29 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
         departures = _blobs(neg, diff, mask)
 
         for blob in arrivals:
-            blob["persist"] = round(_persistence(frames_a, blob, plate_b), 2)
+            blob["persist"] = round(
+                _persistence(frames_a, blob, matched_b), 2)
         arrivals = [x for x in arrivals if x["persist"] >= PERSIST_FRAC]
+        # A DEPARTURE HAS TO BE GONE, not merely dimmer in the median.
+        # Same discipline as an arrival and for the same reason: the
+        # median can be swayed by something that sat still for part of
+        # the window, and a flicker is not a ball being picked up.
+        for blob in departures:
+            blob["persist"] = round(
+                _persistence(frames_a, blob, matched_b, sign=-1), 2)
+        departures = [x for x in departures if x["persist"] >= PERSIST_FRAC]
         # Steadiest first, then brightest. Not biggest: at the back of a
         # green the ball is a handful of pixels and the biggest thing
         # that survives the filters is more likely to be a shadow.
         arrivals.sort(key=lambda z: (-z["persist"], -z["strength"]))
 
         notes = []
+        if abs(shift) >= EXPOSURE_NOTE_LEVELS or abs(gain - 1.0) >= 0.1:
+            notes.append(
+                f"The camera's exposure moved between the two plates "
+                f"({shift:+.0f} grey levels, gain {gain:.2f}). Corrected "
+                "before comparing — without that, every textured patch "
+                "reads as something that arrived or left.")
         if not polygon:
             notes.append(
                 "No green outline for this camera, so the whole frame was "
@@ -384,7 +455,7 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
                 cap_txt = (
                     f"{len(arrivals)} arrival(s), {len(departures)} "
                     f"departure(s) - plates {b / fps:.1f}s and {a / fps:.1f}s")
-                image = str(_render(plate_b, plate_a, poly, arrivals,
+                image = str(_render(matched_b, plate_a, poly, arrivals,
                                     departures, Path(debug_path), cap_txt))
             except Exception as exc:  # noqa: BLE001
                 log.warning("rest-spot debug render failed: %s", exc)
@@ -397,6 +468,8 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
         # not.
         return {
             "ok": True,
+            "exposure_shift": round(shift, 1),
+            "exposure_gain": round(gain, 3),
             "timing": {
                 "read_sec": round(read_sec, 2),
                 "detect_sec": round(detect_sec, 2),
