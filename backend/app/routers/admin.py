@@ -8452,6 +8452,69 @@ REST_PLATE_BEFORE_SEC = 6.0
 REST_PLATE_AFTER_SEC = 14.0
 
 
+def _green_outline_for(db, green_camera_id):
+    """(points, drawn_at) for a green camera, or (None, None).
+
+    One lookup, because two callers want it and an outline that is
+    present for one and missing for the other is a bug waiting.
+    """
+    cam = db.get(Camera, int(green_camera_id)) if green_camera_id else None
+    roi = (cam.green_roi if cam else None) or {}
+    pts = roi.get("points")
+    if not pts:
+        return None, None
+    frame = roi.get("frame") or {}
+    return pts, ([frame.get("w"), frame.get("h")] if frame else None)
+
+
+def _rest_spot_at(db, row, green_path, green_impact_sec: float,
+                  green_camera_id: int):
+    """Where the ball came to rest, anchored on one swing's impact.
+
+    `green_impact_sec` is the moment of impact in the GREEN clip's own
+    seconds — the callers both have it, by different routes, and
+    neither should be re-deriving the two cameras' offset here.
+
+    REQUIRES AN OUTLINE, and refuses without one. Unbounded, the finder
+    searches the whole frame and cannot tell a white dot on the putting
+    surface from an identical one ten yards short of it -- fine when an
+    operator is looking at the picture and judging, not fine when the
+    answer becomes a measured distance on somebody's prize.
+    """
+    from ..services import greenrest
+
+    pts, drawn_at = _green_outline_for(db, green_camera_id)
+    if not pts:
+        return None, ("the green camera has no outline drawn — trace one "
+                      "on the Cameras page and this measures itself")
+    out = greenrest.find_rest_spot(
+        green_path, polygon=pts, drawn_at=drawn_at,
+        before_sec=max(0.0, green_impact_sec - REST_PLATE_BEFORE_SEC),
+        after_sec=green_impact_sec + REST_PLATE_AFTER_SEC,
+    )
+    if not out.get("ok"):
+        return None, (out.get("error") or "the plates could not be built")
+    arrivals = out.get("arrivals") or []
+    if not arrivals:
+        return None, "nothing new was on the green afterwards"
+    # MORE THAN ONE THING ARRIVED is not an answer. A partner who also
+    # hit in, or shade that moved, leaves this with no way to know which
+    # blob was the shot -- and a prize measured off a guess is worse
+    # than no measurement.
+    if len(arrivals) > 1:
+        return None, (f"{len(arrivals)} things arrived on the green — no way "
+                      "to tell which was this shot")
+    best = arrivals[0]
+    return (
+        {"xy": [float(best["x"]), float(best["y"])],
+         "camera_id": int(green_camera_id), "source": "plates",
+         "area": best.get("area"), "persist": best.get("persist")},
+        (f"came to rest at {best['x']},{best['y']} — {best.get('area')}px, "
+         f"in {round((best.get('persist') or 0) * 100)}% of the after "
+         f"frames, plates {out['before_frame']}/{out['after_frame']}"),
+    )
+
+
 def _rest_from_plates(db, row, swing: dict, green_camera_id: int):
     """Where the ball actually stopped, measured off the green clip.
 
@@ -8469,18 +8532,10 @@ def _rest_from_plates(db, row, swing: dict, green_camera_id: int):
     answer becomes a measured distance on somebody's prize.
     """
     from ..models import CameraEvent
-    from ..services import greenrest
 
     try:
         if not row.green_filename:
             return None
-        cam = db.get(Camera, int(green_camera_id))
-        roi = (cam.green_roi if cam else None) or {}
-        if not roi.get("points"):
-            log.info("rest plates: green camera %s has no outline — not "
-                     "measuring automatically", green_camera_id)
-            return None
-
         fps = float(swing.get("fps") or 0) or 60.0
         impact_frame = swing.get("impact_frame")
         if impact_frame is None:
@@ -8503,28 +8558,12 @@ def _rest_from_plates(db, row, swing: dict, green_camera_id: int):
         path = CLIPS_DIR / row.green_filename
         if not path.exists():
             return None
-        frame = roi.get("frame") or {}
-        out = greenrest.find_rest_spot(
-            path,
-            polygon=roi.get("points"),
-            drawn_at=[frame.get("w"), frame.get("h")] if frame else None,
-            before_sec=max(0.0, green_impact - REST_PLATE_BEFORE_SEC),
-            after_sec=green_impact + REST_PLATE_AFTER_SEC,
-        )
-        if not out.get("ok") or not out.get("best"):
-            return None
-        # MORE THAN ONE THING ARRIVED is not an answer. A partner who
-        # also hit in, or a shadow that moved, leaves this with no way
-        # to know which blob was the shot -- and a prize measured off a
-        # guess is worse than no measurement.
-        if len(out.get("arrivals") or []) > 1:
-            log.info("rest plates: %d arrivals on upload %s swing %s — not "
-                     "guessing which was the shot",
-                     len(out["arrivals"]), row.id, swing.get("idx"))
-            return None
-        best = out["best"]
-        return {"xy": [float(best["x"]), float(best["y"])],
-                "camera_id": int(green_camera_id), "source": "plates"}
+        rest, why = _rest_spot_at(db, row, path, green_impact,
+                                  int(green_camera_id))
+        if rest is None:
+            log.info("rest plates: upload %s swing %s — %s",
+                     row.id, swing.get("idx"), why)
+        return rest
     except Exception as exc:  # noqa: BLE001
         log.debug("rest plates for upload %s swing %s: %s",
                   getattr(row, "id", None), swing.get("idx"), exc)
@@ -8598,6 +8637,20 @@ def _green_rest_for_swing(db, row, slot: int):
             # before the shot with the green once everything has settled,
             # so what they find is where it finished. The difference
             # decides prizes.
+            #
+            # ALREADY MEASURED, USUALLY. The ascent/descent pass runs
+            # the plates for every swing it sees and writes the answer
+            # onto the swing, so in a normal produce this is a lookup.
+            # Re-running it here would read the green clip a second
+            # time for a number already on the row.
+            _rs = _s.get("rest_spot")
+            if _rs:
+                try:
+                    return {"xy": [float(_rs[0]), float(_rs[1])],
+                            "camera_id": int(g_id),
+                            "source": _s.get("rest_source") or "plates"}
+                except (TypeError, ValueError, IndexError):
+                    pass
             _plates = _rest_from_plates(db, row, _s, int(g_id))
             if _plates:
                 return _plates
@@ -21265,10 +21318,49 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
             f"{_e.get('tilt_deg')} degrees off vertical")
         out["n_matched"] += 1
 
+    # ── where it came to REST, which is a different question ────────
+    #
+    # Everything above hunts the ball on its way DOWN, and on a green
+    # ringed with brush that is the hardest thing this system does: the
+    # wind moves more of the frame than the ball does. The resting
+    # place needs none of it. Compare the green before the shot with
+    # the green once the ball is down and still, and what is newly on
+    # the putting surface is the answer -- no tracking, no linking, no
+    # chain to lose.
+    #
+    # Run for EVERY swing with an impact, not only the ones a descent
+    # chain was found for. That is the point: the descent search fails
+    # on this green most of the time, and when it does this is the only
+    # thing that still knows where the ball finished.
+    #
+    # AND IT IS NOT THE SAME POINT AS `landing_spot`. A descent chain
+    # ends where the ball stopped FALLING -- the pitch mark -- and a
+    # ball bounces and rolls from there. Both are kept, because the
+    # comet wants the arrival and the distance wants the finish.
+    _t_id, _g_id = _camera_pair_for(db, row)
+    out["n_rest"] = 0
+    if _g_id:
+        for i, c in enumerate(_clips):
+            _imp = c.get("impact_frame")
+            if _imp is None:
+                continue
+            if progress:
+                progress(f"Looking for where it came to rest, swing "
+                         f"{i + 1} of {len(_clips)}", i, len(_clips))
+            _base = float(_imp) / float(fps or 30.0) - float(out["delta_sec"])
+            _rest, _why = _rest_spot_at(db, row, _gp, _base, int(_g_id))
+            c["rest_reason"] = _why
+            if _rest:
+                c["rest_spot"] = [int(_rest["xy"][0]), int(_rest["xy"][1])]
+                c["rest_source"] = "plates"
+                out["n_rest"] += 1
+    else:
+        out["rest_reason"] = "no green camera on this pair"
+
     _ascent_window_views(row, _gp, out, _clips, _gfps, fps,
                          _tee_start, _green_start)
     out.pop("dets_all", None)
-    out["ok"] = out["n_matched"] > 0
+    out["ok"] = out["n_matched"] > 0 or out.get("n_rest", 0) > 0
     out["reason"] = (
         ("" if out["delta_measured"] else
          "⚠ THE TWO CLOCKS WERE NOT MEASURED — the offset below is a "

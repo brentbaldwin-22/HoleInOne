@@ -90,6 +90,37 @@ def test_the_plates_outrank_a_descent_chain():
           resolve(CHAIN, plates=None)["xy"], [100.0, 200.0])
 
 
+def test_a_stored_measurement_is_not_measured_again():
+    """The ascent pass writes it onto the swing; this is a lookup.
+
+    Re-running the finder here would read the whole green clip a
+    second time for a number already sitting on the row.
+    """
+    swing = dict(CHAIN)
+    swing["rest_spot"] = [640, 480]
+    calls = []
+
+    def _spy(db, row, sw, gid):
+        calls.append(1)
+        return PLATES
+
+    saved = (admin._camera_pair_for, admin._rest_from_plates)
+    try:
+        admin._camera_pair_for = lambda db, row: (10, 20)
+        admin._rest_from_plates = _spy
+        got = admin._green_rest_for_swing(None, Row(swing), 0)
+    finally:
+        (admin._camera_pair_for, admin._rest_from_plates) = saved
+
+    check("the stored point is used", got["xy"], [640.0, 480.0])
+    check("  and it is still the plates", got["source"], "plates")
+    check("  without reading the clip again", calls, [])
+    # CONTROL: with nothing stored, the finder IS called — so the empty
+    # call list above is the cache and not a disconnected wire.
+    check("control, no stored point runs the finder",
+          resolve(CHAIN, plates=PLATES)["xy"], [500.0, 400.0])
+
+
 def test_a_swing_with_nothing_at_all_answers_nothing():
     check("no track and no plates is None",
           resolve({"idx": 0, "descent_auto": True}, plates=None), None)
@@ -235,6 +266,7 @@ def test_the_plate_finder_refuses_without_an_outline():
 
 for fn in (test_a_human_outranks_a_measurement,
            test_the_plates_outrank_a_descent_chain,
+           test_a_stored_measurement_is_not_measured_again,
            test_a_swing_with_nothing_at_all_answers_nothing,
            test_it_finds_one_ball_on_a_real_clip,
            test_two_things_arriving_is_not_an_answer,

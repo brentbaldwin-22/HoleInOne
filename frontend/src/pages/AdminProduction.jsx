@@ -8991,10 +8991,27 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
           <details style={{ margin: "10px 0" }}>
             <summary className="small">
               Balls coming down on the green
+              {/* A SEPARATE COUNT, because it answers a separate
+                  question. The descent search can find nothing at all
+                  on a green ringed with brush — the wind moves more of
+                  the frame than the ball does — and the plate
+                  comparison still knows where the ball finished,
+                  because it needs no tracking whatever. */}
+              {rep.descents.n_rest != null && (
+                <span className={`pill ${rep.descents.n_rest
+                  ? "ok" : "warn"}`} style={{ marginLeft: 6 }}>
+                  {rep.descents.n_rest} at rest
+                </span>
+              )}
               <span className="muted">
                 {" "}— {rep.descents.reason || "…"}
               </span>
             </summary>
+            {rep.descents.rest_reason && (
+              <div className="tiny muted" style={{ margin: "4px 0" }}>
+                {rep.descents.rest_reason}
+              </div>
+            )}
             {/* ONE PICTURE PER SWING, of its own three seconds. The
                 single all-candidates frame it replaces could not answer
                 the question anyone actually asks, which is always about
@@ -9269,6 +9286,12 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                     <th align="left">tee spot</th>
                     <th align="left">impact</th>
                     <th align="left">landed</th>
+                    {/* WHERE IT FINISHED, which is not where it landed.
+                        A descent chain ends at the pitch mark and the
+                        ball runs on from there; this is the plate
+                        comparison, which sees the green once everything
+                        has settled. */}
+                    <th align="left">at rest</th>
                     <th align="left">{findOnly ? "" : "clip"}</th>
                   </tr>
                 </thead>
@@ -9300,12 +9323,14 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                             {c.ball[0]}, {c.ball[1]}
                           </span>
                         ) : <span className="muted">—</span>}</td>
-                        {/* EVERY ONE OF THESE IS AN ESTIMATE NOW. The
-                            column used to say which were measured and
-                            which were not, because a resting-ball scan
-                            ran first and sometimes answered. It does
-                            not run any more, so the distinction is gone
-                            and marking every row "est" says nothing. */}
+                        {/* EVERY ONE OF THESE IS AN ESTIMATE. The column
+                            used to say which were measured and which
+                            were not; it does not, and marking every row
+                            "est" would say nothing. A resting-ball scan
+                            does run again — but it answers where the
+                            ball FINISHED, not where it was struck, so it
+                            is its own column rather than a qualifier on
+                            this one. */}
                         <td>{c.impact_frame != null ? (
                           <span title="Where the chain, run back along its own heading, crosses the tee line. The run back is linear and a struck ball slows as it climbs, so this lands a little early.">
                             f{c.impact_frame}<span className="muted"> ~</span>
@@ -9319,6 +9344,13 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                           </>
                         ) : (
                           <span className="muted">tee-only</span>
+                        )}</td>
+                        <td title={c.rest_reason || ""}>{c.rest_spot ? (
+                          <span style={{ color: "#f59e0b" }}>
+                            {c.rest_spot[0]}, {c.rest_spot[1]}
+                          </span>
+                        ) : (
+                          <span className="muted">—</span>
                         )}</td>
                         <td>{findOnly ? null : (c.clip_url
                           ? <a href={c.clip_url} target="_blank"
