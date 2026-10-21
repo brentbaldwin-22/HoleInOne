@@ -83,7 +83,8 @@ class Block:
         self.text = text
 
 
-def ask(reply, path, before=2.0, after=13.0, raises=None, debug=None):
+def ask(reply, path, before=2.0, after=13.0, raises=None, debug=None,
+        pair=None):
     class Msgs:
         @staticmethod
         def create(**_kw):
@@ -97,7 +98,9 @@ def ask(reply, path, before=2.0, after=13.0, raises=None, debug=None):
         A.have_ai_tracer = lambda: True
         A._anthropic_client = lambda: client
         A._resolve_model = lambda m=None: "test-model"
-        return A.find_ball_at_rest(path, before, after, debug_path=debug)
+        return A.find_ball_at_rest(path, before, after,
+                                   debug_path=debug,
+                                   pair_path=pair)
     finally:
         (A.have_ai_tracer, A._anthropic_client, A._resolve_model) = saved
 
@@ -204,6 +207,58 @@ def test_a_missing_clip_is_not_a_ball():
           got["error"], "could not read both frames from the green clip")
 
 
+def test_it_shows_both_frames():
+    """The question is what CHANGED, so both have to be on screen.
+
+    A single marked panel asks the operator to take the comparison on
+    trust. In colour, because a white ball on green grass is a colour
+    fact and greyscale throws away the easier half of it.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "g.mp4"
+        clip(p)
+        pair = Path(td) / "pair.jpg"
+        got = ask('{"x": %d, "y": %d, "on_green": true, "confidence": 0.9,'
+                  ' "why": "x"}' % BALL, p, pair=pair)
+        check("a pair is written", pair.exists(), True)
+        check("  and reported", got["pair_image"], str(pair))
+        img = cv2.imread(str(pair))
+        check("  two panels wide", img.shape[1], W * 2)
+        # COLOUR, not greyscale: the three channels must actually
+        # differ, or this is a grey image in a colour container.
+        b, g, r = img[:, :, 0], img[:, :, 1], img[:, :, 2]
+        check("  and genuinely in colour",
+              not (np.array_equal(b, g) and np.array_equal(g, r)), True)
+    # CONTROL: no pair_path, no file and nothing claimed.
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "g.mp4"
+        clip(p)
+        check("control, it is opt-in",
+              ask('{"x": %d, "y": %d, "on_green": true, "confidence": 0.9,'
+                  ' "why": "x"}' % BALL, p)["pair_image"], None)
+
+
+def test_the_prompt_demands_both_conditions():
+    """On the green AND not there before — the operator's own wording.
+
+    A prompt that asks only "where is the ball" will happily return a
+    partner's ball that was already sitting there, or one in the
+    fringe. Both are confidently wrong answers to a question about a
+    prize.
+    """
+    t = A.BALL_AT_REST_PROMPT
+    check("it asks the direct question",
+          "WHERE IS THE GOLF BALL ON THE GREEN" in t, True)
+    check("  insists on the putting surface",
+          "ON THE PUTTING SURFACE" in t, True)
+    check("  and on the ball being new",
+          "NOT THERE IN THE BEFORE FRAME" in t, True)
+    check("  rules out a ball already there",
+          "belongs to somebody" in t, True)
+    check("  and offers a way out",
+          "could not find one" in t, True)
+
+
 def test_it_draws_what_it_found():
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "g.mp4"
@@ -221,6 +276,8 @@ for fn in (test_a_rough_answer_is_snapped_onto_the_ball,
            test_an_unsure_or_empty_answer_is_not_taken,
            test_it_says_when_the_ball_missed_the_green,
            test_a_missing_clip_is_not_a_ball,
+           test_it_shows_both_frames,
+           test_the_prompt_demands_both_conditions,
            test_it_draws_what_it_found):
     print(f"\n-- {fn.__name__}")
     fn()

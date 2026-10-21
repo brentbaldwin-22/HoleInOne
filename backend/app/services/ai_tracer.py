@@ -12162,17 +12162,22 @@ BALL_AT_REST_PROMPT = (
     "at a golf green. BEFORE was taken just before a shot was played. "
     "AFTER was taken once the ball had landed and come to rest.\n\n"
     "WHERE IS THE GOLF BALL ON THE GREEN in the AFTER frame?\n\n"
-    "Use the BEFORE frame for one purpose only: to rule out any ball "
-    "that was already on the green before this shot. The ball you want "
-    "is the one that is there in AFTER and was not there in BEFORE.\n\n"
+    "Two conditions, and BOTH must hold:\n"
+    "  1. It is ON THE PUTTING SURFACE — the smooth mown green itself, "
+    "not the fringe, the apron, a bunker, the rough or the fairway.\n"
+    "  2. It is NOT THERE IN THE BEFORE FRAME. Compare the two frames "
+    "at that exact spot before you answer.\n\n"
+    "A ball that is already on the green in BEFORE belongs to somebody "
+    "else and is NOT the answer, however clearly you can see it. "
+    "Neither is anything off the putting surface, however ball-like. "
+    "If the only ball you can find fails either condition, say you "
+    "could not find one.\n\n"
     "Give its position in the AFTER frame in pixels, with (0,0) at the "
-    "top-left. Also say whether it finished on the putting surface "
-    "itself, rather than on the fringe, the apron, a bunker or the "
-    "rough around it.\n\n"
+    "top-left.\n\n"
     "Reply with JSON only:\n"
     '  {\"x\": <int>, \"y\": <int>, \"on_green\": <true|false>, '
     '\"confidence\": <0..1>, \"why\": \"<one short sentence>\"}\n'
-    "If no ball arrived between the two frames, reply "
+    "If no ball arrived on the green between the two frames, reply "
     '{\"x\": null, \"y\": null, \"on_green\": false, '
     '\"confidence\": 0, \"why\": \"...\"}. Saying you cannot see '
     "one is a useful answer: this feeds a closest-to-the-pin "
@@ -12254,9 +12259,48 @@ def _snap_to_nearest_blob(frame_bgr, x: int, y: int,
     return best
 
 
+def _render_colour_pair(before, after, xy, out_path, caption=""):
+    """BEFORE | AFTER side by side, in colour, with the ball ringed.
+
+    THE TWO FRAMES THE MODEL WAS GIVEN, and the only way to check its
+    answer without taking its word for it: the question is "what is in
+    the second that was not in the first", so both have to be on screen
+    to judge it. In colour, because a white ball on green grass is a
+    colour fact and the greyscale version throws away the easiest half
+    of the comparison.
+    """
+    h = min(before.shape[0], after.shape[0])
+    w = min(before.shape[1], after.shape[1])
+    pair = np.zeros((h, w * 2, 3), np.uint8)
+    pair[:, :w] = before[:h, :w]
+    pair[:, w:] = after[:h, :w]
+    u = max(1, int(round(max(w, h) / 500.0)))
+    cv2.line(pair, (w, 0), (w, h), (40, 40, 40), max(1, u))
+    for label, x in (("BEFORE", 10 * u), ("AFTER", w + 10 * u)):
+        cv2.putText(pair, label, (x, 26 * u), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7 * u, (255, 255, 255), u + 1)
+    if xy:
+        # Ringed on BOTH panels, at the same place. The point is to make
+        # the comparison easy: the ring on the left shows what that spot
+        # looked like before, which is the evidence for the answer on
+        # the right.
+        for dx, col in ((0, (170, 170, 170)), (w, (60, 170, 250))):
+            cv2.circle(pair, (int(xy[0]) + dx, int(xy[1])), 14 * u, col,
+                       u + 1)
+        cv2.putText(pair, "at rest",
+                    (int(xy[0]) + w + 18 * u, int(xy[1]) - 12 * u),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55 * u, (60, 170, 250), u)
+    if caption:
+        cv2.putText(pair, caption, (10 * u, h - 12 * u),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5 * u, (255, 255, 255), u)
+    if not cv2.imwrite(str(out_path), pair):
+        raise OSError(f"could not write {out_path}")
+    return out_path
+
+
 def find_ball_at_rest(green_path, before_sec: float, after_sec: float,
                       model_override: str | None = None,
-                      debug_path=None) -> dict:
+                      debug_path=None, pair_path=None) -> dict:
     """Where the ball finished on the green, from two colour frames.
 
     No outline, no plates, no tracking: two pictures and a question.
@@ -12266,6 +12310,7 @@ def find_ball_at_rest(green_path, before_sec: float, after_sec: float,
     info: dict = {"xy": None, "on_green": None, "confidence": 0.0,
                   "why": "", "snapped": False, "snap_px": None,
                   "error": None, "model": None, "image": None,
+                  "pair_image": None,
                   "before_sec": round(float(before_sec), 1),
                   "after_sec": round(float(after_sec), 1)}
     if not have_ai_tracer():
@@ -12363,6 +12408,16 @@ def find_ball_at_rest(green_path, before_sec: float, after_sec: float,
         x, y = snapped
     info["xy"] = [x, y]
 
+    if pair_path is not None:
+        try:
+            _render_colour_pair(
+                before, after, [x, y], Path(str(pair_path)),
+                f"{before_sec:.1f}s vs {after_sec:.1f}s"
+                + (f" · snapped {info['snap_px']}px" if info["snapped"]
+                   else ""))
+            info["pair_image"] = str(pair_path)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ai_tracer: ball-at-rest pair render failed: %s", exc)
     if debug_path is not None:
         try:
             from . import greenrest as _gr

@@ -16505,14 +16505,21 @@ def long_upload_green_rest(upload_id: int,
     # other is the whole point of having the button.
     _b = _secs("before_sec")
     _a = _secs("after_sec")
+    pair_name = f"green-rest-{upload_id}-pair.jpg"
     ai_out = ai_tracer.find_ball_at_rest(
         path,
         before_sec=_b if _b is not None else 2.0,
         after_sec=_a if _a is not None else 13.0,
         debug_path=CLIPS_DIR / out_name,
+        # BOTH FRAMES, for the button. The question is "what is in the
+        # second that was not in the first", so an operator checking
+        # the answer needs both on screen -- the single marked panel
+        # asks them to take the comparison on trust.
+        pair_path=CLIPS_DIR / pair_name,
     )
     if ai_out.get("xy"):
-        _img = CLIPS_DIR / out_name
+        _img = CLIPS_DIR / (pair_name if ai_out.get("pair_image")
+                            else out_name)
         return {
             "ok": True,
             "source": "ai",
@@ -16537,7 +16544,7 @@ def long_upload_green_rest(upload_id: int,
                 f"{ai_out['after_sec']}s.",
             ],
             "image_url": (
-                f"{settings.app_base_url}/uploads/clips/{out_name}"
+                f"{settings.app_base_url}/uploads/clips/{_img.name}"
                 f"?v={int(_img.stat().st_mtime)}" if _img.exists() else None),
             "camera_id": cam.id if cam else None,
             "has_outline": bool(roi.get("points")),
