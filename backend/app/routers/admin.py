@@ -8452,6 +8452,33 @@ REST_PLATE_BEFORE_SEC = 6.0
 REST_PLATE_AFTER_SEC = 14.0
 
 
+def _ai_pick_ball(arrivals, pair_image_path):
+    """Ask which numbered ring is the ball. None means still unresolved.
+
+    Never raises and never costs anything when there is no AI
+    configured: the caller's fallback is to refuse to measure, which is
+    a correct outcome, and an AI outage must not take down the part
+    that works without it.
+    """
+    from ..services import ai_tracer
+
+    if not pair_image_path:
+        return None
+    try:
+        jpeg = Path(pair_image_path).read_bytes()
+    except OSError as exc:
+        log.warning("ball picker: could not read %s: %s", pair_image_path, exc)
+        return None
+    got = ai_tracer.pick_ball_among(jpeg, len(arrivals))
+    if got.get("index") is None:
+        log.info("ball picker: %d candidates, not resolved — %s",
+                 len(arrivals), got.get("error"))
+        return None
+    log.info("ball picker: chose ring %s of %d (%.2f) — %s",
+             got["index"], len(arrivals), got["confidence"], got["why"])
+    return got
+
+
 def _green_outline_for(db, green_camera_id):
     """(points, drawn_at) for a green camera, or (None, None).
 
@@ -8507,11 +8534,18 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
     # difference between two plates -- so a later after plate competes
     # the ball against more clutter, not less. The impact knows when
     # the ball arrived; nothing else here does.
+    # THE BEFORE/AFTER PAIR TOO, when there is somewhere to put it.
+    # Two readers: the ball picker, which is shown exactly the picture
+    # an operator would be shown -- if a person could not tell from it,
+    # the model is not being asked anything fairer -- and the operator,
+    # for whom "two things arrived" is only answerable by looking.
+    _pair = (Path(str(marks_path)).with_name(
+        Path(str(marks_path)).stem + "-plates.jpg") if marks_path else None)
     out = greenrest.find_rest_spot(
         green_path, polygon=pts, drawn_at=drawn_at,
         before_sec=max(0.0, green_impact_sec - REST_PLATE_BEFORE_SEC),
         after_sec=green_impact_sec + REST_PLATE_AFTER_SEC,
-        marks_path=marks_path, marks=_marks,
+        marks_path=marks_path, marks=_marks, debug_path=_pair,
     )
     if not out.get("ok"):
         return None, (out.get("error") or "the plates could not be built")
@@ -8522,19 +8556,41 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
              f"{green_impact_sec:.1f}s)")
     if not arrivals:
         return None, "nothing new was on the green afterwards" + _when
-    # MORE THAN ONE THING ARRIVED is not an answer. A partner who also
-    # hit in, or shade that moved, leaves this with no way to know which
-    # blob was the shot -- and a prize measured off a guess is worse
-    # than no measurement.
+    # MORE THAN ONE THING ARRIVED. A partner who also hit in, shade that
+    # crawled, a towel somebody dropped. The plates cannot tell which
+    # was the shot, and a prize measured off a guess is worse than no
+    # measurement -- so the fallback is still to refuse.
+    #
+    # But refusing is a dead end, and this is the one part of the job
+    # that is judgement rather than measurement: the candidates already
+    # carry exact coordinates, and the only question is which of three
+    # or four is a golf ball. That is what a model is good at, and its
+    # weak axis -- pixel coordinates, off by 50-100px per this repo's
+    # own notes -- does not enter into choosing an index.
     if len(arrivals) > 1:
-        return None, (f"{len(arrivals)} things arrived on the green — no way "
-                      "to tell which was this shot" + _when)
+        _picked = _ai_pick_ball(arrivals, out.get("image_path"))
+        if _picked is None:
+            return None, (f"{len(arrivals)} things arrived on the green — "
+                          "no way to tell which was this shot" + _when)
+        best = arrivals[_picked["index"] - 1]
+        return (
+            {"xy": [float(best["x"]), float(best["y"])],
+             "camera_id": int(green_camera_id), "source": "plates+ai",
+             "area": best.get("area"), "persist": best.get("persist"),
+             "image": out.get("marks_path"),
+             "plates_image": out.get("image_path")},
+            (f"{len(arrivals)} things arrived; ring {_picked['index']} "
+             f"chosen as the ball at {best['x']},{best['y']} "
+             f"({_picked['confidence']:.0%} confident — "
+             f"{_picked['why']}).{_when}"),
+        )
     best = arrivals[0]
     return (
         {"xy": [float(best["x"]), float(best["y"])],
          "camera_id": int(green_camera_id), "source": "plates",
          "area": best.get("area"), "persist": best.get("persist"),
-         "image": out.get("marks_path")},
+         "image": out.get("marks_path"),
+         "plates_image": out.get("image_path")},
         (f"came to rest at {best['x']},{best['y']} — {best.get('area')}px, "
          f"in {round((best.get('persist') or 0) * 100)}% of the after "
          f"frames. Plates at "
@@ -8594,8 +8650,16 @@ def _rest_from_plates(db, row, swing: dict, green_camera_id: int):
                      row.id, swing.get("idx"), why)
         return rest
     except Exception as exc:  # noqa: BLE001
-        log.debug("rest plates for upload %s swing %s: %s",
-                  getattr(row, "id", None), swing.get("idx"), exc)
+        # AT WARNING, NOT DEBUG. This catch exists so a measurement
+        # failure cannot cost a clip, and it does its job -- but it
+        # turns a crash into something indistinguishable from a polite
+        # "could not tell", and the other caller of _rest_spot_at does
+        # not have it. A mutation run found exactly that: a TypeError
+        # on the picker path was swallowed here and read as a refusal,
+        # while produce would have raised. Quiet is the wrong default
+        # for a difference that large.
+        log.warning("rest plates for upload %s swing %s: %s",
+                    getattr(row, "id", None), swing.get("idx"), exc)
         return None
 
 

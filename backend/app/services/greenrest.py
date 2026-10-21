@@ -322,10 +322,18 @@ def _render(plate_b, plate_a, poly, arrivals, departures, out_path,
             cv2.polylines(pair, [shifted], True, (120, 230, 170), u)
 
     # Rings go on the AFTER panel, which is where the thing is.
+    #
+    # NUMBERED FROM ONE, ALWAYS, when there is more than one. The same
+    # picture is what the ball picker is shown, and it is asked which
+    # RING is the ball -- so "at rest" on the first and "#2" on the
+    # second would be asking about a numbering that does not exist.
+    # One candidate keeps the words, because there is nothing to pick
+    # between and a bare "1" beside a lone ring says less.
+    _numbered = len(arrivals) > 1
     for i, a in enumerate(arrivals):
         c = (60, 170, 250) if i == 0 else (90, 200, 255)
         cv2.circle(pair, (a["x"] + w, a["y"]), 11 * u, c, u + 1)
-        cv2.putText(pair, "at rest" if i == 0 else f"#{i + 1}",
+        cv2.putText(pair, f"{i + 1}" if _numbered else "at rest",
                     (a["x"] + w + 14 * u, a["y"] - 10 * u),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45 * u, c, u)
     # ...and departures on the BEFORE panel, because that is the only

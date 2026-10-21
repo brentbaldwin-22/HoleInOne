@@ -159,8 +159,12 @@ def green_clip(path, balls):
     vw.release()
 
 
-def run_finder(balls, outline=OUTLINE):
-    """_rest_from_plates against a real clip and a stubbed camera."""
+def run_finder(balls, outline=OUTLINE, direct=False):
+    """A real clip and a stubbed camera.
+
+    `direct` calls _rest_spot_at, skipping the _rest_from_plates
+    wrapper whose catch-all would hide a crash as a refusal.
+    """
     class Cam:
         green_roi = outline
 
@@ -181,6 +185,9 @@ def run_finder(balls, outline=OUTLINE):
         try:
             admin.CLIPS_DIR = d
             admin.storage = Store()
+            if direct:
+                return admin._rest_spot_at(
+                    DB(), row, d / "g.mp4", 10.0, 20)[0]
             return admin._rest_from_plates(DB(), row, SWING, 20)
         finally:
             (admin.CLIPS_DIR, admin.storage) = saved
@@ -281,6 +288,57 @@ def test_the_after_plate_follows_the_impact_and_is_not_pushed_later():
           seen.get("before_sec"), 44.0)
 
 
+def test_the_picker_resolves_two_arrivals_or_leaves_the_refusal():
+    """The fallback has to survive every way the model can fail."""
+    # STRAIGHT AT _rest_spot_at, NOT THROUGH _rest_from_plates. That
+    # wrapper catches every exception and returns None, which is right
+    # for a measurement that must not cost a clip and wrong for a test:
+    # a crash in here comes back looking exactly like a refusal. A
+    # mutation run proved it — removing the refusal entirely still
+    # passed, because the TypeError it caused was swallowed.
+    def with_picker(result):
+        saved = admin._ai_pick_ball
+        try:
+            admin._ai_pick_ball = lambda arrivals, img: result
+            return run_finder([BALL, (240, 200)], direct=True)
+        finally:
+            admin._ai_pick_ball = saved
+
+    # Unresolved — exactly the state before the picker existed.
+    check("declining leaves the refusal standing", with_picker(None), None)
+
+    one = with_picker({"index": 1, "confidence": 0.9, "why": "round"})
+    two = with_picker({"index": 2, "confidence": 0.9, "why": "round"})
+    check("a choice is taken", one and one["source"], "plates+ai")
+
+    def near_one_of(got, wanted):
+        return any(abs(got["xy"][0] - x) <= 6 and abs(got["xy"][1] - y) <= 6
+                   for x, y in wanted)
+
+    both = [BALL, (240, 200)]
+    check("  and lands on one of the two balls", near_one_of(one, both), True)
+    check("  as does ring 2", near_one_of(two, both), True)
+    # THE PROPERTY THAT MATTERS, and the one that is actually
+    # assertable: the index SELECTS. Which ball is ring 1 depends on
+    # how the candidates sort, which is not this test's business —
+    # that the two rings give DIFFERENT balls is.
+    check("  and the two rings are different balls",
+          one["xy"] != two["xy"], True)
+
+
+def test_the_picker_is_not_consulted_when_there_is_one_arrival():
+    """It costs money and there is nothing to decide."""
+    calls = []
+    saved = admin._ai_pick_ball
+    try:
+        admin._ai_pick_ball = lambda arrivals, img: calls.append(1)
+        got = run_finder([BALL])
+    finally:
+        admin._ai_pick_ball = saved
+    check("no call for a single candidate", calls, [])
+    check("  and the answer is the plates alone", got["source"], "plates")
+
+
 def test_without_an_outline_it_will_not_measure():
     """Unbounded it cannot tell the green from the ground short of it.
 
@@ -365,6 +423,8 @@ for fn in (test_the_descent_search_is_off_by_default,
            test_it_finds_one_ball_on_a_real_clip,
            test_two_things_arriving_is_not_an_answer,
            test_the_after_plate_follows_the_impact_and_is_not_pushed_later,
+           test_the_picker_resolves_two_arrivals_or_leaves_the_refusal,
+           test_the_picker_is_not_consulted_when_there_is_one_arrival,
            test_without_an_outline_it_will_not_measure,
            test_the_plate_finder_refuses_without_an_outline):
     print(f"\n-- {fn.__name__}")

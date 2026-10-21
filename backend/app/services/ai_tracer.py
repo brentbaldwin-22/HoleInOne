@@ -11993,3 +11993,145 @@ def run_full_ai_tracer_pipeline(
         result["cutover_time_sec"] or 0.0,
     )
     return result
+
+
+# ── which of these is the ball? ────────────────────────────────────────
+#
+# THE ONE THING THE PLATES CANNOT DO. The resting-ball search compares
+# the green before a shot with the green once it has settled and reports
+# what is newly on the putting surface. When that is one blob it is the
+# answer and nothing here is needed. When it is several -- a partner who
+# also hit in, a shadow that crawled, a towel somebody dropped -- the
+# search has no way to tell which was the shot, and it refuses rather
+# than guessing, because a prize measured off a guess is worse than no
+# measurement.
+#
+# Refusing is right and it is also a dead end. This resolves it the only
+# way it can be resolved: by looking.
+#
+# WHY A MODEL IS THE RIGHT TOOL *HERE* AND NOT FOR THE SEARCH ITSELF.
+# Vision models are poor at pixel coordinates -- this file already
+# records it, at `_snap_to_ball`: "the claimed rest position can be off
+# by 50-100px". On a green that is tens of feet, and it is why the
+# search is a differencing measurement rather than a judgement. But this
+# is not a measurement. The candidates arrive WITH exact coordinates
+# already; the question is which index, among three or four, is a golf
+# ball. That is judgement, which is what the model is good at, and its
+# weak axis does not enter into it.
+BALL_PICKER_PROMPT = (
+    "You are looking at two frames from a fixed camera pointed at a golf "
+    "green: the same view before a shot was played and after the ball "
+    "came to rest.\n\n"
+    "Numbered rings mark things that are present in the AFTER frame and "
+    "were not present in the BEFORE frame. Exactly one of them may be a "
+    "golf ball that has just come to rest. The others are things like a "
+    "shadow that moved, a sprinkler head now catching the light, a "
+    "person, a towel, a ball mark, or a patch of turf that changed "
+    "brightness.\n\n"
+    "A golf ball at rest is small, round, uniformly bright, sits ON the "
+    "grass with a short shadow, and does not have the soft or ragged "
+    "edges of a shadow or the elongation of a person or a mowing line.\n\n"
+    "Reply with JSON only:\n"
+    '  {\"ball\": <ring number>, \"confidence\": <0..1>, '
+    '\"why\": \"<one short sentence>\"}\n'
+    "If none of them is a golf ball, or you cannot tell them apart, "
+    'reply {\"ball\": null, \"confidence\": 0, \"why\": \"...\"}. '
+    "Saying you cannot tell is a useful answer and is strongly "
+    "preferred over a guess: this feeds a closest-to-the-pin "
+    "measurement, and a confident wrong ring is far more damaging than "
+    "an admitted uncertainty."
+)
+
+# BELOW THIS WE DO NOT TAKE THE ANSWER. The caller's fallback is to
+# refuse, which is a correct outcome; a model that is unsure is not an
+# improvement on it.
+BALL_PICKER_MIN_CONFIDENCE = 0.6
+
+
+def pick_ball_among(jpeg: bytes, n_candidates: int,
+                    model_override: str | None = None) -> dict:
+    """Which numbered ring is the golf ball? 1-based, or None.
+
+    `jpeg` is the before/after pair with the candidates ringed and
+    numbered on the after panel -- the same picture an operator would
+    be shown, which is the point: if a person could not tell from it,
+    the model is not being asked anything fairer.
+
+    Returns {"index": int|None, "confidence": float, "why": str,
+             "error": str|None}. Never raises: the caller's fallback is
+    to refuse to measure, and an AI outage must not become an outage of
+    the thing that works without it.
+    """
+    info: dict = {"index": None, "confidence": 0.0, "why": "", "error": None,
+                  "model": None}
+    if n_candidates < 2:
+        info["error"] = "nothing to choose between"
+        return info
+    if not have_ai_tracer():
+        info["error"] = "no AI configured"
+        return info
+    client = _anthropic_client()
+    if client is None:
+        info["error"] = "anthropic SDK not installed"
+        return info
+    model = _resolve_model(model_override)
+    info["model"] = model
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=200,
+            system=[{
+                "type": "text",
+                "text": BALL_PICKER_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": (
+                    f"BEFORE is the left panel, AFTER is the right. "
+                    f"Rings 1 to {n_candidates} are on the AFTER panel. "
+                    "Which ring is the golf ball? JSON only.")},
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/jpeg",
+                    "data": base64.standard_b64encode(jpeg).decode("ascii"),
+                }},
+            ]}],
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ai_tracer: ball picker call failed: %s", exc)
+        info["error"] = f"api_failed: {exc}"
+        return info
+
+    parsed = _extract_json("\n".join(
+        b.text for b in resp.content
+        if getattr(b, "type", None) == "text" and getattr(b, "text", None)
+    ))
+    if not parsed:
+        info["error"] = "no_json_in_response"
+        return info
+    info["why"] = str(parsed.get("why") or "")[:200]
+    try:
+        info["confidence"] = max(0.0, min(1.0, float(
+            parsed.get("confidence") or 0.0)))
+    except (TypeError, ValueError):
+        info["confidence"] = 0.0
+    _idx = parsed.get("ball")
+    if _idx is None:
+        info["error"] = "model declined to choose"
+        return info
+    try:
+        _idx = int(_idx)
+    except (TypeError, ValueError):
+        info["error"] = f"unusable index {parsed.get('ball')!r}"
+        return info
+    # A RING THAT DOES NOT EXIST is not an answer. Models do occasionally
+    # name a fifth candidate out of four, and taking it modulo anything
+    # would turn a clear failure into a plausible wrong ball.
+    if not (1 <= _idx <= n_candidates):
+        info["error"] = f"index {_idx} is outside 1..{n_candidates}"
+        return info
+    if info["confidence"] < BALL_PICKER_MIN_CONFIDENCE:
+        info["error"] = (f"confidence {info['confidence']:.2f} below "
+                         f"{BALL_PICKER_MIN_CONFIDENCE}")
+        return info
+    info["index"] = _idx
+    return info
