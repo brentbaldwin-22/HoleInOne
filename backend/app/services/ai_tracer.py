@@ -12159,28 +12159,25 @@ def pick_ball_among(jpeg: bytes, n_candidates: int,
 # blob nearest it. The model says which object; the pixels say where.
 BALL_AT_REST_PROMPT = (
     "You are looking at two colour frames from a fixed camera pointed "
-    "at a golf green. BEFORE was taken a moment before a shot was "
-    "played. AFTER was taken once the ball had landed and come to "
-    "rest.\n\n"
-    "Find the golf ball: the small white ball that is present in AFTER "
-    "and was NOT present in BEFORE. Compare the two frames carefully — "
-    "the difference between them is what identifies it. Other white "
-    "things in the scene (sprinkler heads, the flagstick, distant "
-    "markers, a cart, balls that were already there in BEFORE) are not "
-    "the answer.\n\n"
-    "Give its position in the AFTER frame, in pixels, with (0,0) at the "
-    "top-left. Also say whether it finished on the putting surface — "
-    "the smooth mown green itself, not the fringe, the apron, the "
-    "bunker or the rough around it.\n\n"
+    "at a golf green. BEFORE was taken just before a shot was played. "
+    "AFTER was taken once the ball had landed and come to rest.\n\n"
+    "WHERE IS THE GOLF BALL ON THE GREEN in the AFTER frame?\n\n"
+    "Use the BEFORE frame for one purpose only: to rule out any ball "
+    "that was already on the green before this shot. The ball you want "
+    "is the one that is there in AFTER and was not there in BEFORE.\n\n"
+    "Give its position in the AFTER frame in pixels, with (0,0) at the "
+    "top-left. Also say whether it finished on the putting surface "
+    "itself, rather than on the fringe, the apron, a bunker or the "
+    "rough around it.\n\n"
     "Reply with JSON only:\n"
     '  {\"x\": <int>, \"y\": <int>, \"on_green\": <true|false>, '
     '\"confidence\": <0..1>, \"why\": \"<one short sentence>\"}\n'
-    "If you cannot find a ball that arrived between the two frames, "
-    'reply {\"x\": null, \"y\": null, \"on_green\": false, '
-    '\"confidence\": 0, \"why\": \"...\"}. Saying you cannot see it is '
-    "a useful answer: this feeds a closest-to-the-pin measurement, and "
-    "a confident wrong position is far more damaging than an admitted "
-    "miss."
+    "If no ball arrived between the two frames, reply "
+    '{\"x\": null, \"y\": null, \"on_green\": false, '
+    '\"confidence\": 0, \"why\": \"...\"}. Saying you cannot see '
+    "one is a useful answer: this feeds a closest-to-the-pin "
+    "measurement, and a confident wrong position is worse than an "
+    "admitted miss."
 )
 
 # Below this the answer is not taken; the caller falls back.

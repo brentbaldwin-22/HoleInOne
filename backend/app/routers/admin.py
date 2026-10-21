@@ -16458,7 +16458,7 @@ def long_upload_green_rest(upload_id: int,
     says nothing about whether the thing found is a ball, and the only
     way to judge a run of this is to look at what it looked at.
     """
-    from ..services import greenrest
+    from ..services import ai_tracer, greenrest
 
     row = db.get(LongVideoUpload, upload_id)
     if row is None:
@@ -16497,14 +16497,67 @@ def long_upload_green_rest(upload_id: int,
             raise HTTPException(400, f"{key} must be a number of seconds")
 
     out_name = f"green-rest-{upload_id}.jpg"
+
+    # THE SAME MODEL THE PRODUCE PATH USES, and for the same reason: a
+    # ball at rest on mown grass is a thing a model can simply see, and
+    # it needs no outline to do it. The button and the produce run must
+    # not answer differently -- an operator checking one against the
+    # other is the whole point of having the button.
+    _b = _secs("before_sec")
+    _a = _secs("after_sec")
+    ai_out = ai_tracer.find_ball_at_rest(
+        path,
+        before_sec=_b if _b is not None else 2.0,
+        after_sec=_a if _a is not None else 13.0,
+        debug_path=CLIPS_DIR / out_name,
+    )
+    if ai_out.get("xy"):
+        _img = CLIPS_DIR / out_name
+        return {
+            "ok": True,
+            "source": "ai",
+            "best": {"x": ai_out["xy"][0], "y": ai_out["xy"][1],
+                     "area": None, "persist": None},
+            "arrivals": [{"x": ai_out["xy"][0], "y": ai_out["xy"][1]}],
+            "departures": [],
+            "on_green": ai_out.get("on_green"),
+            "confidence": ai_out.get("confidence"),
+            "snapped": ai_out.get("snapped"),
+            "snap_px": ai_out.get("snap_px"),
+            "before_frame": 0, "after_frame": 0, "fps": 1,
+            "notes": [
+                (ai_out.get("why") or "").strip(),
+                (f"Snapped {ai_out['snap_px']}px onto the nearest "
+                 "ball-sized blob." if ai_out.get("snapped")
+                 else "No ball-sized blob nearby to snap to — this is the "
+                      "model's own position."),
+                ("" if ai_out.get("on_green") else
+                 "The model says this is NOT on the putting surface."),
+                f"Frames at {ai_out['before_sec']}s and "
+                f"{ai_out['after_sec']}s.",
+            ],
+            "image_url": (
+                f"{settings.app_base_url}/uploads/clips/{out_name}"
+                f"?v={int(_img.stat().st_mtime)}" if _img.exists() else None),
+            "camera_id": cam.id if cam else None,
+            "has_outline": bool(roi.get("points")),
+            "clip": row.green_filename,
+            "timing": {},
+        }
+
+    # ...and the plates as the fallback, exactly as produce does.
     out = greenrest.find_rest_spot(
         path,
         polygon=roi.get("points"),
         drawn_at=[frame.get("w"), frame.get("h")] if frame else None,
-        before_sec=_secs("before_sec"),
-        after_sec=_secs("after_sec"),
+        before_sec=_b,
+        after_sec=_a,
         debug_path=CLIPS_DIR / out_name,
     )
+    out["source"] = "plates"
+    out.setdefault("notes", []).insert(
+        0, f"The model did not answer ({ai_out.get('error')}), so this is "
+           "the plate comparison.")
     img = CLIPS_DIR / out_name
     out["image_url"] = (
         f"{settings.app_base_url}/uploads/clips/{out_name}"

@@ -113,15 +113,28 @@ export default function GreenRestModal({ row, adminPassword, onClose }) {
           <div className="small" style={{ marginTop: 10 }}>
             <div>
               {out.best
-                ? `At rest near ${out.best.x}, ${out.best.y} — ${out.best.area}px, `
-                  + `present in ${Math.round((out.best.persist || 0) * 100)}% `
-                  + "of the after frames"
-                : "Nothing new on the green."}
+                ? (out.source === "ai"
+                  ? `Ball at ${out.best.x}, ${out.best.y} — `
+                    + `${Math.round((out.confidence || 0) * 100)}% confident, `
+                    + (out.on_green ? "on the green" : "NOT on the green")
+                  : `At rest near ${out.best.x}, ${out.best.y} — `
+                    + `${out.best.area}px, present in `
+                    + `${Math.round((out.best.persist || 0) * 100)}% of the `
+                    + "after frames")
+                : "No ball found on the green."}
+              {out.source && (
+                <span className="muted">
+                  {" "}· {out.source === "ai" ? "found by the model"
+                    : "plate comparison"}
+                </span>
+              )}
             </div>
             <div className="muted" style={{ marginTop: 2 }}>
-              plates at {(out.before_frame / (out.fps || 60)).toFixed(1)}s and{" "}
-              {(out.after_frame / (out.fps || 60)).toFixed(1)}s
-              {out.clip ? ` · ${out.clip}` : ""}
+              {out.source === "ai" ? (out.clip || "") : (
+                <>plates at {(out.before_frame / (out.fps || 60)).toFixed(1)}s
+                  {" "}and {(out.after_frame / (out.fps || 60)).toFixed(1)}s
+                  {out.clip ? ` · ${out.clip}` : ""}</>
+              )}
             </div>
             {out.timing && (
               <div className="muted" style={{ marginTop: 2 }}>
@@ -134,7 +147,7 @@ export default function GreenRestModal({ row, adminPassword, onClose }) {
                 {out.timing.detect_sec || 0}s comparing
               </div>
             )}
-            {(out.notes || []).map((n, i) => (
+            {(out.notes || []).filter(Boolean).map((n, i) => (
               <div key={i} className="muted" style={{ marginTop: 2 }}>{n}</div>
             ))}
             {!out.best && (
