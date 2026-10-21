@@ -259,7 +259,14 @@ def test_the_prompt_demands_both_conditions():
           "could not find one" in t, True)
 
 
-def test_it_draws_what_it_found():
+def test_it_draws_what_it_found_in_colour():
+    """It used to render the greyscale plate the old method worked in.
+
+    On a green, white-on-green IS the signal — a black-and-white
+    picture of a golf course throws away the thing that makes the
+    answer checkable at a glance. Nothing downstream ever wanted it
+    grey; it was an artefact of the method that has been replaced.
+    """
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "g.mp4"
         clip(p)
@@ -268,6 +275,11 @@ def test_it_draws_what_it_found():
                   ' "why": "x"}' % BALL, p, debug=shot)
         check("a picture is written", shot.exists(), True)
         check("  and reported", got["image"], str(shot))
+        img = cv2.imread(str(shot))
+        b, g, r = img[:, :, 0], img[:, :, 1], img[:, :, 2]
+        check("  in colour",
+              not (np.array_equal(b, g) and np.array_equal(g, r)), True)
+        check("  and one panel, not a pair", img.shape[1], W)
 
 
 for fn in (test_a_rough_answer_is_snapped_onto_the_ball,
@@ -278,7 +290,7 @@ for fn in (test_a_rough_answer_is_snapped_onto_the_ball,
            test_a_missing_clip_is_not_a_ball,
            test_it_shows_both_frames,
            test_the_prompt_demands_both_conditions,
-           test_it_draws_what_it_found):
+           test_it_draws_what_it_found_in_colour):
     print(f"\n-- {fn.__name__}")
     fn()
 

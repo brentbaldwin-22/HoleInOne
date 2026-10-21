@@ -12419,14 +12419,28 @@ def find_ball_at_rest(green_path, before_sec: float, after_sec: float,
         except Exception as exc:  # noqa: BLE001
             log.warning("ai_tracer: ball-at-rest pair render failed: %s", exc)
     if debug_path is not None:
+        # IN COLOUR. It used to render the greyscale plate the old
+        # pipeline worked in, which made every report look like a
+        # black-and-white picture of a golf course -- and on a green,
+        # white-on-green IS the signal. Nothing downstream wanted it
+        # grey; it was only ever an artefact of the method that has
+        # been replaced.
         try:
-            from . import greenrest as _gr
-            _gr.render_marks(
-                cv2.cvtColor(after, cv2.COLOR_BGR2GRAY), None,
-                [{"xy": [x, y], "label": "at rest", "colour": (60, 170, 250)}],
-                Path(str(debug_path)),
-                f"AI, {before_sec:.1f}s vs {after_sec:.1f}s"
-                + (f", snapped {info['snap_px']}px" if info["snapped"] else ""))
+            marked = after.copy()
+            u = max(1, int(round(max(marked.shape[:2]) / 500.0)))
+            cv2.circle(marked, (x, y), 14 * u, (60, 170, 250), u + 1)
+            cv2.putText(marked, "at rest", (x + 18 * u, y - 12 * u),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55 * u,
+                        (60, 170, 250), u)
+            cap = (f"AI, {before_sec:.1f}s vs {after_sec:.1f}s"
+                   + (f", snapped {info['snap_px']}px" if info["snapped"]
+                      else ""))
+            cv2.putText(marked, cap,
+                        (10 * u, marked.shape[0] - 12 * u),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5 * u,
+                        (255, 255, 255), u)
+            if not cv2.imwrite(str(debug_path), marked):
+                raise OSError(f"could not write {debug_path}")
             info["image"] = str(debug_path)
         except Exception as exc:  # noqa: BLE001
             log.warning("ai_tracer: ball-at-rest render failed: %s", exc)

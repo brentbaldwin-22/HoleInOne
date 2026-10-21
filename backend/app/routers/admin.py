@@ -22737,6 +22737,43 @@ def _green_descent(db, row, src_path, tee_fps: float, impact_frame: int,
         log.warning("swing test: green descent failed: %s", exc)
         out["reason"] = f"failed: {exc}"
     out["seconds"] = round(time.perf_counter() - _t0, 2)
+    # ── no descent? then where it came to REST is the landing ───────
+    #
+    # THE TRACER NEEDS A PLACE, NOT A PATH. Everything above watches
+    # the ball fall, and on a green ringed with wind-blown brush that
+    # search fails or answers wrongly -- which is why
+    # `ascent_descent_search` is off by default. But the curve the
+    # tracer draws only ever used one thing from it: a point in green
+    # pixels, mapped through the hole's green->tee homography.
+    #
+    # The model supplies that point directly, and better: a descent
+    # chain ends where the ball stopped FALLING, where this is where it
+    # finished. Without it the tracer falls back to _guess_landing_tee,
+    # which aims at the flag -- a real place on the hole, but the same
+    # place for every shot.
+    if not out.get("landing_xy"):
+        try:
+            _t_id, _g_id = _camera_pair_for(db, row)
+            _gp = _local_green(row)
+            if _g_id and _gp and _gp.exists():
+                _imp_sec = float(impact_frame) / float(tee_fps or 30.0)
+                _delta = float(out.get("delta_sec") or 0.0)
+                _rest, _why = _rest_spot_at(
+                    db, row, _gp, _imp_sec - _delta, int(_g_id))
+                if _rest:
+                    out["landing_xy"] = [int(_rest["xy"][0]),
+                                         int(_rest["xy"][1])]
+                    out["landing_source"] = _rest.get("source")
+                    out["landing_on_green"] = _rest.get("on_green")
+                    out["rest_reason"] = _why
+                    if not out.get("frame_size"):
+                        _gwh = _frame_size(_gp)
+                        out["frame_size"] = list(_gwh) if _gwh else None
+                else:
+                    out["rest_reason"] = _why
+        except Exception as exc:  # noqa: BLE001
+            log.warning("swing test: rest fallback failed on %s: %s",
+                        getattr(row, "id", None), exc)
     return out
 
 
