@@ -180,6 +180,29 @@ def polygon_mask(polygon, shape, drawn_at=None):
     return mask
 
 
+# WHERE THE AFTER PLATE GOES WHEN NOBODY SAYS, in seconds from the
+# start of the clip.
+#
+# IT USED TO BE "NEAR THE END", which is only sensible on a short clip.
+# Rivertowne 8, event 1164: a two-minute capture, so the after plate
+# landed at 118 seconds — by which time the group was standing ON the
+# green and the shadow edge had crawled several feet. Twenty-two
+# arrivals, nineteen departures, every one of them a real difference
+# between two pictures taken two minutes apart. The detector was right
+# and the question was wrong.
+#
+# The ball is down and still within a few seconds of the shot. Waiting
+# any longer buys nothing and risks everything that walks, mows or
+# moves with the sun. Clipped to what the clip can give, so a 27-second
+# capture still works.
+DEFAULT_AFTER_SEC = 30.0
+
+# ...AND HOW FAR APART IS TOO FAR to pass without comment. On a green,
+# a minute is long enough for the group to arrive and for shade to
+# move, and both look exactly like things arriving on the putting
+# surface — because that is what they are.
+PLATE_GAP_WARN_SEC = 60.0
+
 # HOW BIG A GLOBAL SHIFT IS WORTH MENTIONING, in grey levels. Below
 # this the match is housekeeping; above it the operator should be told,
 # because an exposure change is the one failure here that produces
@@ -366,7 +389,10 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
         if after_frame is None and after_sec is not None:
             after_frame = int(round(float(after_sec) * fps))
         b = int(before_frame if before_frame is not None else pad)
-        a = int(after_frame if after_frame is not None else total - 1 - pad)
+        if after_frame is None:
+            after_frame = min(int(round(DEFAULT_AFTER_SEC * fps)),
+                              total - 1 - pad)
+        a = int(after_frame)
         # A PLATE NEEDS ROOM EITHER SIDE OF ITS CENTRE. Asked for one at
         # the very first or very last frame, clamp rather than refuse:
         # "2 seconds in" is a reasonable thing to ask for and the
@@ -421,6 +447,14 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
         arrivals.sort(key=lambda z: (-z["persist"], -z["strength"]))
 
         notes = []
+        _gap = (a - b) / fps
+        if _gap > PLATE_GAP_WARN_SEC:
+            notes.append(
+                f"The two plates are {_gap:.0f} seconds apart. On a green "
+                "that is long enough for the group to walk on and for the "
+                "shade to move, and both read as things arriving — because "
+                "that is what they are. Pull the after plate back to just "
+                "after the ball settled.")
         if abs(shift) >= EXPOSURE_NOTE_LEVELS or abs(gain - 1.0) >= 0.1:
             notes.append(
                 f"The camera's exposure moved between the two plates "

@@ -499,6 +499,72 @@ def test_a_bad_render_does_not_lose_the_answer():
     check("  with no picture claimed", out["image_path"], None)
 
 
+def test_a_long_clip_does_not_wait_until_the_group_arrives():
+    """THE FIELD FAILURE, Rivertowne 8 event 1164, 21 Oct.
+
+    A two-minute capture, so "near the end" put the after plate at 118
+    seconds — by which time the group was standing ON the green and
+    the shadow edge had crawled several feet. Twenty-two arrivals,
+    nineteen departures, and every one of them a real difference
+    between two pictures taken two minutes apart. The detector was
+    right; the question was wrong.
+
+    The ball is down and still within a few seconds of the shot, so
+    waiting any longer buys nothing and risks everything that walks,
+    mows, or moves with the sun.
+    """
+    import cv2 as _cv2
+    LONG = 60 * 120                 # two minutes, like the real one
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "g.mp4"
+        vw = _cv2.VideoWriter(str(p), _cv2.VideoWriter_fourcc(*"mp4v"),
+                              float(FPS), (W, H))
+        rng = np.random.default_rng(11)
+        for f in range(LONG):
+            im = np.full((H, W, 3), 95, np.uint8)
+            im[200:, :] = 120
+            im[200:, :] = np.clip(
+                im[200:, :].astype(np.int16)
+                + rng.integers(-14, 15, size=(H - 200, W, 1)), 0, 255
+            ).astype(np.uint8)
+            if f >= LANDS_AT:
+                _cv2.circle(im, (300, 300), 3, (250, 250, 250), -1)
+            # THE GROUP ARRIVING, after a minute and a half, at the FAR
+            # edge of the green. Size is the whole point: a golfer
+            # standing close is far too big and too tall to be taken
+            # for a ball and the shape filters throw them out, but at
+            # the back of a green they are a handful of pixels and pass
+            # both. That is the cluster on the real failure — small
+            # rings along the top edge, not big ones in front.
+            if f > 90 * FPS:
+                for k in range(4):
+                    _cv2.rectangle(im, (420 + k * 30, 232),
+                                   (428 + k * 30, 250), (235, 235, 235), -1)
+            # ...AND THE SHADE MOVING, which is the other half of it. A
+            # shadow edge is a real difference between two pictures two
+            # minutes apart, and it fragments into a row of blobs along
+            # its boundary.
+            _sx = int(120 + (f / FPS) * 1.2)
+            im[205:245, :_sx] = (im[205:245, :_sx].astype(np.float64)
+                                 * 0.55).astype(np.uint8)
+            vw.write(im)
+        vw.release()
+        out = G.find_rest_spot(p, polygon=GREEN_POLY, drawn_at=[W, H])
+        late = G.find_rest_spot(p, polygon=GREEN_POLY, drawn_at=[W, H],
+                                after_sec=115.0)
+
+    check("the default stops well short of the end",
+          out["after_frame"] / FPS <= 35, True)
+    check("  and finds the ball alone", len(out["arrivals"]), 1)
+    check("  which is the ball", near(out["best"], (300, 300)), True)
+    # CONTROL: the people are really there and really do confuse it —
+    # so the default above is avoiding a genuine trap, not an empty one.
+    check("control, asked at 115s the group is reported too",
+          len(late["arrivals"]) > 1, True)
+    check("  and it says the plates are too far apart",
+          any("seconds apart" in n for n in late["notes"]), True)
+
+
 def test_an_empty_green_says_so():
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "g.mp4"
@@ -535,6 +601,7 @@ for fn in (test_it_finds_a_ball_at_rest,
            test_a_plate_asked_for_at_the_very_edge_is_clamped,
            test_it_hands_back_a_picture,
            test_a_bad_render_does_not_lose_the_answer,
+           test_a_long_clip_does_not_wait_until_the_group_arrives,
            test_an_empty_green_says_so):
     print(f"\n-- {fn.__name__}")
     fn()
