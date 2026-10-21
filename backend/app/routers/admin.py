@@ -22753,6 +22753,7 @@ def _green_descent(db, row, src_path, tee_fps: float, impact_frame: int,
     # place for every shot.
     if not out.get("landing_xy"):
         try:
+            from ..services import ai_tracer
             _t_id, _g_id = _camera_pair_for(db, row)
             _gp = _local_green(row)
             if _g_id and _gp and _gp.exists():
@@ -22766,6 +22767,23 @@ def _green_descent(db, row, src_path, tee_fps: float, impact_frame: int,
                     out["landing_source"] = _rest.get("source")
                     out["landing_on_green"] = _rest.get("on_green")
                     out["rest_reason"] = _why
+                    # ...AND ONLY NOW, WHEN. Knowing where it finished
+                    # turns "track a ball falling through a windy
+                    # green" into "watch one patch of grass and see
+                    # when it changed". No resting place, no walk:
+                    # there would be nothing to watch.
+                    _land = ai_tracer.find_landing_frame(
+                        _gp, out["landing_xy"],
+                        _imp_sec - _delta + REST_PLATE_AFTER_SEC)
+                    if _land.get("frame") is not None:
+                        out["landing_frame_green"] = _land["frame"]
+                        out["landing_sec_green"] = _land["sec"]
+                    out["landing_frame_reason"] = (
+                        _land.get("error")
+                        or f"arrived at f{_land['frame']} "
+                           f"({_land['sec']}s of the green clip), found by "
+                           f"walking back {_land['walked_frames']} frames "
+                           "from where it stopped")
                     if not out.get("frame_size"):
                         _gwh = _frame_size(_gp)
                         out["frame_size"] = list(_gwh) if _gwh else None

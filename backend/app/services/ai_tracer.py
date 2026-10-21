@@ -12191,12 +12191,21 @@ BALL_AT_REST_MIN_CONFIDENCE = 0.5
 # HOW FAR THE SNAP MAY REACH, in pixels at 1080p. Sized from this
 # file's own measurement of vision localisation error (50-100px) with
 # room over it. Wider and the snap starts finding the flagstick.
-SNAP_RADIUS_PX = 110
+SNAP_RADIUS_PX = 60
 
 # The ball, in pixels of area at 1080p. Generous at the top end because
 # the front of a green is a great deal closer than the back of it.
 SNAP_MIN_AREA = 2
 SNAP_MAX_AREA = 400
+
+# HOW MUCH BRIGHTER THAN ITS SURROUNDINGS a blob has to be to be a
+# ball. THE BUNKER IS WHY. Sand is as bright as a golf ball and a green
+# has acres of it, so brightness alone snapped an answer 80px sideways
+# into a bunker and reported it with confidence. A ball on grass is an
+# ISOLATED bright dot -- its immediate surroundings are dark. A bright
+# patch of sand sits in more sand, and fails this where no threshold on
+# brightness alone ever could.
+SNAP_MIN_LOCAL_CONTRAST = 18.0
 
 # A BALL IS ROUND, AND A FLAGSTICK IS NOT. Area alone does not separate
 # them: a stick two pixels wide and sixty long is 120px, comfortably
@@ -12204,6 +12213,42 @@ SNAP_MAX_AREA = 400
 # Without this the snap walks the answer onto the pin -- caught by the
 # test that puts a flagstick in the frame and aims the model near it.
 SNAP_MAX_ASPECT = 3.0
+
+
+# HOW FAR APART THE GRIDLINES GO, in pixels. Close enough that a cell
+# is a small part of a green, far enough that the labels stay legible
+# after the API's own downscale.
+GRID_STEP_PX = 200
+
+
+def _with_grid(img, step: int = GRID_STEP_PX):
+    """A labelled pixel grid over a copy of the frame.
+
+    THE WHOLE ACCURACY PROBLEM IN ONE PICTURE. Asked where the ball is,
+    the model said "on the green to the right of the flag" -- correct,
+    and plainly so -- and then gave coordinates 400px away from it. It
+    knows WHAT it is looking at and estimates WHERE badly, which this
+    file's own note at `_snap_to_ball` already records as 50-100px of
+    error.
+
+    A grid turns the estimate into a reading. Instead of judging a
+    distance in pixels from the frame edge, it names the cell the ball
+    sits in and interpolates inside it -- and the lines are right there
+    to check against. The snap afterwards still does the last few
+    pixels, but it is being handed a point that is close.
+    """
+    out = img.copy()
+    h, w = out.shape[:2]
+    u = max(1, int(round(max(w, h) / 900.0)))
+    for x in range(step, w, step):
+        cv2.line(out, (x, 0), (x, h), (0, 255, 255), u)
+        cv2.putText(out, str(x), (x + 3 * u, 18 * u),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45 * u, (0, 255, 255), u)
+    for y in range(step, h, step):
+        cv2.line(out, (0, y), (w, y), (0, 255, 255), u)
+        cv2.putText(out, str(y), (3 * u, y - 4 * u),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45 * u, (0, 255, 255), u)
+    return out
 
 
 def _grab_colour_frame(path, sec: float):
@@ -12253,6 +12298,25 @@ def _snap_to_nearest_blob(frame_bgr, x: int, y: int,
         if max(bw, bh) / max(1, min(bw, bh)) > SNAP_MAX_ASPECT:
             continue
         cx, cy = float(cent[i][0]) + x0, float(cent[i][1]) + y0
+        # ISOLATED, not merely bright. A ring of background twice the
+        # blob's size around it has to be meaningfully darker than the
+        # blob -- true of a ball on grass, false of a bright patch of
+        # sand in a bunker.
+        _r = max(3, int(round(max(
+            stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]))))
+        _ix, _iy = int(round(cx)), int(round(cy))
+        _ry0, _ry1 = max(0, _iy - 3 * _r), min(h, _iy + 3 * _r + 1)
+        _rx0, _rx1 = max(0, _ix - 3 * _r), min(w, _ix + 3 * _r + 1)
+        ring = cv2.cvtColor(frame_bgr[_ry0:_ry1, _rx0:_rx1],
+                            cv2.COLOR_BGR2GRAY).astype(float)
+        if ring.size < 9:
+            continue
+        core = ring[max(0, _iy - _r - _ry0):_iy - _ry0 + _r + 1,
+                    max(0, _ix - _r - _rx0):_ix - _rx0 + _r + 1]
+        if core.size < 1:
+            continue
+        if float(core.mean()) - float(np.median(ring)) < SNAP_MIN_LOCAL_CONTRAST:
+            continue
         d = (cx - x) ** 2 + (cy - y) ** 2
         if best_d is None or d < best_d:
             best, best_d = (int(round(cx)), int(round(cy))), d
@@ -12334,7 +12398,9 @@ def find_ball_at_rest(green_path, before_sec: float, after_sec: float,
                                [int(cv2.IMWRITE_JPEG_QUALITY), 92])
         return buf.tobytes() if ok else None
 
-    jb, ja = _jpeg(before), _jpeg(after)
+    # GRIDDED, BOTH OF THEM. The same lines on both frames so a spot
+    # can be compared between them by cell rather than by eye.
+    jb, ja = _jpeg(_with_grid(before)), _jpeg(_with_grid(after))
     if not jb or not ja:
         info["error"] = "could not encode the frames"
         return info
@@ -12360,8 +12426,15 @@ def find_ball_at_rest(green_path, before_sec: float, after_sec: float,
                     "type": "base64", "media_type": "image/jpeg",
                     "data": base64.standard_b64encode(ja).decode("ascii")}},
                 {"type": "text", "text": (
-                    f"Both frames are {w}x{h} pixels. Where is the golf "
-                    "ball in the AFTER frame? JSON only.")},
+                    f"Both frames are {w}x{h} pixels. A yellow grid is "
+                    f"drawn over them every {GRID_STEP_PX} pixels, with "
+                    "the x value labelled along the top of each vertical "
+                    "line and the y value beside each horizontal one. "
+                    "READ THE BALL'S POSITION OFF THAT GRID: find the "
+                    "cell it is in, then estimate how far across and "
+                    "down that cell it sits. Do not guess the distance "
+                    "from the edge of the frame. Where is the golf ball "
+                    "in the AFTER frame? JSON only.")},
             ]}],
         )
     except Exception as exc:  # noqa: BLE001
@@ -12445,3 +12518,113 @@ def find_ball_at_rest(green_path, before_sec: float, after_sec: float,
         except Exception as exc:  # noqa: BLE001
             log.warning("ai_tracer: ball-at-rest render failed: %s", exc)
     return info
+
+
+# ── when did it get there? ─────────────────────────────────────────────
+#
+# THE RESTING PLACE MAKES THIS EASY, which is why it is only ever run
+# after one is found. Knowing WHERE the ball finished turns "track a
+# ball falling through a windy green" into "watch one small patch of
+# grass and see when it changed" -- a few hundred reads of a 40-pixel
+# box, no tracking, no linking, nothing to lose.
+#
+# Walk backwards from the resting frame. The ball is in that patch, and
+# in it, and in it, and then at some frame it is not: that is the frame
+# it arrived. Before that the patch is bare grass.
+#
+# IT DOES NOT HAVE TO BE EXACT, and the operator said so: "bigger deal
+# is landing frame so the timing of the tracer will be correct". A few
+# frames either way moves the tracer's last moments imperceptibly; a
+# landing frame that is seconds out makes the whole clip wrong.
+LANDING_PATCH_PX = 9
+LANDING_MIN_CONTRAST = 14.0
+LANDING_GONE_FRAMES = 3
+LANDING_MAX_WALK_SEC = 12.0
+
+
+def find_landing_frame(green_path, rest_xy, rest_sec: float,
+                       max_walk_sec: float = LANDING_MAX_WALK_SEC) -> dict:
+    """The frame the ball arrived at `rest_xy`, walking back from rest.
+
+    Returns {"frame", "sec", "walked_frames", "error"}. `frame` is None
+    when the patch never empties inside the window -- which means the
+    ball was already there when the walk began, and the honest answer
+    is that this clip cannot say when it landed.
+    """
+    info: dict = {"frame": None, "sec": None, "walked_frames": 0,
+                  "error": None}
+    if not rest_xy:
+        info["error"] = "no resting place to walk back from"
+        return info
+    cap = cv2.VideoCapture(str(green_path))
+    try:
+        if not cap.isOpened():
+            info["error"] = "could not open the green clip"
+            return info
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 60.0)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        start = max(0, min(int(round(rest_sec * fps)),
+                           (total - 1) if total else 0))
+        stop = max(0, start - int(round(max_walk_sec * fps)))
+        x, y = int(rest_xy[0]), int(rest_xy[1])
+        r = LANDING_PATCH_PX
+
+        # READ FORWARDS, JUDGE BACKWARDS. Seeking per frame is what made
+        # the first version of the plate search take minutes; one seek
+        # and a sequential walk costs a fraction of it.
+        cap.set(cv2.CAP_PROP_POS_FRAMES, stop)
+        present: list = []
+        for idx in range(stop, start + 1):
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+            h, w = frame.shape[:2]
+            y0, y1 = max(0, y - r), min(h, y + r + 1)
+            x0, x1 = max(0, x - r), min(w, x + r + 1)
+            if y1 - y0 < 3 or x1 - x0 < 3:
+                info["error"] = "the resting place is off the frame"
+                return info
+            g = cv2.cvtColor(frame[y0:y1, x0:x1],
+                             cv2.COLOR_BGR2GRAY).astype(float)
+            ry0, ry1 = max(0, y - 3 * r), min(h, y + 3 * r + 1)
+            rx0, rx1 = max(0, x - 3 * r), min(w, x + 3 * r + 1)
+            ring = cv2.cvtColor(frame[ry0:ry1, rx0:rx1],
+                                cv2.COLOR_BGR2GRAY).astype(float)
+            # The ball against the grass immediately around it, which
+            # is the one measurement that survives the light changing
+            # over the seconds this walk covers.
+            present.append((idx, float(g.max()) - float(np.median(ring))
+                            >= LANDING_MIN_CONTRAST))
+        info["walked_frames"] = len(present)
+        if not present:
+            info["error"] = "could not read the walk-back window"
+            return info
+
+        # IS IT EVEN THERE AT THE END? Without this the walk reports a
+        # landing for a patch that never held a ball: scanning back
+        # from the finish, the first three absent frames it meets are
+        # the last three, and it calls that the arrival. Which is a
+        # confident landing time for a resting place that is wrong --
+        # the one thing worse than no landing time at all.
+        _tail = [here for _i, here in present[-LANDING_GONE_FRAMES:]]
+        if not any(_tail):
+            info["error"] = ("there is no ball at that spot at the end of "
+                             "the window — the resting place is wrong")
+            return info
+
+        # The last run of absence before it is there for good.
+        gone = 0
+        for idx, here in reversed(present):
+            if here:
+                gone = 0
+                continue
+            gone += 1
+            if gone >= LANDING_GONE_FRAMES:
+                info["frame"] = int(idx + LANDING_GONE_FRAMES)
+                info["sec"] = round(info["frame"] / fps, 2)
+                return info
+        info["error"] = ("the ball is in that spot for the whole window — "
+                         "it was already there when the walk began")
+        return info
+    finally:
+        cap.release()
