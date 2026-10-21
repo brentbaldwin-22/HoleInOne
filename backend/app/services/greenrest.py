@@ -222,7 +222,7 @@ def _match_exposure(plate_b, plate_a, mask):
     mb, ma = float(np.median(b)), float(np.median(a))
     sb = float(np.median(np.abs(b - mb))) or 1.0
     sa = float(np.median(np.abs(a - ma))) or 1.0
-    gain = sa / sb
+    gain = min(max(sa / sb, MATCH_GAIN_LIMIT[0]), MATCH_GAIN_LIMIT[1])
     out = (plate_b.astype(np.float64) - mb) * gain + ma
     return np.clip(out, 0, 255).astype(np.uint8), ma - mb, gain
 
