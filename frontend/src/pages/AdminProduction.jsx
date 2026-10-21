@@ -9345,10 +9345,25 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                         ) : (
                           <span className="muted">tee-only</span>
                         )}</td>
+                        {/* THE PICTURE, not the pixels. Two numbers
+                            mean nothing on their own; the same green
+                            with the pitch mark and the resting place
+                            ringed on it, and a dashed line showing the
+                            run-out between them, is the answer. */}
                         <td title={c.rest_reason || ""}>{c.rest_spot ? (
-                          <span style={{ color: "#f59e0b" }}>
-                            {c.rest_spot[0]}, {c.rest_spot[1]}
-                          </span>
+                          c.rest_image_url ? (
+                            <a href={c.rest_image_url} target="_blank"
+                               rel="noreferrer" title={c.rest_reason || ""}>
+                              <img src={c.rest_image_url} alt="where it
+                                   finished"
+                                   style={{ height: 54, borderRadius: 4,
+                                            display: "block" }} />
+                            </a>
+                          ) : (
+                            <span style={{ color: "#f59e0b" }}>
+                              {c.rest_spot[0]}, {c.rest_spot[1]}
+                            </span>
+                          )
                         ) : (
                           <span className="muted">—</span>
                         )}</td>

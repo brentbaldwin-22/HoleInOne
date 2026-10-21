@@ -250,6 +250,55 @@ def _match_exposure(plate_b, plate_a, mask):
     return np.clip(out, 0, 255).astype(np.uint8), ma - mb, gain
 
 
+def render_marks(plate, poly, marks, out_path, caption=""):
+    """One picture of the green with named points on it.
+
+    PIXELS ARE NOT AN ANSWER TO A PERSON. "1213, 717" tells an operator
+    nothing about whether the ball is on the green, let alone where on
+    it, and the two numbers that matter most -- where it pitched and
+    where it finished -- only mean something next to each other.
+
+    `marks` is [{"xy": [x, y], "label": str, "colour": (b,g,r)}, ...],
+    drawn in order with a dashed line between consecutive pairs, so the
+    run-out from pitch mark to resting place reads as a run-out rather
+    than as two unrelated rings.
+    """
+    h, w = plate.shape[:2]
+    img = cv2.cvtColor(plate, cv2.COLOR_GRAY2BGR)
+    u = max(1, int(round(max(w, h) / 500.0)))
+    if poly is not None:
+        cv2.polylines(img, [poly], True, (120, 230, 170), u)
+
+    pts = [m for m in marks if m.get("xy")]
+    # The run-out, dashed so it reads as a path and not as a chord of
+    # something. Drawn under the rings.
+    for a, b in zip(pts, pts[1:]):
+        x0, y0 = int(a["xy"][0]), int(a["xy"][1])
+        x1, y1 = int(b["xy"][0]), int(b["xy"][1])
+        n = max(2, int(np.hypot(x1 - x0, y1 - y0) / (6 * u)))
+        for k in range(0, n, 2):
+            t0, t1 = k / n, min(1.0, (k + 1) / n)
+            cv2.line(img,
+                     (int(x0 + (x1 - x0) * t0), int(y0 + (y1 - y0) * t0)),
+                     (int(x0 + (x1 - x0) * t1), int(y0 + (y1 - y0) * t1)),
+                     (235, 235, 235), max(1, u))
+    for m in pts:
+        x, y = int(m["xy"][0]), int(m["xy"][1])
+        c = tuple(m.get("colour") or (60, 170, 250))
+        cv2.circle(img, (x, y), 10 * u, c, u + 1)
+        cv2.line(img, (x - 15 * u, y), (x - 11 * u, y), c, u)
+        cv2.line(img, (x + 11 * u, y), (x + 15 * u, y), c, u)
+        cv2.putText(img, str(m.get("label") or ""),
+                    (x + 14 * u, y - 10 * u), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5 * u, c, u)
+    if caption:
+        cv2.putText(img, caption, (10 * u, h - 12 * u),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45 * u, (255, 255, 255), u)
+    if not cv2.imwrite(str(out_path), img):
+        raise OSError(f"could not write {out_path}")
+    return out_path
+
+
 def _render(plate_b, plate_a, poly, arrivals, departures, out_path,
             caption=""):
     """The two plates side by side, with what was found ringed.
@@ -360,7 +409,7 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
                    after_frame: int | None = None,
                    before_sec: float | None = None,
                    after_sec: float | None = None,
-                   debug_path=None) -> dict:
+                   debug_path=None, marks_path=None, marks=None) -> dict:
     """What arrived on the green, and what left it.
 
     The two plates are centred on `before_frame` / `after_frame`, or on
@@ -483,6 +532,28 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
 
         detect_sec = time.monotonic() - _t
         _t = time.monotonic()
+        # ONE PICTURE OF THE GREEN with named points on it, when the
+        # caller has others to show beside the resting place -- the
+        # pitch mark, typically, which only means anything next to it.
+        #
+        # Drawn here rather than by handing the plate back, because the
+        # plate is a numpy array and these results are returned as JSON
+        # by two endpoints. A caller that forgot to strip it would get
+        # a 500 rather than a picture.
+        marked = None
+        if marks_path is not None:
+            try:
+                _m = list(marks or [])
+                if arrivals:
+                    _m.append({"xy": [arrivals[0]["x"], arrivals[0]["y"]],
+                               "label": "at rest",
+                               "colour": (60, 170, 250)})
+                if _m:
+                    marked = str(render_marks(
+                        plate_a, poly, _m, Path(marks_path),
+                        f"plates {b / fps:.1f}s and {a / fps:.1f}s"))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("rest-spot mark render failed: %s", exc)
         image = None
         if debug_path is not None:
             try:
@@ -512,6 +583,7 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
                 "clip_frames": total,
             },
             "image_path": image,
+            "marks_path": marked,
             "best": arrivals[0] if arrivals else None,
             "arrivals": arrivals,
             "departures": departures,

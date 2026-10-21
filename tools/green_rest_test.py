@@ -486,6 +486,77 @@ def test_it_hands_back_a_picture():
     check("control, it is opt-in", quiet["image_path"], None)
 
 
+def test_it_draws_the_pitch_mark_beside_the_resting_place():
+    """Because neither number means anything on its own.
+
+    "1213, 717" tells an operator nothing about whether the ball is on
+    the green, let alone where on it. Where it came DOWN and where it
+    STOPPED only mean something next to each other, with the run-out
+    drawn between them.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        clip(d / "g.mp4")
+        both = d / "both.jpg"
+        out = G.find_rest_spot(
+            d / "g.mp4", polygon=GREEN_POLY, drawn_at=[W, H],
+            marks_path=both,
+            marks=[{"xy": [240, 290], "label": "landed",
+                    "colour": (235, 190, 90)}])
+        check("a picture is drawn", both.exists(), True)
+        check("  and reported", out["marks_path"], str(both))
+        img = cv2.imread(str(both))
+        # ONE panel, not the before/after pair: this is a picture of
+        # the green, not of a comparison.
+        check("  one panel wide", img.shape[1], W)
+
+        # The landing mark really is drawn — the same clip without it
+        # produces a different picture.
+        alone = d / "alone.jpg"
+        G.find_rest_spot(d / "g.mp4", polygon=GREEN_POLY, drawn_at=[W, H],
+                         marks_path=alone)
+        check("  and the landing mark changes it",
+              cv2.imread(str(alone)).tobytes() != img.tobytes(), True)
+
+
+def test_a_pitch_mark_is_drawn_even_with_nothing_at_rest():
+    """A miss is still worth seeing."""
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        # An empty green: nothing arrives, so there is no resting place.
+        vw = cv2.VideoWriter(str(d / "g.mp4"),
+                             cv2.VideoWriter_fourcc(*"mp4v"),
+                             float(FPS), (W, H))
+        for _f in range(N):
+            im = np.full((H, W, 3), 95, np.uint8)
+            im[200:, :] = 120
+            vw.write(im)
+        vw.release()
+        shot = d / "m.jpg"
+        out = G.find_rest_spot(d / "g.mp4", polygon=GREEN_POLY,
+                               drawn_at=[W, H], marks_path=shot,
+                               marks=[{"xy": [240, 290], "label": "landed"}])
+        check("nothing came to rest", out["best"], None)
+        check("  but the pitch mark is still drawn", shot.exists(), True)
+    # CONTROL: with no marks at all and nothing found, no picture —
+    # an empty green with an empty frame on it is not worth a file.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        vw = cv2.VideoWriter(str(d / "g.mp4"),
+                             cv2.VideoWriter_fourcc(*"mp4v"),
+                             float(FPS), (W, H))
+        for _f in range(N):
+            im = np.full((H, W, 3), 95, np.uint8)
+            im[200:, :] = 120
+            vw.write(im)
+        vw.release()
+        shot = d / "m.jpg"
+        out = G.find_rest_spot(d / "g.mp4", polygon=GREEN_POLY,
+                               drawn_at=[W, H], marks_path=shot)
+        check("control, nothing to mark draws nothing", shot.exists(), False)
+        check("  and claims nothing", out["marks_path"], None)
+
+
 def test_a_bad_render_does_not_lose_the_answer():
     """The picture is a convenience; the coordinates are the result."""
     with tempfile.TemporaryDirectory() as td:
@@ -600,6 +671,8 @@ for fn in (test_it_finds_a_ball_at_rest,
            test_the_plates_can_be_placed_by_time,
            test_a_plate_asked_for_at_the_very_edge_is_clamped,
            test_it_hands_back_a_picture,
+           test_it_draws_the_pitch_mark_beside_the_resting_place,
+           test_a_pitch_mark_is_drawn_even_with_nothing_at_rest,
            test_a_bad_render_does_not_lose_the_answer,
            test_a_long_clip_does_not_wait_until_the_group_arrives,
            test_an_empty_green_says_so):

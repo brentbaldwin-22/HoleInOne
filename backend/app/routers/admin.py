@@ -8468,7 +8468,7 @@ def _green_outline_for(db, green_camera_id):
 
 
 def _rest_spot_at(db, row, green_path, green_impact_sec: float,
-                  green_camera_id: int):
+                  green_camera_id: int, marks_path=None, landing_xy=None):
     """Where the ball came to rest, anchored on one swing's impact.
 
     `green_impact_sec` is the moment of impact in the GREEN clip's own
@@ -8487,10 +8487,18 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
     if not pts:
         return None, ("the green camera has no outline drawn — trace one "
                       "on the Cameras page and this measures itself")
+    # THE PITCH MARK GOES ON THE SAME PICTURE when the descent search
+    # found one. The two numbers that matter -- where it came down and
+    # where it stopped -- only mean something next to each other, and a
+    # dashed line between them is the run-out.
+    _marks = ([{"xy": [int(landing_xy[0]), int(landing_xy[1])],
+                "label": "landed", "colour": (235, 190, 90)}]
+              if landing_xy else [])
     out = greenrest.find_rest_spot(
         green_path, polygon=pts, drawn_at=drawn_at,
         before_sec=max(0.0, green_impact_sec - REST_PLATE_BEFORE_SEC),
         after_sec=green_impact_sec + REST_PLATE_AFTER_SEC,
+        marks_path=marks_path, marks=_marks,
     )
     if not out.get("ok"):
         return None, (out.get("error") or "the plates could not be built")
@@ -8508,7 +8516,8 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
     return (
         {"xy": [float(best["x"]), float(best["y"])],
          "camera_id": int(green_camera_id), "source": "plates",
-         "area": best.get("area"), "persist": best.get("persist")},
+         "area": best.get("area"), "persist": best.get("persist"),
+         "image": out.get("marks_path")},
         (f"came to rest at {best['x']},{best['y']} — {best.get('area')}px, "
          f"in {round((best.get('persist') or 0) * 100)}% of the after "
          f"frames, plates {out['before_frame']}/{out['after_frame']}"),
@@ -21348,11 +21357,20 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                 progress(f"Looking for where it came to rest, swing "
                          f"{i + 1} of {len(_clips)}", i, len(_clips))
             _base = float(_imp) / float(fps or 30.0) - float(out["delta_sec"])
-            _rest, _why = _rest_spot_at(db, row, _gp, _base, int(_g_id))
+            _shot = CLIPS_DIR / f"green-rest-{row.id}-s{i + 1}.jpg"
+            _rest, _why = _rest_spot_at(
+                db, row, _gp, _base, int(_g_id),
+                marks_path=_shot, landing_xy=c.get("landing_spot"))
             c["rest_reason"] = _why
             if _rest:
                 c["rest_spot"] = [int(_rest["xy"][0]), int(_rest["xy"][1])]
                 c["rest_source"] = "plates"
+                c["rest_area"] = _rest.get("area")
+                c["rest_persist"] = _rest.get("persist")
+                if _rest.get("image") and _shot.exists():
+                    c["rest_image_url"] = (
+                        f"{settings.app_base_url}/uploads/clips/{_shot.name}"
+                        f"?v={int(_shot.stat().st_mtime)}")
                 out["n_rest"] += 1
     else:
         out["rest_reason"] = "no green camera on this pair"
