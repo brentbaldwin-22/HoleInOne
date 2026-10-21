@@ -38,6 +38,7 @@ has to get right:
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 import cv2
@@ -100,24 +101,50 @@ def _read_at(cap, idx: int):
     return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
 
-def _plate(cap, centre: int, fps: float, n: int = PLATE_FRAMES,
-           span_sec: float = PLATE_SPAN_SEC):
-    """The median of `n` frames spread across `span_sec` around `centre`.
+def _window_frames(cap, centre: int, fps: float, n: int = PLATE_FRAMES,
+                   span_sec: float = PLATE_SPAN_SEC):
+    """`n` frames spread across `span_sec` around `centre`, read ONCE.
 
-    Spread, not consecutive — see PLATE_SPAN_SEC. Returns None if the
-    clip could not give us enough frames to median honestly.
+    SEEKING PER FRAME IS WHAT MADE THIS UNUSABLE. The first version
+    called cap.set(POS_FRAMES) for every sample -- 31 per plate, twice,
+    and then seven more per candidate for the persistence check, which
+    rewound to the start of the window each time. On a two-minute
+    1080p60 clip that is a few hundred seeks, most of them backwards,
+    and each backward seek makes the decoder restart from the preceding
+    keyframe. It ran for ten minutes and Render's gateway gave up
+    first.
+
+    So: one seek to the start of the window, then walk forward. Frames
+    we do not want are grab()ed rather than read() -- the decoder still
+    has to run but the colour conversion and the copy are skipped,
+    which is most of the cost of a frame we are going to discard.
+
+    The frames come back as a LIST rather than a median, because the
+    persistence check wants the same frames and fetching them twice is
+    what this function exists to stop.
     """
     total = _frame_count(cap)
     half = max(1, int(round(span_sec * max(1.0, fps) / 2.0)))
     lo, hi = max(0, centre - half), min(total - 1, centre + half)
     if hi <= lo:
-        return None
-    idxs = np.linspace(lo, hi, num=max(3, n)).round().astype(int)
+        return []
+    wanted = set(
+        np.linspace(lo, hi, num=max(3, n)).round().astype(int).tolist())
+    cap.set(cv2.CAP_PROP_POS_FRAMES, int(lo))
     frames = []
-    for i in idxs:
-        g = _read_at(cap, int(i))
-        if g is not None:
-            frames.append(g)
+    for idx in range(lo, hi + 1):
+        if idx in wanted:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+        elif not cap.grab():
+            break
+    return frames
+
+
+def _median(frames):
+    """The plate. None when there were not enough frames to be honest."""
     if len(frames) < 3:
         return None
     return np.median(np.stack(frames), axis=0).astype(np.uint8)
@@ -227,32 +254,30 @@ def _blobs(diff_mask, diff, mask):
     return out
 
 
-def _persistence(cap, blob, plate_before, centre, fps, mask_shape):
-    """In how many individual after-frames is this blob actually there?
+def _persistence(frames, blob, plate_before):
+    """In how many of the after frames is this blob actually there?
 
     The median's blind spot: something that sat still for half the
-    window shows up in it. A ball at rest is in every frame.
+    window shows up in it. A ball that has come to rest is in every
+    frame. Measured on the frames the plate was already built from --
+    they are the after window, and re-reading them was what made the
+    first version of this take minutes.
     """
-    total = _frame_count(cap)
-    half = max(1, int(round(PLATE_SPAN_SEC * max(1.0, fps) / 2.0)))
-    lo, hi = max(0, centre - half), min(total - 1, centre + half)
-    idxs = np.linspace(lo, hi, num=PERSIST_SAMPLES).round().astype(int)
+    if not frames:
+        return 0.0
     x, y = blob["x"], blob["y"]
     r = 2
-    h, w = mask_shape[:2]
+    h, w = frames[0].shape[:2]
     y0, y1 = max(0, y - r), min(h, y + r + 1)
     x0, x1 = max(0, x - r), min(w, x + r + 1)
     base = float(plate_before[y0:y1, x0:x1].mean())
-    hits = 0
-    seen = 0
-    for i in idxs:
-        g = _read_at(cap, int(i))
-        if g is None:
-            continue
-        seen += 1
-        if float(g[y0:y1, x0:x1].mean()) - base >= DIFF_THRESHOLD * PERSIST_REL:
-            hits += 1
-    return (hits / seen) if seen else 0.0
+    step = max(1, len(frames) // PERSIST_SAMPLES)
+    sampled = frames[::step] or frames
+    hits = sum(
+        1 for g in sampled
+        if float(g[y0:y1, x0:x1].mean()) - base >= DIFF_THRESHOLD * PERSIST_REL
+    )
+    return hits / len(sampled)
 
 
 def find_rest_spot(input_path, polygon=None, drawn_at=None,
@@ -300,8 +325,16 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
             return {"ok": False,
                     "error": "the after plate must come after the before one"}
 
-        plate_b = _plate(cap, b, fps)
-        plate_a = _plate(cap, a, fps)
+        # IN CLIP ORDER, so the decoder only ever walks forwards. The
+        # before window is earlier than the after one by construction
+        # (checked above), so reading them in this order means one
+        # forward seek each instead of a rewind between them.
+        _t = time.monotonic()
+        frames_b = _window_frames(cap, b, fps)
+        frames_a = _window_frames(cap, a, fps)
+        read_sec = time.monotonic() - _t
+        _t = time.monotonic()
+        plate_b, plate_a = _median(frames_b), _median(frames_a)
         if plate_b is None or plate_a is None:
             return {"ok": False, "error": "not enough frames to build a plate"}
 
@@ -315,8 +348,7 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
         departures = _blobs(neg, diff, mask)
 
         for blob in arrivals:
-            blob["persist"] = round(
-                _persistence(cap, blob, plate_b, a, fps, plate_a.shape), 2)
+            blob["persist"] = round(_persistence(frames_a, blob, plate_b), 2)
         arrivals = [x for x in arrivals if x["persist"] >= PERSIST_FRAC]
         # Steadiest first, then brightest. Not biggest: at the back of a
         # green the ball is a handful of pixels and the biggest thing
@@ -344,6 +376,8 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
                 "Nothing new is on the green. Either the shot missed it, or "
                 "the ball came to rest outside the outline.")
 
+        detect_sec = time.monotonic() - _t
+        _t = time.monotonic()
         image = None
         if debug_path is not None:
             try:
@@ -355,8 +389,21 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
             except Exception as exc:  # noqa: BLE001
                 log.warning("rest-spot debug render failed: %s", exc)
 
+        # TIMED, AND REPORTED. The first version of this ran for ten
+        # minutes on the real machine and under nine seconds here, so
+        # there was no way to tell from a failure which part was slow
+        # or whether a change had helped. A number measured where the
+        # work actually happens beats an estimate made where it does
+        # not.
         return {
             "ok": True,
+            "timing": {
+                "read_sec": round(read_sec, 2),
+                "detect_sec": round(detect_sec, 2),
+                "render_sec": round(time.monotonic() - _t, 2),
+                "frames_read": len(frames_b) + len(frames_a),
+                "clip_frames": total,
+            },
             "image_path": image,
             "best": arrivals[0] if arrivals else None,
             "arrivals": arrivals,

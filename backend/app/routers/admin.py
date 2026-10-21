@@ -16162,7 +16162,12 @@ def long_upload_green_rest(upload_id: int,
         raise HTTPException(404, "upload not found")
     if not row.green_filename:
         raise HTTPException(409, "this capture has no green clip")
+    # TIMED SEPARATELY. After a redeploy the ephemeral disk is empty and
+    # this is a silent multi-megabyte download -- which looks exactly
+    # like a slow detector from the outside.
+    _t = time.monotonic()
     storage.ensure_local(CLIPS_DIR, row.green_filename)
+    fetch_sec = time.monotonic() - _t
     path = CLIPS_DIR / row.green_filename
     if not path.exists():
         raise HTTPException(404, f"green clip missing: {row.green_filename}")
@@ -16202,6 +16207,7 @@ def long_upload_green_rest(upload_id: int,
         f"{settings.app_base_url}/uploads/clips/{out_name}"
         f"?v={int(img.stat().st_mtime)}" if img.exists() else None
     )
+    out.setdefault("timing", {})["fetch_sec"] = round(fetch_sec, 2)
     out["camera_id"] = cam.id if cam else None
     out["has_outline"] = bool(roi.get("points"))
     out["clip"] = row.green_filename

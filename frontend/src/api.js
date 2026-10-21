@@ -513,6 +513,11 @@ export const api = {
       method: "POST",
       adminPassword: key,
       body: opts,
+      // Long enough for a cold clip on a busy box: the first run after
+      // a redeploy downloads the raw before it can look at it. Without
+      // a timeout of our own the browser's gives up first and reports
+      // "Failed to fetch", which says nothing about what was slow.
+      timeoutMs: 240_000,
     }),
   greenRestTest: (key, cameraId, opts = {}) =>
     request(`/api/admin/cameras/${cameraId}/green-rest-test`, {

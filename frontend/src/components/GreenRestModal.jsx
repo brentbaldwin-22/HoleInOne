@@ -123,6 +123,17 @@ export default function GreenRestModal({ row, adminPassword, onClose }) {
               {(out.after_frame / (out.fps || 60)).toFixed(1)}s
               {out.clip ? ` · ${out.clip}` : ""}
             </div>
+            {out.timing && (
+              <div className="muted" style={{ marginTop: 2 }}>
+                took {(
+                  (out.timing.fetch_sec || 0) + (out.timing.read_sec || 0)
+                  + (out.timing.detect_sec || 0) + (out.timing.render_sec || 0)
+                ).toFixed(1)}s — {out.timing.fetch_sec || 0}s fetching the
+                clip, {out.timing.read_sec || 0}s reading{" "}
+                {out.timing.frames_read} frames of {out.timing.clip_frames},{" "}
+                {out.timing.detect_sec || 0}s comparing
+              </div>
+            )}
             {(out.notes || []).map((n, i) => (
               <div key={i} className="muted" style={{ marginTop: 2 }}>{n}</div>
             ))}
