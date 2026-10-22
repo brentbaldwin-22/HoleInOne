@@ -55,7 +55,8 @@ export default function AdminLongUpload() {
   const [reprocessing, setReprocessing] = useState({}); // {id: true}
   const [testCutting, setTestCutting] = useState({}); // {id: true}
   const [testCutResults, setTestCutResults] = useState({}); // {id: {detector, cuts, ...}}
-  const [testCutDetector, setTestCutDetector] = useState({}); // {id: "motion"|"audio"}
+  const [testCutDetector, setTestCutDetector] = useState({}); // {id: "motion"|"audio"|"combined"|"pi"}
+  const [piParams, setPiParams] = useState({}); // {id: {min_ratio, ...}}
   const [audioMinRatio, setAudioMinRatio] = useState({}); // {id: number}
   const [motionRatio, setMotionRatio] = useState({}); // {id: number}
   const [pairWindow, setPairWindow] = useState({}); // {id: number} -> combined-mode pair window
@@ -128,6 +129,22 @@ export default function AdminLongUpload() {
     }
   }
 
+  // The tee rig's swing_select knobs, in the order they matter when
+  // dialling one in: how big a burst has to be, how far apart two
+  // bursts are still one swing, then the window kept around it.
+  const PI_FIELDS = [
+    { key: "min_ratio", def: 4, min: 0.5, step: 0.5, label: "min_ratio",
+      help: "burst must be this many times the clip's median motion. Swings measure 5-7, a milling group 2-4" },
+    { key: "min_separation_sec", def: 6, min: 1, step: 0.5, label: "min_separation_sec",
+      help: "two peaks closer than this are one swing (backswing + follow-through)" },
+    { key: "max_burst_sec", def: 6, min: 0.5, step: 0.5, label: "max_burst_sec",
+      help: "wider than this is locomotion, not a swing — this is what rejects a group walking off" },
+    { key: "before_sec", def: 4.5, min: 0, step: 0.5, label: "before_sec",
+      help: "kept before impact (the address)" },
+    { key: "after_sec", def: 9, min: 1, step: 0.5, label: "after_sec",
+      help: "kept after impact (the ball flight)" },
+  ];
+
   async function testCutPrior(uploadId) {
     const detector = testCutDetector[uploadId] || "motion";
     const opts = {};
@@ -141,6 +158,13 @@ export default function AdminLongUpload() {
       if (Number.isFinite(aRatio) && aRatio > 0) opts.audioMinPeakRatio = aRatio;
       if (Number.isFinite(mRatio) && mRatio > 0) opts.motionRatio = mRatio;
       if (Number.isFinite(win) && win > 0) opts.combinedPairWindowSec = win;
+    } else if (detector === "pi") {
+      const cur = piParams[uploadId] || {};
+      opts.pi = {};
+      PI_FIELDS.forEach((f) => {
+        const v = parseFloat(cur[f.key] ?? f.def);
+        if (Number.isFinite(v)) opts.pi[f.key] = v;
+      });
     } else {
       const ratio = parseFloat(motionRatio[uploadId]);
       if (Number.isFinite(ratio) && ratio > 0) opts.motionRatio = ratio;
@@ -403,6 +427,7 @@ export default function AdminLongUpload() {
                         <option value="motion">motion</option>
                         <option value="audio">audio</option>
                         <option value="combined">combined</option>
+                        <option value="pi">pi (rig)</option>
                       </select>
                       {(testCutDetector[u.id] || "motion") === "audio" && (
                         <input
@@ -433,6 +458,29 @@ export default function AdminLongUpload() {
                           style={{ width: 60, fontSize: 12, padding: "2px 6px" }}
                           title="Motion threshold = median frame-diff × this ratio. Higher = stricter. Default 4."
                         />
+                      )}
+                      {(testCutDetector[u.id] || "motion") === "pi" && (
+                        <>
+                          {PI_FIELDS.map((f) => (
+                            <input
+                              key={f.key}
+                              type="number"
+                              min={f.min}
+                              step={f.step}
+                              value={(piParams[u.id] || {})[f.key] ?? f.def}
+                              onChange={(e) =>
+                                setPiParams((o) => ({
+                                  ...o,
+                                  [u.id]: { ...(o[u.id] || {}), [f.key]: e.target.value },
+                                }))
+                              }
+                              disabled={!!testCutting[u.id] || missing || busy}
+                              className="small"
+                              style={{ width: 62, fontSize: 12, padding: "2px 6px" }}
+                              title={`${f.label} — ${f.help} (rig default ${f.def})`}
+                            />
+                          ))}
+                        </>
                       )}
                       {(testCutDetector[u.id] || "motion") === "combined" && (
                         <span

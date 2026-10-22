@@ -1136,6 +1136,12 @@ export const api = {
       if (opts.audioMinPeakRatio != null) {
         fd.append("audio_min_peak_ratio", String(opts.audioMinPeakRatio));
       }
+      // The rig's knobs go up under the rig's own names, so what is
+      // dialled in here can be copied into the Pi's config.yaml
+      // verbatim instead of translated.
+      Object.entries(opts.pi || {}).forEach(([k, v]) => {
+        if (v != null && v !== "") fd.append(`pi_${k}`, String(v));
+      });
       if (opts.motionRatio != null) {
         fd.append("motion_ratio", String(opts.motionRatio));
       }

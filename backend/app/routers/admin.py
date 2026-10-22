@@ -11836,6 +11836,31 @@ def delete_long_upload(upload_id: int, db: Session = Depends(get_db)):
 TESTCUTS_SUBDIR = "_testcuts"
 
 
+def _tee_trigger_zones(db, row):
+    """The trigger boxes the tee rig measures motion inside, in pixels.
+
+    THE SAME BOXES, NOT A RESTATEMENT OF THEM. The rig calls
+    `tee_roi.boxes(camera.tee_box_roi)` and hands the result to its
+    MotionTracker; so does this. Anything else here -- a band, a
+    remembered rectangle, a fraction converted twice -- would make the
+    tester measure a different patch of grass than the rig, and every
+    threshold dialled in against it would be wrong by an unknown amount.
+
+    None when the camera has no boxes drawn, which the tracker reads as
+    "measure the whole frame" exactly as it does in the field.
+    """
+    ev = (
+        db.get(CameraEvent, row.camera_event_id)
+        if getattr(row, "camera_event_id", None) else None
+    )
+    if ev is None or not ev.tee_camera_id:
+        return None
+    cam = db.get(Camera, ev.tee_camera_id)
+    if cam is None:
+        return None
+    return tee_roi.boxes(cam.tee_box_roi) or None
+
+
 @router.post("/long-uploads/{upload_id}/test-cut")
 def test_cut_long_upload(
     upload_id: int,
@@ -11844,6 +11869,18 @@ def test_cut_long_upload(
     motion_ratio: float = Form(4.0),
     combined_pair_window_sec: float = Form(3.0),
     cut_clips: bool = Form(True),
+    # THE RIG'S OWN KNOBS, under the rig's own names. These are the
+    # values that go into `swing_select:` in the Pi's config.yaml once
+    # they are settled, so renaming them here would mean translating
+    # between two vocabularies every time a number moves.
+    pi_min_ratio: float = Form(4.0),
+    pi_min_separation_sec: float = Form(6.0),
+    pi_before_sec: float = Form(4.5),
+    pi_after_sec: float = Form(9.0),
+    pi_smooth_seconds: float = Form(0.15),
+    pi_max_burst_sec: float = Form(6.0),
+    pi_sample_hz: float = Form(20.0),
+    pi_use_zones: bool = Form(True),
     db: Session = Depends(get_db),
 ):
     """Dry-run the swing-cutting half of the long-upload pipeline.
@@ -11858,7 +11895,14 @@ def test_cut_long_upload(
     /admin/clips. Calling this again for the same upload wipes the
     previous test cuts first.
 
-    detector: 'motion' (default) | 'audio'
+    detector: 'motion' (default) | 'audio' | 'combined' | 'pi'
+
+    'pi' runs the TEE RIG'S OWN detector (pi-agent/agent/swingfind.py),
+    imported rather than reimplemented, against this stored clip. It is
+    the only option here that predicts what the rig will actually
+    upload; the other three are the backend's own cutters. Its person
+    gate is off (see services/pi_swingfind), so it reports the same
+    peaks as the rig or more, never fewer.
     """
     row = db.get(LongVideoUpload, upload_id)
     if not row:
@@ -11883,6 +11927,33 @@ def test_cut_long_upload(
             src_path,
             fps=tee_fps,
             min_peak_ratio=float(audio_min_peak_ratio),
+            debug=debug,
+        )
+    elif detector == "pi":
+        from ..services.pi_swingfind import detect_swings_pi
+
+        # The operator's trigger boxes are what the rig measures inside
+        # -- not a band in config. Feeding the same boxes here is the
+        # difference between testing the rig and testing something that
+        # resembles it.
+        _zones = None
+        if pi_use_zones:
+            try:
+                _zones = _tee_trigger_zones(db, row)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("test-cut: no trigger zones for upload=%s (%s) "
+                            "— measuring the whole frame instead",
+                            upload_id, exc)
+        windows = detect_swings_pi(
+            src_path,
+            sample_hz=float(pi_sample_hz),
+            zones=_zones,
+            min_ratio=float(pi_min_ratio),
+            min_separation_sec=float(pi_min_separation_sec),
+            before_sec=float(pi_before_sec),
+            after_sec=float(pi_after_sec),
+            smooth_seconds=float(pi_smooth_seconds),
+            max_burst_sec=float(pi_max_burst_sec),
             debug=debug,
         )
     elif detector == "combined":
