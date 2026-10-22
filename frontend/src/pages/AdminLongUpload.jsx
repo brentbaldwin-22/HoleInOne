@@ -665,6 +665,65 @@ export default function AdminLongUpload() {
                         <div className="tiny muted" style={{ marginBottom: 8, fontFamily: "monospace", lineHeight: 1.4 }}>
                           {testCutResults[u.id].debug.reason ? (
                             <div className="err-text">reason: {testCutResults[u.id].debug.reason}</div>
+                          ) : testCutResults[u.id].detector === "pi" ? (
+                            (() => {
+                              const d = testCutResults[u.id].debug || {};
+                              const zones = d.zones_used ?? 0;
+                              const cov = d.coverage ?? 0;
+                              // 0.70 is the rig's _CUT_WORTH_IT_BELOW: above
+                              // it the swings cover so much of the session
+                              // that cutting saves nothing and the clip goes
+                              // up whole — which is also what keeps it
+                              // attached to its paired green.
+                              const wouldCut = cov > 0 && cov < 0.7;
+                              return (
+                                <>
+                                  {zones > 0 ? (
+                                    <>measured inside {zones} trigger zone
+                                      {zones === 1 ? "" : "s"} (the boxes drawn
+                                      on the Cameras page — the same ones the
+                                      rig uses)</>
+                                  ) : (
+                                    <span className="warn-text">
+                                      measured the WHOLE FRAME — this upload has
+                                      no tee camera zones, so sky, cart path and
+                                      the next tee are all in the signal. The rig
+                                      measures inside its trigger boxes, so these
+                                      ratios will not match it.
+                                    </span>
+                                  )}
+                                  <br />
+                                  best peak ×{d.best_ratio?.toFixed?.(2) ?? d.best_ratio}
+                                  {d.best_at != null && <> at {Number(d.best_at).toFixed(1)}s</>}
+                                  {" "}vs threshold ×{d.min_ratio}
+                                  {" "}· {d.above_threshold ?? 0} cleared it
+                                  {d.rejected_too_wide > 0 && (
+                                    <> · <b>{d.rejected_too_wide}</b> rejected as
+                                      too wide (widest {d.widest_rejected_sec}s —
+                                      that is walking, not a swing)</>
+                                  )}
+                                  {d.rejected_no_person > 0 && (
+                                    <> · {d.rejected_no_person} rejected for nobody in the ROI</>
+                                  )}
+                                  <br />
+                                  {d.samples ?? 0} samples @ {d.sample_hz}Hz over
+                                  {" "}{d.duration_sec?.toFixed?.(1)}s
+                                  {" "}· person gate {d.person_gate}
+                                  <br />
+                                  swings cover {(cov * 100).toFixed(0)}% of the clip —
+                                  {" "}<b>{wouldCut
+                                    ? "the rig would CUT this into separate clips"
+                                    : cov === 0
+                                      ? "the rig would find nothing and upload it WHOLE"
+                                      : "above 70%, so the rig would upload it WHOLE"}</b>
+                                  {wouldCut && (
+                                    <> — and each cut uploads as a derived session,
+                                      which currently orphans the tee half of a
+                                      paired event.</>
+                                  )}
+                                </>
+                              );
+                            })()
                           ) : testCutResults[u.id].detector === "combined" ? (
                             <>
                               {(() => {
