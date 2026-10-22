@@ -66,6 +66,17 @@ def main():
     # panel cannot attribute one signal's verdict to the others.
     for r in out["signals"]:
         assert len(r["peaks"]) == len(SW), r
+    # The winner carries its whole sweep, not just its best row: one
+    # clip's best is not a setting, and choosing one that holds across
+    # clips means seeing every candidate on each.
+    top = out["signals"][0]
+    assert top["rows"], "winning signal returned no sweep rows"
+    assert all(r["caught"] > 0 for r in top["rows"]), top["rows"]
+    ordering = [(-r["caught"], r["false_positives"]) for r in top["rows"]]
+    assert ordering == sorted(ordering), ordering
+    assert any(r["min_ratio"] != top["best"]["min_ratio"]
+               or r["max_burst_sec"] != top["best"]["max_burst_sec"]
+               for r in top["rows"]), "sweep holds only the best row"
     # Some signal must find a workable setting when the swing is
     # genuinely there, or the sweep is not reaching far enough.
     assert any(r["best"]["caught"] == len(SW) and

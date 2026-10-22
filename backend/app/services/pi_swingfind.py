@@ -433,6 +433,7 @@ def compare_signals(video_path, known_sec, *, sample_hz: float = 20.0,
         elsewhere = max(far) if far else 0.0
 
         best = None
+        rows_for_signal = []
         for mr in _SWEEP_RATIOS:
             for mb in _SWEEP_BURSTS:
                 wins = sf.merge_windows(sf.find_swings(
@@ -449,6 +450,7 @@ def compare_signals(video_path, known_sec, *, sample_hz: float = 20.0,
                 row = {"min_ratio": mr, "max_burst_sec": mb,
                        "caught": caught, "of": len(known),
                        "false_positives": len(wins) - len(hit)}
+                rows_for_signal.append(row)
                 if best is None or (
                         (row["caught"], -row["false_positives"])
                         > (best["caught"], -best["false_positives"])):
@@ -469,6 +471,17 @@ def compare_signals(video_path, known_sec, *, sample_hz: float = 20.0,
             "elsewhere": round(elsewhere, 2),
             "separation": round(at_swing / elsewhere, 2) if elsewhere else None,
             "best": best,
+            # EVERY SETTING, not just this signal's best one. One clip's
+            # best is not a setting -- the rig needs a single pair that
+            # holds across clips, and picking it means seeing how each
+            # candidate did on each clip rather than three different
+            # winners. Trimmed to the ones that caught something, since
+            # the rest are only ever noise.
+            "rows": sorted(
+                [r for r in rows_for_signal if r["caught"] > 0],
+                key=lambda r: (-r["caught"], r["false_positives"],
+                               r["min_ratio"]),
+            )[:10],
         })
 
     # CAUGHT FIRST, THEN COST, and separation only to break ties.

@@ -921,6 +921,24 @@ export default function AdminLongUpload() {
                                                 .map((v) => `×${v}`).join(", ")}
                                             </span>
                                           )}
+                                          {i === 0 && Array.isArray(r.rows)
+                                            && r.rows.length > 0 && (
+                                            <div style={{ marginLeft: 14 }}>
+                                              <span className="muted">
+                                                every setting that caught
+                                                something, so one pair can be
+                                                picked that holds across clips:
+                                              </span>
+                                              {r.rows.map((x, j) => (
+                                                <div key={j}>
+                                                  {"  "}ratio {x.min_ratio}
+                                                  {" "}· burst {x.max_burst_sec}s →{" "}
+                                                  {x.caught}/{x.of} caught,{" "}
+                                                  {x.false_positives} false
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
                                           {i === 0 && r.separation != null
                                             && r.separation <= 1 && (
                                             <span className="muted">
