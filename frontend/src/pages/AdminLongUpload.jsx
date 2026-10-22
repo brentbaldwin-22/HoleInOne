@@ -169,7 +169,7 @@ export default function AdminLongUpload() {
       if (Number.isFinite(aRatio) && aRatio > 0) opts.audioMinPeakRatio = aRatio;
       if (Number.isFinite(mRatio) && mRatio > 0) opts.motionRatio = mRatio;
       if (Number.isFinite(win) && win > 0) opts.combinedPairWindowSec = win;
-    } else if (detector === "pi") {
+    } else if (detector === "pi" || detector === "ballgone") {
       const cur = piParams[uploadId] || {};
       opts.pi = {};
       PI_FIELDS.forEach((f) => {
@@ -446,6 +446,7 @@ export default function AdminLongUpload() {
                         <option value="audio">audio</option>
                         <option value="combined">combined</option>
                         <option value="pi">pi (rig)</option>
+                        <option value="ballgone">ball vanishes</option>
                       </select>
                       {(testCutDetector[u.id] || "motion") === "audio" && (
                         <input
@@ -477,7 +478,8 @@ export default function AdminLongUpload() {
                           title="Motion threshold = median frame-diff × this ratio. Higher = stricter. Default 4."
                         />
                       )}
-                      {(testCutDetector[u.id] || "motion") === "pi" && (
+                      {["pi", "ballgone"].includes(
+                        testCutDetector[u.id] || "motion") && (
                         <>
                           {PI_FIELDS.map((f) => (
                             <label
@@ -686,7 +688,8 @@ export default function AdminLongUpload() {
                   )}
 
                   {piZonesOpen[u.id]
-                    && (testCutDetector[u.id] || "motion") === "pi"
+                    && ["pi", "ballgone"].includes(
+                      testCutDetector[u.id] || "motion")
                     && !missing && (
                     <div className="card tight" style={{ margin: "10px 0 0", background: "var(--surface-alt)" }}>
                       <PiTestZones
@@ -774,6 +777,61 @@ export default function AdminLongUpload() {
                         <div className="tiny muted" style={{ marginBottom: 8, fontFamily: "monospace", lineHeight: 1.4 }}>
                           {testCutResults[u.id].debug.reason ? (
                             <div className="err-text">reason: {testCutResults[u.id].debug.reason}</div>
+                          ) : testCutResults[u.id].detector === "ballgone" ? (
+                            (() => {
+                              const d = testCutResults[u.id].debug || {};
+                              const sc = d.scored;
+                              return (
+                                <>
+                                  scanned {d.frames_scanned} frames @ {d.sample_hz}Hz
+                                  {" "}over {d.duration_sec}s ·{" "}
+                                  {d.zones_used > 0
+                                    ? `inside ${d.zones_used} hitting area`
+                                    : "the WHOLE FRAME — draw a hitting area, "
+                                      + "this detector needs a small box"}
+                                  {" "}· {d.n_tracks} bright thing(s) tracked
+                                  {sc && (
+                                    <><br /><b>caught {sc.caught}/{sc.of}</b>
+                                      {" "}of the swings you named,{" "}
+                                      {sc.false_positives} false</>
+                                  )}
+                                  {Array.isArray(d.balls) && d.balls.length > 0 && (
+                                    <>
+                                      <br /><b>sat still, then vanished:</b>
+                                      {d.balls.map((b, i) => (
+                                        <div key={i}>
+                                          {"  "}gone at <b>{b.vanished_at}s</b> —
+                                          {" "}sat {b.seen_for}s, moved {b.spread_px}px,
+                                          {" "}at ({b.x}, {b.y}), {b.area}px²,
+                                          {" "}contrast {b.contrast}
+                                        </div>
+                                      ))}
+                                    </>
+                                  )}
+                                  {Array.isArray(d.rejected) && d.rejected.length > 0 && (
+                                    <>
+                                      <br /><span className="muted">
+                                        rejected — why nothing was found matters as
+                                        much as what was:
+                                      </span>
+                                      {d.rejected.slice(0, 6).map((r, i) => (
+                                        <div key={i} className="muted">
+                                          {"  "}at {r.at}s — {r.why}
+                                        </div>
+                                      ))}
+                                    </>
+                                  )}
+                                  {(!d.balls || d.balls.length === 0)
+                                    && (!d.rejected || d.rejected.length === 0) && (
+                                    <><br /><span className="err-text">
+                                      No small bright thing was tracked at all — the
+                                      box is probably not on the ball, or the ball is
+                                      too dim to separate from the grass.
+                                    </span></>
+                                  )}
+                                </>
+                              );
+                            })()
                           ) : testCutResults[u.id].detector === "pi" ? (
                             (() => {
                               const d = testCutResults[u.id].debug || {};

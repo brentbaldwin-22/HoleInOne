@@ -11967,7 +11967,7 @@ def test_cut_long_upload(
     /admin/clips. Calling this again for the same upload wipes the
     previous test cuts first.
 
-    detector: 'motion' (default) | 'audio' | 'combined' | 'pi'
+    detector: 'motion' | 'audio' | 'combined' | 'pi' | 'ballgone'
 
     'pi' runs the TEE RIG'S OWN detector (pi-agent/agent/swingfind.py),
     imported rather than reimplemented, against this stored clip. It is
@@ -12001,6 +12001,65 @@ def test_cut_long_upload(
             min_peak_ratio=float(audio_min_peak_ratio),
             debug=debug,
         )
+    elif detector == "ballgone":
+        from ..services.ball_vanish import find_ball_vanish
+
+        _bz = None
+        _bz_frac = False
+        if (pi_zones_json or "").strip():
+            try:
+                _drawn = json.loads(pi_zones_json)
+                _bz = [{"x": float(b["x"]), "y": float(b["y"]),
+                        "w": float(b["w"]), "h": float(b["h"])}
+                       for b in _drawn
+                       if float(b.get("w") or 0) > 0]
+                _bz_frac = True
+            except (ValueError, TypeError, KeyError) as exc:
+                raise HTTPException(
+                    400, f"hitting area is not usable: {exc}") from None
+        elif pi_use_zones:
+            try:
+                _bz = _tee_trigger_zones(db, row)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("test-cut: no zones for upload=%s (%s)",
+                            upload_id, exc)
+        windows = find_ball_vanish(
+            src_path,
+            zones=_bz,
+            zones_fractional=_bz_frac,
+            sample_hz=float(pi_sample_hz),
+            before_sec=float(pi_before_sec),
+            after_sec=float(pi_after_sec),
+            debug=debug,
+        )
+        debug["zone_source"] = ("drawn for this test" if _bz_frac
+                                else "camera trigger zones" if _bz
+                                else "whole frame")
+        _known_b = []
+        for part in (pi_known_swings or "").replace(";", ",").split(","):
+            part = part.strip()
+            if part:
+                try:
+                    _known_b.append(float(part))
+                except ValueError:
+                    raise HTTPException(
+                        400, f"'{part}' is not a time in seconds") from None
+        if _known_b:
+            # Scored the same way as the motion detectors, so the two
+            # approaches can be compared on the same clips rather than
+            # on two different notions of "right".
+            _tol = 4.0
+            _hit = [w for w in windows
+                    if any(abs(w["peak_time_sec"] - k) <= _tol
+                           for k in _known_b)]
+            debug["scored"] = {
+                "known": _known_b,
+                "caught": sum(1 for k in _known_b
+                              if any(abs(w["peak_time_sec"] - k) <= _tol
+                                     for w in windows)),
+                "of": len(_known_b),
+                "false_positives": len(windows) - len(_hit),
+            }
     elif detector == "pi":
         from ..services.pi_swingfind import detect_swings_pi
 
