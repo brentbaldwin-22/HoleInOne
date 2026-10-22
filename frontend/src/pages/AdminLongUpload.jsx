@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
+import { MotionGraph } from "../components/MotionGraph.jsx";
 import { PiTestZones } from "../components/PiTestZones.jsx";
 import { Brand, Icon } from "../components/Brand.jsx";
 import { fmtDateTime } from "../time.js";
@@ -141,15 +142,15 @@ export default function AdminLongUpload() {
   // dialling one in: how big a burst has to be, how far apart two
   // bursts are still one swing, then the window kept around it.
   const PI_FIELDS = [
-    { key: "min_ratio", def: 4, min: 0.5, step: 0.5, label: "min_ratio",
+    { key: "min_ratio", short: "ratio", def: 4, min: 0.5, step: 0.5, label: "min_ratio",
       help: "burst must be this many times the clip's median motion. Swings measure 5-7, a milling group 2-4" },
-    { key: "min_separation_sec", def: 6, min: 1, step: 0.5, label: "min_separation_sec",
+    { key: "min_separation_sec", short: "gap s", def: 6, min: 1, step: 0.5, label: "min_separation_sec",
       help: "two peaks closer than this are one swing (backswing + follow-through)" },
-    { key: "max_burst_sec", def: 6, min: 0.5, step: 0.5, label: "max_burst_sec",
+    { key: "max_burst_sec", short: "width s", def: 6, min: 0.5, step: 0.5, label: "max_burst_sec",
       help: "wider than this is locomotion, not a swing — this is what rejects a group walking off" },
-    { key: "before_sec", def: 4.5, min: 0, step: 0.5, label: "before_sec",
+    { key: "before_sec", short: "pre s", def: 4.5, min: 0, step: 0.5, label: "before_sec",
       help: "kept before impact (the address)" },
-    { key: "after_sec", def: 9, min: 1, step: 0.5, label: "after_sec",
+    { key: "after_sec", short: "post s", def: 9, min: 1, step: 0.5, label: "after_sec",
       help: "kept after impact (the ball flight)" },
   ];
 
@@ -473,23 +474,31 @@ export default function AdminLongUpload() {
                       {(testCutDetector[u.id] || "motion") === "pi" && (
                         <>
                           {PI_FIELDS.map((f) => (
-                            <input
+                            <label
                               key={f.key}
-                              type="number"
-                              min={f.min}
-                              step={f.step}
-                              value={(piParams[u.id] || {})[f.key] ?? f.def}
-                              onChange={(e) =>
-                                setPiParams((o) => ({
-                                  ...o,
-                                  [u.id]: { ...(o[u.id] || {}), [f.key]: e.target.value },
-                                }))
-                              }
-                              disabled={!!testCutting[u.id] || missing || busy}
-                              className="small"
-                              style={{ width: 62, fontSize: 12, padding: "2px 6px" }}
+                              style={{ display: "inline-flex", flexDirection: "column",
+                                       alignItems: "center", gap: 1 }}
                               title={`${f.label} — ${f.help} (rig default ${f.def})`}
-                            />
+                            >
+                              <span className="tiny muted" style={{ fontSize: 10 }}>
+                                {f.short}
+                              </span>
+                              <input
+                                type="number"
+                                min={f.min}
+                                step={f.step}
+                                value={(piParams[u.id] || {})[f.key] ?? f.def}
+                                onChange={(e) =>
+                                  setPiParams((o) => ({
+                                    ...o,
+                                    [u.id]: { ...(o[u.id] || {}), [f.key]: e.target.value },
+                                  }))
+                                }
+                                disabled={!!testCutting[u.id] || missing || busy}
+                                className="small"
+                                style={{ width: 62, fontSize: 12, padding: "2px 6px" }}
+                              />
+                            </label>
                           ))}
                           <button
                             className="small"
@@ -736,10 +745,14 @@ export default function AdminLongUpload() {
                               return (
                                 <>
                                   {zones > 0 ? (
-                                    <>measured inside {zones} trigger zone
-                                      {zones === 1 ? "" : "s"} (the boxes drawn
-                                      on the Cameras page — the same ones the
-                                      rig uses)</>
+                                    <>measured inside <b>{zones}</b> zone
+                                      {zones === 1 ? "" : "s"} —{" "}
+                                      {d.zone_source === "drawn for this test" ? (
+                                        <b>the box you drew for this test</b>
+                                      ) : (
+                                        <>the camera&apos;s own trigger zones,
+                                          which is what the rig uses</>
+                                      )}</>
                                   ) : (
                                     <span className="warn-text">
                                       measured the WHOLE FRAME — this upload has
@@ -777,6 +790,21 @@ export default function AdminLongUpload() {
                                     <> — and each cut uploads as a derived session,
                                       which currently orphans the tee half of a
                                       paired event.</>
+                                  )}
+                                  {d.trace && (
+                                    <div style={{ marginTop: 6 }}>
+                                      <MotionGraph
+                                        trace={d.trace}
+                                        windows={testCutResults[u.id].cuts || []}
+                                      />
+                                      <div className="tiny muted">
+                                        smoothed motion ÷ the clip&apos;s own median,
+                                        which is the number compared to the
+                                        threshold. Red dashed = your ratio
+                                        ({d.trace.threshold}). Green bands = windows
+                                        kept, dots = where impact was placed.
+                                      </div>
+                                    </div>
                                   )}
                                 </>
                               );

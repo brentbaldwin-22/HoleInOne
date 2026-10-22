@@ -171,6 +171,44 @@ def motion_trace(video_path, *, sample_hz: float = 20.0,
         cap.release()
 
 
+def _ratio_curve(sf, times, motion, *, smooth_seconds: float) -> dict:
+    """The curve the detector actually thresholds, for plotting.
+
+    NOT RAW MOTION. find_swings smooths the signal and divides by the
+    session's own median, then compares THAT to min_ratio -- so a graph
+    of raw frame-difference cannot be read against the threshold, and
+    the peak an operator sees would not be the number the detector
+    used. This recomputes the same curve with the rig's own `smooth`
+    and `_median`, mirroring find_swings' rate arithmetic exactly, so
+    the line on screen and the decision are the same quantity.
+
+    Reusing the rig's functions rather than reimplementing them is the
+    same rule as the rest of this module: a second smoother would drift.
+    """
+    n = min(len(times), len(motion))
+    if n < 3:
+        return {"times": [], "ratio": [], "median": 0.0}
+    times = list(times[:n])
+    motion = [float(m) for m in motion[:n]]
+    span = times[-1] - times[0]
+    if span <= 0:
+        return {"times": [], "ratio": [], "median": 0.0}
+    rate = (n - 1) / span
+    sm = sf.smooth(motion, int(round(rate * smooth_seconds)))
+    med = sf._median(sm)
+    if med <= 0:
+        # Matches find_swings: a dead-flat signal has no median to
+        # divide by, and inventing ratios from it would draw peaks
+        # that do not exist.
+        return {"times": [round(t, 2) for t in times],
+                "ratio": [], "median": 0.0}
+    return {
+        "times": [round(t, 2) for t in times],
+        "ratio": [round(v / med, 3) for v in sm],
+        "median": round(med, 4),
+    }
+
+
 def detect_swings_pi(video_path, *, sample_hz: float = 20.0,
                      zones: Optional[list] = None,
                      zones_fractional: bool = False,
@@ -195,12 +233,13 @@ def detect_swings_pi(video_path, *, sample_hz: float = 20.0,
     ))
     if debug is not None:
         debug.update(dbg)
-        debug["trace"] = {
-            # The signal itself, so the operator can see the peak that
-            # missed rather than only being told that one did.
-            "times": [round(t, 2) for t in trace["times"]],
-            "motion": [round(m, 3) for m in trace["motion"]],
-        }
+        debug["trace"] = _ratio_curve(
+            sf, trace["times"], trace["motion"],
+            smooth_seconds=float(params.get(
+                "smooth_seconds", sf.DEFAULT_SMOOTH_SECONDS)),
+        )
+        debug["trace"]["threshold"] = float(
+            params.get("min_ratio", sf.DEFAULT_MIN_RATIO))
         debug["sample_hz"] = sample_hz
         debug["zones_used"] = trace["zones_used"]
         debug["duration_sec"] = trace["duration_sec"]

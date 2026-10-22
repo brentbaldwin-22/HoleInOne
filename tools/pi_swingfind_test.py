@@ -136,8 +136,8 @@ def main():
         f"doing its job: {ww}")
 
     # --- the trace is returned for plotting --------------------------
-    assert dbg.get("trace", {}).get("motion"), "no trace returned"
-    assert len(dbg["trace"]["times"]) == len(dbg["trace"]["motion"])
+    assert dbg.get("trace", {}).get("ratio"), "no trace returned"
+    assert len(dbg["trace"]["times"]) == len(dbg["trace"]["ratio"])
     assert dbg.get("person_gate") == "off (tester)", dbg.get("person_gate")
     print(f"  trace: {len(dbg['trace']['times'])} points, "
           f"coverage {dbg.get('coverage'):.2f}")
@@ -173,6 +173,28 @@ def main():
     assert d_away["best_ratio"] < d_fr["best_ratio"], (
         "a box away from the action measured the same as a box on it — "
         "the zones are not reaching the tracker")
+
+    # --- the graph must plot what the detector decided on -----------
+    # If the curve on screen is not the curve find_swings thresholded,
+    # the operator tunes against a picture of something else. The max
+    # of the plotted ratio must BE the reported best_ratio.
+    for name, clip in (("swing", swing), ("walking", walkclip),
+                       ("weak", weak), ("flat", flat)):
+        dd = {}
+        detect_swings_pi(clip, debug=dd, **p)
+        tr = dd["trace"]
+        if not tr["ratio"]:
+            print(f"  graph[{name}]: flat signal, no curve (median 0)")
+            continue
+        top = max(tr["ratio"])
+        assert abs(top - dd["best_ratio"]) < 0.02, (
+            f"{name}: graph peaks at {top} but the detector reported "
+            f"best_ratio {dd['best_ratio']} — the plot is not the signal")
+        assert len(tr["times"]) == len(tr["ratio"]), name
+        assert tr["threshold"] == p["min_ratio"], tr["threshold"]
+        print(f"  graph[{name}]: peak {top:.2f} == best_ratio "
+              f"{dd['best_ratio']:.2f}, {len(tr['ratio'])} points, "
+              f"median {tr['median']}")
 
     print("\nALL PASS")
 
