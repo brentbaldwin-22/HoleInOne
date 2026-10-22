@@ -1147,6 +1147,9 @@ export const api = {
       if (Array.isArray(opts.piZones) && opts.piZones.length > 0) {
         fd.append("pi_zones_json", JSON.stringify(opts.piZones));
       }
+      if (opts.piKnownSwings) {
+        fd.append("pi_known_swings", String(opts.piKnownSwings));
+      }
       if (opts.motionRatio != null) {
         fd.append("motion_ratio", String(opts.motionRatio));
       }

@@ -11887,6 +11887,10 @@ def test_cut_long_upload(
     # stop the tee triggering on a live hole. Trying a tighter box
     # against yesterday's footage must not be able to do that.
     pi_zones_json: str = Form(""),
+    # Times (seconds) of swings the operator can see in the clip. Given
+    # these, the panel stops being a threshold-guessing game: every
+    # combination is scored against them at once.
+    pi_known_swings: str = Form(""),
     db: Session = Depends(get_db),
 ):
     """Dry-run the swing-cutting half of the long-upload pipeline.
@@ -11989,6 +11993,34 @@ def test_cut_long_upload(
             debug=debug,
         )
         debug["zone_source"] = _zone_source
+        _known = []
+        for part in (pi_known_swings or "").replace(";", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                _known.append(float(part))
+            except ValueError:
+                raise HTTPException(
+                    400, f"'{part}' is not a time in seconds") from None
+        if _known:
+            from ..services.pi_swingfind import tune_against_known
+
+            debug["tuning"] = tune_against_known(
+                src_path, _known,
+                sample_hz=float(pi_sample_hz),
+                zones=_zones,
+                zones_fractional=_zones_fractional,
+                min_ratio=float(pi_min_ratio),
+                min_separation_sec=float(pi_min_separation_sec),
+                before_sec=float(pi_before_sec),
+                after_sec=float(pi_after_sec),
+                smooth_seconds=float(pi_smooth_seconds),
+                max_burst_sec=float(pi_max_burst_sec),
+            )
+            # The curve is already in debug["trace"]; carrying a second
+            # copy doubles a 1300-point payload for nothing.
+            debug["tuning"].pop("curve", None)
     elif detector == "combined":
         windows = detect_swings_combined(
             src_path,

@@ -66,6 +66,7 @@ export default function AdminLongUpload() {
   // #890 saw the button flick back to "Test cut" and nothing else --
   // which is indistinguishable from a dead button, and was read as one.
   const [testCutError, setTestCutError] = useState({}); // {id: message}
+  const [knownSwings, setKnownSwings] = useState({}); // {id: "60, 92, 124"}
   const [audioMinRatio, setAudioMinRatio] = useState({}); // {id: number}
   const [motionRatio, setMotionRatio] = useState({}); // {id: number}
   const [pairWindow, setPairWindow] = useState({}); // {id: number} -> combined-mode pair window
@@ -175,6 +176,9 @@ export default function AdminLongUpload() {
         if (Number.isFinite(v)) opts.pi[f.key] = v;
       });
       if ((piZones[uploadId] || []).length > 0) opts.piZones = piZones[uploadId];
+      if ((knownSwings[uploadId] || "").trim()) {
+        opts.piKnownSwings = knownSwings[uploadId].trim();
+      }
     } else {
       const ratio = parseFloat(motionRatio[uploadId]);
       if (Number.isFinite(ratio) && ratio > 0) opts.motionRatio = ratio;
@@ -513,6 +517,26 @@ export default function AdminLongUpload() {
                               ? ` (${piZones[u.id].length})`
                               : ""}
                           </button>
+                          <label
+                            style={{ display: "inline-flex", flexDirection: "column",
+                                     alignItems: "center", gap: 1 }}
+                            title="Seconds where you can SEE a swing, comma separated (e.g. 60, 92, 124). Given these, every threshold/width combination is scored against them instead of guessed at."
+                          >
+                            <span className="tiny muted" style={{ fontSize: 10 }}>
+                              swings at
+                            </span>
+                            <input
+                              type="text"
+                              placeholder="60, 92, 124"
+                              value={knownSwings[u.id] || ""}
+                              onChange={(e) =>
+                                setKnownSwings((o) => ({ ...o, [u.id]: e.target.value }))
+                              }
+                              disabled={!!testCutting[u.id] || missing || busy}
+                              className="small"
+                              style={{ width: 96, fontSize: 12, padding: "2px 6px" }}
+                            />
+                          </label>
                         </>
                       )}
                       {(testCutDetector[u.id] || "motion") === "combined" && (
@@ -790,6 +814,57 @@ export default function AdminLongUpload() {
                                     <> — and each cut uploads as a derived session,
                                       which currently orphans the tee half of a
                                       paired event.</>
+                                  )}
+                                  {d.tuning && (
+                                    <div style={{ marginTop: 8 }}>
+                                      <div style={{ marginBottom: 3 }}>
+                                        <b>What the signal holds at the swings
+                                          you named:</b>
+                                      </div>
+                                      {d.tuning.at_swing.map((a, i) => (
+                                        <div key={i}>
+                                          {"  "}{a.at}s →{" "}
+                                          {a.peak == null ? (
+                                            <span className="err-text">
+                                              outside the clip
+                                            </span>
+                                          ) : (
+                                            <>peak <b>×{a.peak}</b> at {a.peak_at}s,
+                                              burst {a.burst_sec}s{" "}
+                                              {a.peak < 1.6 && (
+                                                <span className="err-text">
+                                                  — barely above the median: the
+                                                  swing is not in this signal, so
+                                                  no threshold will find it
+                                                </span>
+                                              )}</>
+                                          )}
+                                        </div>
+                                      ))}
+                                      <div style={{ margin: "6px 0 3px" }}>
+                                        <b>Settings scored against them</b>{" "}
+                                        <span className="muted">
+                                          (caught / false positives)
+                                        </span>
+                                      </div>
+                                      <div>
+                                        {"  "}your settings ×{d.tuning.current.min_ratio}
+                                        {" / "}{d.tuning.current.max_burst_sec}s →{" "}
+                                        <b>{d.tuning.current.caught}/{d.tuning.current.of}</b>
+                                        {" "}caught, {d.tuning.current.false_positives} false
+                                      </div>
+                                      {d.tuning.rows.slice(0, 6).map((r, i) => (
+                                        <div key={i} style={{
+                                          color: i === 0 ? "var(--ok, #27ae60)" : undefined,
+                                        }}>
+                                          {"  "}ratio <b>{r.min_ratio}</b>
+                                          {" "}· burst <b>{r.max_burst_sec}s</b> →{" "}
+                                          {r.caught}/{r.of} caught,{" "}
+                                          {r.false_positives} false
+                                          {i === 0 && <> ← best</>}
+                                        </div>
+                                      ))}
+                                    </div>
                                   )}
                                   {d.trace && (
                                     <div style={{ marginTop: 6 }}>

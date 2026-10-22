@@ -209,6 +209,135 @@ def _ratio_curve(sf, times, motion, *, smooth_seconds: float) -> dict:
     }
 
 
+# Thresholds worth trying, and burst widths worth pairing them with.
+# The ratio list reaches well below the rig's 4.0 on purpose: on a
+# camera where a swing is small and distant, the swing itself can sit
+# inside the "people milling" band, and the question becomes whether
+# WIDTH can separate them once the threshold is low enough to see them
+# at all.
+_SWEEP_RATIOS = (1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.5, 4.0)
+_SWEEP_BURSTS = (0.8, 1.2, 1.6, 2.5, 4.0, 6.0)
+
+
+def tune_against_known(video_path, known_sec, *, sample_hz: float = 20.0,
+                       zones=None, zones_fractional: bool = False,
+                       tolerance_sec: float = 4.0, **params) -> dict:
+    """Which settings would have caught the swings you already know about.
+
+    HUNTING A THRESHOLD BY HAND IS THE SLOW WAY and it cannot see the
+    cost: lowering min_ratio until the swing appears also admits
+    everything else, and the panel gave no way to count what else came
+    with it. Given the times of real swings, every combination can be
+    scored at once -- caught, and how much rubbish came too.
+
+    find_swings IS CALLED, not reimplemented, once per combination. The
+    video is decoded once and the signal reused, so the sweep costs
+    arithmetic rather than another minute of ffmpeg.
+    """
+    sf = _swingfind()
+    trace = motion_trace(video_path, sample_hz=sample_hz, zones=zones,
+                         zones_fractional=zones_fractional)
+    times, motion = trace["times"], trace["motion"]
+    known = sorted(float(k) for k in known_sec)
+    base = {k: v for k, v in params.items()
+            if k in ("min_separation_sec", "before_sec", "after_sec",
+                     "smooth_seconds")}
+
+    # What the signal holds AT each swing, independent of any setting.
+    # This is the question under the question: if there is no peak at
+    # 60s, no threshold will ever find the swing at 60s, and the fix is
+    # the zone or the camera rather than a number.
+    curve = _ratio_curve(sf, times, motion,
+                         smooth_seconds=float(base.get(
+                             "smooth_seconds", sf.DEFAULT_SMOOTH_SECONDS)))
+    at_swing = []
+    if curve["ratio"]:
+        n = len(curve["ratio"])
+        span = curve["times"][-1] - curve["times"][0]
+        rate = (n - 1) / span if span > 0 else 1.0
+        for k in known:
+            lo = max(0, int((k - tolerance_sec - curve["times"][0]) * rate))
+            hi = min(n - 1, int((k + tolerance_sec - curve["times"][0]) * rate))
+            if hi <= lo:
+                at_swing.append({"at": k, "peak": None})
+                continue
+            seg = curve["ratio"][lo:hi + 1]
+            best_i = lo + max(range(len(seg)), key=lambda j: seg[j])
+            at_swing.append({
+                "at": k,
+                "peak": round(curve["ratio"][best_i], 2),
+                "peak_at": round(curve["times"][best_i], 1),
+                "burst_sec": round(
+                    sf.burst_width(curve["ratio"], best_i, rate), 2),
+            })
+
+    rows = []
+    for mr in _SWEEP_RATIOS:
+        for mb in _SWEEP_BURSTS:
+            dbg: dict = {}
+            wins = sf.merge_windows(sf.find_swings(
+                times, motion, duration_sec=trace["duration_sec"],
+                min_ratio=mr, max_burst_sec=mb, person_times=None,
+                debug=dbg, **base))
+            hit = [w for w in wins
+                   if any(abs(w["peak_time_sec"] - k) <= tolerance_sec
+                          for k in known)]
+            # A window can straddle two known swings; count SWINGS
+            # caught, not windows that touched one, or a single greedy
+            # window would score as a clean sweep.
+            caught = sum(
+                1 for k in known
+                if any(abs(w["peak_time_sec"] - k) <= tolerance_sec
+                       for w in wins))
+            rows.append({
+                "min_ratio": mr,
+                "max_burst_sec": mb,
+                "caught": caught,
+                "of": len(known),
+                "false_positives": len(wins) - len(hit),
+                "windows": len(wins),
+            })
+
+    # Best first: every swing matters more than any amount of rubbish,
+    # because a missed shot is a refund and a spare clip is 6 MB.
+    # WHAT THE OPERATOR IS CURRENTLY ASKING FOR, always, even when the
+    # sweep ranks it nowhere. "Here are twelve better settings" without
+    # the one in the boxes leaves the size of the improvement unstated,
+    # and that is the number being decided on.
+    _cur_mr = float(params.get("min_ratio", sf.DEFAULT_MIN_RATIO))
+    _cur_mb = float(params.get("max_burst_sec", sf.DEFAULT_MAX_BURST))
+    _cur_dbg: dict = {}
+    _cur_wins = sf.merge_windows(sf.find_swings(
+        times, motion, duration_sec=trace["duration_sec"],
+        min_ratio=_cur_mr, max_burst_sec=_cur_mb, person_times=None,
+        debug=_cur_dbg, **base))
+    _cur_hit = [w for w in _cur_wins
+                if any(abs(w["peak_time_sec"] - k) <= tolerance_sec
+                       for k in known)]
+    current = {
+        "min_ratio": _cur_mr,
+        "max_burst_sec": _cur_mb,
+        "caught": sum(1 for k in known
+                      if any(abs(w["peak_time_sec"] - k) <= tolerance_sec
+                             for w in _cur_wins)),
+        "of": len(known),
+        "false_positives": len(_cur_wins) - len(_cur_hit),
+        "windows": len(_cur_wins),
+    }
+
+    rows.sort(key=lambda r: (-r["caught"], r["false_positives"],
+                             r["min_ratio"]))
+    return {
+        "known": known,
+        "at_swing": at_swing,
+        "current": current,
+        "rows": rows[:12],
+        "curve": curve,
+        "duration_sec": trace["duration_sec"],
+        "zones_used": trace["zones_used"],
+    }
+
+
 def detect_swings_pi(video_path, *, sample_hz: float = 20.0,
                      zones: Optional[list] = None,
                      zones_fractional: bool = False,
