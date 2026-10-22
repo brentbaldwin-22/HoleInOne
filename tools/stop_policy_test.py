@@ -129,6 +129,28 @@ def main():
         "no sightings recorded — swing_select's person gate would reject "
         "every peak on a copy rig")
 
+    # --- the code fallback and the shipped config must agree --------
+    # They disagreed for the life of both files (30 in the example, 5
+    # in the code), which means a rig that omits the key behaves
+    # nothing like the documented default and nothing like every other
+    # rig. Harmless only for as long as nobody omits it.
+    import re
+    root = Path(__file__).resolve().parents[1] / "pi-agent"
+    cfg_txt = (root / "config.example.yaml").read_text()
+    tee_txt = (root / "agent" / "tee.py").read_text()
+    m_cfg = re.search(r"^\s*no_person_timeout_seconds:\s*([0-9.]+)",
+                      cfg_txt, re.M)
+    m_code = re.search(
+        r'no_person_timeout_seconds"\s*,\s*([0-9.]+)\s*\)', tee_txt)
+    assert m_cfg, "no_person_timeout_seconds missing from config.example.yaml"
+    assert m_code, "no fallback found in tee.py"
+    cfg_v, code_v = float(m_cfg.group(1)), float(m_code.group(1))
+    print(f"shipped config {cfg_v}s, code fallback {code_v}s")
+    assert cfg_v == code_v, (
+        f"config.example.yaml ships {cfg_v}s but tee.py falls back to "
+        f"{code_v}s — a rig omitting the key gets neither what the "
+        f"config documents nor what every other rig runs")
+
     print("\nALL PASS")
 
 

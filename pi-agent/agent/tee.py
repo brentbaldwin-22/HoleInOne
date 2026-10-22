@@ -952,7 +952,15 @@ class TeeAgent:
         # condition was not.
         dwell_grace = float(
             self.det_cfg.get("trigger_dwell_grace_seconds", 3))
-        no_person_timeout = float(self.det_cfg.get("no_person_timeout_seconds", 5))
+        # THE FALLBACK MATCHES THE SHIPPED CONFIG, which it did not for
+        # as long as both have existed: config.example.yaml said 30 and
+        # this said 5, so a rig whose config omitted the key recorded
+        # six-second clips while its own documentation promised
+        # half-minute ones. Nobody hit it because every rig in the
+        # field sets the key -- which is exactly why it could sit there.
+        # tools/stop_policy_test.py now fails if the two drift again.
+        no_person_timeout = float(
+            self.det_cfg.get("no_person_timeout_seconds", 12))
 
         detector = self._build_detector(det_width)
 
