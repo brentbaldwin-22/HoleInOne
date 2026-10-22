@@ -626,6 +626,16 @@ export default function AdminLongUpload() {
                         zones={piZones[u.id] || []}
                         onChange={(z) => setPiZones((o) => ({ ...o, [u.id]: z }))}
                       />
+                      {testCutting[u.id] && (
+                        <div className="small" style={{ marginTop: 6 }}>
+                          <b>Running…</b>{" "}
+                          <span className="muted">
+                            the rig&apos;s detector decodes ~20 frames a second
+                            of this clip, so a two-minute session takes a
+                            half-minute or so. Results appear below.
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
 

@@ -96,12 +96,19 @@ export function PiTestZones({ uploadId, adminPassword, zones, onChange }) {
           onMouseUp={onUp}
           onMouseLeave={onUp}
         >
+          {/* HEIGHT IS CAPPED ON PURPOSE. At full size this frame runs
+              ~850px and pushes the Test cut results a screen and a half
+              down the page, which reads exactly like the button doing
+              nothing -- it did, to the first person who used it. The
+              overlays are positioned in percentages, so scaling the
+              image scales the boxes with it. */}
           <img
             ref={imgRef}
             src={frame.image_url}
             alt="frame to draw test zones on"
             draggable={false}
-            style={{ maxWidth: "100%", display: "block", borderRadius: 4 }}
+            style={{ maxWidth: "100%", maxHeight: "48vh",
+                     display: "block", borderRadius: 4 }}
           />
           {[...boxes, ...(draft ? [draft] : [])].map((b, i) => (
             <div
