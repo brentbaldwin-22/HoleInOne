@@ -837,8 +837,12 @@ export default function AdminLongUpload() {
                                   {d.tuning && (
                                     <div style={{ marginTop: 8 }}>
                                       <div style={{ marginBottom: 3 }}>
-                                        <b>What the signal holds at the swings
-                                          you named:</b>
+                                        <b>What the RIG&apos;S signal (meandiff)
+                                          holds at the swings you named:</b>{" "}
+                                        <span className="muted">
+                                          — the other signals are scored
+                                          separately below
+                                        </span>
                                       </div>
                                       {d.tuning.at_swing.map((a, i) => (
                                         <div key={i}>
@@ -852,9 +856,8 @@ export default function AdminLongUpload() {
                                               burst {a.burst_sec}s{" "}
                                               {a.peak < 1.6 && (
                                                 <span className="err-text">
-                                                  — barely above the median: the
-                                                  swing is not in this signal, so
-                                                  no threshold will find it
+                                                  — barely above the median, so no
+                                                  threshold on THIS signal finds it
                                                 </span>
                                               )}</>
                                           )}
@@ -890,9 +893,13 @@ export default function AdminLongUpload() {
                                       <div style={{ marginBottom: 3 }}>
                                         <b>Which signal separates your swings</b>{" "}
                                         <span className="muted">
-                                          (separation = loudest at a swing ÷
-                                          loudest anywhere else; above 1 means
-                                          some threshold can work)
+                                          (ranked by swings caught, then by spare
+                                          clips — a missed shot is a refund, a
+                                          spare 6 MB clip is not. Separation =
+                                          loudest at a swing ÷ loudest anywhere
+                                          else; above 1 means it stands clear of
+                                          the noise rather than scraping in under
+                                          a low threshold)
                                         </span>
                                       </div>
                                       {d.signal_compare.signals.map((r, i) => (
@@ -906,17 +913,34 @@ export default function AdminLongUpload() {
                                           {" "}→ separation{" "}
                                           <b>{r.separation == null ? "—" : r.separation}</b>
                                           {" "}· best {r.best.min_ratio}/{r.best.max_burst_sec}s
-                                          {" "}catches {r.best.caught}/{r.best.of},{" "}
+                                          {" "}catches <b>{r.best.caught}/{r.best.of}</b>,{" "}
                                           {r.best.false_positives} false
+                                          {Array.isArray(r.peaks) && (
+                                            <span className="muted">
+                                              {" "}· at your swings: {r.peaks
+                                                .map((v) => `×${v}`).join(", ")}
+                                            </span>
+                                          )}
+                                          {i === 0 && r.separation != null
+                                            && r.separation <= 1 && (
+                                            <span className="muted">
+                                              {" "}← catches the most, but below ×1
+                                              separation: it works on this clip by
+                                              a low threshold rather than by
+                                              standing clear of the noise, so
+                                              check it on a second clip before
+                                              moving the rig
+                                            </span>
+                                          )}
                                         </div>
                                       ))}
                                       {d.signal_compare.signals.every(
-                                        (r) => !r.separation || r.separation <= 1) && (
+                                        (r) => r.best.caught === 0) && (
                                         <div className="err-text" style={{ marginTop: 3 }}>
-                                          Every signal is below 1 — nothing measured here
-                                          puts your swings above the rest of the clip, so
-                                          no threshold will work. That is a zone, camera
-                                          or audio problem, not a tuning one.
+                                          No signal caught a single one of your swings at
+                                          any setting — nothing measured here sees them at
+                                          all. That is a zone, camera or audio problem, and
+                                          no amount of tuning will fix it.
                                         </div>
                                       )}
                                     </div>

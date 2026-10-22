@@ -56,9 +56,16 @@ def main():
               f"{b['caught']}/{b['of']}, {b['false_positives']} false")
 
     assert {"meandiff", "topk", "localdiff", "flowmax"} <= names, names
-    # Ranked by separation, best first.
-    seps = [r["separation"] or 0 for r in out["signals"]]
-    assert seps == sorted(seps, reverse=True), seps
+    # Ranked by swings caught, then by spare clips. Ranking on
+    # separation alone put the signal that caught every swing LAST on
+    # real footage, which is the opposite of what the operator wants.
+    order = [(-r["best"]["caught"], r["best"]["false_positives"])
+             for r in out["signals"]]
+    assert order == sorted(order), order
+    # Every signal reports what it holds at each named swing, so the
+    # panel cannot attribute one signal's verdict to the others.
+    for r in out["signals"]:
+        assert len(r["peaks"]) == len(SW), r
     # Some signal must find a workable setting when the swing is
     # genuinely there, or the sweep is not reaching far enough.
     assert any(r["best"]["caught"] == len(SW) and

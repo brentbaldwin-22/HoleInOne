@@ -455,15 +455,38 @@ def compare_signals(video_path, known_sec, *, sample_hz: float = 20.0,
                     best = row
         out.append({
             "signal": name,
+            # What this signal holds at each named swing. Previously
+            # only the rig's signal was reported, under a heading that
+            # did not say so -- so "the swing is not in this signal"
+            # was printed while the table below showed another signal
+            # finding it.
+            "peaks": [
+                round(max((r for t, r in zip(ct, cr)
+                           if abs(t - k) <= tolerance_sec), default=0.0), 2)
+                for k in known
+            ],
             "at_swing": round(at_swing, 2),
             "elsewhere": round(elsewhere, 2),
             "separation": round(at_swing / elsewhere, 2) if elsewhere else None,
             "best": best,
         })
 
-    # Separation first: a signal that cannot put the swing above the
-    # noise is not rescued by a lucky threshold on one clip.
-    out.sort(key=lambda r: -(r["separation"] or 0))
+    # CAUGHT FIRST, THEN COST, and separation only to break ties.
+    #
+    # Ranking on separation alone was wrong, and hole 8 showed it: the
+    # signal that caught all three swings sorted LAST, because it
+    # caught them at a low threshold rather than by standing clear of
+    # the noise. That is a worse diagnosis, not a worse outcome. The
+    # module's own rule decides this -- "a missed shot is a refund; a
+    # needless 6.75 MB is nothing" -- so a signal that catches 3/3 with
+    # two spare clips beats one that catches 2/3 cleanly.
+    #
+    # Separation still earns its place as the thing that says whether a
+    # result will generalise: catching every swing with separation
+    # below 1 worked on THIS clip and may not on the next.
+    out.sort(key=lambda r: (-r["best"]["caught"],
+                            r["best"]["false_positives"],
+                            -(r["separation"] or 0)))
     return {"known": known, "signals": out, "zones_used": tr["zones_used"]}
 
 
