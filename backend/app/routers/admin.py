@@ -5810,6 +5810,55 @@ def list_long_uploads(
     return out
 
 
+def _reconcile_unfinished_events(db, rows) -> int:
+    """Catch events whose upload finished without telling them.
+
+    THE STATUS IS DERIVED AT WRITE TIME, which works only if every
+    writer remembers. One did not -- the wizard commit -- and the
+    result was a pair reading "Produced 1/1" on Production and
+    "Queued - STUCK" on Cameras simultaneously, with nothing to do
+    about it but Re-process work that was already done.
+
+    A write-time mirror cannot be made safe by adding the missing call
+    alone: the next writer can forget just as easily, and the symptom
+    is a permanently wrong label rather than an error anybody sees. So
+    the listing reconciles what it is about to show. One extra query
+    per page, only for events that are not finished, and the repair
+    persists -- the rows already stranded fix themselves on the next
+    page load rather than needing a migration.
+
+    Never raises: a listing that 500s over a cosmetic status is a worse
+    failure than the status it was fixing.
+    """
+    from ..models import LongVideoUpload as _LVU
+
+    unfinished = [r.id for r in rows
+                  if r.status in ("queued", "paired_uploaded")]
+    if not unfinished:
+        return 0
+    try:
+        uploads = (
+            db.query(_LVU)
+            .filter(_LVU.camera_event_id.in_(unfinished))
+            .filter(_LVU.processing_status.in_(("completed", "failed")))
+            .all()
+        )
+        n = 0
+        for lvu in uploads:
+            _sync_camera_event_from_upload(db, lvu.id)
+            n += 1
+        if n:
+            log.info("cameras: reconciled %d event(s) whose upload had "
+                     "already finished", n)
+            for r in rows:
+                db.refresh(r)
+        return n
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        log.warning("cameras: could not reconcile event statuses: %s", exc)
+        return 0
+
+
 @router.get("/camera-events")
 def list_camera_events(
     limit: int = 100, offset: int = 0, db: Session = Depends(get_db),
@@ -5828,6 +5877,7 @@ def list_camera_events(
         .limit(max(1, min(500, limit)))
         .all()
     )
+    _reconcile_unfinished_events(db, rows)
     if not rows:
         return []
 
@@ -11573,6 +11623,11 @@ def commit_wizard_clip(
     clip.delivered_at = _utcnow_naive()
     row.processing_status = "completed"
     row.processing_completed_at = _utcnow_naive()
+    # MIRROR IT ONTO THE CAMERA EVENT TOO (done after the commit
+    # below). This is the third place an upload reaches a terminal
+    # status and was the only one that did not tell the event, so a
+    # pair produced through the wizard read "Produced 1/1" on
+    # Production and "Queued - STUCK" on Cameras at the same time.
     if clip_id is None:
         # Single-swing wizard commit owns the whole upload's counts.
         # A targeted per-swing commit must NOT collapse a multi-swing
@@ -11592,6 +11647,9 @@ def commit_wizard_clip(
     )
     db.commit()
     db.refresh(clip)
+    # AFTER the commit, so the sync reads the status that was just
+    # written rather than the one it is replacing.
+    _sync_camera_event_from_upload(db, upload_id)
     return {
         "upload_id": upload_id,
         "clip_id": clip.id,
