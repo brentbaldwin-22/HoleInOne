@@ -60,6 +60,11 @@ export default function AdminLongUpload() {
   const [piParams, setPiParams] = useState({}); // {id: {min_ratio, ...}}
   const [piZones, setPiZones] = useState({});   // {id: [{x,y,w,h}] fractions}
   const [piZonesOpen, setPiZonesOpen] = useState({}); // {id: true}
+  // PER-ROW, not the page-level banner. A failed test cut put its
+  // message at the top of a long page, so the operator sitting on row
+  // #890 saw the button flick back to "Test cut" and nothing else --
+  // which is indistinguishable from a dead button, and was read as one.
+  const [testCutError, setTestCutError] = useState({}); // {id: message}
   const [audioMinRatio, setAudioMinRatio] = useState({}); // {id: number}
   const [motionRatio, setMotionRatio] = useState({}); // {id: number}
   const [pairWindow, setPairWindow] = useState({}); // {id: number} -> combined-mode pair window
@@ -176,11 +181,13 @@ export default function AdminLongUpload() {
     if (detectOnly[uploadId]) opts.cutClips = false;
     setTestCutting((t) => ({ ...t, [uploadId]: true }));
     setError(null);
+    setTestCutError((r) => ({ ...r, [uploadId]: null }));
     try {
       const data = await api.testCutLongUpload(adminPassword, uploadId, detector, opts);
       setTestCutResults((r) => ({ ...r, [uploadId]: data }));
     } catch (e) {
       setError(e.message);
+      setTestCutError((r) => ({ ...r, [uploadId]: e.message }));
     } finally {
       setTestCutting((t) => ({ ...t, [uploadId]: false }));
     }
@@ -615,6 +622,16 @@ export default function AdminLongUpload() {
                       </button>
                     </div>
                   </div>
+
+                  {testCutError[u.id] && (
+                    <div className="card tight err-text small"
+                         style={{ margin: "10px 0 0" }}>
+                      <b>Test cut failed.</b>{" "}
+                      <span style={{ fontFamily: "monospace" }}>
+                        {testCutError[u.id]}
+                      </span>
+                    </div>
+                  )}
 
                   {piZonesOpen[u.id]
                     && (testCutDetector[u.id] || "motion") === "pi"
