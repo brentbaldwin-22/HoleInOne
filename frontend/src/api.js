@@ -1142,6 +1142,11 @@ export const api = {
       Object.entries(opts.pi || {}).forEach(([k, v]) => {
         if (v != null && v !== "") fd.append(`pi_${k}`, String(v));
       });
+      // Test-only zones, as fractions. Sent with the request and stored
+      // nowhere: the camera's own boxes are untouched.
+      if (Array.isArray(opts.piZones) && opts.piZones.length > 0) {
+        fd.append("pi_zones_json", JSON.stringify(opts.piZones));
+      }
       if (opts.motionRatio != null) {
         fd.append("motion_ratio", String(opts.motionRatio));
       }

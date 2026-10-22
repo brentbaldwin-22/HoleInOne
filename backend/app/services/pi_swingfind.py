@@ -91,6 +91,7 @@ def pi_defaults() -> dict:
 
 def motion_trace(video_path, *, sample_hz: float = 20.0,
                  zones: Optional[list] = None,
+                 zones_fractional: bool = False,
                  max_seconds: Optional[float] = None) -> dict:
     """The motion signal the rig would have measured for this clip.
 
@@ -121,7 +122,20 @@ def motion_trace(video_path, *, sample_hz: float = 20.0,
             keep_seconds=1e9,
         )
         if zones and width and height:
-            tracker.set_zones(zones, width, height)
+            # TEST ZONES ARRIVE AS FRACTIONS, camera zones as pixels.
+            # The operator draws on a scaled <img>, so a pixel there is
+            # not a pixel in the video; fractions are the only form that
+            # survives the trip. The camera's own boxes are already in
+            # native pixels and must NOT be scaled again.
+            _z = zones
+            if zones_fractional:
+                _z = [{
+                    "x": float(b["x"]) * width,
+                    "y": float(b["y"]) * height,
+                    "w": float(b["w"]) * width,
+                    "h": float(b["h"]) * height,
+                } for b in zones]
+            tracker.set_zones(_z, width, height)
 
         # Decode only at sample points. +0.5 so rounding never lands
         # the step on 0 and spins forever on a high-fps clip.
@@ -159,6 +173,7 @@ def motion_trace(video_path, *, sample_hz: float = 20.0,
 
 def detect_swings_pi(video_path, *, sample_hz: float = 20.0,
                      zones: Optional[list] = None,
+                     zones_fractional: bool = False,
                      person_times: Optional[list] = None,
                      debug: Optional[dict] = None,
                      **params) -> list:
@@ -168,7 +183,8 @@ def detect_swings_pi(video_path, *, sample_hz: float = 20.0,
     so the names here are the names there and the names in config.
     """
     sf = _swingfind()
-    trace = motion_trace(video_path, sample_hz=sample_hz, zones=zones)
+    trace = motion_trace(video_path, sample_hz=sample_hz, zones=zones,
+                         zones_fractional=zones_fractional)
     dbg: dict = {}
     windows = sf.merge_windows(sf.find_swings(
         trace["times"], trace["motion"],

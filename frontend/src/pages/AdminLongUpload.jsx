@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
+import { PiTestZones } from "../components/PiTestZones.jsx";
 import { Brand, Icon } from "../components/Brand.jsx";
 import { fmtDateTime } from "../time.js";
 
@@ -57,6 +58,8 @@ export default function AdminLongUpload() {
   const [testCutResults, setTestCutResults] = useState({}); // {id: {detector, cuts, ...}}
   const [testCutDetector, setTestCutDetector] = useState({}); // {id: "motion"|"audio"|"combined"|"pi"}
   const [piParams, setPiParams] = useState({}); // {id: {min_ratio, ...}}
+  const [piZones, setPiZones] = useState({});   // {id: [{x,y,w,h}] fractions}
+  const [piZonesOpen, setPiZonesOpen] = useState({}); // {id: true}
   const [audioMinRatio, setAudioMinRatio] = useState({}); // {id: number}
   const [motionRatio, setMotionRatio] = useState({}); // {id: number}
   const [pairWindow, setPairWindow] = useState({}); // {id: number} -> combined-mode pair window
@@ -165,6 +168,7 @@ export default function AdminLongUpload() {
         const v = parseFloat(cur[f.key] ?? f.def);
         if (Number.isFinite(v)) opts.pi[f.key] = v;
       });
+      if ((piZones[uploadId] || []).length > 0) opts.piZones = piZones[uploadId];
     } else {
       const ratio = parseFloat(motionRatio[uploadId]);
       if (Number.isFinite(ratio) && ratio > 0) opts.motionRatio = ratio;
@@ -480,6 +484,19 @@ export default function AdminLongUpload() {
                               title={`${f.label} — ${f.help} (rig default ${f.def})`}
                             />
                           ))}
+                          <button
+                            className="small"
+                            onClick={() =>
+                              setPiZonesOpen((o) => ({ ...o, [u.id]: !o[u.id] }))
+                            }
+                            disabled={!!testCutting[u.id] || missing || busy}
+                            style={{ fontSize: 12, padding: "2px 6px" }}
+                            title="Try different trigger zones against this clip. Nothing is saved — the camera keeps its own."
+                          >
+                            zones{(piZones[u.id] || []).length > 0
+                              ? ` (${piZones[u.id].length})`
+                              : ""}
+                          </button>
                         </>
                       )}
                       {(testCutDetector[u.id] || "motion") === "combined" && (
@@ -598,6 +615,19 @@ export default function AdminLongUpload() {
                       </button>
                     </div>
                   </div>
+
+                  {piZonesOpen[u.id]
+                    && (testCutDetector[u.id] || "motion") === "pi"
+                    && !missing && (
+                    <div className="card tight" style={{ margin: "10px 0 0", background: "var(--surface-alt)" }}>
+                      <PiTestZones
+                        uploadId={u.id}
+                        adminPassword={adminPassword}
+                        zones={piZones[u.id] || []}
+                        onChange={(z) => setPiZones((o) => ({ ...o, [u.id]: z }))}
+                      />
+                    </div>
+                  )}
 
                   {showSource[u.id] && !missing && (u.tee_url || u.green_url) && (
                     <div className="card tight" style={{ margin: "10px 0 0", background: "var(--surface-alt)" }}>

@@ -11881,6 +11881,12 @@ def test_cut_long_upload(
     pi_max_burst_sec: float = Form(6.0),
     pi_sample_hz: float = Form(20.0),
     pi_use_zones: bool = Form(True),
+    # ZONES FOR THIS RUN ONLY, as JSON [{x,y,w,h}] in 0-1 fractions of
+    # the frame. NOTHING IS SAVED: the camera's own boxes are what the
+    # rig records against, and a tester that quietly rewrote them could
+    # stop the tee triggering on a live hole. Trying a tighter box
+    # against yesterday's footage must not be able to do that.
+    pi_zones_json: str = Form(""),
     db: Session = Depends(get_db),
 ):
     """Dry-run the swing-cutting half of the long-upload pipeline.
@@ -11937,9 +11943,34 @@ def test_cut_long_upload(
         # difference between testing the rig and testing something that
         # resembles it.
         _zones = None
-        if pi_use_zones:
+        _zones_fractional = False
+        _zone_source = "none"
+        if (pi_zones_json or "").strip():
+            try:
+                _drawn = json.loads(pi_zones_json)
+                if not isinstance(_drawn, list):
+                    raise ValueError("expected a list of boxes")
+                _zones = [
+                    {"x": float(b["x"]), "y": float(b["y"]),
+                     "w": float(b["w"]), "h": float(b["h"])}
+                    for b in _drawn
+                    if float(b.get("w") or 0) > 0 and float(b.get("h") or 0) > 0
+                ] or None
+                _zones_fractional = True
+                _zone_source = "drawn for this test"
+            except (ValueError, TypeError, KeyError) as exc:
+                # A malformed override must not silently fall back to
+                # the camera's boxes: the operator would read ratios
+                # from one set of zones believing they came from
+                # another, which is the single most misleading thing
+                # this panel could do.
+                raise HTTPException(
+                    400, f"test zones are not usable: {exc}") from exc
+        elif pi_use_zones:
             try:
                 _zones = _tee_trigger_zones(db, row)
+                if _zones:
+                    _zone_source = "camera trigger zones"
             except Exception as exc:  # noqa: BLE001
                 log.warning("test-cut: no trigger zones for upload=%s (%s) "
                             "— measuring the whole frame instead",
@@ -11948,6 +11979,7 @@ def test_cut_long_upload(
             src_path,
             sample_hz=float(pi_sample_hz),
             zones=_zones,
+            zones_fractional=_zones_fractional,
             min_ratio=float(pi_min_ratio),
             min_separation_sec=float(pi_min_separation_sec),
             before_sec=float(pi_before_sec),
@@ -11956,6 +11988,7 @@ def test_cut_long_upload(
             max_burst_sec=float(pi_max_burst_sec),
             debug=debug,
         )
+        debug["zone_source"] = _zone_source
     elif detector == "combined":
         windows = detect_swings_combined(
             src_path,

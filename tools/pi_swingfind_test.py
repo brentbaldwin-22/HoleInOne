@@ -142,6 +142,38 @@ def main():
     print(f"  trace: {len(dbg['trace']['times'])} points, "
           f"coverage {dbg.get('coverage'):.2f}")
 
+    # --- test zones: fractions must land where pixels land ----------
+    # The operator draws on a scaled <img>, so the box arrives as
+    # fractions and is converted against the video's real size. If that
+    # conversion is wrong, every number tuned on this panel is wrong by
+    # an amount nobody can see.
+    zc = d / "zones.mp4"
+    _write(zc, 30, [(15.0, 0.4, 60)], noise=1.0, walk=(8.0, 5.0))
+    px = {"x": 100, "y": 60, "w": 120, "h": 60}          # in 320x180
+    fr = {"x": 100 / W, "y": 60 / H, "w": 120 / W, "h": 60 / H}
+    d_px, d_fr = {}, {}
+    detect_swings_pi(zc, zones=[px], debug=d_px, **p)
+    detect_swings_pi(zc, zones=[fr], zones_fractional=True, debug=d_fr, **p)
+    print(f"  zones: pixel box ratio {d_px['best_ratio']:.2f}, "
+          f"fraction box ratio {d_fr['best_ratio']:.2f}")
+    assert d_px["zones_used"] == 1 and d_fr["zones_used"] == 1
+    assert abs(d_px["best_ratio"] - d_fr["best_ratio"]) < 0.01, (
+        "the same box given as pixels and as fractions measured "
+        f"differently ({d_px['best_ratio']} vs {d_fr['best_ratio']}) — "
+        "the conversion is wrong")
+
+    # CONTROL: a box somewhere else must NOT see the swing, or the
+    # zones are being ignored and every result above is whole-frame.
+    away = {"x": 0.02, "y": 0.02, "w": 0.2, "h": 0.2}
+    d_away = {}
+    w_away = detect_swings_pi(zc, zones=[away], zones_fractional=True,
+                              debug=d_away, **p)
+    print(f"  zone away from the swing -> {len(w_away)} window(s), "
+          f"best ratio {d_away['best_ratio']:.2f}")
+    assert d_away["best_ratio"] < d_fr["best_ratio"], (
+        "a box away from the action measured the same as a box on it — "
+        "the zones are not reaching the tracker")
+
     print("\nALL PASS")
 
 
