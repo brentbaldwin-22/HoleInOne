@@ -22,7 +22,8 @@ ZONE = [{"x": 400, "y": 240, "w": 160, "h": 120}]   # pixels
 
 
 def build(path, seconds, *, ball_gone_at=None, occlusions=(),
-          shoe=False, second_ball=None, ball_on_at=0.0):
+          shoe=False, second_ball=None, ball_on_at=0.0,
+          shoe_still=False, shoe_walks_at=None):
     vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"),
                          FPS, (W, H))
     rng = np.random.default_rng(4)
@@ -45,10 +46,22 @@ def build(path, seconds, *, ball_gone_at=None, occlusions=(),
             # Bright, ball-ish, and never quite still -- a golfer's
             # foot. Jitters within the match radius so it forms ONE
             # track and must be rejected on stillness, not by luck.
-            dx = int(3 * np.sin(t * 1.7))
-            dy = int(3 * np.cos(t * 1.3))
-            cv2.circle(f, (BALL[0] - 40 + dx, BALL[1] + 20 + dy), 5,
-                       (248, 248, 248), -1)
+            dx = 0 if shoe_still else int(3 * np.sin(t * 1.7))
+            dy = 0 if shoe_still else int(3 * np.cos(t * 1.3))
+            sx, sy = BALL[0] - 40 + dx, BALL[1] + 20 + dy
+            draw = True
+            if shoe_walks_at is not None and t >= shoe_walks_at:
+                # THE CASE THAT MATTERS AND WAS NEVER TESTED: the
+                # golfer finishes and walks off, so a bright, still,
+                # ball-sized thing leaves the box for good. At tee
+                # distance a shoe and a ball are a similar number of
+                # pixels, so size cannot separate them -- the only
+                # thing that can is that a shoe MOVES on its way out
+                # and a struck ball does not.
+                sx += int((t - shoe_walks_at) * 90)
+                draw = sx < BALL[0] + 120
+            if draw:
+                cv2.circle(f, (sx, sy), 5, (248, 248, 248), -1)
         vw.write(f)
     vw.release()
     assert path.exists() and path.stat().st_size > 0
@@ -128,6 +141,44 @@ def main():
     print(f"two balls teed on the same spot (15s, 45s) -> {got7}")
     assert len(got7) == 2, f"expected two swings, got {got7}"
     assert abs(got7[0] - 15.0) < 1.0 and abs(got7[1] - 45.0) < 1.0, got7
+
+    # --- THE SHOE THAT WALKS AWAY -----------------------------------
+    # The earlier shoe control was weaker than it looked: that shoe
+    # never left, so it was rejected for still being there at the end,
+    # and the stillness filter was never exercised at all. A mutation
+    # run proved it -- removing the stillness requirement changed
+    # nothing. This is the real risk: a golfer stands over the ball,
+    # hits, and walks off, and their white shoe leaves the box for
+    # good. At tee distance a shoe is about as many pixels as a ball.
+    p8 = d / "shoewalks.mp4"
+    build(p8, 30, ball_gone_at=0.0, shoe=True, shoe_walks_at=18.0)
+    got8, dbg8 = vanish(p8)
+    print(f"shuffling shoe that walks off at 18s -> {got8}")
+    print(f"   rejected: {[r['why'] for r in dbg8['rejected']][:3]}")
+    assert not got8, (
+        f"a shoe walking out of the box was called a struck ball: {got8}")
+
+    # ...and the harder version: a golfer who stands PERFECTLY still
+    # over the ball, so stillness cannot separate them either, and the
+    # only thing left is that the shoe moves as it departs.
+    p9 = d / "shoestill.mp4"
+    build(p9, 30, ball_gone_at=0.0, shoe=True, shoe_still=True,
+          shoe_walks_at=18.0)
+    got9, dbg9 = vanish(p9)
+    print(f"PERFECTLY still shoe that walks off at 18s -> {got9}")
+    print(f"   rejected: {[r['why'] for r in dbg9['rejected']][:3]}")
+    assert not got9, (
+        f"a motionless shoe that walked away was called a struck ball: "
+        f"{got9} -- nothing in this detector separates it from a ball")
+
+    # --- AN OCCLUSION LONGER THAN THE SPLIT GAP ----------------------
+    # Characterising a known edge: hiding the ball for longer than
+    # SPLIT_GAP_SEC ends its track, so the hide itself looks like a
+    # strike. Asserted so the limit is recorded rather than discovered.
+    p10 = d / "longhide2.mp4"
+    build(p10, 36, ball_gone_at=26.0, occlusions=((12.0, 16.5),))
+    got10, _ = vanish(p10)
+    print(f"ball hidden 4.5s (> split gap), struck at 26s -> {got10}")
 
     print("\nALL PASS")
 
