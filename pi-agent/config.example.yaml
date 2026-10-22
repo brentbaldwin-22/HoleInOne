@@ -219,10 +219,23 @@ detection:
   # After the trigger, keep recording until no person is seen for
   # this many seconds, then stop. This is the "group window": a golfer
   # bending to tee up, turning away, or stepping aside briefly makes the
-  # person detector drop out for a few seconds, so keep this generous
-  # (~30s) or one presence gets split into several short clips. Matches
-  # the doc's "record the group, stop after ~30s of an empty tee box".
-  no_person_timeout_seconds: 30
+  # person detector drop out for a few seconds, so it cannot go near
+  # zero or one presence gets split into several short clips.
+  #
+  # WAS 30, FOR "record the group and cut the swings out of it". That
+  # plan needs the cutting to work. Measured on hole 8, 21 Oct: 19
+  # sessions, every one of them ran to the 120s cap because the longest
+  # stretch with nobody in the zone was 21.5 seconds -- a group waiting
+  # their turn never leaves for thirty. Each capped clip is ~57 MB
+  # against ~6 MB for a real one, and swing_select then found 1 swing
+  # in 8 on that camera, so they went up whole or not at all.
+  #
+  # 12 is above the detector's dropout and below the gap between
+  # groups. It does NOT fix a zone somebody stands in continuously --
+  # see tools/stop_policy_test.py, where a sighting every 8s runs to
+  # the cap at 12s just as it does at 30s. It ends the clip in the
+  # gaps, which is where most of the 120 seconds was being spent.
+  no_person_timeout_seconds: 12
   # Frame is downsampled to this width before the pose model sees it.
   # Smaller = faster but less reliable at distance. 320 px works
   # well for a person at ~5-15 m.
