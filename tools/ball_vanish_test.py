@@ -171,14 +171,20 @@ def main():
         f"a motionless shoe that walked away was called a struck ball: "
         f"{got9} -- nothing in this detector separates it from a ball")
 
-    # --- AN OCCLUSION LONGER THAN THE SPLIT GAP ----------------------
-    # Characterising a known edge: hiding the ball for longer than
-    # SPLIT_GAP_SEC ends its track, so the hide itself looks like a
-    # strike. Asserted so the limit is recorded rather than discovered.
+    # --- AN OCCLUSION LONGER THAN THE OLD SPLIT GAP ------------------
+    # This fixture found a real false positive. At a 3-second split
+    # gap, hiding the ball for 4.5s ended its track, so the hide read
+    # as a strike and the detector returned 11.93 AND 25.93 -- one
+    # real swing and one invented. The gap is 8s now; this pins the
+    # result so the invented swing cannot come back, and it was only
+    # printing its answer when it caught the bug.
     p10 = d / "longhide2.mp4"
     build(p10, 36, ball_gone_at=26.0, occlusions=((12.0, 16.5),))
     got10, _ = vanish(p10)
-    print(f"ball hidden 4.5s (> split gap), struck at 26s -> {got10}")
+    print(f"ball hidden 4.5s, struck at 26s -> {got10}")
+    assert len(got10) == 1, (
+        f"a long hide was counted as a strike: {got10}")
+    assert abs(got10[0] - 26.0) < 1.0, got10
 
     print("\nALL PASS")
 
