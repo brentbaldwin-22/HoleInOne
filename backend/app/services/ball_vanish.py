@@ -76,10 +76,18 @@ GONE_SEC = 0.8
 # A GAP LONGER THAN THIS STARTS A NEW BALL, rather than continuing the
 # old one. Without it, matching purely on position merges every ball
 # ever teed on the same spot into a single track, and a clip with four
-# swings in it reports one -- which is the failure this detector exists
-# to avoid. Three seconds is comfortably longer than a club hiding the
-# ball at address and far shorter than the minutes between players.
-SPLIT_GAP_SEC = 3.0
+# swings in it reports one -- the failure this detector exists to
+# avoid, arriving quietly.
+#
+# WAS 3.0, AND THAT WAS TOO SHORT. A hide longer than the gap ends the
+# track, so the hide itself reads as a strike: measured on a fixture
+# where the ball was obscured for 4.5s and struck at 26s, the detector
+# returned 11.93 AND 25.93 -- one real swing and one invented. Eight
+# seconds covers any plausible address, and the thing it must not
+# swallow is two balls teed on the same spot, which takes a player
+# walking up and setting up again. Nobody does that inside eight
+# seconds.
+SPLIT_GAP_SEC = 8.0
 
 
 def _detections(gray, roi_boxes):

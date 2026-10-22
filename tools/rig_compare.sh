@@ -67,15 +67,14 @@ for i in 1 2 3; do
     "${BASE}/health" 2>/dev/null || echo "  run $i: failed"
 done
 echo
-echo "--- upload speed, 2 MB of real payload ---"
-# UP is the direction that matters and the one nothing else measures.
-# Cellular links are wildly asymmetric; a fast download says nothing.
-dd if=/dev/urandom of=/tmp/rigtest.bin bs=1M count=2 status=none 2>/dev/null
-curl -s -o /dev/null --max-time 120 \
-  -w "  2MB up in %{time_total}s  (%{speed_upload} bytes/sec)\n" \
-  -F "file=@/tmp/rigtest.bin" "${BASE}/health" 2>/dev/null \
-  || echo "  upload test failed"
-rm -f /tmp/rigtest.bin
+echo "--- upload speed ---"
+# REMOVED, NOT FIXED HERE. This used to POST 2 MB at ${BASE}/health and
+# report the rate. /health is GET-only: the server answered 405 without
+# reading the body, so the figure was the speed of being refused. It
+# looked like a measurement and was not, which is worse than no line at
+# all -- a rig was called slow on the strength of it.
+echo "  see tools/speed_now.sh — it uploads to a host that accepts the"
+echo "  bytes, and says FAILED instead of printing a zero when it cannot."
 echo
 echo "--- agent service ---"
 systemctl is-active golfreelz-agent 2>/dev/null
