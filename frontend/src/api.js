@@ -1150,6 +1150,7 @@ export const api = {
       if (opts.piKnownSwings) {
         fd.append("pi_known_swings", String(opts.piKnownSwings));
       }
+      if (opts.piCompareSignals) fd.append("pi_compare_signals", "true");
       if (opts.motionRatio != null) {
         fd.append("motion_ratio", String(opts.motionRatio));
       }

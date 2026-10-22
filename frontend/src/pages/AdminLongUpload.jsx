@@ -67,6 +67,7 @@ export default function AdminLongUpload() {
   // which is indistinguishable from a dead button, and was read as one.
   const [testCutError, setTestCutError] = useState({}); // {id: message}
   const [knownSwings, setKnownSwings] = useState({}); // {id: "60, 92, 124"}
+  const [cmpSignals, setCmpSignals] = useState({}); // {id: true}
   const [audioMinRatio, setAudioMinRatio] = useState({}); // {id: number}
   const [motionRatio, setMotionRatio] = useState({}); // {id: number}
   const [pairWindow, setPairWindow] = useState({}); // {id: number} -> combined-mode pair window
@@ -178,6 +179,7 @@ export default function AdminLongUpload() {
       if ((piZones[uploadId] || []).length > 0) opts.piZones = piZones[uploadId];
       if ((knownSwings[uploadId] || "").trim()) {
         opts.piKnownSwings = knownSwings[uploadId].trim();
+        if (cmpSignals[uploadId]) opts.piCompareSignals = true;
       }
     } else {
       const ratio = parseFloat(motionRatio[uploadId]);
@@ -537,6 +539,23 @@ export default function AdminLongUpload() {
                               style={{ width: 96, fontSize: 12, padding: "2px 6px" }}
                             />
                           </label>
+                          <label
+                            className="small"
+                            style={{ display: "inline-flex", alignItems: "center", gap: 3 }}
+                            title="Also score top-k, optical flow and a rolling baseline against those swings. Adds an optical-flow pass, so it is slower."
+                          >
+                            <input
+                              type="checkbox"
+                              checked={!!cmpSignals[u.id]}
+                              onChange={(e) =>
+                                setCmpSignals((o) => ({ ...o, [u.id]: e.target.checked }))
+                              }
+                              disabled={!(knownSwings[u.id] || "").trim()
+                                        || !!testCutting[u.id] || missing || busy}
+                              style={{ margin: 0 }}
+                            />
+                            compare signals
+                          </label>
                         </>
                       )}
                       {(testCutDetector[u.id] || "motion") === "combined" && (
@@ -864,6 +883,42 @@ export default function AdminLongUpload() {
                                           {i === 0 && <> ← best</>}
                                         </div>
                                       ))}
+                                    </div>
+                                  )}
+                                  {d.signal_compare && (
+                                    <div style={{ marginTop: 8 }}>
+                                      <div style={{ marginBottom: 3 }}>
+                                        <b>Which signal separates your swings</b>{" "}
+                                        <span className="muted">
+                                          (separation = loudest at a swing ÷
+                                          loudest anywhere else; above 1 means
+                                          some threshold can work)
+                                        </span>
+                                      </div>
+                                      {d.signal_compare.signals.map((r, i) => (
+                                        <div key={r.signal}
+                                             style={{ color: i === 0 && r.separation > 1
+                                               ? "var(--ok, #27ae60)" : undefined }}>
+                                          {"  "}<b>{r.signal}</b>
+                                          {r.signal === "meandiff" && (
+                                            <span className="muted"> (what the rig uses)</span>
+                                          )}
+                                          {" "}→ separation{" "}
+                                          <b>{r.separation == null ? "—" : r.separation}</b>
+                                          {" "}· best {r.best.min_ratio}/{r.best.max_burst_sec}s
+                                          {" "}catches {r.best.caught}/{r.best.of},{" "}
+                                          {r.best.false_positives} false
+                                        </div>
+                                      ))}
+                                      {d.signal_compare.signals.every(
+                                        (r) => !r.separation || r.separation <= 1) && (
+                                        <div className="err-text" style={{ marginTop: 3 }}>
+                                          Every signal is below 1 — nothing measured here
+                                          puts your swings above the rest of the clip, so
+                                          no threshold will work. That is a zone, camera
+                                          or audio problem, not a tuning one.
+                                        </div>
+                                      )}
                                     </div>
                                   )}
                                   {d.trace && (

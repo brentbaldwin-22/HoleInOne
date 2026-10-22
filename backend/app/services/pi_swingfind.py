@@ -219,6 +219,254 @@ _SWEEP_RATIOS = (1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.5, 4.0)
 _SWEEP_BURSTS = (0.8, 1.2, 1.6, 2.5, 4.0, 6.0)
 
 
+# ---------------------------------------------------------------------
+# Alternative signals
+# ---------------------------------------------------------------------
+# THE RIG MEASURES THE WRONG QUANTITY FOR THIS CAMERA, and the graphs
+# from hole 8 say so: mean absolute frame difference inside the box,
+# which is HOW MANY PIXELS CHANGED. A swing is one small object moving
+# very fast; a foursome crossing the box is several large objects
+# moving slowly, and on area they win -- measured 7.65 for walking
+# against 5-7 for a swing in the module's own notes, and on a distant
+# tee the swing never cleared x2.8 at all.
+#
+# Four candidates, scored against swings the operator can actually see
+# rather than argued about:
+#
+#   meandiff  the rig's own, kept as the control. Anything that cannot
+#             beat it is not worth moving the rig for.
+#   topk      the mean of the 32 most-changed pixels in the box,
+#             instead of the mean of all of them. A clubhead is a few
+#             violently-changed pixels; a body is many mildly-changed
+#             ones, and averaging over the box buries the first in the
+#             second. Free: same decode, different reduction.
+#
+#             NOT A PERCENTILE. The first version took the 99th, and
+#             it measured nothing at all: a small object in a large
+#             box does not reach the top 1%, so the signal stayed in
+#             the background noise, its median came out 0, and the
+#             curve was discarded entirely. A fixed rank only works
+#             when the object is bigger than the tail, which is
+#             exactly what cannot be assumed here. A fixed COUNT does
+#             not care how large the box is.
+#   flowmax   the largest dense optical-flow magnitude in the box --
+#             SPEED, which is the thing that actually separates a club
+#             from a walker. Costs a Farneback pass, but at 320x180
+#             that is a few ms a frame.
+#   localdiff meandiff normalised by a ROLLING median instead of the
+#             session's. The session median is why a busy clip hides
+#             its own swings: constant milling raises the divisor, so
+#             more walking makes a swing harder to see rather than
+#             easier. A local baseline asks "is this louder than the
+#             last few seconds" instead.
+_FLOW_WIN = 9
+# Enough pixels to average away a lone noisy one, few enough that a
+# club-sized object still dominates them.
+_TOPK = 32
+_LOCAL_BASELINE_SEC = 5.0
+
+
+def _rolling_median(xs, half):
+    """Median in a window around each sample. O(n*w); n is ~1300 here."""
+    out = []
+    n = len(xs)
+    for i in range(n):
+        lo, hi = max(0, i - half), min(n, i + half + 1)
+        w = sorted(xs[lo:hi])
+        m = len(w)
+        out.append(w[m // 2] if m % 2 else 0.5 * (w[m // 2 - 1] + w[m // 2]))
+    return out
+
+
+def multi_signal_trace(video_path, *, sample_hz: float = 20.0,
+                       zones=None, zones_fractional: bool = False,
+                       want_flow: bool = True) -> dict:
+    """Every candidate signal, from ONE decode of the clip.
+
+    The rig's own signal comes from the rig's own MotionTracker fed the
+    same frames, so `meandiff` stays a true control rather than a
+    lookalike computed here.
+    """
+    import cv2
+    import numpy as np
+
+    sf = _swingfind()
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"could not open {video_path}")
+    try:
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        tracker = sf.MotionTracker(sample_hz=float(sample_hz),
+                                   keep_seconds=1e9)
+        SW, SH = tracker.width, tracker.height
+        boxes = []
+        if zones and width and height:
+            _z = zones
+            if zones_fractional:
+                _z = [{"x": float(b["x"]) * width, "y": float(b["y"]) * height,
+                       "w": float(b["w"]) * width, "h": float(b["h"]) * height}
+                      for b in zones]
+            tracker.set_zones(_z, width, height)
+            boxes = list(tracker._boxes)
+
+        step = max(1, int(fps / max(1.0, float(sample_hz)) + 0.5))
+        times, topk, flowmax = [], [], []
+        prev = None
+        i = 0
+        while True:
+            if not cap.grab():
+                break
+            if i % step == 0:
+                ok, frame = cap.retrieve()
+                if not ok:
+                    break
+                ts = i / fps
+                tracker.feed(ts, frame)           # the rig's own signal
+                small = cv2.resize(frame, (SW, SH))
+                if small.ndim == 3:
+                    small = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+                if prev is not None:
+                    diff = np.abs(small.astype(np.int16) - prev.astype(np.int16))
+                    if boxes:
+                        parts = [diff[y0:y1, x0:x1] for x0, y0, x1, y1 in boxes]
+                        sub = np.concatenate([q.ravel() for q in parts])
+                    else:
+                        sub = diff.ravel()
+                    if sub.size:
+                        k = min(_TOPK, sub.size)
+                        topk.append(float(np.partition(sub, -k)[-k:].mean()))
+                    else:
+                        topk.append(0.0)
+                    if want_flow:
+                        fl = cv2.calcOpticalFlowFarneback(
+                            prev, small, None, 0.5, 3, _FLOW_WIN, 3, 5, 1.2, 0)
+                        mag = np.sqrt(fl[..., 0] ** 2 + fl[..., 1] ** 2)
+                        if boxes:
+                            vals = [mag[y0:y1, x0:x1].ravel()
+                                    for x0, y0, x1, y1 in boxes]
+                            vals = [v for v in vals if v.size]
+                            flat = np.concatenate(vals) if vals else None
+                        else:
+                            flat = mag.ravel()
+                        # A PERCENTILE, NOT THE MAXIMUM. Farneback puts
+                        # noisy vectors on flat, grainy regions -- sky
+                        # and mown grass are full of them -- and a
+                        # literal max is whichever of those misfired
+                        # worst in that frame. Measured on a built clip
+                        # where the fast object was unmistakable, max
+                        # scored the swing BELOW the walkers (6.11 vs
+                        # 7.18) purely on that noise.
+                        mm = (float(np.percentile(flat, 99.5))
+                              if flat is not None and flat.size else 0.0)
+                        flowmax.append(mm)
+                    times.append(ts)
+                prev = small
+            i += 1
+
+        rig_t, rig_m = tracker.span(0.0, 1e9)
+        # MotionTracker skips its first frame (no previous), so the two
+        # series start together; align on length to be sure.
+        n = min(len(rig_t), len(times))
+        sigs = {"meandiff": rig_m[:n], "topk": topk[:n]}
+        if want_flow and flowmax:
+            sigs["flowmax"] = flowmax[:n]
+        base_half = int(_LOCAL_BASELINE_SEC * float(sample_hz) / 2)
+        med = _rolling_median(sigs["meandiff"], base_half)
+        sigs["localdiff"] = [
+            (v / m) if m > 1e-9 else 0.0
+            for v, m in zip(sigs["meandiff"], med)
+        ]
+        return {
+            "times": rig_t[:n],
+            "signals": sigs,
+            "duration_sec": (i / fps) if fps else 0.0,
+            "zones_used": len(boxes),
+        }
+    finally:
+        cap.release()
+
+
+def compare_signals(video_path, known_sec, *, sample_hz: float = 20.0,
+                    zones=None, zones_fractional: bool = False,
+                    want_flow: bool = True, tolerance_sec: float = 4.0,
+                    **params) -> dict:
+    """Score every candidate signal against swings the operator can see.
+
+    ONE DECODE, every signal, every threshold. The comparison that
+    matters is not "does this find swings" -- a low enough threshold
+    always finds something -- but "does it find THESE swings without
+    dragging the walkers in with them", and only known times can
+    answer that.
+
+    `separation` is the number to read: the best peak at a real swing
+    divided by the best peak anywhere else. Above 1 means the swing is
+    the loudest thing in the clip and some threshold works; below 1
+    means something else is louder and no threshold can win, however
+    the sweep is scored.
+    """
+    sf = _swingfind()
+    tr = multi_signal_trace(video_path, sample_hz=sample_hz, zones=zones,
+                            zones_fractional=zones_fractional,
+                            want_flow=want_flow)
+    times = tr["times"]
+    known = sorted(float(k) for k in known_sec)
+    base = {k: v for k, v in params.items()
+            if k in ("min_separation_sec", "before_sec", "after_sec",
+                     "smooth_seconds")}
+    smooth_sec = float(base.get("smooth_seconds", sf.DEFAULT_SMOOTH_SECONDS))
+
+    out = []
+    for name, series in tr["signals"].items():
+        if not series or len(series) < 10:
+            continue
+        curve = _ratio_curve(sf, times, series, smooth_seconds=smooth_sec)
+        if not curve["ratio"]:
+            continue
+        ct, cr = curve["times"], curve["ratio"]
+        near = [r for t, r in zip(ct, cr)
+                if any(abs(t - k) <= tolerance_sec for k in known)]
+        far = [r for t, r in zip(ct, cr)
+               if not any(abs(t - k) <= tolerance_sec for k in known)]
+        at_swing = max(near) if near else 0.0
+        elsewhere = max(far) if far else 0.0
+
+        best = None
+        for mr in _SWEEP_RATIOS:
+            for mb in _SWEEP_BURSTS:
+                wins = sf.merge_windows(sf.find_swings(
+                    times, series, duration_sec=tr["duration_sec"],
+                    min_ratio=mr, max_burst_sec=mb, person_times=None,
+                    **base))
+                caught = sum(
+                    1 for k in known
+                    if any(abs(w["peak_time_sec"] - k) <= tolerance_sec
+                           for w in wins))
+                hit = [w for w in wins
+                       if any(abs(w["peak_time_sec"] - k) <= tolerance_sec
+                              for k in known)]
+                row = {"min_ratio": mr, "max_burst_sec": mb,
+                       "caught": caught, "of": len(known),
+                       "false_positives": len(wins) - len(hit)}
+                if best is None or (
+                        (row["caught"], -row["false_positives"])
+                        > (best["caught"], -best["false_positives"])):
+                    best = row
+        out.append({
+            "signal": name,
+            "at_swing": round(at_swing, 2),
+            "elsewhere": round(elsewhere, 2),
+            "separation": round(at_swing / elsewhere, 2) if elsewhere else None,
+            "best": best,
+        })
+
+    # Separation first: a signal that cannot put the swing above the
+    # noise is not rescued by a lucky threshold on one clip.
+    out.sort(key=lambda r: -(r["separation"] or 0))
+    return {"known": known, "signals": out, "zones_used": tr["zones_used"]}
+
+
 def tune_against_known(video_path, known_sec, *, sample_hz: float = 20.0,
                        zones=None, zones_fractional: bool = False,
                        tolerance_sec: float = 4.0, **params) -> dict:

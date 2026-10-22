@@ -11891,6 +11891,10 @@ def test_cut_long_upload(
     # these, the panel stops being a threshold-guessing game: every
     # combination is scored against them at once.
     pi_known_swings: str = Form(""),
+    # Score the alternative signals (top-k, optical flow, local
+    # baseline) against those same known swings. Off by default: the
+    # flow pass is the only part of this panel that costs real time.
+    pi_compare_signals: bool = Form(False),
     db: Session = Depends(get_db),
 ):
     """Dry-run the swing-cutting half of the long-upload pipeline.
@@ -12021,6 +12025,20 @@ def test_cut_long_upload(
             # The curve is already in debug["trace"]; carrying a second
             # copy doubles a 1300-point payload for nothing.
             debug["tuning"].pop("curve", None)
+
+            if pi_compare_signals:
+                from ..services.pi_swingfind import compare_signals
+
+                debug["signal_compare"] = compare_signals(
+                    src_path, _known,
+                    sample_hz=float(pi_sample_hz),
+                    zones=_zones,
+                    zones_fractional=_zones_fractional,
+                    min_separation_sec=float(pi_min_separation_sec),
+                    before_sec=float(pi_before_sec),
+                    after_sec=float(pi_after_sec),
+                    smooth_seconds=float(pi_smooth_seconds),
+                )
     elif detector == "combined":
         windows = detect_swings_combined(
             src_path,
