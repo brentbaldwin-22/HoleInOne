@@ -67,9 +67,14 @@ from ..config import settings
 from ..database import SessionLocal, get_db
 from ..deps import require_admin
 from .cameras import _LIVE_FRAMES, _WATCHERS, _LIVE_LOCK, WATCH_TTL, FRAME_TTL
+from .cameras import STILL_MAX_AGE, still_path
 from .cameras import request_lens as _request_lens
 from .cameras import battery_status as _battery_status
+from .cameras import throttled_status as _throttled_status
 from .cameras import focus_status as _focus_status
+from .cameras import exposure_status as _exposure_status
+from .cameras import stream_status as _stream_status
+from .cameras import link_status as _link_status
 from .cameras import _focus_remaining as _cam_focus_remaining
 from ..models import (
     AuditLog,
@@ -95,6 +100,7 @@ from ..schemas import (
     HIOReviewAction,
 )
 from ..services import notifications, storage, thanks, tracer_examples
+from ..services import lens_zoom, site_theme, tee_roi, workload
 from ..services.matcher import match_clip
 from ..services.qr import generate_qr_png
 from ..services.auth import hash_password
@@ -244,6 +250,28 @@ detect_swings_combined = _timed(detect_swings_combined, "detect_swings")
 router = APIRouter(
     prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)]
 )
+
+
+@router.get("/theme")
+def admin_get_theme(db: Session = Depends(get_db)):
+    """The site's appearance, plus the choices that are on offer, so the
+    admin screen never has to hard-code a list the server would reject."""
+    return {
+        **site_theme.get_theme(db),
+        "directions": list(site_theme.DIRECTIONS),
+        "modes": list(site_theme.MODES),
+        "defaults": dict(site_theme.DEFAULT_THEME),
+    }
+
+
+@router.post("/theme")
+def admin_set_theme(payload: dict, db: Session = Depends(get_db)):
+    """Change the site's colours for everyone, at once. Send either key
+    on its own — {"mode": "light"} keeps the current direction."""
+    try:
+        return site_theme.set_theme(db, payload or {})
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @router.get("/courses", response_model=list[CourseOut])
@@ -4949,7 +4977,7 @@ def _screen_then_run(upload_id, tee_name, target, kwargs):
 
 
 @router.post("/clips/quick-upload")
-async def quick_upload_videos(
+def quick_upload_videos(
     course_id: int = Form(...),
     base_captured_at: str = Form(...),
     video: UploadFile = File(...),
@@ -4991,7 +5019,12 @@ async def quick_upload_videos(
         raise HTTPException(400, "invalid base_captured_at; use ISO 8601")
 
     # Save the tee video.
-    data = await video.read()
+    # Sync `def`, not `async def`: the write_bytes below is a blocking
+    # disk write of up to several hundred MB, and on the event loop it
+    # stops the whole server — health check included — until it ends.
+    # In the threadpool, blocking is the thread's job. Starlette has
+    # already buffered the body, so this reads its spooled temp file.
+    data = video.file.read()
     if not data:
         raise HTTPException(400, "empty tee video upload")
     if len(data) > 1024 * 1024 * 1024:
@@ -5011,7 +5044,7 @@ async def quick_upload_videos(
     green_src_name: str | None = None
     green_original_filename: str | None = None
     if dual_camera:
-        green_data = await video_green.read()
+        green_data = video_green.file.read()
         if not green_data:
             src_path.unlink(missing_ok=True)
             raise HTTPException(400, "empty green video upload")
@@ -5118,7 +5151,7 @@ async def quick_upload_videos(
 
 
 @router.post("/clips/long-upload")
-async def upload_long_video(
+def upload_long_video(
     course_id: int = Form(...),
     camera_type: str = Form("tee"),
     base_captured_at: str = Form(...),
@@ -5245,7 +5278,12 @@ async def upload_long_video(
         _stamps["source_" + _field.replace("_started_at", "") +
                 "_started_at"] = _dt.isoformat()
 
-    data = await video.read()
+    # Sync `def`, not `async def`: the write_bytes below is a blocking
+    # disk write of up to several hundred MB, and on the event loop it
+    # stops the whole server — health check included — until it ends.
+    # In the threadpool, blocking is the thread's job. Starlette has
+    # already buffered the body, so this reads its spooled temp file.
+    data = video.file.read()
     if not data:
         raise HTTPException(400, "empty video upload")
     if len(data) > 1024 * 1024 * 1024:  # 1GB cap on the long source
@@ -5264,7 +5302,7 @@ async def upload_long_video(
 
     green_src_path: Path | None = None
     if dual_camera:
-        green_data = await video_green.read()
+        green_data = video_green.file.read()
         if not green_data:
             src_path.unlink(missing_ok=True)
             raise HTTPException(400, "empty green video upload")
@@ -5319,8 +5357,15 @@ async def upload_long_video(
             except Exception as exc:  # pragma: no cover
                 log.warning("long-upload preview gen failed for %s: %s", p.name, exc)
 
+    def _preview_job() -> None:
+        # Niced but NOT gated: these are a handful of frames, and they
+        # are what the operator is staring at. Making them queue behind
+        # a ten-minute produce would be the wrong trade.
+        workload.deprioritize()
+        _preview_raw_sources(raw_sources)
+
     threading.Thread(
-        target=_preview_raw_sources, args=(raw_sources,),
+        target=_preview_job,
         daemon=True, name=f"long-upload-preview-{upload_id}",
     ).start()
 
@@ -5334,8 +5379,8 @@ async def upload_long_video(
     # per-segment pipeline. That is the only remaining caller of it, and
     # it is a deliberate one rather than a path nobody migrated.
     if seg_list:
-        threading.Thread(
-            target=_run_long_upload_job,
+        _heavy_thread(
+            _run_long_upload_job,
             kwargs={
                 "upload_id": upload_id,
                 "seg_list": list(seg_list),
@@ -5352,9 +5397,8 @@ async def upload_long_video(
                 "motion_only": bool(motion_only),
                 "single_hole": bool(motion_only),
             },
-            daemon=True,
             name=f"long-upload-manual-{upload_id}",
-        ).start()
+        )
     else:
         # An operator-supplied tee→green offset is real information the
         # cameras couldn't provide — persist it where the produce path's
@@ -5816,6 +5860,55 @@ def list_long_uploads(
     return out
 
 
+def _reconcile_unfinished_events(db, rows) -> int:
+    """Catch events whose upload finished without telling them.
+
+    THE STATUS IS DERIVED AT WRITE TIME, which works only if every
+    writer remembers. One did not -- the wizard commit -- and the
+    result was a pair reading "Produced 1/1" on Production and
+    "Queued - STUCK" on Cameras simultaneously, with nothing to do
+    about it but Re-process work that was already done.
+
+    A write-time mirror cannot be made safe by adding the missing call
+    alone: the next writer can forget just as easily, and the symptom
+    is a permanently wrong label rather than an error anybody sees. So
+    the listing reconciles what it is about to show. One extra query
+    per page, only for events that are not finished, and the repair
+    persists -- the rows already stranded fix themselves on the next
+    page load rather than needing a migration.
+
+    Never raises: a listing that 500s over a cosmetic status is a worse
+    failure than the status it was fixing.
+    """
+    from ..models import LongVideoUpload as _LVU
+
+    unfinished = [r.id for r in rows
+                  if r.status in ("queued", "paired_uploaded")]
+    if not unfinished:
+        return 0
+    try:
+        uploads = (
+            db.query(_LVU)
+            .filter(_LVU.camera_event_id.in_(unfinished))
+            .filter(_LVU.processing_status.in_(("completed", "failed")))
+            .all()
+        )
+        n = 0
+        for lvu in uploads:
+            _sync_camera_event_from_upload(db, lvu.id)
+            n += 1
+        if n:
+            log.info("cameras: reconciled %d event(s) whose upload had "
+                     "already finished", n)
+            for r in rows:
+                db.refresh(r)
+        return n
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        log.warning("cameras: could not reconcile event statuses: %s", exc)
+        return 0
+
+
 @router.get("/camera-events")
 def list_camera_events(
     limit: int = 100, offset: int = 0, db: Session = Depends(get_db),
@@ -5834,6 +5927,7 @@ def list_camera_events(
         .limit(max(1, min(500, limit)))
         .all()
     )
+    _reconcile_unfinished_events(db, rows)
     if not rows:
         return []
 
@@ -5934,6 +6028,20 @@ def list_camera_events(
             "missing": False,
         }
 
+    # THE DATABASE IS DONE WITH; GIVE THE CONNECTION BACK BEFORE PROBING.
+    #
+    # Everything below reads files, not rows. The session would hold a
+    # pooled connection through all of it anyway, because Depends keeps
+    # it for the life of the request — and the life of this request is
+    # however long ffprobe takes, which on a cold cache is seconds. The
+    # page polls every ten seconds, so requests stack; twenty of them
+    # holding twenty of the pool's thirty connections is what made every
+    # heartbeat, watch-status and poll-trigger 500 with QueuePool
+    # timeouts on the morning of 2 Oct.
+    #
+    # expire_on_commit=False, so the rows above stay readable after this.
+    db.commit()
+
     out = []
     for r in rows:
         tee_meta = _meta(r.tee_clip_filename)
@@ -5970,6 +6078,17 @@ def list_camera_events(
                 ),
                 "status": r.status,
                 "last_error": r.last_error,
+                # HAS THE SERVER GIVEN UP ON THIS ONE. The stuck card
+                # told the operator "the server retries a stalled event
+                # on its own, a few times over" in the present tense --
+                # true for the first three attempts and a lie after
+                # them, at exactly the moment somebody is reading it to
+                # find out whether to wait. These two let the card say
+                # which it is.
+                "produce_retries": int(
+                    getattr(r, "produce_retries", 0) or 0),
+                "produce_retry_budget": int(
+                    settings.camera_produce_max_retries or 0),
                 # WHEN EACH CAMERA'S FIRST FRAME ACTUALLY IS, as the Pi
                 # reported it. The trigger time is close but not equal --
                 # the two Pis start a fraction of a second apart, which
@@ -6015,6 +6134,58 @@ def list_camera_events(
     return out
 
 
+@router.post("/previews/sweep")
+def post_preview_sweep(payload: dict = Body(default={})):
+    """Make the previews for raws that never got one.
+
+    For the backlog stranded before the upload-time transcode had a
+    backstop: the clip is intact on its Production card with "No
+    preview" where its tile should be, and nothing was ever coming back
+    for it. New captures are covered automatically.
+
+    Runs in the background and takes the heavy gate per file, so it
+    shares the box rather than owning it. Bounded by `limit` files and
+    `max_age_hours`, because the alternative is re-encoding every raw
+    the database has ever held.
+    """
+    from .cameras import sweep_missing_previews
+
+    limit = int(payload.get("limit") or 60)
+    hours = int(payload.get("max_age_hours") or 72)
+
+    def _run() -> None:
+        try:
+            sweep_missing_previews(limit=limit, max_age_hours=hours)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("preview sweep crashed: %s", exc)
+
+    threading.Thread(target=_run, daemon=True, name="preview-sweep").start()
+    return {"started": True, "limit": limit, "max_age_hours": hours}
+
+
+@router.get("/produce-queue")
+def get_produce_queue():
+    """What the produce queue is doing, and whether it is paused."""
+    return produce_queue_status()
+
+
+@router.post("/produce-queue/pause")
+def post_produce_queue_pause(payload: dict = Body(default={})):
+    """Hold automatic produce so the box is free for hands-on work.
+
+    Automatic only: a Produce, Find Ascents or wizard run an operator
+    starts still goes through, and pressing Produce on a held card
+    promotes it out of the hold. Nothing is cancelled -- held jobs go
+    back in their original order on resume.
+
+    In memory, so a restart resumes. That is the right default for a
+    switch whose purpose is "I am working on the box right now": the
+    failure mode of forgetting to un-pause it is a course that quietly
+    stops producing clips.
+    """
+    return set_produce_paused(bool(payload.get("paused", True)))
+
+
 @router.post("/camera-events/{event_id}/reprocess")
 def reprocess_camera_event(event_id: int, db: Session = Depends(get_db)):
     """Re-run the production pipeline for a previously-uploaded
@@ -6044,11 +6215,24 @@ def reprocess_camera_event(event_id: int, db: Session = Depends(get_db)):
     # stale last_error gets cleared.
     event.status = "paired_uploaded" if event.green_clip_filename else "tee_uploaded"
     event.last_error = None
+    # A HUMAN ASKING COUNTS AS A FRESH START. The recovery sweeper will
+    # only restart an event camera_produce_max_retries times, so without
+    # this an event that burned its budget during a bad night could
+    # never be auto-recovered again -- and the operator who just pressed
+    # the button has no way of knowing that.
+    event.produce_retries = 0
     db.commit()
 
     threading.Thread(
         target=_process_camera_event_job,
-        args=(event.id,),
+        # A HUMAN ASKING IS THE OTHER WAY A TEE-ONLY PRODUCE IS
+        # LEGITIMATE. The normal path refuses to queue a paired event
+        # whose green is not in yet, which is right for the automatic
+        # case and wrong here: somebody is looking at this event and
+        # has decided a tee-only clip is what they want.
+        # (allow_tee_only, manual): a human is asking, so a paired
+        # event may go tee-only AND a paused queue must not hold it.
+        args=(event.id, True, True),
         daemon=True,
         name=f"camera-event-reprocess-{event.id}",
     ).start()
@@ -8357,6 +8541,272 @@ def _finalize_green_comet(upload_id, swing_no, green_path, green_cut,
         return None
 
 
+# WHERE THE PLATES GO, relative to the swing's impact, in seconds of
+# the GREEN clip. The green cut runs from impact + CLIP_SECONDS_TEE_
+# AFTER_IMPACT for about eight seconds, so the ball arrives and settles
+# inside that window: before it, the green is empty; a few seconds
+# after it, the ball is down and still and the group is a hundred and
+# fifty yards away, which is the one moment on the whole capture when
+# nothing else is moving on the putting surface.
+REST_PLATE_BEFORE_SEC = 6.0
+REST_PLATE_AFTER_SEC = 14.0
+
+
+def _ai_pick_ball(arrivals, pair_image_path):
+    """Ask which numbered ring is the ball. None means still unresolved.
+
+    Never raises and never costs anything when there is no AI
+    configured: the caller's fallback is to refuse to measure, which is
+    a correct outcome, and an AI outage must not take down the part
+    that works without it.
+    """
+    from ..services import ai_tracer
+
+    if not pair_image_path:
+        return None
+    try:
+        jpeg = Path(pair_image_path).read_bytes()
+    except OSError as exc:
+        log.warning("ball picker: could not read %s: %s", pair_image_path, exc)
+        return None
+    got = ai_tracer.pick_ball_among(jpeg, len(arrivals))
+    if got.get("index") is None:
+        log.info("ball picker: %d candidates, not resolved — %s",
+                 len(arrivals), got.get("error"))
+        return None
+    log.info("ball picker: chose ring %s of %d (%.2f) — %s",
+             got["index"], len(arrivals), got["confidence"], got["why"])
+    return got
+
+
+def _green_outline_for(db, green_camera_id):
+    """(points, drawn_at) for a green camera, or (None, None).
+
+    One lookup, because two callers want it and an outline that is
+    present for one and missing for the other is a bug waiting.
+    """
+    cam = db.get(Camera, int(green_camera_id)) if green_camera_id else None
+    roi = (cam.green_roi if cam else None) or {}
+    pts = roi.get("points")
+    if not pts:
+        return None, None
+    frame = roi.get("frame") or {}
+    return pts, ([frame.get("w"), frame.get("h")] if frame else None)
+
+
+def _rest_spot_at(db, row, green_path, green_impact_sec: float,
+                  green_camera_id: int, marks_path=None, landing_xy=None):
+    """Where the ball came to rest, anchored on one swing's impact.
+
+    `green_impact_sec` is the moment of impact in the GREEN clip's own
+    seconds — the callers both have it, by different routes, and
+    neither should be re-deriving the two cameras' offset here.
+
+    REQUIRES AN OUTLINE, and refuses without one. Unbounded, the finder
+    searches the whole frame and cannot tell a white dot on the putting
+    surface from an identical one ten yards short of it -- fine when an
+    operator is looking at the picture and judging, not fine when the
+    answer becomes a measured distance on somebody's prize.
+    """
+    from ..services import ai_tracer, greenrest
+
+    # ── ask the model first ─────────────────────────────────────────
+    #
+    # NO OUTLINE, NO PLATES, NO TRACKING. Two colour frames and a
+    # question. The plate comparison below is a careful piece of
+    # machinery and on this green it kept producing an answer that
+    # needed explaining; a ball at rest on mown grass is one of the
+    # things a vision model is genuinely good at, and "what is in the
+    # second picture that was not in the first" is a question about
+    # meaning rather than pixel arithmetic. A median plate has to be
+    # told what counts as the green. A model can see it.
+    #
+    # The model's answer is snapped to the real bright blob nearest it
+    # — it says which object, the pixels say where. See
+    # `find_ball_at_rest`.
+    _ai = ai_tracer.find_ball_at_rest(
+        green_path,
+        before_sec=max(0.0, green_impact_sec - REST_PLATE_BEFORE_SEC),
+        after_sec=green_impact_sec + REST_PLATE_AFTER_SEC,
+        debug_path=marks_path)
+    if _ai.get("xy"):
+        _x, _y = _ai["xy"]
+        return (
+            {"xy": [float(_x), float(_y)],
+             "camera_id": int(green_camera_id), "source": "ai",
+             "on_green": _ai.get("on_green"),
+             "confidence": _ai.get("confidence"),
+             "image": _ai.get("image")},
+            (f"came to rest at {_x},{_y}"
+             + ("" if _ai.get("on_green") else " — NOT on the putting "
+                                               "surface, by the model's "
+                                               "reading")
+             + f" ({_ai.get('confidence', 0):.0%} confident"
+             + (f", snapped {_ai['snap_px']}px to the nearest blob"
+                if _ai.get("snapped") else ", no blob to snap to")
+             + f"). {_ai.get('why') or ''} Frames at "
+             f"{_ai['before_sec']}s and {_ai['after_sec']}s."),
+        )
+    _ai_why = _ai.get("error") or "the model found no ball"
+
+    # ── and fall back to the plates ─────────────────────────────────
+    #
+    # Free, deterministic, and already written. It needs the outline
+    # the model does not, so without one this is where the road ends.
+    pts, drawn_at = _green_outline_for(db, green_camera_id)
+    if not pts:
+        return None, (f"{_ai_why}; and with no green outline drawn there "
+                      "is no fallback to try")
+    # THE PITCH MARK GOES ON THE SAME PICTURE when the descent search
+    # found one. The two numbers that matter -- where it came down and
+    # where it stopped -- only mean something next to each other, and a
+    # dashed line between them is the run-out.
+    _marks = ([{"xy": [int(landing_xy[0]), int(landing_xy[1])],
+                "label": "landed", "colour": (235, 190, 90)}]
+              if landing_xy else [])
+    # ANCHORED ON IMPACT, AND NOT PUSHED LATER. I briefly made this
+    # take whichever was later of impact+14 and the 30-second default,
+    # on the reasoning that a later plate is a more settled ball. It is
+    # not, and the field says so: on Rivertowne 8 event 1161 the
+    # impact-anchored window (2.0s/13.6s) and the operator's own
+    # 2s/13s run agree on the same point to three pixels, while the
+    # same clip at 2s/25s picks a DIFFERENT one.
+    #
+    # Later is not safer on a green in partial shade. Every extra
+    # second is more shadow travel, and shadow travel is a real
+    # difference between two plates -- so a later after plate competes
+    # the ball against more clutter, not less. The impact knows when
+    # the ball arrived; nothing else here does.
+    # THE BEFORE/AFTER PAIR TOO, when there is somewhere to put it.
+    # Two readers: the ball picker, which is shown exactly the picture
+    # an operator would be shown -- if a person could not tell from it,
+    # the model is not being asked anything fairer -- and the operator,
+    # for whom "two things arrived" is only answerable by looking.
+    _pair = (Path(str(marks_path)).with_name(
+        Path(str(marks_path)).stem + "-plates.jpg") if marks_path else None)
+    out = greenrest.find_rest_spot(
+        green_path, polygon=pts, drawn_at=drawn_at,
+        before_sec=max(0.0, green_impact_sec - REST_PLATE_BEFORE_SEC),
+        after_sec=green_impact_sec + REST_PLATE_AFTER_SEC,
+        marks_path=marks_path, marks=_marks, debug_path=_pair,
+    )
+    if not out.get("ok"):
+        return None, (out.get("error") or "the plates could not be built")
+    arrivals = out.get("arrivals") or []
+    _when = (f" (plates at "
+             f"{out['before_frame'] / (out.get('fps') or 60):.1f}s and "
+             f"{out['after_frame'] / (out.get('fps') or 60):.1f}s, impact "
+             f"{green_impact_sec:.1f}s)")
+    if not arrivals:
+        return None, (f"{_ai_why}; the plates found nothing new on the "
+                      "green either" + _when)
+    # MORE THAN ONE THING ARRIVED. A partner who also hit in, shade that
+    # crawled, a towel somebody dropped. The plates cannot tell which
+    # was the shot, and a prize measured off a guess is worse than no
+    # measurement -- so the fallback is still to refuse.
+    #
+    # But refusing is a dead end, and this is the one part of the job
+    # that is judgement rather than measurement: the candidates already
+    # carry exact coordinates, and the only question is which of three
+    # or four is a golf ball. That is what a model is good at, and its
+    # weak axis -- pixel coordinates, off by 50-100px per this repo's
+    # own notes -- does not enter into choosing an index.
+    if len(arrivals) > 1:
+        _picked = _ai_pick_ball(arrivals, out.get("image_path"))
+        if _picked is None:
+            return None, (f"{len(arrivals)} things arrived on the green — "
+                          "no way to tell which was this shot" + _when)
+        best = arrivals[_picked["index"] - 1]
+        return (
+            {"xy": [float(best["x"]), float(best["y"])],
+             "camera_id": int(green_camera_id), "source": "plates+ai",
+             "area": best.get("area"), "persist": best.get("persist"),
+             "image": out.get("marks_path"),
+             "plates_image": out.get("image_path")},
+            (f"{len(arrivals)} things arrived; ring {_picked['index']} "
+             f"chosen as the ball at {best['x']},{best['y']} "
+             f"({_picked['confidence']:.0%} confident — "
+             f"{_picked['why']}).{_when}"),
+        )
+    best = arrivals[0]
+    return (
+        {"xy": [float(best["x"]), float(best["y"])],
+         "camera_id": int(green_camera_id), "source": "plates",
+         "area": best.get("area"), "persist": best.get("persist"),
+         "image": out.get("marks_path"),
+         "plates_image": out.get("image_path")},
+        (f"came to rest at {best['x']},{best['y']} — {best.get('area')}px, "
+         f"in {round((best.get('persist') or 0) * 100)}% of the after "
+         f"frames. Plates at "
+         f"{out['before_frame'] / (out.get('fps') or 60):.1f}s and "
+         f"{out['after_frame'] / (out.get('fps') or 60):.1f}s of the green "
+         f"clip, from an impact at {green_impact_sec:.1f}s"),
+    )
+
+
+def _rest_from_plates(db, row, swing: dict, green_camera_id: int):
+    """Where the ball actually stopped, measured off the green clip.
+
+    The third source, and the only one that answers the question the
+    prize asks. `operator` is a human who watched the ball and stopped
+    clicking where it stopped; `descent` is where it stopped FALLING,
+    which is the pitch mark and not the finish. This compares the green
+    before the shot with the green once the ball is down, and reports
+    what is newly on it.
+
+    REQUIRES AN OUTLINE, and refuses without one. Unbounded, the finder
+    searches the whole frame and cannot tell a white dot on the putting
+    surface from an identical one ten yards short of it -- fine when an
+    operator is looking at the picture and judging, not fine when the
+    answer becomes a measured distance on somebody's prize.
+    """
+    from ..models import CameraEvent
+
+    try:
+        if not row.green_filename:
+            return None
+        fps = float(swing.get("fps") or 0) or 60.0
+        impact_frame = swing.get("impact_frame")
+        if impact_frame is None:
+            return None
+        tee_impact_sec = float(impact_frame) / fps
+
+        # The green camera starts at its own wall-clock moment, so the
+        # same instant sits elsewhere in its clip. Same delta the
+        # composite cut uses, derived the same way.
+        green_delta = 0.0
+        if getattr(row, "camera_event_id", None):
+            ev = db.get(CameraEvent, row.camera_event_id)
+            if (ev is not None and ev.tee_recording_started_at is not None
+                    and ev.green_recording_started_at is not None):
+                green_delta = (ev.tee_recording_started_at
+                               - ev.green_recording_started_at).total_seconds()
+        green_impact = tee_impact_sec + green_delta
+
+        storage.ensure_local(CLIPS_DIR, row.green_filename)
+        path = CLIPS_DIR / row.green_filename
+        if not path.exists():
+            return None
+        rest, why = _rest_spot_at(db, row, path, green_impact,
+                                  int(green_camera_id))
+        if rest is None:
+            log.info("rest plates: upload %s swing %s — %s",
+                     row.id, swing.get("idx"), why)
+        return rest
+    except Exception as exc:  # noqa: BLE001
+        # AT WARNING, NOT DEBUG. This catch exists so a measurement
+        # failure cannot cost a clip, and it does its job -- but it
+        # turns a crash into something indistinguishable from a polite
+        # "could not tell", and the other caller of _rest_spot_at does
+        # not have it. A mutation run found exactly that: a TypeError
+        # on the picker path was swallowed here and read as a refusal,
+        # while produce would have raised. Quiet is the wrong default
+        # for a difference that large.
+        log.warning("rest plates for upload %s swing %s: %s",
+                    getattr(row, "id", None), swing.get("idx"), exc)
+        return None
+
+
 def _green_rest_for_swing(db, row, slot: int):
     """Where the ball finished on the GREEN camera, and which camera saw it.
 
@@ -8391,20 +8841,57 @@ def _green_rest_for_swing(db, row, slot: int):
             if not isinstance(_s, dict) or int(_s.get("idx", -1)) != int(slot):
                 continue
             _src = "descent" if _s.get("descent_auto") else "operator"
-            _gt = [q for q in (_s.get("green_track") or [])
-                   if isinstance(q, dict) and q.get("x") is not None]
-            if _gt:
-                _last = max(_gt, key=lambda q: int(q.get("frame") or 0))
-                return {"xy": [float(_last["x"]), float(_last["y"])],
-                        "camera_id": int(g_id), "source": _src}
-            _ls = _s.get("landing_spot")
-            if _ls:
-                _x = _ls.get("x") if isinstance(_ls, dict) else _ls[0]
-                _y = _ls.get("y") if isinstance(_ls, dict) else _ls[1]
-                if _x is not None and _y is not None:
-                    return {"xy": [float(_x), float(_y)],
+
+            def _from_track():
+                _gt = [q for q in (_s.get("green_track") or [])
+                       if isinstance(q, dict) and q.get("x") is not None]
+                if _gt:
+                    _last = max(_gt, key=lambda q: int(q.get("frame") or 0))
+                    return {"xy": [float(_last["x"]), float(_last["y"])],
                             "camera_id": int(g_id), "source": _src}
-            return None
+                _ls = _s.get("landing_spot")
+                if _ls:
+                    _x = _ls.get("x") if isinstance(_ls, dict) else _ls[0]
+                    _y = _ls.get("y") if isinstance(_ls, dict) else _ls[1]
+                    if _x is not None and _y is not None:
+                        return {"xy": [float(_x), float(_y)],
+                                "camera_id": int(g_id), "source": _src}
+                return None
+
+            # A HUMAN WHO WATCHED THE BALL OUTRANKS EVERYTHING. They saw
+            # it stop and clicked where it stopped; nothing measured can
+            # improve on that, and overruling it would make the operator's
+            # own correction disappear.
+            if _src == "operator":
+                _hand = _from_track()
+                if _hand:
+                    return _hand
+
+            # ...and the plates outrank the descent chain, because they
+            # answer a different question. A descent chain ends where the
+            # ball stopped FALLING -- the pitch mark -- and a ball
+            # bounces and rolls from there. The plates compare the green
+            # before the shot with the green once everything has settled,
+            # so what they find is where it finished. The difference
+            # decides prizes.
+            #
+            # ALREADY MEASURED, USUALLY. The ascent/descent pass runs
+            # the plates for every swing it sees and writes the answer
+            # onto the swing, so in a normal produce this is a lookup.
+            # Re-running it here would read the green clip a second
+            # time for a number already on the row.
+            _rs = _s.get("rest_spot")
+            if _rs:
+                try:
+                    return {"xy": [float(_rs[0]), float(_rs[1])],
+                            "camera_id": int(g_id),
+                            "source": _s.get("rest_source") or "plates"}
+                except (TypeError, ValueError, IndexError):
+                    pass
+            _plates = _rest_from_plates(db, row, _s, int(g_id))
+            if _plates:
+                return _plates
+            return _from_track()
         return None
     except Exception as exc:  # noqa: BLE001
         log.debug("green rest for upload %s slot %s: %s",
@@ -9421,6 +9908,166 @@ def _pin_for_row(db, row):
         except (TypeError, ValueError):
             pass
     return e, (f"marked {str(_eff)[:16]}" if _eff else "marked (undated)")
+
+
+def _search_area_for(db, row) -> dict:
+    """This upload's TEE camera's ascent search area, as fractions.
+
+    {sky_frac, left_frac, right_frac}, any of them None. The tee
+    camera's, always — the ascent sweep runs on tee footage whoever
+    asked for it, and a green's own horizon describes a different
+    picture entirely.
+
+    ONE READER, because three call sites pass this and a hole searched
+    differently by the sweep than by the per-candidate check is a hole
+    whose two reports cannot be compared.
+    """
+    out = {"sky_frac": None, "left_frac": None, "right_frac": None}
+    try:
+        ev = (db.get(CameraEvent, row.camera_event_id)
+              if getattr(row, "camera_event_id", None) else None)
+        cam = (db.get(Camera, ev.tee_camera_id)
+               if ev is not None and ev.tee_camera_id else None)
+        if cam is None:
+            return out
+        for _k, _attr in (("sky_frac", "sky_line_frac"),
+                          ("left_frac", "search_left_frac"),
+                          ("right_frac", "search_right_frac")):
+            v = getattr(cam, _attr, None)
+            out[_k] = float(v) if v is not None else None
+    except Exception as exc:  # noqa: BLE001
+        log.debug("search area lookup failed for upload %s: %s",
+                  getattr(row, "id", None), exc)
+    return out
+
+
+def _recent_upload_for_camera(db, cam):
+    """(upload, which) — the newest clip this camera appears in, and
+    which half of it is this camera's. (None, None) if it has none."""
+    _is_green = (cam.assigned_role or "tee") == "green"
+    _col = (CameraEvent.green_camera_id if _is_green
+            else CameraEvent.tee_camera_id)
+    ev_ids = [e.id for e in db.query(CameraEvent)
+              .filter(_col == cam.id)
+              .order_by(CameraEvent.id.desc()).limit(200).all()]
+    if not ev_ids:
+        return None, None
+    _file = (LongVideoUpload.green_filename if _is_green
+             else LongVideoUpload.tee_filename)
+    row = (db.query(LongVideoUpload)
+           .filter(LongVideoUpload.camera_event_id.in_(ev_ids))
+           .filter(_file.isnot(None))
+           .order_by(LongVideoUpload.id.desc()).first())
+    return row, ("green" if _is_green else "tee")
+
+
+@router.get("/cameras/{camera_id}/sky-line")
+def get_camera_sky_line(camera_id: int, db: Session = Depends(get_db)):
+    """This camera's skyline, and a frame to draw it on.
+
+    THE LINE A PERSON CAN SEE AND THE CAMERA CANNOT COMPUTE. The ascent
+    sweep searches a strip of sky above the noise; where that strip
+    stops used to be guessed as "a golfer's height above the hitting
+    area", which is a proxy measured off one reference frame. On
+    Rivertowne 8 the proxy lands 150px inside the treeline, and the
+    sweep's per-frame budget of ten blobs then goes to tree edges
+    rather than to the ball.
+
+    Serves the frame as an upload id rather than a picture, so the
+    drawing modal goes through the SAME frame endpoint the calibrator
+    uses -- and, like that one, keeps working with the rig off the air,
+    which is exactly when somebody is sitting down to set this up.
+    """
+    from ..services import debug3 as _d3
+
+    cam = db.get(Camera, camera_id)
+    if cam is None:
+        raise HTTPException(404, "camera not found")
+    row, which = _recent_upload_for_camera(db, cam)
+    if row is None:
+        raise HTTPException(
+            409, "no capture from this camera yet — record one, then draw "
+                 "the skyline on it")
+    # WHERE THE FLOOR SITS TODAY, so the modal can show what it is
+    # replacing rather than opening on an empty frame. Fractions, which
+    # is what the line is stored as.
+    # The tee half whenever there is one: the camera ROI is in tee
+    # pixels and sizing it against a green file would scale it wrong.
+    # Falls back to the green so a green-only row still answers.
+    _src = _local_tee(row) or _local_green(row)
+    _roi = _tee_box_roi_fractions(_src, db, row)
+    _r = _roi.get("roi") or {}
+    _tee_frac = float(_r.get("y")) if _r.get("y") is not None else None
+    _guess = (max(0.0, _tee_frac - _d3.ASCENT_HEAD_ROOM_FRAC)
+              if _tee_frac is not None
+              else _d3.ASCENT_BAND_FALLBACK_FRAC)
+    return {
+        "camera_id": cam.id,
+        "sky_line_frac": getattr(cam, "sky_line_frac", None),
+        "search_left_frac": getattr(cam, "search_left_frac", None),
+        "search_right_frac": getattr(cam, "search_right_frac", None),
+        "upload_id": row.id,
+        "which": which,
+        "captured_at": (row.base_captured_at.isoformat()
+                        if row.base_captured_at else None),
+        # The computed guess this replaces, and the tee line it is
+        # measured from — both as fractions of frame height.
+        "guess_frac": round(_guess, 4),
+        "tee_line_frac": round(_tee_frac, 4) if _tee_frac is not None else None,
+        "roi_source": _roi.get("source"),
+    }
+
+
+@router.post("/cameras/{camera_id}/sky-line")
+def set_camera_sky_line(
+    camera_id: int,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+):
+    """Store (or clear) this camera's skyline. Body: {sky_line_frac}.
+
+    Null or absent clears it and the sweep goes back to the computed
+    guess, which is the right escape hatch for a line drawn wrong on a
+    camera that has since been re-aimed.
+    """
+    cam = db.get(Camera, camera_id)
+    if cam is None:
+        raise HTTPException(404, "camera not found")
+    # ONLY WHAT WAS SENT. A modal that saves the skyline must not
+    # silently clear the left and right edges it did not mention.
+    for _key, _attr in (("sky_line_frac", "sky_line_frac"),
+                        ("search_left_frac", "search_left_frac"),
+                        ("search_right_frac", "search_right_frac")):
+        if _key not in payload:
+            continue
+        raw = payload.get(_key)
+        if raw is None:
+            setattr(cam, _attr, None)
+            continue
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{_key} must be a number 0-1")
+        # REFUSED, NOT CLAMPED. An edge at 0 or 1 is a mis-drag, not a
+        # setting, and silently moving it to something legal would hide
+        # that from the person who just drew it.
+        if not (0.01 <= v <= 0.99):
+            raise HTTPException(
+                400, f"{_key} must sit between 0.01 and 0.99 of the "
+                     f"frame — that one is off the picture")
+        setattr(cam, _attr, v)
+    # AND THE TWO EDGES HAVE TO LEAVE SOMETHING BETWEEN THEM.
+    _l, _r = cam.search_left_frac, cam.search_right_frac
+    if _l is not None and _r is not None and _r - _l < 0.05:
+        db.rollback()
+        raise HTTPException(
+            400, "the left and right edges leave less than 5% of the "
+                 "frame to search — a ball cannot be found in that")
+    db.commit()
+    return {"camera_id": cam.id,
+            "sky_line_frac": cam.sky_line_frac,
+            "search_left_frac": cam.search_left_frac,
+            "search_right_frac": cam.search_right_frac}
 
 
 @router.get("/cameras/{camera_id}/calibration-source")
@@ -11026,6 +11673,11 @@ def commit_wizard_clip(
     clip.delivered_at = _utcnow_naive()
     row.processing_status = "completed"
     row.processing_completed_at = _utcnow_naive()
+    # MIRROR IT ONTO THE CAMERA EVENT TOO (done after the commit
+    # below). This is the third place an upload reaches a terminal
+    # status and was the only one that did not tell the event, so a
+    # pair produced through the wizard read "Produced 1/1" on
+    # Production and "Queued - STUCK" on Cameras at the same time.
     if clip_id is None:
         # Single-swing wizard commit owns the whole upload's counts.
         # A targeted per-swing commit must NOT collapse a multi-swing
@@ -11045,6 +11697,9 @@ def commit_wizard_clip(
     )
     db.commit()
     db.refresh(clip)
+    # AFTER the commit, so the sync reads the status that was just
+    # written rather than the one it is replacing.
+    _sync_camera_event_from_upload(db, upload_id)
     return {
         "upload_id": upload_id,
         "clip_id": clip.id,
@@ -11234,14 +11889,13 @@ def wizard_produce(
 
     _debugx_set("produce", upload_id, stage="Queued", done=0, total=0,
                 running=True, error=None)
-    threading.Thread(
-        target=run_wizard_produce_job,
+    _heavy_thread(
+        run_wizard_produce_job,
         args=(upload_id, (bx, by), impact_frame, hole_number,
               landing_frame, landing_spot, solo, swing_idx,
               points, launch_frame),
-        daemon=True,
         name=f"wizard-produce-{upload_id}",
-    ).start()
+    )
     log.info(
         "wizard produce: upload=%s queued with ball=(%.0f,%.0f) impact=f%d "
         "(%s)", upload_id, bx, by, impact_frame,
@@ -11290,6 +11944,31 @@ def delete_long_upload(upload_id: int, db: Session = Depends(get_db)):
 TESTCUTS_SUBDIR = "_testcuts"
 
 
+def _tee_trigger_zones(db, row):
+    """The trigger boxes the tee rig measures motion inside, in pixels.
+
+    THE SAME BOXES, NOT A RESTATEMENT OF THEM. The rig calls
+    `tee_roi.boxes(camera.tee_box_roi)` and hands the result to its
+    MotionTracker; so does this. Anything else here -- a band, a
+    remembered rectangle, a fraction converted twice -- would make the
+    tester measure a different patch of grass than the rig, and every
+    threshold dialled in against it would be wrong by an unknown amount.
+
+    None when the camera has no boxes drawn, which the tracker reads as
+    "measure the whole frame" exactly as it does in the field.
+    """
+    ev = (
+        db.get(CameraEvent, row.camera_event_id)
+        if getattr(row, "camera_event_id", None) else None
+    )
+    if ev is None or not ev.tee_camera_id:
+        return None
+    cam = db.get(Camera, ev.tee_camera_id)
+    if cam is None:
+        return None
+    return tee_roi.boxes(cam.tee_box_roi) or None
+
+
 @router.post("/long-uploads/{upload_id}/test-cut")
 def test_cut_long_upload(
     upload_id: int,
@@ -11298,6 +11977,32 @@ def test_cut_long_upload(
     motion_ratio: float = Form(4.0),
     combined_pair_window_sec: float = Form(3.0),
     cut_clips: bool = Form(True),
+    # THE RIG'S OWN KNOBS, under the rig's own names. These are the
+    # values that go into `swing_select:` in the Pi's config.yaml once
+    # they are settled, so renaming them here would mean translating
+    # between two vocabularies every time a number moves.
+    pi_min_ratio: float = Form(4.0),
+    pi_min_separation_sec: float = Form(6.0),
+    pi_before_sec: float = Form(4.5),
+    pi_after_sec: float = Form(9.0),
+    pi_smooth_seconds: float = Form(0.15),
+    pi_max_burst_sec: float = Form(6.0),
+    pi_sample_hz: float = Form(20.0),
+    pi_use_zones: bool = Form(True),
+    # ZONES FOR THIS RUN ONLY, as JSON [{x,y,w,h}] in 0-1 fractions of
+    # the frame. NOTHING IS SAVED: the camera's own boxes are what the
+    # rig records against, and a tester that quietly rewrote them could
+    # stop the tee triggering on a live hole. Trying a tighter box
+    # against yesterday's footage must not be able to do that.
+    pi_zones_json: str = Form(""),
+    # Times (seconds) of swings the operator can see in the clip. Given
+    # these, the panel stops being a threshold-guessing game: every
+    # combination is scored against them at once.
+    pi_known_swings: str = Form(""),
+    # Score the alternative signals (top-k, optical flow, local
+    # baseline) against those same known swings. Off by default: the
+    # flow pass is the only part of this panel that costs real time.
+    pi_compare_signals: bool = Form(False),
     db: Session = Depends(get_db),
 ):
     """Dry-run the swing-cutting half of the long-upload pipeline.
@@ -11312,7 +12017,14 @@ def test_cut_long_upload(
     /admin/clips. Calling this again for the same upload wipes the
     previous test cuts first.
 
-    detector: 'motion' (default) | 'audio'
+    detector: 'motion' | 'audio' | 'combined' | 'pi' | 'ballgone'
+
+    'pi' runs the TEE RIG'S OWN detector (pi-agent/agent/swingfind.py),
+    imported rather than reimplemented, against this stored clip. It is
+    the only option here that predicts what the rig will actually
+    upload; the other three are the backend's own cutters. Its person
+    gate is off (see services/pi_swingfind), so it reports the same
+    peaks as the rig or more, never fewer.
     """
     row = db.get(LongVideoUpload, upload_id)
     if not row:
@@ -11339,6 +12051,161 @@ def test_cut_long_upload(
             min_peak_ratio=float(audio_min_peak_ratio),
             debug=debug,
         )
+    elif detector == "ballgone":
+        from ..services.ball_vanish import find_ball_vanish
+
+        _bz = None
+        _bz_frac = False
+        if (pi_zones_json or "").strip():
+            try:
+                _drawn = json.loads(pi_zones_json)
+                _bz = [{"x": float(b["x"]), "y": float(b["y"]),
+                        "w": float(b["w"]), "h": float(b["h"])}
+                       for b in _drawn
+                       if float(b.get("w") or 0) > 0]
+                _bz_frac = True
+            except (ValueError, TypeError, KeyError) as exc:
+                raise HTTPException(
+                    400, f"hitting area is not usable: {exc}") from None
+        elif pi_use_zones:
+            try:
+                _bz = _tee_trigger_zones(db, row)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("test-cut: no zones for upload=%s (%s)",
+                            upload_id, exc)
+        windows = find_ball_vanish(
+            src_path,
+            zones=_bz,
+            zones_fractional=_bz_frac,
+            sample_hz=float(pi_sample_hz),
+            before_sec=float(pi_before_sec),
+            after_sec=float(pi_after_sec),
+            debug=debug,
+        )
+        debug["zone_source"] = ("drawn for this test" if _bz_frac
+                                else "camera trigger zones" if _bz
+                                else "whole frame")
+        _known_b = []
+        for part in (pi_known_swings or "").replace(";", ",").split(","):
+            part = part.strip()
+            if part:
+                try:
+                    _known_b.append(float(part))
+                except ValueError:
+                    raise HTTPException(
+                        400, f"'{part}' is not a time in seconds") from None
+        if _known_b:
+            # Scored the same way as the motion detectors, so the two
+            # approaches can be compared on the same clips rather than
+            # on two different notions of "right".
+            _tol = 4.0
+            _hit = [w for w in windows
+                    if any(abs(w["peak_time_sec"] - k) <= _tol
+                           for k in _known_b)]
+            debug["scored"] = {
+                "known": _known_b,
+                "caught": sum(1 for k in _known_b
+                              if any(abs(w["peak_time_sec"] - k) <= _tol
+                                     for w in windows)),
+                "of": len(_known_b),
+                "false_positives": len(windows) - len(_hit),
+            }
+    elif detector == "pi":
+        from ..services.pi_swingfind import detect_swings_pi
+
+        # The operator's trigger boxes are what the rig measures inside
+        # -- not a band in config. Feeding the same boxes here is the
+        # difference between testing the rig and testing something that
+        # resembles it.
+        _zones = None
+        _zones_fractional = False
+        _zone_source = "none"
+        if (pi_zones_json or "").strip():
+            try:
+                _drawn = json.loads(pi_zones_json)
+                if not isinstance(_drawn, list):
+                    raise ValueError("expected a list of boxes")
+                _zones = [
+                    {"x": float(b["x"]), "y": float(b["y"]),
+                     "w": float(b["w"]), "h": float(b["h"])}
+                    for b in _drawn
+                    if float(b.get("w") or 0) > 0 and float(b.get("h") or 0) > 0
+                ] or None
+                _zones_fractional = True
+                _zone_source = "drawn for this test"
+            except (ValueError, TypeError, KeyError) as exc:
+                # A malformed override must not silently fall back to
+                # the camera's boxes: the operator would read ratios
+                # from one set of zones believing they came from
+                # another, which is the single most misleading thing
+                # this panel could do.
+                raise HTTPException(
+                    400, f"test zones are not usable: {exc}") from exc
+        elif pi_use_zones:
+            try:
+                _zones = _tee_trigger_zones(db, row)
+                if _zones:
+                    _zone_source = "camera trigger zones"
+            except Exception as exc:  # noqa: BLE001
+                log.warning("test-cut: no trigger zones for upload=%s (%s) "
+                            "— measuring the whole frame instead",
+                            upload_id, exc)
+        windows = detect_swings_pi(
+            src_path,
+            sample_hz=float(pi_sample_hz),
+            zones=_zones,
+            zones_fractional=_zones_fractional,
+            min_ratio=float(pi_min_ratio),
+            min_separation_sec=float(pi_min_separation_sec),
+            before_sec=float(pi_before_sec),
+            after_sec=float(pi_after_sec),
+            smooth_seconds=float(pi_smooth_seconds),
+            max_burst_sec=float(pi_max_burst_sec),
+            debug=debug,
+        )
+        debug["zone_source"] = _zone_source
+        _known = []
+        for part in (pi_known_swings or "").replace(";", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                _known.append(float(part))
+            except ValueError:
+                raise HTTPException(
+                    400, f"'{part}' is not a time in seconds") from None
+        if _known:
+            from ..services.pi_swingfind import tune_against_known
+
+            debug["tuning"] = tune_against_known(
+                src_path, _known,
+                sample_hz=float(pi_sample_hz),
+                zones=_zones,
+                zones_fractional=_zones_fractional,
+                min_ratio=float(pi_min_ratio),
+                min_separation_sec=float(pi_min_separation_sec),
+                before_sec=float(pi_before_sec),
+                after_sec=float(pi_after_sec),
+                smooth_seconds=float(pi_smooth_seconds),
+                max_burst_sec=float(pi_max_burst_sec),
+            )
+            # The curve is already in debug["trace"]; carrying a second
+            # copy doubles a 1300-point payload for nothing.
+            debug["tuning"].pop("curve", None)
+
+            if pi_compare_signals:
+                from ..services.pi_swingfind import compare_signals
+
+                debug["signal_compare"] = compare_signals(
+                    src_path, _known,
+                    sample_hz=float(pi_sample_hz),
+                    zones=_zones,
+                    zones_fractional=_zones_fractional,
+                    min_separation_sec=float(pi_min_separation_sec),
+                    before_sec=float(pi_before_sec),
+                    after_sec=float(pi_after_sec),
+                    smooth_seconds=float(pi_smooth_seconds),
+                )
     elif detector == "combined":
         windows = detect_swings_combined(
             src_path,
@@ -14212,24 +15079,30 @@ def produce_debug(
         row.last_error = None
         db.commit()
         wait_after = time.time()
-        threading.Thread(
-            target=_run_long_upload_job,
+        _heavy_thread(
+            _run_long_upload_job,
             kwargs={
                 "upload_id": row.id, "seg_list": [], "auto_detect_swings": True,
                 "starting_hole": 1, "ai_tracer_model": None,
                 "debug_artifacts": True,
             },
-            daemon=True, name=f"produce-debug-produce-{row.id}",
-        ).start()
+            name=f"produce-debug-produce-{row.id}",
+        )
 
     # 2) Report renderer — reads the produce run's record; adds the
     # classical-CV comparison and shows the production tracer.
+    def _analyze_job() -> None:
+        # Niced but NOT gated, deliberately: this waits for the produce
+        # thread above to finish, and a waiter holding the gate the
+        # thing it waits on needs is a deadlock.
+        workload.deprioritize()
+        _run_produce_debug_job(
+            upload_id=row.id, motion_only=motion_only,
+            wait_after=wait_after,
+        )
+
     threading.Thread(
-        target=_run_produce_debug_job,
-        kwargs={
-            "upload_id": row.id, "motion_only": motion_only,
-            "wait_after": wait_after,
-        },
+        target=_analyze_job,
         daemon=True, name=f"produce-debug-analyze-{row.id}",
     ).start()
     return {"ok": True, "upload_id": row.id, "ai_available": bool(os.environ.get("ANTHROPIC_API_KEY"))}
@@ -14281,7 +15154,7 @@ def rescan_ball(upload_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/clips/upload")
-async def upload_clip(
+def upload_clip(
     course_id: int = Form(...),
     hole_number: int = Form(...),
     camera_type: str = Form("tee"),
@@ -14320,7 +15193,12 @@ async def upload_clip(
     if not (video.content_type or "").startswith("video/"):
         raise HTTPException(400, "must be a video file")
 
-    data = await video.read()
+    # Sync `def`, not `async def`: the write_bytes below is a blocking
+    # disk write of up to several hundred MB, and on the event loop it
+    # stops the whole server — health check included — until it ends.
+    # In the threadpool, blocking is the thread's job. Starlette has
+    # already buffered the body, so this reads its spooled temp file.
+    data = video.file.read()
     if not data:
         raise HTTPException(400, "empty video upload")
     if len(data) > 500 * 1024 * 1024:
@@ -14384,7 +15262,7 @@ async def upload_clip(
     composite_url = None
     composite_info: dict | None = None
     if video_green is not None and not already_traced:
-        green_data = await video_green.read()
+        green_data = video_green.file.read()
         if green_data:
             if len(green_data) > 500 * 1024 * 1024:
                 raise HTTPException(413, "green video too large (max 500MB)")
@@ -14558,7 +15436,7 @@ def update_showcase(position: int, payload: dict, db: Session = Depends(get_db))
 
 
 @router.post("/showcase/{position}/upload")
-async def upload_showcase(
+def upload_showcase(
     position: int,
     video: UploadFile = File(...),
     title: str = Form(""),
@@ -14571,7 +15449,12 @@ async def upload_showcase(
     if not (video.content_type or "").startswith("video/"):
         raise HTTPException(400, "must be a video file")
 
-    data = await video.read()
+    # Sync `def`, not `async def`: the write_bytes below is a blocking
+    # disk write of up to several hundred MB, and on the event loop it
+    # stops the whole server — health check included — until it ends.
+    # In the threadpool, blocking is the thread's job. Starlette has
+    # already buffered the body, so this reads its spooled temp file.
+    data = video.file.read()
     if not data:
         raise HTTPException(400, "empty upload")
     if len(data) > 500 * 1024 * 1024:
@@ -14771,10 +15654,137 @@ def _rtsp_url_for(c: Camera, sub: bool = False) -> str | None:
     return f"rtsp://{user}:PASSWORD@{hostpart}{path}"
 
 
+# ── clips a camera has recorded but not handed over yet ──────────────
+#
+# WHY THIS LIVES ON THE SERVER. The Pi knows its own queue depth, and
+# saying so is one heartbeat field — but a field only the new agent
+# sends is useless on the camera you most need it for. The rig whose
+# link is too congested to upload is the same rig that is too congested
+# to SSH into, which is the same rig you therefore cannot update to the
+# build that would report it. So this is derived from rows the events
+# table already has: one is written when the tee triggers, and the
+# filename is filled in when the clip lands. The gap between those two
+# IS the backlog, and it is visible for any agent old enough to trigger
+# at all.
+#
+# "Owed" means: triggered, past the settle window below, still no clip.
+# It does NOT prove the clip is in flight. A Pi that lost power
+# mid-recording, or whose spool hit upload_spool_max_mb and evicted the
+# file to make room, leaves an identical row behind. Read a count that
+# FALLS as uploads landing, and a count that SITS STILL as something to
+# go and look at.
+
+# Below this a clip is probably still being made rather than stuck: the
+# tee holds ~10s before rolling (record_delay_seconds), records up to
+# max_clip_seconds (120 by default), then compresses for upload — which
+# on a Pi that is also capturing at 30 fps is not instant. Counting
+# those would make a perfectly healthy camera look permanently behind.
+_OWED_SETTLE_SECONDS = 300
+
+# Past this the Pi has given up on its own: upload_spool_max_age_hours
+# defaults to 24, after which the spool sweep deletes the file instead
+# of retrying it forever. An event older than that with no clip is not
+# owed, it is lost — and counting it would mean a number that can never
+# come down. The horizon doubles as the bound on the query below.
+_OWED_HORIZON_HOURS = 24
+
+
+def _owed_age(seconds: float) -> str:
+    """Compact age for the pill. Minutes until an hour, then hours."""
+    if seconds < 3600:
+        return f"{max(1, int(seconds // 60))}m"
+    return f"{int(round(seconds / 3600.0))}h"
+
+
+def _owed_status(count: int, oldest: datetime | None, now: datetime) -> dict | None:
+    """Shape one camera's backlog for the card. None when it owes
+    nothing, so an idle camera shows no pill at all."""
+    if count <= 0:
+        return None
+    age = (now - oldest).total_seconds() if oldest else 0.0
+    # SEVERITY COMES FROM THE AGE, not the count. Twenty clips that all
+    # arrived in the last ten minutes is a busy morning; two clips from
+    # six hours ago is a link that is not moving, and only one of those
+    # is worth walking out to the hole for.
+    level = "ok" if age < 1800 else "warn" if age < 4 * 3600 else "bad"
+    return {
+        "count": int(count),
+        "oldest_at": oldest.isoformat() if oldest else None,
+        "oldest_age_seconds": int(age),
+        "level": level,
+        "summary": (
+            f"{count} clip{'' if count == 1 else 's'} owed"
+            + (f", oldest {_owed_age(age)}" if oldest else "")
+        ),
+    }
+
+
+def _owed_clips(db, cams) -> dict[int, dict]:
+    """Per-camera upload backlog, in ONE pair of grouped queries.
+
+    Batched for the same reason `course_name` is: the cameras list is
+    the page an operator leaves open, and this endpoint has already
+    once taken the server down by doing per-camera work in a loop.
+    """
+    ids = [c.id for c in cams if c.id]
+    if not ids:
+        return {}
+    now = datetime.utcnow()
+    floor = now - timedelta(hours=_OWED_HORIZON_HOURS)
+    ceiling = now - timedelta(seconds=_OWED_SETTLE_SECONDS)
+
+    acc: dict[int, dict] = {}
+    # BOTH SIDES, SUMMED. A camera owes whichever side it played in the
+    # event, and re-pairing or re-roling a card changes which side that
+    # is for events already on the books — so this counts where it
+    # appears rather than trusting its current assigned_role.
+    for cam_col, clip_col in (
+        (CameraEvent.tee_camera_id, CameraEvent.tee_clip_filename),
+        (CameraEvent.green_camera_id, CameraEvent.green_clip_filename),
+    ):
+        rows = (
+            db.query(
+                cam_col,
+                func.count(CameraEvent.id),
+                func.min(CameraEvent.triggered_at),
+            )
+            .filter(
+                cam_col.in_(ids),
+                clip_col.is_(None),
+                CameraEvent.triggered_at >= floor,
+                CameraEvent.triggered_at <= ceiling,
+            )
+            .group_by(cam_col)
+            .all()
+        )
+        for cam_id, n, oldest in rows:
+            if not cam_id or not n:
+                continue
+            cur = acc.setdefault(cam_id, {"count": 0, "oldest": None})
+            cur["count"] += int(n)
+            if oldest and (cur["oldest"] is None or oldest < cur["oldest"]):
+                cur["oldest"] = oldest
+
+    out: dict[int, dict] = {}
+    for cam_id, v in acc.items():
+        shaped = _owed_status(v["count"], v["oldest"], now)
+        if shaped:
+            out[cam_id] = shaped
+    return out
+
+
+def _owed_for(db, cam: Camera) -> dict | None:
+    """Single-camera backlog, for the endpoints that return one row.
+    Without it the pill vanishes the moment you edit or pair a camera,
+    until the next full list refresh."""
+    return _owed_clips(db, [cam]).get(cam.id)
+
+
 def _camera_to_dict(
     c: Camera,
     last_event: CameraEvent | None = None,
     course_name: str | None = None,
+    owed: dict | None = None,
 ) -> dict:
     """Shape a Camera row for the admin UI. Includes the auth_token
     because operators need it to provision the Pi's SD card.
@@ -14806,17 +15816,58 @@ def _camera_to_dict(
         "rtsp_url": _rtsp_url_for(c),
         "rtsp_substream_url": _rtsp_url_for(c, sub=True),
         "tee_box_roi": c.tee_box_roi,
+        "sky_line_frac": getattr(c, "sky_line_frac", None),
+        "search_left_frac": getattr(c, "search_left_frac", None),
+        "search_right_frac": getattr(c, "search_right_frac", None),
+        # Normalised for the editor: always a list, whichever shape the
+        # column holds.
+        "tee_zones": {
+            "boxes": tee_roi.boxes(c.tee_box_roi),
+            "frame": (lambda f: {"w": f[0], "h": f[1]} if f else None)(
+                tee_roi.frame_size(c.tee_box_roi)),
+        },
+        # The putting surface, for the outline editor. Null until an
+        # operator traces one; the rest-spot finder says so loudly
+        # rather than quietly searching the whole frame.
+        "green_roi": getattr(c, "green_roi", None),
         "ball_side": c.ball_side,
         "last_seen_at": c.last_seen_at.isoformat() if c.last_seen_at else None,
         "firmware_version": c.firmware_version,
         "battery": _battery_status(
             c.battery_voltage, c.battery_current_a, c.battery_updated_at,
         ),
+        # Needs no sensor, so unlike `battery` this arrives from every
+        # rig — including the ones where a missing INA226 made "no
+        # telemetry" and "telemetry says fine" look the same.
+        "power": _throttled_status(c.throttled, c.throttled_at),
         "focus": _focus_status(
             c.focus_score, c.focus_brightness, c.focus_updated_at,
             best=c.focus_best,
             focus_seconds=_cam_focus_remaining(c.id),
         ),
+        "exposure": _exposure_status(
+            c.camera_settings, c.camera_settings_at,
+        ),
+        "stream": _stream_status(c.stream_info, c.stream_info_at),
+        # WHAT THE UPLINK SAYS ABOUT ITSELF, read over USB on the Pi so
+        # it arrives from a rig whose cellular link is too starved to
+        # hold an SSH session. See link_status for what it separates.
+        "link": _link_status(c.link_info, c.link_info_at),
+        # CLIPS RECORDED BUT NOT YET HANDED OVER. Derived from the
+        # events table rather than reported by the Pi, so it works on
+        # an agent too old — or a link too congested — to tell us
+        # itself. See _owed_clips for what the number does and does
+        # not prove. None when the camera owes nothing.
+        "owed": owed,
+        # When the stored snapshot was taken. The card uses it as the
+        # cache key for the picture: it refetches the JPEG when this
+        # changes and not on a timer, so a page left open all afternoon
+        # costs one image per camera per snapshot instead of one a minute.
+        "still_at": c.still_at.isoformat() if c.still_at else None,
+        # WHERE THE ZOOM IS, counted from the nudges we have sent and
+        # tied to the lens's own stops. See services/lens_zoom.py for
+        # why it is a count and not a reading.
+        "zoom": lens_zoom.describe(c.lens_zoom, c.stream_model),
         "enabled": bool(c.enabled),
         "triggering_enabled": bool(c.triggering_enabled),
         "note": c.note,
@@ -14851,6 +15902,8 @@ def list_cameras(db: Session = Depends(get_db)):
         .filter(Course.id.in_({c.course_id for c in cams}))
         .all()
     } if cams else {}
+    # One pair of grouped queries for every camera, not one per card.
+    owed = _owed_clips(db, cams)
     out: list[dict] = []
     for c in cams:
         last_evt = (
@@ -14862,7 +15915,9 @@ def list_cameras(db: Session = Depends(get_db)):
             .order_by(CameraEvent.triggered_at.desc())
             .first()
         )
-        out.append(_camera_to_dict(c, last_evt, course_names.get(c.course_id)))
+        out.append(_camera_to_dict(
+            c, last_evt, course_names.get(c.course_id), owed.get(c.id),
+        ))
     return out
 
 
@@ -15087,16 +16142,24 @@ def calibrate_green_camera(
     the back. The operator picks the origin; marking the pin makes
     distances readable without moving it.
 
-    BOTH ROLES, for different jobs. On the GREEN camera this MEASURES --
-    closest-to-the-pin -- so it is held to MAX_RMS_FT. On the TEE camera
-    it AIMS: a landing marked on the green becomes feet on the green
-    becomes a pixel in the tee frame, which is where the tracer has to
-    finish. The tee's view of the green is small and far, so the same
-    four clicks carry more world error -- but a few feet there is a few
-    pixels on screen, and holding it to the measuring tolerance would
-    reject a fit that is entirely good enough for the only job it has.
-    Hence the looser limit, and `purpose` recorded so nothing downstream
-    can mistake an aiming fit for a measuring one.
+    THE GREEN CAMERA IS THE ONE THAT NEEDS THIS. It MEASURES --
+    closest-to-the-pin, and the distance stamped on a clip -- so a green
+    fit is held to MAX_RMS_FT.
+
+    A TEE fit is still accepted, and still recorded with the looser limit
+    and `purpose: "aim"` so nothing downstream can mistake it for a
+    measuring one, but NOTHING READS IT ANY MORE and the Cameras page no
+    longer offers it. It aimed the tracer the long way round -- green
+    pixels to feet to tee pixels -- which needed this camera calibrated
+    against a tape measure. Course.view_maps replaced that with four
+    clicks in two pictures and no measuring at all:
+    _landing_in_tee_view reads the map and returns "no green→tee mapping
+    yet" rather than falling back here, and green_to_image -- the
+    feet-to-tee-pixels half of the old route -- has no callers left.
+
+    Left accepting a tee fit rather than 409-ing one, because refusing
+    would break any caller we have not thought of for no gain; the fit is
+    simply stored and ignored.
     """
     from ..services import green_calibration as gc
 
@@ -15565,9 +16628,494 @@ _LENS_OPS = {
     "reset_focus":  ("Mode", False),
 }
 
+# The ops that move FOCUS, as opposed to zoom. Pressing one of these is
+# the only reason anybody wants the fast sharpness readout, so they arm
+# it themselves rather than making the operator ask for it first and
+# then wonder why the number is a minute old. Short, because it exists
+# to show the result of the press that armed it; each further press
+# tops it up, and it lapses by itself when the hands stop.
+_FOCUS_OPS = {"focus", "simple_focus", "reset_focus"}
+_FOCUS_WINDOW_AFTER_LENS = 180
+
 
 # The only magnitudes the lens accepts, per the camera's own schema.
 _LENS_STEPS = (1, 10, 100)
+
+
+# EXPOSURE PRESETS, IN GOLF TERMS. The number that matters is how long
+# the sensor is open while the ball crosses the frame: at ~1100 px/s and
+# ~4 px wide, 1/60 smears it over ~18 px and divides its contrast against
+# the sky by five, which is the difference between an ascent chain that
+# forms and one that does not on a dull day.
+#
+# These are the SLOWEST exposure the camera may choose, not a fixed one,
+# wherever the camera exposes such a key -- it should still be free to
+# expose for the light, just not to smear. "manual" pins it instead, for
+# the case where auto keeps drifting.
+_EXPOSURE_PRESETS = {
+    "auto":     {"mode": "auto",   "speed": None,
+                 "label": "Auto — the camera decides"},
+    "bright":   {"mode": "auto",   "speed": "1/1000",
+                 "label": "Bright — cap at 1/1000"},
+    "overcast": {"mode": "auto",   "speed": "1/500",
+                 "label": "Overcast — cap at 1/500"},
+    "dusk":     {"mode": "auto",   "speed": "1/250",
+                 "label": "Dusk — cap at 1/250"},
+    "pin500":   {"mode": "manual", "speed": "1/500",
+                 "label": "Pinned at 1/500"},
+}
+
+# THE SHUTTER AS A LADDER, for the slider on the live view. The presets
+# above are three points on it with weather names; this is the same
+# thing with the rungs in between, because "a bit shorter than overcast"
+# is a real thing to want on a bright-but-hazy afternoon and there was
+# no way to ask for it.
+#
+# Every rung but the first is a CAP on auto-exposure, not a fixed
+# shutter: the camera stays free to expose for the light and is only
+# forbidden the long smear. Ordered slowest-to-fastest, which is also
+# dimmest-to-sharpest, so the slider runs one way the whole time.
+_SHUTTER_LADDER = ("auto", "1/125", "1/250", "1/500",
+                   "1/1000", "1/2000", "1/4000")
+
+
+@router.get("/cameras/{camera_id}/tee-zones")
+def get_tee_zones(camera_id: int, db: Session = Depends(get_db)):
+    """The boxes a person has to stand in for this camera to trigger."""
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    fr = tee_roi.frame_size(cam.tee_box_roi)
+    return {
+        "camera_id": cam.id,
+        "boxes": tee_roi.boxes(cam.tee_box_roi),
+        "frame": {"w": fr[0], "h": fr[1]} if fr else None,
+        "union": tee_roi.union(cam.tee_box_roi),
+        "max_boxes": tee_roi.MAX_BOXES,
+    }
+
+
+@router.get("/cameras/{camera_id}/green-outline")
+def get_green_outline(camera_id: int, db: Session = Depends(get_db)):
+    """The putting surface this camera is looking at, if it is drawn."""
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    return {"camera_id": cam.id, "green_roi": cam.green_roi}
+
+
+@router.post("/cameras/{camera_id}/green-outline")
+def set_green_outline(
+    camera_id: int,
+    points: str = Form(...),      # JSON [[x, y], ...]
+    frame_w: int = Form(...),
+    frame_h: int = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Replace this camera's green outline.
+
+    A POLYGON, NOT A BOX. Greens are not rectangles, and the thing the
+    outline has to exclude is usually the apron and the fairway beyond
+    it -- a bounding box around a green includes exactly the ground a
+    ball most often finishes on when it misses.
+
+    The frame size is stored with it for the same reason the trigger
+    zones store theirs: these are native pixels, and a polygon drawn at
+    1080p quietly means somewhere else if the camera is recaptured at
+    720p.
+    """
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    try:
+        parsed = json.loads(points)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "points must be JSON")
+    if not isinstance(parsed, list):
+        raise HTTPException(400, "points must be a list of [x, y]")
+    # CLEARING IS A REAL REQUEST, not an error: an outline drawn on the
+    # wrong camera has to be removable without a database console.
+    if not parsed:
+        cam.green_roi = None
+        db.commit()
+        return {"ok": True, "green_roi": None, "cleared": True}
+    # A POLYGON NEEDS THREE CORNERS. Two points enclose no area at all,
+    # and the mask built from them is empty -- which downstream reads as
+    # "nothing is on the green, ever", a far more confusing failure than
+    # being told now.
+    if len(parsed) < 3:
+        raise HTTPException(
+            400, "a green outline needs at least 3 points")
+    pts = []
+    for pt in parsed:
+        if not isinstance(pt, (list, tuple)) or len(pt) != 2:
+            raise HTTPException(400, "each point must be [x, y]")
+        try:
+            pts.append([int(round(float(pt[0]))), int(round(float(pt[1])))])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "point coordinates must be numbers")
+    if int(frame_w) <= 0 or int(frame_h) <= 0:
+        raise HTTPException(400, "frame size must be positive")
+    cam.green_roi = {"points": pts,
+                     "frame": {"w": int(frame_w), "h": int(frame_h)}}
+    db.commit()
+    log.info("cameras: green outline set on %s — %d point(s) at %dx%d",
+             cam.id, len(pts), frame_w, frame_h)
+    return {"ok": True, "green_roi": cam.green_roi}
+
+
+@router.post("/long-uploads/{upload_id}/green-rest")
+def long_upload_green_rest(upload_id: int,
+                           payload: dict = Body(default={}),
+                           db: Session = Depends(get_db)):
+    """Find the ball at rest on THIS capture's green clip.
+
+    Per upload rather than "the camera's most recent clip", because the
+    most recent clip is a lottery: it may hold no shot at all, or have
+    been taken at dusk. The operator knows which capture had a ball
+    land on the green and should be able to say so.
+
+    Returns a BEFORE/AFTER picture as well as coordinates. "1247, 638"
+    says nothing about whether the thing found is a ball, and the only
+    way to judge a run of this is to look at what it looked at.
+    """
+    from ..services import ai_tracer, greenrest
+
+    row = db.get(LongVideoUpload, upload_id)
+    if row is None:
+        raise HTTPException(404, "upload not found")
+    if not row.green_filename:
+        raise HTTPException(409, "this capture has no green clip")
+    # TIMED SEPARATELY. After a redeploy the ephemeral disk is empty and
+    # this is a silent multi-megabyte download -- which looks exactly
+    # like a slow detector from the outside.
+    _t = time.monotonic()
+    storage.ensure_local(CLIPS_DIR, row.green_filename)
+    fetch_sec = time.monotonic() - _t
+    path = CLIPS_DIR / row.green_filename
+    if not path.exists():
+        raise HTTPException(404, f"green clip missing: {row.green_filename}")
+
+    # The outline belongs to the CAMERA, found through the event this
+    # upload came from. No event (a hand-uploaded pair) means no
+    # outline, and the finder says so rather than searching the frame
+    # silently.
+    cam = None
+    if getattr(row, "camera_event_id", None):
+        ev = db.get(CameraEvent, row.camera_event_id)
+        if ev is not None and ev.green_camera_id:
+            cam = db.get(Camera, ev.green_camera_id)
+    roi = (cam.green_roi if cam else None) or {}
+    frame = roi.get("frame") or {}
+
+    def _secs(key):
+        v = payload.get(key)
+        if v in (None, ""):
+            return None
+        try:
+            return max(0.0, float(v))
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{key} must be a number of seconds")
+
+    out_name = f"green-rest-{upload_id}.jpg"
+
+    # THE SAME MODEL THE PRODUCE PATH USES, and for the same reason: a
+    # ball at rest on mown grass is a thing a model can simply see, and
+    # it needs no outline to do it. The button and the produce run must
+    # not answer differently -- an operator checking one against the
+    # other is the whole point of having the button.
+    _b = _secs("before_sec")
+    _a = _secs("after_sec")
+    pair_name = f"green-rest-{upload_id}-pair.jpg"
+    ai_out = ai_tracer.find_ball_at_rest(
+        path,
+        before_sec=_b if _b is not None else 2.0,
+        after_sec=_a if _a is not None else 13.0,
+        debug_path=CLIPS_DIR / out_name,
+        # BOTH FRAMES, for the button. The question is "what is in the
+        # second that was not in the first", so an operator checking
+        # the answer needs both on screen -- the single marked panel
+        # asks them to take the comparison on trust.
+        pair_path=CLIPS_DIR / pair_name,
+    )
+    if ai_out.get("xy"):
+        _img = CLIPS_DIR / (pair_name if ai_out.get("pair_image")
+                            else out_name)
+        return {
+            "ok": True,
+            "source": "ai",
+            "best": {"x": ai_out["xy"][0], "y": ai_out["xy"][1],
+                     "area": None, "persist": None},
+            "arrivals": [{"x": ai_out["xy"][0], "y": ai_out["xy"][1]}],
+            "departures": [],
+            "on_green": ai_out.get("on_green"),
+            "confidence": ai_out.get("confidence"),
+            "snapped": ai_out.get("snapped"),
+            "snap_px": ai_out.get("snap_px"),
+            "before_frame": 0, "after_frame": 0, "fps": 1,
+            "notes": [
+                (ai_out.get("why") or "").strip(),
+                (f"Snapped {ai_out['snap_px']}px onto the nearest "
+                 "ball-sized blob." if ai_out.get("snapped")
+                 else "No ball-sized blob nearby to snap to — this is the "
+                      "model's own position."),
+                ("" if ai_out.get("on_green") else
+                 "The model says this is NOT on the putting surface."),
+                f"Frames at {ai_out['before_sec']}s and "
+                f"{ai_out['after_sec']}s.",
+            ],
+            "image_url": (
+                f"{settings.app_base_url}/uploads/clips/{_img.name}"
+                f"?v={int(_img.stat().st_mtime)}" if _img.exists() else None),
+            "camera_id": cam.id if cam else None,
+            "has_outline": bool(roi.get("points")),
+            "clip": row.green_filename,
+            "timing": {},
+        }
+
+    # ...and the plates as the fallback, exactly as produce does.
+    out = greenrest.find_rest_spot(
+        path,
+        polygon=roi.get("points"),
+        drawn_at=[frame.get("w"), frame.get("h")] if frame else None,
+        before_sec=_b,
+        after_sec=_a,
+        debug_path=CLIPS_DIR / out_name,
+    )
+    out["source"] = "plates"
+    out.setdefault("notes", []).insert(
+        0, f"The model did not answer ({ai_out.get('error')}), so this is "
+           "the plate comparison.")
+    img = CLIPS_DIR / out_name
+    out["image_url"] = (
+        f"{settings.app_base_url}/uploads/clips/{out_name}"
+        f"?v={int(img.stat().st_mtime)}" if img.exists() else None
+    )
+    out.setdefault("timing", {})["fetch_sec"] = round(fetch_sec, 2)
+    out["camera_id"] = cam.id if cam else None
+    out["has_outline"] = bool(roi.get("points"))
+    out["clip"] = row.green_filename
+    return out
+
+
+@router.post("/cameras/{camera_id}/green-rest-test")
+def green_rest_test(camera_id: int,
+                    payload: dict = Body(default={}),
+                    db: Session = Depends(get_db)):
+    """Run the rest-spot finder on this camera's most recent clip.
+
+    So the outline can be drawn and checked in one place, against real
+    footage, before anything downstream depends on it.
+
+    `before_sec` and `after_sec` move the two plates. They default to
+    near each end of the clip, and the default is wrong often enough to
+    be worth a control: a green capture runs well past the shot, and on
+    a short hole the group can be up and marking the ball before the
+    clip stops. The after plate then contains a green with nothing new
+    on it, which reads exactly like a miss. Being able to pull that
+    plate back to just after the ball settled is the difference between
+    an answer and a mystery.
+    """
+    from ..services import greenrest
+
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    ev = (
+        db.query(CameraEvent)
+        .filter(CameraEvent.green_camera_id == camera_id)
+        .filter(CameraEvent.green_clip_filename.isnot(None))
+        .order_by(CameraEvent.triggered_at.desc())
+        .first()
+    )
+    if ev is None:
+        raise HTTPException(
+            404, "no clip from this camera yet — capture one first")
+    storage.ensure_local(CLIPS_DIR, ev.green_clip_filename)
+    path = CLIPS_DIR / ev.green_clip_filename
+    if not path.exists():
+        raise HTTPException(
+            404, f"clip missing on disk: {ev.green_clip_filename}")
+    roi = cam.green_roi or {}
+    frame = roi.get("frame") or {}
+
+    def _secs(key):
+        v = payload.get(key)
+        if v in (None, ""):
+            return None
+        try:
+            return max(0.0, float(v))
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{key} must be a number of seconds")
+
+    out = greenrest.find_rest_spot(
+        path,
+        polygon=roi.get("points"),
+        drawn_at=[frame.get("w"), frame.get("h")] if frame else None,
+        # Seconds, not frames: the clip knows its own rate and this
+        # endpoint should not have an opinion about it.
+        before_sec=_secs("before_sec"),
+        after_sec=_secs("after_sec"),
+    )
+    out["event_id"] = ev.id
+    out["clip"] = ev.green_clip_filename
+    return out
+
+
+@router.post("/cameras/{camera_id}/tee-zones")
+def set_tee_zones(
+    camera_id: int,
+    boxes: str = Form(...),       # JSON [{x,y,w,h,label?}, ...]
+    frame_w: int = Form(...),
+    frame_h: int = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Replace this camera's trigger zones.
+
+    ONE PER TEE, rather than one big box spanning them: a rectangle
+    wide enough to hold the back tee and the middle tee also holds the
+    path between them, and somebody walking that path is a recording
+    nobody asked for.
+
+    The frame size is required and stored alongside, because the boxes
+    are in the camera's native pixels and a box drawn at 1080p means
+    something else at 720p. The agent scales them to whatever it is
+    actually capturing.
+
+    Takes effect on the camera's next status poll — about a second —
+    with no restart and no SD card.
+    """
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    if (cam.assigned_role or "") != "tee":
+        raise HTTPException(
+            409, "only a tee camera triggers, so only a tee camera has zones")
+    try:
+        parsed = json.loads(boxes)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "boxes must be valid JSON")
+    try:
+        payload = tee_roi.store(parsed, int(frame_w), int(frame_h))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    cam.tee_box_roi = payload
+    db.add(AuditLog(
+        actor="admin", action="camera_tee_zones",
+        target=f"camera:{camera_id}",
+        detail=f"{len(payload['boxes'])} zone(s) on {frame_w}x{frame_h}",
+    ))
+    db.commit()
+    return {
+        "ok": True,
+        "boxes": payload["boxes"],
+        "frame": payload["frame"],
+        "note": "saved — the camera picks this up on its next status poll",
+    }
+
+
+@router.post("/cameras/{camera_id}/exposure")
+def control_camera_exposure(
+    camera_id: int,
+    preset: str = Form(...),
+    wdr: str | None = Form(None),
+    db: Session = Depends(get_db),
+):
+    """Set an IP camera's shutter, or just read what it currently has.
+
+    Like the lens endpoint, THE BACKEND CANNOT REACH THE CAMERA: this
+    queues a command the agent collects on its next watch-status poll
+    and runs against the camera's own API on the course LAN.
+
+    `preset=read` asks and changes nothing. Either way the agent reports
+    the camera's answer on its next heartbeat, so what the card shows is
+    the camera's reading and never the value we asked for -- which keys
+    a given firmware exposes varies, and a set that lands on the wrong
+    one must be visible rather than assumed.
+    """
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    if (cam.kind or "pi") != "ip":
+        raise HTTPException(
+            409,
+            "only an IP camera owns its own exposure; a Pi module's is "
+            "set by the agent itself",
+        )
+    _p = (preset or "").strip().lower()
+    if _p == "read":
+        depth = _request_lens(camera_id, "exposure_view", 0)
+        return {
+            "ok": True, "preset": "read", "queued": depth,
+            "note": "asked — the camera's answer arrives with its next "
+                    "heartbeat",
+        }
+    # A rung of the ladder, from the slider. Named presets still work --
+    # they are three rungs with weather on them -- but the slider sends
+    # the speed itself, because the point of it is the rungs between.
+    if _p in _SHUTTER_LADDER and _p != "auto":
+        params = {"mode": "auto", "speed": _p}
+    else:
+        spec = _EXPOSURE_PRESETS.get(_p)
+        if spec is None:
+            raise HTTPException(
+                400,
+                f"preset must be a shutter from {list(_SHUTTER_LADDER)}, "
+                f"one of {sorted(_EXPOSURE_PRESETS)}, or read",
+            )
+        params = {"mode": spec["mode"]}
+        if spec["speed"]:
+            params["speed"] = spec["speed"]
+    if wdr is not None and str(wdr).strip() != "":
+        params["wdr"] = "1" if str(wdr).lower() in ("1", "true", "on") else "0"
+    depth = _request_lens(camera_id, "exposure_set", 0, params)
+    db.add(AuditLog(
+        actor="admin", action="camera_exposure",
+        target=f"camera:{camera_id}",
+        detail=f"preset={_p} {params}",
+    ))
+    db.commit()
+    return {
+        "ok": True, "preset": _p, "sent": params, "queued": depth,
+        "note": "queued — the camera applies it on its next poll and "
+                "reports back what it then reads",
+    }
+
+
+@router.post("/cameras/{camera_id}/stream-profile")
+def read_camera_stream_profile(camera_id: int, db: Session = Depends(get_db)):
+    """Ask the camera what its video stream is set to.
+
+    The size and rate the agent OPENED the stream at, and the rate
+    frames are really arriving at, already ride every heartbeat — they
+    cost nothing. This is the other half: the camera's own profile,
+    which is an HTTP call to the camera on the course LAN, so it
+    happens when an operator asks rather than every minute.
+
+    Queued like every other camera command; the answer arrives on the
+    agent's next heartbeat, which it pokes as soon as it has one.
+    """
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    if (cam.kind or "pi") != "ip":
+        raise HTTPException(
+            409, "only an IP camera has a stream profile to read")
+    depth = _request_lens(camera_id, "stream_profile_view", 0)
+    return {
+        "ok": True, "queued": depth,
+        "note": "asked — the camera's answer arrives with its next "
+                "heartbeat",
+    }
+
+
+@router.get("/cameras/exposure-presets")
+def list_exposure_presets():
+    """The presets the UI offers, named here so the two cannot drift."""
+    return [
+        {"key": k, "label": v["label"], "mode": v["mode"], "speed": v["speed"]}
+        for k, v in _EXPOSURE_PRESETS.items()
+    ]
 
 
 @router.post("/cameras/{camera_id}/lens")
@@ -15612,6 +17160,27 @@ def control_camera_lens(
     _sign = -1 if _amt < 0 else 1
     amt = _sign * min(_LENS_STEPS, key=lambda st: abs(st - abs(_amt)))
     depth = _request_lens(camera_id, _op, amt)
+    # MOVING FOCUS TURNS THE METER ON. The camera cannot report where its
+    # focus ring is, so the sharpness score is the only answer to "did
+    # that help?" -- and at the heartbeat's once a minute it is not an
+    # answer you can work against. Arming it here makes the press and the
+    # readout one action instead of two.
+    if _op == "zoom":
+        # KEEP THE COUNT. This is the only record of where the lens is
+        # -- it cannot be asked -- so every step that leaves here is
+        # added, including the ones a hand pressed one at a time.
+        cam.lens_zoom = lens_zoom.nudged(cam.lens_zoom, amt)
+    focusing = _op in _FOCUS_OPS
+    if focusing:
+        from .cameras import extend_focus_mode
+
+        if extend_focus_mode(camera_id, _FOCUS_WINDOW_AFTER_LENS):
+            # Cold start: a new focus session, so the peak starts honest.
+            # Not on every nudge -- the peak is what tells you that you
+            # have gone past the best, and resetting it per press would
+            # wipe exactly that.
+            cam.focus_best = None
+            cam.focus_best_at = None
     db.add(AuditLog(
         actor="admin", action="camera_lens",
         target=f"camera:{camera_id}", detail=f"op={_op} amount={amt}",
@@ -15621,7 +17190,11 @@ def control_camera_lens(
         "ok": True, "op": _op, "amount": amt, "queued": depth,
         # The agent polls every few seconds, so tell the operator when
         # to expect the lens to move rather than leaving them clicking.
-        "note": "queued — the camera's recorder applies it on its next poll",
+        "note": (
+            "queued — the camera's recorder applies it on its next poll"
+            + (", and is reporting sharpness fast while you work"
+               if focusing else "")
+        ),
     }
 
 
@@ -15642,6 +17215,145 @@ def get_camera_live_frame(camera_id: int, db: Session = Depends(get_db)):
         content=frame_bytes,
         media_type="image/jpeg",
         headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/cameras/{camera_id}/zoom")
+def set_camera_zoom(
+    camera_id: int,
+    fraction: float = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Drive the zoom to a position along its travel, 0 wide, 1 tele.
+
+    THE LENS HAS NO ABSOLUTE MODE, so this is not "go to 0.4" — it is
+    "you are counted at 0.7, go back 0.3 of the travel", planned into
+    the three step sizes the lens does accept and queued as one command
+    with a repeat. If the count is wrong the lens ends up somewhere
+    else; marking an end is what puts it right, and is why the ends are
+    there.
+    """
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    if (cam.kind or "pi") != "ip":
+        raise HTTPException(409, "only an IP camera has a motorised lens")
+    if not lens_zoom.calibrated(cam.lens_zoom):
+        raise HTTPException(
+            409,
+            "this lens has no scale yet — drive it to each end and mark "
+            "them, and the slider can work in positions after that",
+        )
+    st = lens_zoom.state(cam.lens_zoom)
+    frac = min(1.0, max(0.0, float(fraction)))
+    target = int(round(frac * st["travel"]))
+    steps = lens_zoom.plan(target - st["pos"])
+    if not steps:
+        return {"ok": True, "moved": 0, "pos": st["pos"],
+                "note": "already there"}
+    if len(steps) > lens_zoom.MAX_PLAN_COMMANDS:
+        raise HTTPException(409, "that move needs more steps than the "
+                                 "lens should be asked for at once")
+    for amount, repeat in steps:
+        _request_lens(camera_id, "zoom", amount, repeat=repeat)
+    cam.lens_zoom = lens_zoom.nudged(cam.lens_zoom, target - st["pos"])
+    db.add(AuditLog(
+        actor="admin", action="camera_zoom",
+        target=f"camera:{camera_id}",
+        detail=f"{st['pos']}->{target} of {st['travel']}",
+    ))
+    db.commit()
+    out = lens_zoom.describe(cam.lens_zoom, cam.stream_model)
+    return {
+        "ok": True,
+        "moved": target - st["pos"],
+        "commands": len(steps),
+        "zoom": out,
+        "note": ("queued — the camera's recorder drives it on its next "
+                 "poll" + (f", to about {out['x']}x" if out.get("x") else "")),
+    }
+
+
+@router.post("/cameras/{camera_id}/zoom-end")
+def mark_camera_zoom_end(
+    camera_id: int,
+    end: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Record that the lens is sitting against one of its hard stops.
+
+    THE ONLY UNAMBIGUOUS THING ON THIS LENS. It cannot say where it is,
+    so a count of nudges is all there is — and a count needs an origin.
+    Drive to the wide end by eye on the live picture, press wide; drive
+    to the tele end, press tele; the span between is the travel and
+    every position after that is on a real scale.
+
+    It is also the repair. The count drifts — a nudge the camera never
+    applied, somebody at the pole using its own web UI — and marking an
+    end re-zeroes it against the lens itself.
+    """
+    cam = db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+    if (cam.kind or "pi") != "ip":
+        raise HTTPException(409, "only an IP camera has a motorised lens")
+    try:
+        cam.lens_zoom = lens_zoom.mark_end(
+            cam.lens_zoom, end, datetime.utcnow().isoformat(),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    db.add(AuditLog(
+        actor="admin", action="camera_zoom_end",
+        target=f"camera:{camera_id}", detail=str(end),
+    ))
+    db.commit()
+    out = lens_zoom.describe(cam.lens_zoom, cam.stream_model)
+    return {
+        "ok": True,
+        "zoom": out,
+        "note": (
+            "wide end marked — now drive to the tele end and mark that"
+            if not out["calibrated"] else
+            f"both ends marked — {out['travel']} steps of travel"
+            + (f", about 1.0x to {out['range_x']}x" if out["range_x"] else "")
+        ),
+    }
+
+
+@router.get("/cameras/{camera_id}/still")
+def get_camera_still(camera_id: int, db: Session = Depends(get_db)):
+    """The camera's most recent snapshot. 204 when there isn't one yet.
+
+    DELIBERATELY DOES NOT MARK THE CAMERA WATCHED, unlike the live frame
+    above. The whole point of the still is that showing a camera's view
+    costs nothing on the device — renewing the watch TTL here would make
+    every open Cameras page put every Pi into 10 fps streaming, which is
+    the thing this replaces.
+    """
+    if not db.get(Camera, camera_id):
+        raise HTTPException(404, "camera not found")
+    path = still_path(camera_id)
+    try:
+        data = path.read_bytes()
+        taken = datetime.utcfromtimestamp(path.stat().st_mtime)
+    except OSError:
+        return Response(status_code=204)
+    if not data:
+        return Response(status_code=204)
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={
+            # The timestamp travels with the bytes, because the picture
+            # is shown with the time printed on it and the two must not
+            # be able to disagree: the card reads both from this one
+            # response rather than pairing an image with a column it
+            # fetched separately.
+            "X-Captured-At": taken.isoformat() + "Z",
+            "X-Stale-After": str(int(STILL_MAX_AGE.total_seconds())),
+            "Cache-Control": "no-store",
+        },
     )
 
 
@@ -15707,7 +17419,9 @@ def create_camera(
     )
     db.commit()
     db.refresh(cam)
-    return _camera_to_dict(cam, None, _course_name_for(db, cam))
+    return _camera_to_dict(
+        cam, None, _course_name_for(db, cam), _owed_for(db, cam),
+    )
 
 
 @router.post("/cameras/{camera_id}/pair")
@@ -15743,8 +17457,13 @@ def pair_camera(
     )
     db.commit()
     return {"ok": True, "cameras": [
-        _camera_to_dict(cam, None, _course_name_for(db, cam)),
-        _camera_to_dict(partner, None, _course_name_for(db, partner)),
+        _camera_to_dict(
+            cam, None, _course_name_for(db, cam), _owed_for(db, cam),
+        ),
+        _camera_to_dict(
+            partner, None, _course_name_for(db, partner),
+            _owed_for(db, partner),
+        ),
     ]}
 
 
@@ -15845,8 +17564,11 @@ def update_camera(
             roi = json.loads(tee_box_roi)
         except json.JSONDecodeError:
             raise HTTPException(400, "tee_box_roi must be valid JSON")
-        if not isinstance(roi, dict) or not all(k in roi for k in ("x", "y", "w", "h")):
-            raise HTTPException(400, "tee_box_roi must be an object with x/y/w/h")
+        # Either shape: one {x,y,w,h} box, or {"boxes": [...], "frame": ...}
+        # from the zone editor. See services/tee_roi.
+        if not isinstance(roi, dict) or not tee_roi.boxes(roi):
+            raise HTTPException(
+                400, "tee_box_roi must be an {x,y,w,h} box or {boxes:[...]}")
         cam.tee_box_roi = roi
 
     # A CAMERA'S KIND CAN CHANGE UNDER IT. Camera #1 was born a Pi with
@@ -15936,7 +17658,9 @@ def update_camera(
         )
     db.commit()
     db.refresh(cam)
-    result = _camera_to_dict(cam, None, _course_name_for(db, cam))
+    result = _camera_to_dict(
+        cam, None, _course_name_for(db, cam), _owed_for(db, cam),
+    )
     result["auto_unpaired"] = auto_unpaired
     return result
 
@@ -16544,9 +18268,22 @@ def _tee_box_roi_fractions(src_path, db, row) -> dict:
         except Exception as exc:  # noqa: BLE001
             log.debug("tee-box ROI: could not size the video: %s", exc)
         _cname = getattr(cam, "name", None) or f"camera {getattr(cam, 'id', '?')}"
+        # ONE BOX OUT OF HOWEVER MANY THE CAMERA TRIGGERS ON. A tee
+        # camera watches the back tee and the middle tee separately so a
+        # walker between them does not fire it, but the ball search has
+        # no such worry — it has to cover whichever tee was actually
+        # played from, so it takes the union.
+        #
+        # And scale it, rather than refusing a box drawn at another
+        # resolution: the zones record the frame they were drawn on, so
+        # a 1080p box on a 720p video is arithmetic, not a mystery.
+        _u = tee_roi.union(cam_roi)
+        _nbox = len(tee_roi.boxes(cam_roi))
+        if _u and fw and fh:
+            _u = tee_roi.union(tee_roi.scaled(cam_roi, fw, fh))
         try:
-            x, y = float(cam_roi["x"]), float(cam_roi["y"])
-            w, h = float(cam_roi["w"]), float(cam_roi["h"])
+            x, y = float(_u["x"]), float(_u["y"])
+            w, h = float(_u["w"]), float(_u["h"])
         except (KeyError, TypeError, ValueError):
             x = y = w = h = -1.0
         if x < 0:
@@ -16564,7 +18301,10 @@ def _tee_box_roi_fractions(src_path, db, row) -> dict:
             )
         else:
             out["roi"] = {"x": x / fw, "y": y / fh, "w": w / fw, "h": h / fh}
-            out["source"] = f"the tee camera's tee box ({_cname})"
+            out["source"] = (
+                f"the tee camera's {_nbox} trigger zones, merged ({_cname})"
+                if _nbox > 1 else f"the tee camera's tee box ({_cname})"
+            )
             return out
 
     # Anything below here means no box was drawn for this hole today, so
@@ -17230,6 +18970,7 @@ def _debugx_start(kind: str, upload_id: int, runner) -> dict:
         # first is what an operator sees when they press Produce on a
         # course morning's backlog. Held until the gate is actually in
         # hand, then handed over to the run's own stages.
+        workload.deprioritize()
         _debugx_set(kind, upload_id,
                     stage="Waiting for the produce queue", running=True)
         _t_gate = time.monotonic()
@@ -18330,7 +20071,15 @@ def _ball_scan_sweep_image(row, src_path, sweep) -> None:
         im = (im.astype("float32") * 0.7).astype("uint8")
         _band = sweep.get("band")
         if _band:
-            cv2.rectangle(im, (0, 0), (int(_band[2]) - 1, int(_band[3])),
+            # FROM ITS OWN ORIGIN. The band gained left/right edges when
+            # one horizontal skyline turned out not to clear a treeline
+            # that is 190px taller on one side -- and a rectangle drawn
+            # from x=0 regardless would show a search area that is not
+            # the one that ran, which is the one thing this picture
+            # exists to be trusted about.
+            cv2.rectangle(im, (int(_band[0]), int(_band[1])),
+                          (int(_band[0]) + int(_band[2]) - 1,
+                           int(_band[1]) + int(_band[3])),
                           (80, 200, 255), 2)
         _ty = int(sweep.get("tee_line_y") or 0)
         if _ty:
@@ -18365,11 +20114,55 @@ def _ball_scan_sweep_image(row, src_path, sweep) -> None:
             if a.get("from_x") is not None and _ty:
                 cv2.drawMarker(im, (int(a["from_x"]), _ty), _col,
                                cv2.MARKER_TILTED_CROSS, 16, 2, cv2.LINE_AA)
+        # THE NUMBERS, ON THE PICTURE. This image is what gets
+        # screenshotted and sent; the counts that say WHY a sweep found
+        # what it found live in a report pane that does not travel with
+        # it. Four separate times a question was answered with "read me
+        # the stage-1 line" when the answer could have been in the
+        # corner of the thing already on screen.
+        im[0:52] = (im[0:52].astype("float32") * 0.35).astype("uint8")
         cv2.putText(
             im,
             f"{len(_asc)} ball(s) seen leaving in {sweep.get('seconds')}s - "
             f"crosses on the tee line are where each was traced back to",
-            (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1,
+            (12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
+            cv2.LINE_AA)
+        _b = sweep.get("band") or [0, 0, 0, 0]
+        _cf = sweep.get("cap_hit_frac")
+        cv2.putText(
+            im,
+            f"{sweep.get('n_dets', '?')} detections -> "
+            f"{sweep.get('n_tracks', '?')} chains -> "
+            f"{sweep.get('n_considered', '?')} weighed  |  "
+            f"keep {sweep.get('per_frame_cap', '?')}/frame"
+            + (f", capped on {_cf:.0%} of frames "
+               f"(worst {sweep.get('max_hits_in_a_frame', '?')})"
+               if _cf is not None else "")
+            + f"  |  {'3-frame' if sweep.get('three_frame', True) else '2-frame'}"
+            f" diff"
+            # WHETHER THE SMEAR WAS REAL. A ball crossing 26px in one
+            # exposure thresholds into two or three blobs, each its own
+            # detection -- and "merged 1,840" next to the detection
+            # count says how much of that cloud was one object twice.
+            + (f"  |  merged {sweep.get('merged_away'):,} at "
+               f"{sweep.get('merge_px'):g}px"
+               if sweep.get("merged_away") is not None
+               and sweep.get("merge_px") else "")
+            # HOW MANY CHAINS WERE ONE FLIGHT. #768 came back as four
+            # chains of one ball, each traced to the tee as its own
+            # swing 0.14s apart; "joined 3" is that not happening.
+            + (f", joined {sweep.get('n_stitched')}"
+               if sweep.get("n_stitched") else "")
+            # AND WHAT THE RE-READ FOUND IN THE HOLES. "refilled 6 in
+            # 2 holes" says the ball was there all along and the
+            # three-frame pass was the only reason it was missing;
+            # nothing says the hole was really empty.
+            + (f", refilled {sweep.get('n_refilled')}"
+               f" in {sweep.get('n_holes_read')} hole(s)"
+               if sweep.get("n_holes_read") else "")
+            + f"  |  band x{int(_b[0])}-{int(_b[0]) + int(_b[2])}"
+            f" y0-{int(_b[3])}",
+            (12, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 230, 255), 1,
             cv2.LINE_AA)
         nm = f"ballscan-{row.id}-sweep.jpg"
         if cv2.imwrite(str(CLIPS_DIR / nm), im,
@@ -18516,7 +20309,15 @@ def _ball_scan_considered_image(row, src_path, sweep) -> None:
         im = (im.astype("float32") * 0.55).astype("uint8")
         _band = sweep.get("band")
         if _band:
-            cv2.rectangle(im, (0, 0), (int(_band[2]) - 1, int(_band[3])),
+            # FROM ITS OWN ORIGIN. The band gained left/right edges when
+            # one horizontal skyline turned out not to clear a treeline
+            # that is 190px taller on one side -- and a rectangle drawn
+            # from x=0 regardless would show a search area that is not
+            # the one that ran, which is the one thing this picture
+            # exists to be trusted about.
+            cv2.rectangle(im, (int(_band[0]), int(_band[1])),
+                          (int(_band[0]) + int(_band[2]) - 1,
+                           int(_band[1]) + int(_band[3])),
                           (80, 200, 255), 2)
         _ty = int(sweep.get("tee_line_y") or 0)
         if _ty:
@@ -18643,6 +20444,104 @@ def _ball_scan_considered_image(row, src_path, sweep) -> None:
         log.debug("ball scan: considered image failed on %s: %s", row.id, exc)
 
 
+def _ascent_detection_zoom_image(row, src_path, sweep) -> None:
+    """THE WIZARD'S ZOOMED VIEW, MADE BY THE SWEEP ITSELF.
+
+    Every picture this sweep draws shows what it ASSEMBLED. None of them
+    shows what it was GIVEN, and those are the two halves that have to
+    be told apart: a ball missing from the chain because the detector
+    never saw it needs the detector fixed, and one missing because the
+    tracker would not link it needs the tracker fixed. From outside,
+    both read as "4pts".
+
+    The operator could already see the difference — by opening the edit
+    wizard, zooming to 2.7x and pressing Scan, where the flight shows up
+    as a clean column of dots. This is that view, cropped to the chain
+    the sweep got furthest with, drawn from the sweep's OWN detections
+    rather than a second scan with different gates. Grey is every
+    detection it had; red is what its chain kept.
+    """
+    from ..services import debug3 as _d3
+
+    _near = (sweep or {}).get("near_dets") or []
+    _con = (sweep or {}).get("considered") or []
+    if not _near or not _con:
+        return
+    chain = _con[0]
+    pts = chain.get("points") or []
+    if not pts:
+        return
+    try:
+        import cv2  # type: ignore
+
+        cap = cv2.VideoCapture(str(src_path))
+        if not cap.isOpened():
+            return
+        try:
+            _mid = pts[len(pts) // 2]["frame"]
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(_mid)))
+            ok, im = cap.read()
+            if not ok or im is None:
+                return
+        finally:
+            cap.release()
+        H, W = im.shape[:2]
+        # The crop: the chain and everything the pad reached, which is
+        # where a continuation would be if there is one.
+        xs = [d["x"] for d in _near] + [p["x"] for p in pts]
+        ys = [d["y"] for d in _near] + [p["y"] for p in pts]
+        x0 = max(0, min(xs) - 40)
+        x1 = min(W, max(xs) + 40)
+        y0 = max(0, min(ys) - 40)
+        y1 = min(H, max(ys) + 40)
+        if x1 - x0 < 60 or y1 - y0 < 60:
+            return
+        crop = (im[y0:y1, x0:x1].astype("float32") * 0.45).astype("uint8")
+        _kept = {(p["frame"], p["x"], p["y"]) for p in pts}
+        for d in _near:
+            _p = (int(d["x"]) - x0, int(d["y"]) - y0)
+            _in = (d["frame"], d["x"], d["y"]) in _kept
+            cv2.circle(crop, _p, 3 if _in else 2,
+                       (90, 90, 255) if _in else (190, 190, 190),
+                       -1 if _in else 1, cv2.LINE_AA)
+            cv2.putText(crop, str(int(d["frame"])),
+                        (_p[0] + 4, _p[1] - 3), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.3, (150, 200, 150) if not _in else (90, 90, 255),
+                        1, cv2.LINE_AA)
+        for u, v in zip(pts, pts[1:]):
+            cv2.line(crop, (u["x"] - x0, u["y"] - y0),
+                     (v["x"] - x0, v["y"] - y0), (90, 90, 255), 1,
+                     cv2.LINE_AA)
+        # BLOWN UP, because at native scale the thing being judged is a
+        # three-pixel dot and the whole point is to look at it.
+        _scale = max(1.0, min(4.0, 900.0 / max(1, x1 - x0)))
+        if _scale > 1.01:
+            crop = cv2.resize(crop, None, fx=_scale, fy=_scale,
+                              interpolation=cv2.INTER_NEAREST)
+        crop[0:46] = (crop[0:46].astype("float32") * 0.3).astype("uint8")
+        cv2.putText(
+            crop,
+            f"every detection the sweep had around its best chain - "
+            f"grey = seen, red = kept",
+            (10, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1,
+            cv2.LINE_AA)
+        cv2.putText(
+            crop,
+            f"{len(_near)} detections over f{pts[0]['frame']}-"
+            f"{pts[-1]['frame']} (+/-{_d3.NEAR_DETS_PAD_FRAMES}) - "
+            f"the chain kept {len(pts)}. Grey dots ON the red line that "
+            f"are not red is the TRACKER; no grey dots at all is the "
+            f"DETECTOR.",
+            (10, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (160, 230, 255), 1,
+            cv2.LINE_AA)
+        nm = f"ballscan-{row.id}-dets.jpg"
+        if cv2.imwrite(str(CLIPS_DIR / nm), crop,
+                       [int(cv2.IMWRITE_JPEG_QUALITY), 90]):
+            sweep["dets_image_url"] = _clip_url_for(nm)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("detection zoom image failed on %s: %s", row.id, exc)
+
+
 def _ascent_trim_considered(sweep) -> None:
     """Drop the coordinates once the picture has been drawn from them.
 
@@ -18658,6 +20557,11 @@ def _ascent_trim_considered(sweep) -> None:
     _con = (sweep or {}).get("considered") or []
     for z in _con[_CAP:]:
         z.pop("points", None)
+    # THE RAW DETECTIONS STAY. They were dropped here for a poll or
+    # two, as weight nothing read — and then the picture drawn from
+    # them answered the question that had resisted five rounds of
+    # theory, which made them the most valuable field in the report.
+    # Bounded at 1200 in the slice instead.
 
 
 def _ball_scan_ascent_image(row, src_path, spots, tok, rep) -> None:
@@ -18947,7 +20851,8 @@ def _ball_scan_run(row, src_path, db, progress=None) -> dict:
         try:
             _asc = _d3.find_ascents(src_path, fps, int(_imp),
                                     (_sp["x"], _sp["y"]),
-                                    roi=_roi.get("roi")) or {}
+                                    roi=_roi.get("roi"),
+                                    **_search_area_for(db, row)) or {}
         except Exception as exc:  # noqa: BLE001
             log.warning("ball scan: ascent search failed on %s: %s",
                         row.id, exc)
@@ -18973,11 +20878,13 @@ def _ball_scan_run(row, src_path, db, progress=None) -> dict:
     try:
         _sweep = _d3.sweep_ascents(
             src_path, fps, roi=_roi.get("roi"),
-            gates=_gate_tuning_for(db, row)[0]) or {}
+            gates=_gate_tuning_for(db, row)[0],
+            **_search_area_for(db, row)) or {}
     except Exception as exc:  # noqa: BLE001
         log.warning("ball scan: ascent sweep failed on %s: %s", row.id, exc)
         _sweep = {"ok": False, "reason": f"failed: {exc}"}
     _ball_scan_sweep_image(row, src_path, _sweep)
+    _ascent_detection_zoom_image(row, src_path, _sweep)
     rep["sweep"] = _sweep
     _t_sweep = time.perf_counter() - _t
 
@@ -19227,13 +21134,17 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     rep["gate_key"] = _gt_key
     rep["gate_key_reason"] = _gt_why
     sweep = _d3.sweep_ascents(src_path, fps, roi=_roi.get("roi"),
-                              gates=_gt) or {}
+                              gates=_gt,
+                              **_search_area_for(db, row)) or {}
     _ball_scan_sweep_image(row, src_path, sweep)
     _ball_scan_considered_image(row, src_path, sweep)
     # AND ONE PER SWING. The whole-clip pictures answer "did the sweep
     # find them all"; the dialog below is organised per swing, and per
     # swing the other chains are clutter.
     _ascent_swing_images(row, src_path, sweep)
+    # BEFORE the trim: it draws from `considered[0]`'s own points, and
+    # the trim is what takes those away.
+    _ascent_detection_zoom_image(row, src_path, sweep)
     _ascent_trim_considered(sweep)
     rep["sweep"] = sweep
     _asc = list(sweep.get("ascents") or [])
@@ -19270,11 +21181,13 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     _n_spot = sum(1 for c in rep["clips"] if c.get("ball"))
     _stage(2, "Tee spot and impact frame",
            "Each chain is run back along its own heading to the tee line. "
-           "Where it crosses is the tee spot and when it crosses is the "
-           "impact frame. Both are estimates and both are early -- the "
-           "run back is linear where a struck ball decelerates -- which "
-           "is the harmless direction for the frame the tracer starts "
-           "on. The resting-ball scan that used to run here is gone: it "
+           "Where it crosses is the tee spot; WHEN it crosses is a "
+           "separate question, and used to be answered with the same "
+           "number -- which is why the spot was right while the frame "
+           "was eleven early on #768. The spot needs only the heading. "
+           "The frame needs a speed, and a struck ball does not hold "
+           "one, so it is now solved through the deceleration fitted to "
+           "the chain itself. The resting-ball scan that used to run here is gone: it "
            "found nothing whenever a playing partner stood in the line, "
            "its watch often failed to conclude on a tee that stays "
            "bright after the ball has left, and it was the most "
@@ -19752,7 +21665,14 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     _tally: dict = {}
     _reasons: list = []
     _sweep: dict = {}
-    for i, (_flo, _fhi) in enumerate(_wins):
+    # TRACKING THE FALL IS OPTIONAL NOW, and off by default. See
+    # `ascent_descent_search`: on a green ringed with wind-blown brush
+    # the search does not merely fail, it answers wrongly -- a landing
+    # in the fairway above the green, a comet along a path the ball
+    # never took. The resting-ball pass below needs none of it.
+    _do_descent = bool(int(_gates.get("ascent_descent_search", 1)))
+    out["descent_search"] = _do_descent
+    for i, (_flo, _fhi) in enumerate(_wins if _do_descent else []):
         if progress:
             progress(f"Looking for the ball coming down, window {i + 1} "
                      f"of {len(_wins)}", i, len(_wins))
@@ -19923,10 +21843,77 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
             f"{_e.get('tilt_deg')} degrees off vertical")
         out["n_matched"] += 1
 
+    # ── where it came to REST, which is a different question ────────
+    #
+    # Everything above hunts the ball on its way DOWN, and on a green
+    # ringed with brush that is the hardest thing this system does: the
+    # wind moves more of the frame than the ball does. The resting
+    # place needs none of it. Compare the green before the shot with
+    # the green once the ball is down and still, and what is newly on
+    # the putting surface is the answer -- no tracking, no linking, no
+    # chain to lose.
+    #
+    # Run for EVERY swing with an impact, not only the ones a descent
+    # chain was found for. That is the point: the descent search fails
+    # on this green most of the time, and when it does this is the only
+    # thing that still knows where the ball finished.
+    #
+    # AND IT IS NOT THE SAME POINT AS `landing_spot`. A descent chain
+    # ends where the ball stopped FALLING -- the pitch mark -- and a
+    # ball bounces and rolls from there. Both are kept, because the
+    # comet wants the arrival and the distance wants the finish.
+    _t_id, _g_id = _camera_pair_for(db, row)
+    out["n_rest"] = 0
+    if _g_id:
+        for i, c in enumerate(_clips):
+            _imp = c.get("impact_frame")
+            if _imp is None:
+                continue
+            if progress:
+                progress(f"Looking for where it came to rest, swing "
+                         f"{i + 1} of {len(_clips)}", i, len(_clips))
+            _base = float(_imp) / float(fps or 30.0) - float(out["delta_sec"])
+            _shot = CLIPS_DIR / f"green-rest-{row.id}-s{i + 1}.jpg"
+            _rest, _why = _rest_spot_at(
+                db, row, _gp, _base, int(_g_id),
+                marks_path=_shot, landing_xy=c.get("landing_spot"))
+            c["rest_reason"] = _why
+            if _rest:
+                c["rest_spot"] = [int(_rest["xy"][0]), int(_rest["xy"][1])]
+                c["rest_source"] = "plates"
+                c["rest_area"] = _rest.get("area")
+                c["rest_persist"] = _rest.get("persist")
+                if _rest.get("image") and _shot.exists():
+                    c["rest_image_url"] = (
+                        f"{settings.app_base_url}/uploads/clips/{_shot.name}"
+                        f"?v={int(_shot.stat().st_mtime)}")
+                out["n_rest"] += 1
+    else:
+        out["rest_reason"] = "no green camera on this pair"
+
     _ascent_window_views(row, _gp, out, _clips, _gfps, fps,
                          _tee_start, _green_start)
     out.pop("dets_all", None)
-    out["ok"] = out["n_matched"] > 0
+    out["ok"] = out["n_matched"] > 0 or out.get("n_rest", 0) > 0
+    if not _do_descent:
+        out["descent_skipped_reason"] = (
+            "The descent search is off for this hole — the ball is found "
+            "where it came to REST instead, which needs no tracking. There "
+            "is no pitch mark and no comet on the green half; turn "
+            "ascent_descent_search back on to get them.")
+    if not _do_descent:
+        # NO CLOCK WARNING HERE. That warning is about the three-second
+        # flight window, and with the descent search off there is no
+        # flight window -- the resting-ball pass compares two plates
+        # seconds apart and a few seconds of offset does not move the
+        # ball on the grass.
+        out["reason"] = (
+            f"{out.get('n_rest', 0)} of {len(_clips)} swing(s) found at "
+            "rest on the green. The descent search is off for this hole, "
+            "so nothing was tracked through the fall — see the note "
+            "below. The two clocks are "
+            f"{out['delta_sec']}s apart ({out['delta_source']})")
+        return out
     out["reason"] = (
         ("" if out["delta_measured"] else
          "⚠ THE TWO CLOCKS WERE NOT MEASURED — the offset below is a "
@@ -19937,7 +21924,8 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         f"{len(_events)} ball(s) coming down, from "
         f"{out['n_frames_searched']} of {out['n_frames_green']} green "
         f"frame(s) — only the flight windows were searched; the two "
-        f"clocks are {out['delta_sec']}s apart ({out['delta_source']})")
+        f"clocks are {out['delta_sec']}s apart ({out['delta_source']}). "
+        f"{out.get('n_rest', 0)} also found at rest")
     return out
 
 
@@ -20159,13 +22147,21 @@ def _ascent_spot_from_chain(out: dict, ascent: dict, seen,
     sweep computed both while it was judging the chain; nothing here is
     a second search.
 
-    Marked `estimated` throughout, and it means what it says: the run
-    back is linear where a struck ball decelerates, so the frame lands
-    EARLY -- 8 to 23 frames on real ascents, capped by
-    ASCENT_MAX_BACKRUN_SEC. Early is the harmless direction. It is
-    where the drawn line begins, and a tracer that starts a fraction
-    before the ball moves reads as a tracer; one that starts after it
-    has gone reads as a bug.
+    Still marked `estimated`, but it no longer means what it used to.
+    The run back was LINEAR, where a struck ball slows the whole way
+    up, so the frame landed early -- eleven frames on #768, which was
+    measured against a known impact of f1536. It now fits the chain's
+    own deceleration and solves for the tee line through that; see
+    _impact_frame in debug3. On that swing it lands on f1536.
+
+    Early is still the harmless direction when it is wrong, and that
+    has not changed: this is where the drawn line begins, and a tracer
+    that starts a fraction before the ball moves reads as a tracer
+    where one that starts after it has gone reads as a bug.
+
+    `from_model` says which model produced the frame. "drag" is the
+    fitted one; the others are what is left when a chain is too short
+    to fit anything, and they still run early.
 
     `why` is prepended when a caller has something to add about how it
     got here. Empty is the normal case now that this is the only path.
@@ -20186,12 +22182,18 @@ def _ascent_spot_from_chain(out: dict, ascent: dict, seen,
     out["impact_frame"] = max(0, _imp)
     out["estimated"] = True
     out["watch_concluded"] = False
+    _model = ascent.get("from_model")
+    out["from_model"] = _model
     out["reason"] = (
         ((why + " — ") if why else "")
         + f"traced back along its own heading to {int(_x)},{int(_y)} on the "
-          f"tee line at f{out['impact_frame']}. The run back is linear and a "
-          f"struck ball slows as it climbs, so this is early rather than "
-          f"exact.")
+          f"tee line at f{out['impact_frame']}"
+        + (", with the frame solved through the chain's own deceleration"
+           if _model == "drag" else
+           f", with the frame run back at a steady speed ({_model})"
+           if _model else "")
+        + ". The spot comes from the heading alone; the frame is the "
+          "estimate.")
     return out
 
 
@@ -21056,6 +23058,61 @@ def _green_descent(db, row, src_path, tee_fps: float, impact_frame: int,
         log.warning("swing test: green descent failed: %s", exc)
         out["reason"] = f"failed: {exc}"
     out["seconds"] = round(time.perf_counter() - _t0, 2)
+    # ── no descent? then where it came to REST is the landing ───────
+    #
+    # THE TRACER NEEDS A PLACE, NOT A PATH. Everything above watches
+    # the ball fall, and on a green ringed with wind-blown brush that
+    # search fails or answers wrongly -- which is why
+    # `ascent_descent_search` is off by default. But the curve the
+    # tracer draws only ever used one thing from it: a point in green
+    # pixels, mapped through the hole's green->tee homography.
+    #
+    # The model supplies that point directly, and better: a descent
+    # chain ends where the ball stopped FALLING, where this is where it
+    # finished. Without it the tracer falls back to _guess_landing_tee,
+    # which aims at the flag -- a real place on the hole, but the same
+    # place for every shot.
+    if not out.get("landing_xy"):
+        try:
+            from ..services import ai_tracer
+            _t_id, _g_id = _camera_pair_for(db, row)
+            _gp = _local_green(row)
+            if _g_id and _gp and _gp.exists():
+                _imp_sec = float(impact_frame) / float(tee_fps or 30.0)
+                _delta = float(out.get("delta_sec") or 0.0)
+                _rest, _why = _rest_spot_at(
+                    db, row, _gp, _imp_sec - _delta, int(_g_id))
+                if _rest:
+                    out["landing_xy"] = [int(_rest["xy"][0]),
+                                         int(_rest["xy"][1])]
+                    out["landing_source"] = _rest.get("source")
+                    out["landing_on_green"] = _rest.get("on_green")
+                    out["rest_reason"] = _why
+                    # ...AND ONLY NOW, WHEN. Knowing where it finished
+                    # turns "track a ball falling through a windy
+                    # green" into "watch one patch of grass and see
+                    # when it changed". No resting place, no walk:
+                    # there would be nothing to watch.
+                    _land = ai_tracer.find_landing_frame(
+                        _gp, out["landing_xy"],
+                        _imp_sec - _delta + REST_PLATE_AFTER_SEC)
+                    if _land.get("frame") is not None:
+                        out["landing_frame_green"] = _land["frame"]
+                        out["landing_sec_green"] = _land["sec"]
+                    out["landing_frame_reason"] = (
+                        _land.get("error")
+                        or f"arrived at f{_land['frame']} "
+                           f"({_land['sec']}s of the green clip), found by "
+                           f"walking back {_land['walked_frames']} frames "
+                           "from where it stopped")
+                    if not out.get("frame_size"):
+                        _gwh = _frame_size(_gp)
+                        out["frame_size"] = list(_gwh) if _gwh else None
+                else:
+                    out["rest_reason"] = _why
+        except Exception as exc:  # noqa: BLE001
+            log.warning("swing test: rest fallback failed on %s: %s",
+                        getattr(row, "id", None), exc)
     return out
 
 
@@ -22674,17 +24731,87 @@ _produce_worker: threading.Thread | None = None
 # does Debug3 / Re-Produce (which run on their own thread so the panel
 # can poll status) — so nothing produces concurrently, whatever started
 # it, even though only queued uploads are ordered among themselves.
-_produce_gate = threading.Lock()
+#
+# It is now the SITE-WIDE heavy-work gate, not just the produce one: the
+# re-encode a Pi upload kicks off takes the same lock, so a produce and
+# an ffmpeg transcode can no longer split the one core between them and
+# starve the health check.
+_produce_gate = workload.heavy_gate
+
+# PAUSE, FOR WHEN A HUMAN NEEDS THE BOX. Produce is the heaviest thing
+# here and it serialises, so a backlog of automatic camera captures
+# means every Produce, Find Ascents or wizard run an operator starts
+# sits behind minutes of other people's golf. Pausing holds the
+# automatic work and leaves the machine to them.
+#
+# It holds AUTOMATIC jobs only. A paused queue that also ignored the
+# button the operator just pressed would be a broken queue, not a
+# paused one -- and the whole reason to pause is to use that button.
+_produce_paused = False
+# Automatic tasks the worker has taken off the queue while paused.
+# Held rather than dropped: they go back in order on resume, and they
+# stay in _produce_pending throughout so a re-queue is still a no-op.
+_produce_deferred: list = []
+
+
+def set_produce_paused(paused: bool) -> dict:
+    """Pause or resume automatic produce. Returns the new state."""
+    global _produce_paused
+    released = 0
+    with _produce_lock:
+        _produce_paused = bool(paused)
+        if not _produce_paused:
+            while _produce_deferred:
+                _produce_q.put(_produce_deferred.pop(0))
+                released += 1
+    if released:
+        _ensure_produce_worker()
+    log.info("produce queue: %s (%d job(s) released)",
+             "PAUSED" if paused else "resumed", released)
+    return {"paused": bool(paused), "released": released}
+
+
+def _heavy_thread(target, *, name: str, args=(), kwargs=None,
+                  label: str | None = None) -> threading.Thread:
+    """Start a daemon thread for CPU-heavy media work.
+
+    Niced below the web server and holding the heavy gate for its whole
+    run, so it cannot share the one core with another produce or with a
+    Pi upload's re-encode. Use it for work that nothing else is waiting
+    on: a job that blocks until ANOTHER gated job finishes must not take
+    the gate itself, or the two deadlock.
+    """
+    def _run() -> None:
+        workload.deprioritize()
+        with workload.heavy(label or name):
+            target(*args, **(kwargs or {}))
+
+    t = threading.Thread(target=_run, daemon=True, name=name)
+    t.start()
+    return t
 
 
 def _produce_worker_loop() -> None:
     global _produce_running
+    # This thread exists only to produce, and produce is the heaviest
+    # thing the box does. Below uvicorn for the life of the thread.
+    workload.deprioritize()
     while True:
         try:
             _key, _seq, task = _produce_q.get()
         except Exception:  # noqa: BLE001
             continue
         uid = task["upload_id"]
+        # HELD, NOT DROPPED. Taken off the queue so the worker can get
+        # to a manual job behind it, and put back in order on resume.
+        # It stays in _produce_pending while deferred, so re-queuing it
+        # is still the no-op it would be at any other time.
+        if _produce_paused and not task.get("manual"):
+            with _produce_lock:
+                _produce_deferred.append((_key, _seq, task))
+            log.info("produce queue: upload %s held — queue is paused", uid)
+            _produce_q.task_done()
+            continue
         try:
             with _produce_lock:
                 _produce_pending.pop(uid, None)
@@ -22729,6 +24856,10 @@ def enqueue_produce_job(
     debug_artifacts: bool = False,
     wait: bool = False,
     db=None,
+    # DID A PERSON ASK FOR THIS? Default yes, so a new call site is
+    # one a pause does not silently swallow. Only the camera path --
+    # the one caller nobody is waiting on -- says otherwise.
+    manual: bool = True,
 ) -> dict:
     """Queue an upload to be produced. Returns immediately unless `wait`.
 
@@ -22759,6 +24890,15 @@ def enqueue_produce_job(
     with _produce_lock:
         existing = _produce_pending.get(upload_id)
         if existing is not None:
+            # A HELD JOB THE OPERATOR NOW ASKS FOR BY HAND is no longer
+            # automatic: promote it and put it back in the queue, or
+            # pressing Produce on a paused card does nothing at all.
+            if manual and not existing.get("manual"):
+                existing["manual"] = True
+                for i, item in enumerate(_produce_deferred):
+                    if item[2] is existing:
+                        _produce_q.put(_produce_deferred.pop(i))
+                        break
             log.info("produce queue: upload %s already queued", upload_id)
             if wait:
                 pass          # fall through and wait on the existing task
@@ -22773,6 +24913,7 @@ def enqueue_produce_job(
                 "debug_artifacts": debug_artifacts,
                 "done": threading.Event(),
                 "result": None,
+                "manual": bool(manual),
             }
             _produce_pending[upload_id] = task
             _produce_q.put((key, next(_produce_seq), task))
@@ -22797,6 +24938,8 @@ def produce_queue_status() -> dict:
             "running_upload_id": _produce_running,
             "queued_upload_ids": sorted(_produce_pending.keys()),
             "depth": _produce_q.qsize(),
+            "paused": _produce_paused,
+            "held": len(_produce_deferred),
         }
 
 
@@ -23039,6 +25182,63 @@ def run_wizard_produce_job(
         db.close()
 
 
+def _sync_camera_event_from_upload(db, upload_id: int) -> None:
+    """Mirror a finished upload's outcome onto the camera event it came
+    from. No-op for an upload nobody's camera made.
+
+    THE CAMERA EVENT'S STATUS IS DERIVED, NOT STAMPED. It used to be
+    written by the thread that kicked produce off, which therefore had
+    to block for the whole job -- so a restart anywhere in those minutes
+    left the event frozen at 'paired_uploaded' with both clips sitting
+    right there, which is the "Both clips in - STUCK" pill nobody could
+    explain. The upload row survives a restart; the thread did not. So
+    the outcome is read off the row that lasts.
+    """
+    from ..models import CameraEvent, VideoClip
+
+    try:
+        lvu = db.get(LongVideoUpload, upload_id)
+        if lvu is None or not getattr(lvu, "camera_event_id", None):
+            return
+        event = db.get(CameraEvent, lvu.camera_event_id)
+        if event is None:
+            return
+
+        # A CAPTURE WITH NO SWING IN IT IS NOT A FAILURE. The auto
+        # detector calls it one, which is right for the long-upload UI
+        # and wrong here: the Pi triggered, captured and uploaded
+        # exactly as asked, and there simply was no golf in the frame.
+        # Flagging those red trains the operator to ignore red.
+        no_swings = (
+            lvu.processing_status == "failed"
+            and (lvu.last_error or "").startswith("no swings detected")
+        )
+        if lvu.processing_status == "completed" or no_swings:
+            event.status = "processed"
+            event.last_error = None
+            # Back-compat pointer; the listing surfaces the full set
+            # through the linked upload.
+            first_clip = (
+                db.query(VideoClip)
+                .filter(VideoClip.long_upload_id == lvu.id)
+                .order_by(VideoClip.captured_at.asc().nulls_last())
+                .first()
+            )
+            if first_clip is not None:
+                event.produced_clip_id = first_clip.id
+        else:
+            event.status = "failed"
+            event.last_error = (
+                lvu.last_error or "produce did not complete")[:2000]
+        db.commit()
+        log.info("cameras: event %s -> %s (from upload %s)",
+                 event.id, event.status, lvu.id)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        log.warning("cameras: could not sync event from upload %s: %s",
+                    upload_id, exc)
+
+
 def _finish_wizard_produce(db, upload_id: int, ok: bool, n_ok: int,
                            error=None) -> None:
     """Release the row the wizard's produce claimed.
@@ -23063,6 +25263,10 @@ def _finish_wizard_produce(db, upload_id: int, ok: bool, n_ok: int,
         db.rollback()
         log.warning("wizard produce: could not release upload %s: %s",
                     upload_id, exc)
+    # OUTSIDE THE TRY, so an event still gets its status even if the
+    # release above partly failed -- and after the commit, so the sync
+    # reads the terminal row rather than the one in flight.
+    _sync_camera_event_from_upload(db, upload_id)
 
 
 def _wizard_ball_side(db, row) -> str | None:
@@ -23135,6 +25339,10 @@ def run_produce_job(
                 db.commit()
             except Exception:  # noqa: BLE001
                 db.rollback()
+            # This path returns without going through
+            # _finish_wizard_produce, so it has to mirror for itself or
+            # a camera event whose raw went missing stays 'queued'.
+            _sync_camera_event_from_upload(db, upload_id)
             return {"ok": False, "error": _err}
         # Report the same stages Debug3's panel shows, so an auto-produce
         # card can say "Finding swing candidates" instead of just going

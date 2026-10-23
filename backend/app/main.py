@@ -50,6 +50,12 @@ app.add_middleware(
     allow_origins=["*"],  # tighten for prod
     allow_methods=["*"],
     allow_headers=["*"],
+    # A browser cannot read a custom RESPONSE header unless it is named
+    # here, whatever allow_headers says — that one is about the request.
+    # The camera snapshot carries its capture time this way, and in dev
+    # (Vite on another origin) the picture would otherwise arrive with no
+    # idea when it was taken.
+    expose_headers=["X-Captured-At", "X-Stale-After"],
 )
 
 
@@ -215,10 +221,28 @@ def _migrate() -> None:
             statements.append(
                 "ALTER TABLE camera_events ADD COLUMN green_recording_started_at TIMESTAMP"
             )
+        if "produce_retries" not in ce_cols:
+            statements.append(
+                "ALTER TABLE camera_events ADD COLUMN produce_retries "
+                "INTEGER DEFAULT 0"
+            )
+            # Belt and braces for any dialect that back-fills NULL
+            # rather than the default: the sweeper reads this as a
+            # budget, and NULL is not a number.
+            statements.append(
+                "UPDATE camera_events SET produce_retries = 0 "
+                "WHERE produce_retries IS NULL"
+            )
 
     # Camera additions — per-camera trigger kill-switch.
     if "cameras" in inspector.get_table_names():
         cam_cols = {c["name"] for c in inspector.get_columns("cameras")}
+        for _c in ("sky_line_frac", "search_left_frac",
+                   "search_right_frac"):
+            if _c not in cam_cols:
+                statements.append(
+                    f"ALTER TABLE cameras ADD COLUMN {_c} FLOAT"
+                )
         if "triggering_enabled" not in cam_cols:
             statements.append(
                 "ALTER TABLE cameras ADD COLUMN triggering_enabled BOOLEAN DEFAULT TRUE"
@@ -231,6 +255,10 @@ def _migrate() -> None:
         if "green_homography" not in cam_cols:
             statements.append(
                 "ALTER TABLE cameras ADD COLUMN green_homography JSON"
+            )
+        if "green_roi" not in cam_cols:
+            statements.append(
+                "ALTER TABLE cameras ADD COLUMN green_roi JSON"
             )
         if "ball_side" not in cam_cols:
             statements.append(
@@ -323,7 +351,7 @@ def _reap_orphaned_jobs() -> None:
     from datetime import datetime
 
     from .database import SessionLocal
-    from .models import LongVideoUpload
+    from .models import CameraEvent, LongVideoUpload
 
     db = SessionLocal()
     try:
@@ -332,13 +360,41 @@ def _reap_orphaned_jobs() -> None:
             .filter(LongVideoUpload.processing_status.in_(["processing", "pending"]))
             .all()
         )
+        _requeued = 0
         for row in stuck:
             row.processing_status = "failed"
             row.processing_completed_at = datetime.utcnow()
             row.last_error = "interrupted (backend restarted)"
+            # A CAMERA EVENT IS NOT A WIZARD UPLOAD. Nobody is going to
+            # come and press Produce on it: the clips arrived on their
+            # own and the only reason this row is orphaned is that the
+            # restart killed the queue. Failing it and walking away is
+            # what left events frozen with both clips sitting on disk.
+            #
+            # So hand it back to the stalled-event sweeper by putting
+            # the event in the status that sweeper looks for. The
+            # sweeper's retry budget still bounds it, which matters
+            # here: an upload that kills the process on produce would
+            # otherwise be re-queued on every boot forever -- a crash
+            # loop built out of a recovery mechanism.
+            ev_id = getattr(row, "camera_event_id", None)
+            if not ev_id:
+                continue
+            ev = db.get(CameraEvent, ev_id)
+            if ev is None or ev.status in ("processed", "failed"):
+                continue
+            ev.status = (
+                "paired_uploaded" if ev.green_clip_filename else "tee_uploaded"
+            )
+            ev.last_error = None
+            _requeued += 1
         if stuck:
             db.commit()
-            _glog.info("startup: reaped %d orphaned in-progress upload(s)", len(stuck))
+            _glog.info(
+                "startup: reaped %d orphaned in-progress upload(s), "
+                "%d handed back to the camera-event sweeper",
+                len(stuck), _requeued,
+            )
     except Exception as exc:  # noqa: BLE001
         _glog.warning("startup: reap orphaned jobs failed: %s", exc)
         db.rollback()
@@ -413,6 +469,14 @@ def _startup() -> None:
         tune_opencv()
     except Exception as exc:  # noqa: BLE001
         _glog.warning("startup: could not tune opencv threads: %s", exc)
+    # FIRST, so it is watching while the rest of startup runs. A
+    # migration that takes eight seconds is a health check Render will
+    # have already failed, and this is the only thing that would say so.
+    try:
+        from .services import stallwatch
+        stallwatch.start()
+    except Exception as exc:  # noqa: BLE001
+        _glog.warning("startup: stall watchdog did not start: %s", exc)
     Base.metadata.create_all(bind=engine)
     _migrate()
     _heal_media_urls()
@@ -421,9 +485,11 @@ def _startup() -> None:
     _sweep_d3_previews()
     _seed_default_courses()
     _seed_showcase_slots()
-    # Produce tee-only when a paired event's green half never arrives, so a
-    # green cellular dropout doesn't cost the whole shot.
-    cameras.start_tee_only_fallback_sweeper()
+    # Restart camera events nothing else will finish: a paired event whose
+    # green half never arrived (produce tee-only, so a green dropout costs
+    # the angle and not the shot), and one whose produce died with the
+    # process and left it at "paired_uploaded" for ever.
+    cameras.start_camera_event_recovery_sweeper()
     # Send the thank-you / review email once its delay has elapsed.
     thanks.start_thanks_sweeper()
 

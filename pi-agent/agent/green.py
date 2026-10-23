@@ -15,6 +15,7 @@ green just has to be recording when the ball lands."""
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -24,21 +25,34 @@ from typing import Optional
 import cv2
 
 from .common import (
+    agent_build_id,
     ClipWriter,
+    DeliveryMeter,
+    link_info_fields,
+    read_throttled,
+    reclock_fps,
+    write_fps_for,
+    stream_info_fields,
     BackendClient,
     BackgroundUploader,
     FrameBuffer,
     HeartbeatThread,
     build_audio_recorder,
-    lens_control,
+    drain_camera_settings,
+    handle_camera_command,
     mux_audio_into_video,
     open_camera,
 )
 from .focus_meter import FocusMeter
 from .livestream import LiveStreamer
+from .copyengine import CopyEngine, preroll_seconds
 
 log = logging.getLogger("golfreelz_agent.green")
-FIRMWARE = "green-0.1.0"
+# The build id is a hash of the installed agent source, so this
+# changes on every update and is identical on two Pis running the
+# same code — which is the whole question when one camera's clips
+# look wrong and the other's do not. See agent_build_id().
+FIRMWARE = f"green-0.1.0+{agent_build_id()}"
 
 
 class GreenAgent:
@@ -82,6 +96,12 @@ class GreenAgent:
         # no quality loss the composite would have kept anyway. Override in
         # config; set bitrate 0 to disable compression (fast wired/WiFi).
         self.upload_bitrate_kbps = int(cfg.get("upload_bitrate_kbps", 1500))
+        # 720 WHEN THE KEY IS ABSENT, unlike the tee, which defaults to
+        # None. So "unset" does not mean "off" here -- it means 720, and
+        # a config that omits the line gets downscaling it never asked
+        # for. Turning it off on a green takes an explicit
+        # `upload_scale_height: 0`; 0 is falsy, so the uploader passes
+        # scale_height=None.
         self.upload_scale_height = cfg.get("upload_scale_height", 720)
         # NOT /tmp. The spool (work_dir/pending) holds clips part-way
         # through an upload, sometimes for tens of minutes across
@@ -96,13 +116,35 @@ class GreenAgent:
         self.buffer: Optional[FrameBuffer] = None
         self.frame_shape: Optional[tuple[int, int]] = None
         self.fps = float(self.cam_cfg.get("fps", 30))
+        # What this camera is really sending, for the admin card — the
+        # config's fps is a belief on an RTSP camera, never a request.
+        self._delivery = DeliveryMeter()
+        self._open_size = None
+        self._open_fps = None
+        self._stream_profile = None
 
     def stop(self) -> None:
         self.stopping.set()
 
     def run(self) -> None:
         cap = open_camera(self.cam_cfg)
-        self.buffer = FrameBuffer(self.buffer_seconds, self.fps)
+        # Asked of the capture, not taken from the config: the point of
+        # the readout is to show where the two disagree.
+        try:
+            import cv2 as _cv2
+            _w = int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            _h = int(cap.get(_cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            self._open_fps = float(cap.get(_cv2.CAP_PROP_FPS) or 0) or None
+            if _w and _h:
+                self._open_size = (_w, _h)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not read the stream geometry: %s", exc)
+        # NOT buffer_seconds OUTRIGHT. With the copy engine running,
+        # the pre-roll is the segment ring on disk and this one is read
+        # only by the decode fallback -- 1.9GB of frames at 1080p60 for
+        # a ring nothing looks at, on a Pi already holding the segments.
+        # Same rule the tee has used since the copy engine landed.
+        self.buffer = FrameBuffer(preroll_seconds(self.cfg), self.fps)
         self._cap_frames = 0
         self._cap_gaps = 0
         self._cap_worst = 0.0
@@ -144,8 +186,19 @@ class GreenAgent:
             if (r := _batt.read_averaged()):
                 out["battery_voltage"] = r["voltage"]
                 out["battery_current_a"] = r["current_a"]
+            # Needs no sensor, unlike the above — which is the point, on
+            # a rig with no INA226 fitted. See read_throttled().
+            if (t := read_throttled()):
+                out["throttled"] = json.dumps(t)[:500]
             if (f := _focus.read()):
                 out.update(f)
+            out.update(drain_camera_settings(self))
+            out.update(stream_info_fields(self))
+            # WHAT THE UPLINK LOOKS LIKE FROM HERE. Read over USB and
+            # /proc, so it costs the cellular link nothing and arrives
+            # even when that link is too starved to hold an SSH session
+            # -- which is the only time anyone wants it.
+            out.update(link_info_fields())
             return out or None
 
         hb = HeartbeatThread(
@@ -185,6 +238,13 @@ class GreenAgent:
             chunk_kb=int(self.cfg.get("upload_chunk_kb", 512)),
         )
         self.uploader.start()
+        # The stream-copy engine, when config asks for it. None leaves
+        # the green exactly as it was. A green is the right place to try
+        # it: its clip window is decided by the tee, so the only thing
+        # under test here is the recording itself.
+        self._copy = CopyEngine.from_config(self.cfg, self.work_dir)
+        if self._copy is not None:
+            self._copy.start()
 
         log.info(
             "green agent running: buffer=%.1fs max=%.0fs poll=%ds",
@@ -233,19 +293,18 @@ class GreenAgent:
             self.uploader.stop(drain_timeout=10.0)
             self.streamer.stop()
 
+            if getattr(self, '_copy', None) is not None:
+                self._copy.stop()
     # -----------------------------------------------------------------
 
-    def _on_lens_command(self, op: str, amount: int) -> None:
-        """Apply an operator's zoom/focus nudge to the camera.
-
-        Best-effort: a lens that refuses a step is a message for the
-        operator watching the live view, not a reason to disturb a
-        capture agent that is otherwise working.
-        """
-        try:
-            lens_control(self.cam_cfg, op, amount)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("lens command %s failed: %s", op, exc)
+    def _on_lens_command(self, op: str, amount: int,
+                         params: dict | None = None,
+                         repeat: int = 1) -> None:
+        """Zoom/focus nudge or an exposure change. See
+        common.handle_camera_command — shared with the tee runner so the
+        two cannot drift. A green camera watches the ball come DOWN, so
+        it wants the same short shutter the tee does."""
+        handle_camera_command(self, op, amount, params, repeat)
 
     def _on_focus_mode(self, seconds: float) -> None:
         """Backend says focus mode is armed for `seconds` (0 = off).
@@ -281,19 +340,85 @@ class GreenAgent:
             _cnow = time.time()
             if self._cap_last is not None:
                 _cgap = _cnow - self._cap_last
-                if _cgap > 1.8 / max(1.0, self.fps):
+                # AGAINST WHAT THE CAMERA IS DELIVERING, not what the
+                # config believes. This counter is the one that says
+                # "the camera stalled" as opposed to "our pipeline fell
+                # behind" — and on a camera configured for 50 while
+                # delivering 30, it called every ordinary 33 ms interval
+                # a stall, because the threshold it was using was 36 ms.
+                # A diagnostic that cries camera fault on a healthy
+                # camera is worse than no diagnostic.
+                _dfps, _ = self._delivery.read()
+                if _cgap > 1.8 / max(1.0, _dfps or self.fps):
                     self._cap_gaps += 1
                     self._cap_worst = max(self._cap_worst, _cgap)
             self._cap_last = _cnow
             self._cap_frames += 1
+            self._delivery.tick()
             if self.frame_shape is None:
                 self.frame_shape = (frame.shape[0], frame.shape[1])
             self.buffer.push(time.time(), frame.copy())
             self.streamer.update_frame(frame)
 
+    def _copy_stop_policy(self, session_id: str):
+        """A green stops when the tee tells it to. Same poll interval
+        and the same forgiving failure handling as the decode loop: a
+        flaky link should make us over-record by a second, never stop
+        a clip early."""
+        # COUNTED, because the failure mode is silent. A poll that
+        # throws every time and a poll that answers "not yet" every
+        # time produce exactly the same thing -- a clip that runs to
+        # its length cap -- and at debug level neither leaves a trace.
+        # A green that records 150s instead of 15s is 200MB on a
+        # cellular link, so which of the two it was has to be
+        # answerable afterwards.
+        state = {"next_check": 0.0, "polls": 0, "failures": 0,
+                 "last_error": None, "warned": False}
+
+        def _stop(now: float):
+            if now < state["next_check"]:
+                return None
+            state["next_check"] = now + self.stop_poll_interval
+            state["polls"] += 1
+            try:
+                status = self.client.event_status(session_id)
+            except Exception as exc:  # noqa: BLE001
+                state["failures"] += 1
+                state["last_error"] = str(exc)[:200]
+                log.debug("event_status poll failed: %s", exc)
+                # Say it ONCE, out loud, when it is clearly not a blip.
+                if state["failures"] >= 10 and not state["warned"]:
+                    state["warned"] = True
+                    log.warning(
+                        "event_status has failed %d times for session=%s "
+                        "(%s) — this green cannot hear the tee's stop "
+                        "signal and will record until its length cap",
+                        state["failures"], session_id, state["last_error"],
+                    )
+                return None
+            return "stop_signal" if status.get("stop_signal") else None
+
+        _stop.stats = state
+        return _stop
+
     def _record_and_upload(
         self, session_id: str, not_before: float | None = None,
     ) -> None:
+        # WHICH ENGINE RECORDS THIS CLIP. Asked before anything is
+        # committed, so an unhealthy ring falls through to the code
+        # below rather than losing the clip. The stop rule is the
+        # green's own: keep going until the tee says stop, or the
+        # runaway cap fires.
+        _copy = getattr(self, "_copy", None)
+        if _copy is not None and _copy.ready():
+            _copy.record_and_upload(
+                self, session_id, self._copy_stop_policy(session_id),
+                not_before=not_before,
+            )
+            return
+        if _copy is not None:
+            log.warning("copy engine is not ready (%s) — recording "
+                        "session=%s the old way", _copy.status(), session_id)
         """Commit the current ring buffer to an MP4 and keep writing
         new frames from the buffer until the tee Pi signals stop
         (via /event-stop, observed by polling /event-status) or the
@@ -317,8 +442,31 @@ class GreenAgent:
         # First-frame wall-clock time (start of the committed pre-roll).
         # Reported on upload for dual-camera cut alignment.
         first_frame_ts = snapshot[0][0]
+        # SAME RULE AS THE TEE, from the same place. This camera's
+        # config has always matched what it delivers, which is why its
+        # clips look right — but that was luck, and a green stamped at
+        # the wrong rate would be spliced against a tee stamped at the
+        # right one.
+        # The delivery meter is handed in as the second opinion — see
+        # write_fps_for. Without it, a bursty RTSP stream can defeat the
+        # pre-roll median and silently fall back to the config.
+        write_fps, _measured, _why = write_fps_for(
+            snapshot, self.fps, delivered=self._delivery.read()[0],
+        )
+        # Kept for the heartbeat: the card should report the rate clips
+        # are REALLY stamped at, not the one the config hoped for.
+        self._last_write_fps = write_fps
+        # One line per recording, as the tee logs — this is the number
+        # that decides whether a clip is smooth, and it should not take
+        # a disagreement to make it visible.
+        log.info(
+            "record: nominal_fps=%.1f measured_fps=%s write_fps=%.2f "
+            "preroll_frames=%d (%s)",
+            self.fps, f"{_measured:.2f}" if _measured else "—",
+            write_fps, len(snapshot), _why,
+        )
         clip_path = self.work_dir / f"{session_id}.mp4"
-        clip_writer = ClipWriter(clip_path, self.fps, (width, height))
+        clip_writer = ClipWriter(clip_path, write_fps, (width, height))
         if not clip_writer.ok:
             log.error("VideoWriter failed for %s", clip_path)
             return
@@ -404,14 +552,29 @@ class GreenAgent:
                 )
 
         size = clip_path.stat().st_size if clip_path.exists() else 0
-        # NO average re-timing. Frame loss is BURSTY: one stall drags
-        # the average down, and re-clocking the whole clip to it plays
-        # the healthy frames slow — the "slow motion" artifact. The
-        # ClipWriter instead fills gaps by holding the previous frame,
-        # so playback time already equals wall-clock time.
-        real_fps = None
         real_span = last_written_ts - first_frame_ts
         frames_written = clip_writer.n_written
+        # NO AVERAGE RE-TIMING — that re-clocked every clip to its mean
+        # rate, and one stall inside an otherwise healthy recording then
+        # played the healthy parts slow. reclock_fps asks the narrower
+        # question instead: are there fewer frames in this file than its
+        # own header needs for the time it covers? When gap filling did
+        # its job there are not, and this is None.
+        # Checked against what the clip was actually STAMPED at, which
+        # is write_fps and not the config — those were the same number
+        # here for as long as the config happened to be right, and the
+        # day it is not, checking against the config would compare a
+        # file to a header it does not have.
+        real_fps = reclock_fps(frames_written, real_span, write_fps)
+        if real_fps:
+            log.warning(
+                "clip is short for its length: %d frames over %.2fs is "
+                "%.2f fps, but it is stamped %.2f — re-clocking on upload "
+                "so it plays in real time and stays length-matched to the "
+                "tee (%.2fs instead of %.2fs)",
+                frames_written, real_span, real_fps, write_fps,
+                real_span, frames_written / write_fps,
+            )
         _captured = frames_written - clip_writer.n_filled
         log.info(
             "recorded %s: %d frames, %.1f MB (reason=%s) | timing: "

@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, API_BASE } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
+import useSiteTheme from "../hooks/useSiteTheme.js";
+import { logoUrl } from "../theme.js";
+import AppearanceCard from "../components/AppearanceCard.jsx";
 import { fmtDateTime } from "../time.js";
 
 const ADMIN_PW_STORAGE = "golfreelz.adminPassword";
@@ -25,8 +28,17 @@ function today() {
 }
 
 export default function Admin() {
+  const theme = useSiteTheme();
   const [adminPassword, setAdminPassword] = useState(() => readStoredPassword());
-  const [authed, setAuthed] = useState(false);
+  // TRUSTED UNTIL THE SERVER SAYS OTHERWISE. This started false, so
+  // every page load began signed out and only the first successful
+  // fetch let you in — which meant the backend being slow to wake put
+  // you back at the password box with a perfectly good password still
+  // in localStorage. Starting from "is a password stored" renders the
+  // console immediately and lets a 401 be the only thing that signs
+  // you out. Nothing is exposed by guessing: every request still
+  // carries the password and the server still checks it.
+  const [authed, setAuthed] = useState(() => !!readStoredPassword());
   const [courses, setCourses] = useState([]);
   const [stats, setStats] = useState(null);
   const [flagged, setFlagged] = useState([]);
@@ -41,13 +53,37 @@ export default function Admin() {
       localStorage.setItem(ADMIN_PW_STORAGE, key);
       setError(null);
     } catch (e) {
-      setError(e.message); setAuthed(false);
+      const msg = String(e?.message || e);
+      setError(msg);
+      // ONLY A 401 MEANS THE PASSWORD IS WRONG. A cold-starting
+      // backend, a timeout, a 502 — all of them used to land here and
+      // sign you out, which is what "it keeps logging me out" was. The
+      // stored password is cleared on a real rejection so a bad one
+      // cannot loop, and kept on everything else so a blip costs a
+      // retry rather than a login.
+      if (/^401\b/.test(msg)) {
+        localStorage.removeItem(ADMIN_PW_STORAGE);
+        setAuthed(false);
+      }
     }
   }
 
   useEffect(() => { if (adminPassword) load(adminPassword); /* eslint-disable-next-line */ }, []);
 
   function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2500); }
+
+  // Shown while signed in: the console is usable, this one fetch is not.
+  const loadError = authed && error ? (
+    <div className="card warn-text small" style={{ display: "flex", gap: 12,
+                                                   alignItems: "center",
+                                                   flexWrap: "wrap" }}>
+      <span style={{ flex: "999 1 240px", minWidth: 0 }}>
+        Could not refresh the dashboard: {error}
+      </span>
+      <button className="small secondary" style={{ width: "auto" }}
+              onClick={() => load()}>Retry</button>
+    </div>
+  ) : null;
 
   if (!authed) {
     return (
@@ -78,20 +114,16 @@ export default function Admin() {
     <div className="wrap wide">
       <div className="brand" style={{ justifyContent: "space-between", width: "100%" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div
-            style={{
-              height: 60,
-              overflow: "hidden",
-              display: "flex",
-              alignItems: "center",
-            }}
-          >
-            <img
-              src="/golfreelz-logo.png"
-              alt="GolfReelz"
-              style={{ height: 100, width: "auto", display: "block" }}
-            />
-          </div>
+          {/* Same lockup the public header wears, through the same
+              lookup — this used to hard-code /golfreelz-logo.png in a
+              60px box clipping a 100px image, which was a crop built
+              around the old banner's whitespace and would have cut the
+              top and bottom off the current mark. */}
+          <img
+            src={logoUrl(theme.direction)}
+            alt="GolfReelz"
+            style={{ height: 62, width: "auto", display: "block" }}
+          />
           <div className="tag">Operator Console</div>
         </div>
       </div>
@@ -115,6 +147,8 @@ export default function Admin() {
           Sign out
         </button>
       </div>
+
+      {loadError}
 
       {stats && (
         <div className="stat-grid">
@@ -171,6 +205,8 @@ export default function Admin() {
       )}
 
       <TestEmailCard adminPassword={adminPassword} onToast={showToast} />
+
+      <AppearanceCard adminPassword={adminPassword} onToast={showToast} />
 
       <div className="card">
         <h3 style={{ marginBottom: 4 }}>Manual review queue</h3>

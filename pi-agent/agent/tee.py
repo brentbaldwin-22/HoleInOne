@@ -10,6 +10,7 @@ without the full ML stack."""
 
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
@@ -22,18 +23,36 @@ import cv2
 import numpy as np
 
 from .common import (
+    agent_build_id,
     BackendClient,
+    BackendUnreachable,
     BackgroundUploader,
     ClipWriter,
     FrameBuffer,
     HeartbeatThread,
     build_audio_recorder,
     mux_audio_into_video,
-    lens_control,
+    drain_camera_settings,
+    handle_camera_command,
     open_camera,
+    link_info_fields,
+    read_throttled,
+    reclock_fps,
+    write_fps_for,
+    stream_info_fields,
+    DeliveryMeter,
+    TriggerGate,
 )
+from . import tee_roi
 from .focus_meter import FocusMeter
 from .livestream import LiveStreamer
+from .copyengine import (
+    CopyEngine,
+    DEFAULT_COPY_FALLBACK_PREROLL,
+    copy_configured,
+    preroll_seconds,
+)
+from .swingfind import MotionTracker
 
 log = logging.getLogger("golfreelz_agent.tee")
 
@@ -101,7 +120,11 @@ def _take_force_trigger() -> bool:
     except OSError:
         pass                # not ours to delete; mtime already guards us
     return True
-FIRMWARE = "tee-0.1.0"
+# The build id is a hash of the installed agent source, so this
+# changes on every update and is identical on two Pis running the
+# same code — which is the whole question when one camera's clips
+# look wrong and the other's do not. See agent_build_id().
+FIRMWARE = f"tee-0.1.0+{agent_build_id()}"
 
 try:
     import mediapipe as mp  # type: ignore
@@ -116,9 +139,11 @@ except Exception:  # pragma: no cover
 # ---------------------------------------------------------------------
 
 class MediaPipePersonDetector:
-    """MediaPipe Pose wrapper. Returns the person's bounding-box
-    center in native-frame pixel coords on each detect() call, or
-    None if no person is found."""
+    """MediaPipe Pose wrapper. Returns where the person is STANDING in
+    native-frame pixel coords on each detect() call, or None if no
+    person is found -- the x of their landmarks' centre and the y of
+    the LOWEST one, which on a standing person is a foot. See
+    `_in_roi` for why the feet and not the middle."""
 
     def __init__(self, detect_width: int = 320):
         self.detect_width = detect_width
@@ -143,7 +168,11 @@ class MediaPipePersonDetector:
         xs = [lm.x for lm in result.pose_landmarks.landmark]
         ys = [lm.y for lm in result.pose_landmarks.landmark]
         cx = (sum(xs) / len(xs)) * sw / scale
-        cy = (sum(ys) / len(ys)) * sh / scale
+        # The lowest landmark, which on a standing person is a foot.
+        # Pose gives ankles, heels and toes; taking the maximum needs no
+        # knowledge of which index is which and degrades sensibly when
+        # the feet are out of shot, to whatever IS lowest.
+        cy = max(ys) * sh / scale
         return int(round(cx)), int(round(cy))
 
     def close(self):
@@ -155,6 +184,9 @@ class MediaPipePersonDetector:
 
 class YoloPersonDetector:
     """YOLOv8n person detector running on OpenCV's built-in DNN module.
+
+    Reports the bottom-centre of the person's box -- where they are
+    STANDING, not where their middle is. See `_in_roi`.
 
     This is the production detector. It loads a pre-exported ONNX model
     (shipped in the repo at pi-agent/models/) and runs it with cv2.dnn —
@@ -226,10 +258,12 @@ class YoloPersonDetector:
         if idxs is None or len(idxs) == 0:
             return None
         idxs = np.array(idxs).flatten()
-        # Among surviving boxes, return the most confident person's center.
+        # Among surviving boxes, the most confident person -- reported at
+        # their FEET. See _in_roi for why it is the feet and not the
+        # middle.
         best = max(idxs, key=lambda i: confs[i])
         x, y, bw_px, bh_px = boxes[best]
-        return int(x + bw_px / 2), int(y + bh_px / 2)
+        return int(x + bw_px / 2), int(y + bh_px)
 
     def close(self):
         pass
@@ -237,8 +271,8 @@ class YoloPersonDetector:
 
 class MotionFallbackDetector:
     """Fallback when MediaPipe isn't installed: per-frame absolute
-    difference against a running background mean, then the centroid
-    of the high-motion mask. Much noisier than pose detection but
+    difference against a running background mean, then the bottom of
+    the high-motion mask. Much noisier than pose detection but
     keeps the rest of the loop testable on a stock Pi OS without
     the heavy ML deps."""
 
@@ -291,30 +325,184 @@ class MotionFallbackDetector:
         if m["m00"] == 0:
             return None
         cx = m["m10"] / m["m00"]
-        cy = m["m01"] / m["m00"]
+        # THE BOTTOM OF THE BLOB, not its middle, to match what the
+        # other two detectors report. Cruder here by nature: this has
+        # no body model, so the bottom of a motion blob is the lowest
+        # thing that moved rather than a foot -- a shadow or a club at
+        # the bottom of its arc will drag it down. It is the last
+        # resort detector and this keeps it answering the same question
+        # as the others rather than a different one.
+        _bx, _by, _bw, _bh = cv2.boundingRect(biggest)
+        cy = _by + _bh
         return int(round(cx / scale)), int(round(cy / scale))
 
     def close(self):
         pass
 
 
-def _in_roi(pt: tuple[int, int], roi: dict) -> bool:
-    x, y = pt
-    return (
-        roi["x"] <= x <= roi["x"] + roi["w"]
-        and roi["y"] <= y <= roi["y"] + roi["h"]
-    )
+class Dwell:
+    """How long has somebody been standing in a zone, and is that long
+    enough to start recording?
+
+    Pulled out of the loop so it can be tested without a camera, a
+    detector and a capture thread — and so there is ONE copy of the
+    rule rather than one in the agent and another in a test that
+    agrees with it by hand.
+
+    TWO THINGS MAKE IT MORE THAN A STOPWATCH.
+
+    A BLINK IS NOT A DEPARTURE. Detection runs at `detection.fps` (5),
+    so a dwell of N seconds asks for N*5 consecutive sightings, and
+    this project's own config notes that "a golfer bending to tee up,
+    turning away, or stepping aside briefly makes the person detector
+    drop out for a few seconds". The stop condition was built generous
+    for exactly that; the start condition reset on a single miss. At
+    two seconds it survived on luck. At ten it does not survive at
+    all: measured on the model of this loop, a two-second blink four
+    seconds in means the dwell is NEVER met in the sixteen seconds the
+    golfer is actually there.
+
+    AND THE CLOCK MUST NOT OUTLIVE THE PERSON. Once a blink is
+    forgiven, elapsed time alone would let somebody who crossed the
+    zone for a second trigger three seconds later, on an empty tee.
+    So firing also requires them to be in a zone right now.
+    """
+
+    def __init__(self, dwell_seconds: float, grace_seconds: float):
+        self.dwell = float(dwell_seconds)
+        self.grace = float(grace_seconds)
+        self.first_seen: Optional[float] = None
+        self.last_seen: float = 0.0
+        self.restarts = 0
+
+    def reset(self) -> None:
+        self.first_seen = None
+
+    def arm(self, now: float) -> None:
+        """Treat the dwell as ALREADY SERVED, as of `now`.
+
+        For the length-cap split, where a clip ends at the cap with the
+        golfer still standing there. They have been in the zone for two
+        minutes; making them serve the dwell again is not a filter, it
+        is a hole. And it is a hole that grows with the setting: at a
+        two-second dwell the next clip opens inside the five-second
+        pre-roll and the two overlap, which is what keeps a swing on
+        the boundary from being cut in half. At ten seconds the pre-roll
+        no longer covers it and five seconds of golf are simply missing.
+
+        So the split re-arms rather than restarts, and the next clip
+        opens on the following tick whatever the dwell is set to. The
+        guard against this running away is `_splits` and the cooldown,
+        which is a separate mechanism and still applies.
+        """
+        self.first_seen = now - self.dwell
+        self.last_seen = now
+
+    def update(self, now: float, in_roi: bool) -> bool:
+        """Advance to `now`. True means trigger."""
+        if in_roi:
+            if self.first_seen is None:
+                self.first_seen = now
+            self.last_seen = now
+        elif (self.first_seen is not None
+                and now - self.last_seen > self.grace):
+            self.first_seen = None
+            self.restarts += 1
+        return (in_roi
+                and self.first_seen is not None
+                and now - self.first_seen >= self.dwell)
+
+    def waiting_for(self, now: float) -> Optional[float]:
+        """Seconds still to go, or None when nobody is being timed."""
+        if self.first_seen is None:
+            return None
+        return max(0.0, self.dwell - (now - self.first_seen))
+
+
+def _in_roi(pt: tuple[int, int], roi) -> bool:
+    """Is the golfer standing on A tee? Any zone counts.
+
+    `pt` IS THE PERSON'S FEET, and used to be the middle of their
+    bounding box. The difference is the whole usability of this
+    feature.
+
+    With a waist-height point, a zone has to be drawn around BODIES,
+    and how far a body extends above the ground in pixels depends on
+    how far away it is -- so the same tee needs a different box
+    depending on where the camera sits, and an operator drawing the
+    obvious thing (the mown rectangle people stand on) gets a zone that
+    fires on nobody. Measured on hole 8: zones drawn around two tee
+    surfaces would have caught neither tee, while the previous box,
+    drawn generously enough to catch waists, also contained the green,
+    the bunkers and the tees 60 yards further out.
+
+    Feet are where someone IS. A zone becomes "this patch of ground",
+    which is what people draw anyway and what the word zone means.
+
+    A par 3 is played from a back tee and a middle tee, and the camera
+    is given one box per tee rather than one box spanning both — a
+    rectangle wide enough to hold them both also holds the path between
+    them, and somebody walking that path is a recording nobody asked
+    for. tee_roi accepts either shape, so a rig still running one box
+    behaves exactly as it did.
+
+    NOTE FOR ANY RIG UPDATED PAST THIS CHANGE: zones drawn for the old
+    waist test sit too high and will under-trigger. They need redrawing
+    onto the ground. The agent says so once at startup.
+    """
+    return tee_roi.contains(pt, roi)
 
 
 # ---------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------
+# How deep the decoded pre-roll ring has to be
+# ---------------------------------------------------------------------
+
+# WHEN THE COPY ENGINE RUNS, THE SEGMENT RING IS THE PRE-ROLL.
+#
+# Both engines were filling a pre-roll at once. The copy engine keeps
+# ~155s of the camera's own H.264 on disk, and alongside it the decode
+# path kept `buffer_seconds * fps` DECODED frames in RAM -- 301 numpy
+# arrays of 1920x1080x3 at 1080p60, about 1.9GB, written every frame and
+# read by nothing, because the copy engine cuts its clips out of the
+# segment ring instead.
+#
+# IT CANNOT GO TO ZERO. Two things still read the ring: the detector,
+# which only ever looks at snapshot()[-1], and the decode FALLBACK at
+# the record fork -- an unhealthy segment ring sends that one swing down
+# the old path rather than losing it, and that path opens its clip with
+# whatever pre-roll is in RAM. So the ring shrinks to a fallback depth
+# rather than disappearing.
+#
 class TeeAgent:
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.client = BackendClient(cfg["backend_url"], cfg["auth_token"])
-        self.roi = cfg["tee_box_roi"]
+        # The zones this agent triggers on. The card's own config is the
+        # bootstrap; the backend's zones replace it on the first status
+        # poll and whenever an operator redraws them. Held behind a lock
+        # because the poll thread writes it while the capture loop reads
+        # it every frame.
+        self.roi = cfg.get("tee_box_roi")
+        self._roi_lock = threading.Lock()
+        self._roi_frame: tuple[int, int] | None = None
+        # The last payload the backend sent, exactly as sent. Only the
+        # backend's zones are re-scaled — a box from config.yaml has
+        # already been through _apply_capture_mode and scaling it again
+        # here would halve it twice.
+        self._roi_raw = None
+        # WHAT THIS CAMERA IS REALLY SENDING, for the admin card. The
+        # config's fps is a belief on an RTSP camera — nothing here ever
+        # asks the camera for a rate — so the delivered rate is measured
+        # and the camera's own profile is fetched on request.
+        self._delivery = DeliveryMeter()
+        self._open_size = None
+        self._open_fps = None
+        self._stream_profile = None
         self.cam_cfg = cfg.get("camera", {})
         # Operator-requested capture, seconds, set from the
         # live-stream poll thread and consumed by the main loop.
@@ -396,6 +584,16 @@ class TeeAgent:
         self.work_dir = Path(
             cfg.get("work_dir", "/var/lib/golfreelz-agent"))
         self.work_dir.mkdir(parents=True, exist_ok=True)
+        # Whether to record a swing whose trigger could not be
+        # registered. Beside the spool on purpose: both exist so that an
+        # unreachable backend costs footage later rather than never.
+        self._gate = TriggerGate(self.work_dir)
+        # The session whose trigger never landed, if the one currently
+        # recording is that session. Only ever one at a time -- the
+        # capture loop runs a session to completion before looking for
+        # the next -- so a single slot is the honest shape, and an
+        # attribute that is usually None keeps the loop readable.
+        self._unregistered_session: Optional[str] = None
         self.stopping = threading.Event()
 
     def stop(self) -> None:
@@ -448,17 +646,70 @@ class TeeAgent:
         )
         return MotionFallbackDetector(detect_width=det_width)
 
-    def _on_lens_command(self, op: str, amount: int) -> None:
-        """Apply an operator's zoom/focus nudge to the camera.
+    def _on_lens_command(self, op: str, amount: int,
+                         params: dict | None = None,
+                         repeat: int = 1) -> None:
+        """Zoom/focus nudge or an exposure change. See
+        common.handle_camera_command — shared with the green runner so
+        the two cannot drift."""
+        handle_camera_command(self, op, amount, params, repeat)
 
-        Best-effort: a lens that refuses a step is a message for the
-        operator watching the live view, not a reason to disturb a
-        capture agent that is otherwise working.
+    def apply_tee_zones(self, payload) -> None:
+        """Adopt the backend's trigger zones, scaled to OUR frames.
+
+        Called on every status poll with the current answer, so this is
+        mostly a no-op comparison; it logs only when something actually
+        moved, which makes "when did the zones change" answerable from
+        the Pi's own journal.
+
+        SILENTLY IGNORES AN EMPTY PAYLOAD. None means the camera has no
+        zones in the app, and the ones from this card's config are
+        better than none at all — a tee that stops triggering because
+        nobody has drawn a box in the UI yet would be a bad trade.
         """
-        try:
-            lens_control(self.cam_cfg, op, amount)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("lens command %s failed: %s", op, exc)
+        if not payload or not tee_roi.boxes(payload):
+            return
+        # KEEP THE PAYLOAD AS SENT, and scale a copy. The frame size is
+        # not known until the capture is open, so the first zones can
+        # arrive unscaled; run() re-applies this raw copy once it knows,
+        # and scaling the already-scaled result instead would shrink the
+        # zones a second time.
+        self._roi_raw = payload
+        size = self._roi_frame
+        scaled = tee_roi.scaled(payload, size[0], size[1]) if size else payload
+        boxes = tee_roi.boxes(scaled)
+        with self._roi_lock:
+            if tee_roi.boxes(self.roi) == boxes:
+                return
+            self.roi = scaled
+        # SWING SELECT MEASURES WHERE THE OPERATOR SAID THE GOLFERS ARE.
+        # The zones are already drawn per camera and already exclude
+        # the cart path and the bench between tees; a second ROI typed
+        # into config.yaml is the same fact stored twice, and the two
+        # drifted apart the first time this ran in the field.
+        tracker = getattr(self, "motion", None)
+        if tracker is not None and size:
+            try:
+                tracker.set_zones(boxes, size[0], size[1])
+            except Exception as exc:  # noqa: BLE001
+                log.debug("swing select: could not adopt zones (%s)", exc)
+        # SAY WHAT THE BOX MEANS, every time they change. A zone is
+        # tested against the golfer's FEET, and a rig updated past that
+        # change is carrying zones drawn for a waist-height point --
+        # which sit too high and quietly stop triggering. One line
+        # beside the zones themselves is where somebody reading the log
+        # to find out why nothing records will actually see it.
+        log.info(
+            "zones are matched against where a person is STANDING (their "
+            "feet). A box drawn around a golfer rather than around the "
+            "ground they stand on will under-trigger.")
+        log.info(
+            "trigger zones updated from the backend: %s",
+            ", ".join(
+                f"{b.get('label') or 'zone'} {b['x']},{b['y']} "
+                f"{b['w']}x{b['h']}" for b in boxes
+            ),
+        )
 
     def _on_focus_mode(self, seconds: float) -> None:
         """Backend says focus mode is armed for `seconds` (0 = off).
@@ -548,11 +799,21 @@ class TeeAgent:
             _cnow = time.time()
             if self._cap_last is not None:
                 _cgap = _cnow - self._cap_last
-                if _cgap > 1.8 / max(1.0, self.fps):
+                # AGAINST WHAT THE CAMERA IS DELIVERING, not what the
+                # config believes. This counter is the one that says
+                # "the camera stalled" as opposed to "our pipeline fell
+                # behind" — and on a camera configured for 50 while
+                # delivering 30, it called every ordinary 33 ms interval
+                # a stall, because the threshold it was using was 36 ms.
+                # A diagnostic that cries camera fault on a healthy
+                # camera is worse than no diagnostic.
+                _dfps, _ = self._delivery.read()
+                if _cgap > 1.8 / max(1.0, _dfps or self.fps):
                     self._cap_gaps += 1
                     self._cap_worst = max(self._cap_worst, _cgap)
             self._cap_last = _cnow
             self._cap_frames += 1
+            self._delivery.tick()
             fcopy = frame.copy()
             # Drop exact-duplicate reads. The GoPro in USB-webcam mode
             # hands cv2 the same frame again ~once/second (the read loop
@@ -580,15 +841,87 @@ class TeeAgent:
             prev = fcopy
             ts = time.time()
             self.buffer.push(ts, fcopy)
+            # THE SWING SIGNAL RIDES ALONG HERE. One resize and one
+            # absolute difference on a frame already decoded for the
+            # person detector, rate-limited to 20 Hz -- so selecting
+            # which seconds to upload costs no second decode and no
+            # pass over the clip at the end. It runs whether or not a
+            # recording is in progress, because a clip starts
+            # buffer_seconds before its trigger and a swing in that
+            # pre-roll is common. feed() swallows everything: a
+            # tracker that raised in here would cost frames, and
+            # frames are the one thing this must never cost.
+            tracker = getattr(self, "motion", None)
+            if tracker is not None:
+                tracker.feed(ts, fcopy)
             streamer = getattr(self, "streamer", None)
             if streamer is not None:
                 streamer.update_frame(frame)
 
     def run(self) -> None:
         cap = open_camera(self.cam_cfg)
+        # WHAT SIZE THE FRAMES ACTUALLY ARE, asked of the capture rather
+        # than taken from the config: a driver can hand back something
+        # other than what it was asked for, and the trigger zones are in
+        # pixels. Scaling them against a size we only believe in would
+        # put the tee in the wrong part of the picture.
+        try:
+            import cv2 as _cv2
+            _fw = int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            _fh = int(cap.get(_cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            self._open_fps = float(cap.get(_cv2.CAP_PROP_FPS) or 0) or None
+            if _fw and _fh:
+                self._open_size = (_fw, _fh)
+                self._roi_frame = (_fw, _fh)
+                log.info("trigger zones will be scaled to %dx%d", _fw, _fh)
+                # Zones that arrived before the capture was open went in
+                # unscaled. Now that the size is known, redo them.
+                if self._roi_raw is not None:
+                    with self._roi_lock:
+                        self.roi = None
+                    self.apply_tee_zones(self._roi_raw)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not read the frame size for zone scaling: %s", exc)
         fps = float(self.cam_cfg.get("fps", 30))
         self.fps = fps
-        self.buffer = FrameBuffer(self.buffer_seconds, fps)
+        _preroll = preroll_seconds(self.cfg)
+        self.buffer = FrameBuffer(_preroll, fps)
+        # SWING SELECTION, off unless asked for. The tracker is cheap
+        # but it is not free, and a rig in the field should not change
+        # what it uploads because an agent was updated.
+        _sw = self.cfg.get("swing_select") or {}
+        self._person_seen_at: list = []
+        self.motion = None
+        if _sw.get("enabled"):
+            self.motion = MotionTracker(
+                sample_hz=float(_sw.get("sample_hz", 20.0)),
+                roi_top=float(_sw.get("roi_top", 0.0)),
+                roi_bottom=float(_sw.get("roi_bottom", 1.0)),
+                keep_seconds=float(self.buffer_seconds)
+                + float(self.cfg.get("max_clip_seconds", 120)) + 60.0,
+            )
+            try:
+                _boxes = tee_roi.boxes(self.roi)
+                _size = getattr(self, "_roi_frame", None)
+                if _boxes and _size:
+                    self.motion.set_zones(_boxes, _size[0], _size[1])
+            except Exception as exc:  # noqa: BLE001
+                log.debug("swing select: no zones at startup (%s)", exc)
+            log.info(
+                "swing select: ON (sampling %.0f Hz, measuring %s) — only "
+                "the swings go up",
+                float(_sw.get("sample_hz", 20.0)),
+                ("inside %d trigger zone(s)" % len(self.motion._boxes))
+                if self.motion._boxes else
+                "the whole frame until trigger zones arrive",
+            )
+        if _preroll != self.buffer_seconds:
+            log.info(
+                "pre-roll ring: %.1fs (%d frames), not buffer_seconds=%.1fs "
+                "— the copy engine's segment ring is the real pre-roll, and "
+                "this one is only for detection and the decode fallback",
+                _preroll, self.buffer.max_frames, self.buffer_seconds,
+            )
         # Camera-side delivery counters (see _capture_loop).
         self._cap_frames = 0
         self._cap_gaps = 0
@@ -608,7 +941,26 @@ class TeeAgent:
         _splits = 0                 # consecutive length-cap splits
         _cooldown_until = 0.0       # automatic triggers paused until this
         dwell_seconds = float(self.det_cfg.get("trigger_dwell_seconds", 2))
-        no_person_timeout = float(self.det_cfg.get("no_person_timeout_seconds", 5))
+        # HOW LONG THE DETECTOR MAY LOSE THEM without the dwell starting
+        # over. See the dwell loop below: without this the clock resets
+        # on a SINGLE missed detection, and at 5 Hz a ten-second dwell
+        # is fifty consecutive sightings with no gaps -- which this
+        # config's own notes say does not happen, because "a golfer
+        # bending to tee up, turning away, or stepping aside briefly
+        # makes the person detector drop out for a few seconds". The
+        # STOP condition was built generous for exactly that; the start
+        # condition was not.
+        dwell_grace = float(
+            self.det_cfg.get("trigger_dwell_grace_seconds", 3))
+        # THE FALLBACK MATCHES THE SHIPPED CONFIG, which it did not for
+        # as long as both have existed: config.example.yaml said 30 and
+        # this said 5, so a rig whose config omitted the key recorded
+        # six-second clips while its own documentation promised
+        # half-minute ones. Nobody hit it because every rig in the
+        # field sets the key -- which is exactly why it could sit there.
+        # tools/stop_policy_test.py now fails if the two drift again.
+        no_person_timeout = float(
+            self.det_cfg.get("no_person_timeout_seconds", 12))
 
         detector = self._build_detector(det_width)
 
@@ -619,7 +971,9 @@ class TeeAgent:
         # patch whose focus decides whether a golfer is detected at all,
         # and a camera sharp on the horizon but soft on the tee is
         # exactly the failure this is meant to surface.
-        _focus = FocusMeter(roi=self.roi)
+        # One rectangle, because the meter only needs a patch of the
+        # right grass to measure sharpness on — the union of the zones.
+        _focus = FocusMeter(roi=tee_roi.union(self.roi) or self.roi)
         self._focus = _focus
 
         def _hb_extra():
@@ -627,8 +981,21 @@ class TeeAgent:
             if (r := _batt.read_averaged()):
                 out["battery_voltage"] = r["voltage"]
                 out["battery_current_a"] = r["current_a"]
+            # Needs no sensor, unlike the above — which is the point, on
+            # a rig with no INA226 fitted. See read_throttled().
+            if (t := read_throttled()):
+                out["throttled"] = json.dumps(t)[:500]
             if (f := _focus.read()):
                 out.update(f)
+            # What the camera said about its own exposure, if anyone has
+            # asked it since the last heartbeat.
+            out.update(drain_camera_settings(self))
+            out.update(stream_info_fields(self))
+            # WHAT THE UPLINK LOOKS LIKE FROM HERE. Read over USB and
+            # /proc, so it costs the cellular link nothing and arrives
+            # even when that link is too starved to hold an SSH session
+            # -- which is the only time anyone wants it.
+            out.update(link_info_fields())
             return out or None
 
         hb = HeartbeatThread(
@@ -642,6 +1009,8 @@ class TeeAgent:
             self.client, on_capture_request=self._request_capture,
             on_focus_mode=self._on_focus_mode,
             on_lens_command=self._on_lens_command,
+            on_tee_zones=self.apply_tee_zones,
+            on_triggering_state=self._gate.note_backend_state,
         )
         streamer.start()
         self.streamer = streamer
@@ -668,6 +1037,12 @@ class TeeAgent:
             chunk_kb=int(self.cfg.get("upload_chunk_kb", 512)),
         )
         self.uploader.start()
+        # THE OTHER ENGINE, when config asks for it. None leaves every
+        # line below untouched and the agent on the path it has always
+        # used; see copyengine.py for why both live here at once.
+        self._copy = CopyEngine.from_config(self.cfg, self.work_dir)
+        if self._copy is not None:
+            self._copy.start()
 
         # Start draining the camera into the buffer before we begin
         # detecting, so the pre-roll is already populated at trigger.
@@ -677,11 +1052,14 @@ class TeeAgent:
         )
         capture_thread.start()
 
-        person_first_seen: Optional[float] = None
+        dwell = Dwell(dwell_seconds, dwell_grace)
         prime_force_trigger()
         log.info(
             "tee agent running: roi=%s buffer=%.1fs dwell=%.1fs",
-            self.roi, self.buffer_seconds, dwell_seconds,
+            # The ring that exists, not the one config asked for — with
+            # the copy engine on, those differ and the journal saying 5s
+            # while 2s is allocated is how you lose an afternoon.
+            self.roi, _preroll, dwell_seconds,
         )
         try:
             while not self.stopping.is_set():
@@ -697,8 +1075,10 @@ class TeeAgent:
                 # Sharpness, off the frame we already have. No-op except
                 # every few seconds; rides out on the heartbeat.
                 _focus.sample(frame)
-                centroid = detector.detect(frame)
-                in_roi = centroid is not None and _in_roi(centroid, self.roi)
+                stance = detector.detect(frame)
+                with self._roi_lock:
+                    _roi_now = self.roi
+                in_roi = stance is not None and _in_roi(stance, _roi_now)
                 # Manual trigger, for testing the record+upload path
                 # without anyone walking into frame:
                 #     touch /tmp/golfreelz-trigger
@@ -711,24 +1091,21 @@ class TeeAgent:
                     # Paused after a runaway. An explicit Capture or a
                     # touched sentinel still gets through — the pause is
                     # for the automatic trigger, not for the operator.
-                    person_first_seen = None
+                    dwell.reset()
                     time.sleep(det_period)
                     continue
 
-                if not forced:
-                    if in_roi:
-                        if person_first_seen is None:
-                            person_first_seen = now
-                            log.info("person entered ROI at %s", centroid)
-                    else:
-                        if person_first_seen is not None:
-                            log.debug("person left ROI before dwell threshold")
-                        person_first_seen = None
-
-                dwell_met = (
-                    person_first_seen is not None
-                    and now - person_first_seen >= dwell_seconds
-                )
+                _was = dwell.first_seen
+                _restarts = dwell.restarts
+                dwell_met = dwell.update(now, in_roi) if not forced else False
+                if dwell.first_seen is not None and _was is None:
+                    log.info("person standing in a zone at %s (their feet)"
+                             " — recording in %.1fs if they stay",
+                             stance, dwell.dwell)
+                elif dwell.restarts != _restarts:
+                    log.debug("nobody in a zone for over %.1fs before the "
+                              "dwell was met — starting the clock over",
+                              dwell.grace)
                 if forced or dwell_met:
                     session_id = str(uuid.uuid4())
                     log.info(
@@ -737,10 +1114,59 @@ class TeeAgent:
                         if pending_secs is not None
                         else (" (MANUAL)" if forced else ""),
                     )
+                    _ack = None
+                    self._unregistered_session = None
                     try:
-                        self.client.event_trigger(session_id)
+                        _ack = self.client.event_trigger(session_id) or {}
+                    except BackendUnreachable as exc:
+                        # SILENCE IS NOT A REFUSAL, and this used to be
+                        # treated as one. A trigger that times out took
+                        # the whole swing with it -- nothing recorded,
+                        # nothing spooled, nothing to recover -- on a
+                        # rig whose modem re-enumerates every three
+                        # minutes. Two swings died this way inside two
+                        # minutes on 14 Oct.
+                        #
+                        # Record it. The clip spools like any other, and
+                        # the uploader's _recover_lost_event registers
+                        # the session when the link returns, because
+                        # /event-trigger is idempotent and takes a
+                        # `recover` flag for exactly this. The gate is
+                        # the one veto: an operator who PAUSED this
+                        # camera still means it.
+                        log.warning(
+                            "event_trigger got no answer (%s)", exc)
+                        if self._gate.should_record_unregistered(session_id):
+                            self._unregistered_session = session_id
+                            _ack = {}
                     except Exception as exc:
-                        log.error("event_trigger failed (%s) — skipping", exc)
+                        # The backend ANSWERED and refused -- a 4xx:
+                        # unknown token, camera disabled, not a tee
+                        # camera. Recording against that is pointless,
+                        # and spooling a clip for it would re-send it
+                        # for 24 hours.
+                        log.error(
+                            "event_trigger refused (%s) — skipping "
+                            "session=%s", exc, session_id)
+                    if _ack is None:
+                        pass        # the trigger never registered
+                    # PAUSED MEANS PAUSED, INCLUDING THE UPLOAD.
+                    #
+                    # The backend has always answered a trigger from a
+                    # paused camera with `triggering_disabled`, and its
+                    # own comment says the point is "so the Pi doesn't
+                    # bother recording / uploading". Nothing out here
+                    # ever read it. So pausing stopped events reaching
+                    # Production and did not stop this Pi spending the
+                    # next minute pushing a 6 MB clip up a 125 KB/s
+                    # modem — which is the link an operator is usually
+                    # trying to pause it in order to GET.
+                    elif _ack.get("triggering_disabled"):
+                        log.info(
+                            "trigger: session=%s ignored — triggering is "
+                            "paused for this camera, so nothing is recorded "
+                            "and nothing is uploaded", session_id,
+                        )
                     else:
                         # LET THEM GET SET. The event is armed (the green
                         # is already recording off the same trigger); the
@@ -764,11 +1190,43 @@ class TeeAgent:
                                 )
                             if self.stopping.is_set():
                                 break
-                        _why = self._record_and_upload(
-                            detector, no_person_timeout, det_period,
-                            fps, session_id, fixed_seconds=pending_secs,
-                            not_before=_not_before,
-                        )
+                        # WHICH ENGINE RECORDS THIS SWING. The copy
+                        # engine is asked whether it is ready BEFORE the
+                        # clip is committed to it: an unhealthy ring
+                        # sends this one swing down the decode path
+                        # rather than losing it, and says so once.
+                        _copy = getattr(self, "_copy", None)
+                        if _copy is not None and _copy.ready():
+                            _why = _copy.record_and_upload(
+                                self, session_id,
+                                self._copy_stop_policy(
+                                    detector, no_person_timeout, det_period),
+                                # THE GREEN IS WAITING ON THIS. The
+                                # decode path sends it from inside
+                                # _record_and_upload, which the copy
+                                # engine replaces — so without this the
+                                # partner is never told the swing ended
+                                # and records to its 150s cap, which on
+                                # the copy engine is a 269MB clip that
+                                # will never cross a cellular link.
+                                on_recording_ended=(
+                                    lambda: self._signal_event_stop(
+                                        session_id)),
+                                fixed_seconds=pending_secs,
+                                not_before=_not_before,
+                            )
+                        else:
+                            if _copy is not None:
+                                log.warning(
+                                    "copy engine is not ready (%s) — "
+                                    "recording session=%s the old way",
+                                    _copy.status(), session_id,
+                                )
+                            _why = self._record_and_upload(
+                                detector, no_person_timeout, det_period,
+                                fps, session_id, fixed_seconds=pending_secs,
+                                not_before=_not_before,
+                            )
                         if _why == "length_cap" and _splits >= self.max_splits:
                             # RUNAWAY GUARD. A split means "the person is
                             # still there", and with a loose ROI that is
@@ -791,7 +1249,7 @@ class TeeAgent:
                             _splits = 0
                             _cooldown_until = now + self.split_cooldown
                             self.buffer.clear()
-                            person_first_seen = None
+                            dwell.reset()
                         elif _why == "length_cap":
                             _splits += 1
                             # A SPLIT, not an ending. Keep the ring buffer
@@ -799,14 +1257,18 @@ class TeeAgent:
                             # and OVERLAPS this one — otherwise a swing
                             # that happens to land on the boundary is cut
                             # in half and neither clip can be produced.
-                            # The golfer is still in the ROI, so re-arm the
-                            # dwell from now and the next clip starts in
-                            # about two seconds.
-                            person_first_seen = now
+                            # The golfer is still in the ROI and has
+                            # been for two minutes, so the dwell is
+                            # re-armed as already served and the next
+                            # clip opens on the following tick. See
+                            # Dwell.arm: making them serve it again
+                            # would put a hole the length of the dwell
+                            # between two clips of the same golfer.
+                            dwell.arm(now)
                         else:
                             _splits = 0
                             self.buffer.clear()
-                            person_first_seen = None
+                            dwell.reset()
                 time.sleep(det_period)
         finally:
             self.stopping.set()
@@ -816,8 +1278,105 @@ class TeeAgent:
             hb.stop()
             self.uploader.stop(drain_timeout=10.0)
             streamer.stop()
+            if getattr(self, "_copy", None) is not None:
+                self._copy.stop()
 
     # -----------------------------------------------------------------
+
+    def _signal_event_stop(self, session_id: str) -> None:
+        """Tell the backend this event is over, so the paired green
+        stops recording. Best-effort and loud about failing: the decode
+        path has always done this and the symptom when it does not
+        happen is silent and expensive — a green that keeps rolling to
+        its cap.
+
+        BOTH RECORDING PATHS COME THROUGH HERE. The copy engine calls it
+        from on_recording_ended and the decode loop calls it before its
+        upload; they used to be two copies of the same try/except, which
+        is two places for the guard below to be missing from.
+        """
+        if session_id and session_id == self._unregistered_session:
+            # There is no event to stop. This session's trigger never
+            # reached the backend, so /event-stop would 404 its way
+            # through four retries and log a warning that reads like a
+            # fault -- and no green is waiting on it, because no green
+            # was ever woken.
+            log.info(
+                "event_stop skipped for %s — its trigger never registered, "
+                "so there is no event to end and no green to release",
+                session_id,
+            )
+            return
+        try:
+            self.client.event_stop(session_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("event_stop failed for %s: %s", session_id, exc)
+
+    def _copy_stop_policy(self, detector, no_person_timeout: float,
+                          det_period: float):
+        """When should a copy-engine clip end? The same answer the
+        decode loop gives: once nobody has been in a trigger zone for
+        `no_person_timeout`.
+
+        Handed to the engine rather than built into it, because the
+        green's reason for stopping is completely different (it waits
+        to be told) and neither runner should have to know about the
+        other's. Detection is rate-limited to `det_period` here just as
+        it is in the decode loop — the engine ticks faster than that so
+        it can notice the agent shutting down promptly.
+        """
+        state = {"last_seen": time.time(), "next_detect": 0.0,
+                 "polls": 0, "in_roi": 0, "no_frames": 0}
+
+        def _stop(now: float):
+            if now < state["next_detect"]:
+                return None
+            state["next_detect"] = now + det_period
+            state["polls"] += 1
+            snap = self.buffer.snapshot()
+            if not snap:
+                state["no_frames"] += 1
+                # No frames is not "nobody is there" — it is a camera
+                # problem, and ending the clip early would hide it.
+                return None
+            stance = detector.detect(snap[-1][1])
+            with self._roi_lock:
+                _roi = self.roi
+            if stance is not None and _in_roi(stance, _roi):
+                state["in_roi"] += 1
+                state["last_seen"] = now
+                # AND REMEMBER THAT WE SAW THEM, which this did not do
+                # for as long as the copy engine has existed.
+                #
+                # swing_select rejects any motion peak with nobody near
+                # it -- on a camera aimed down the hole, moving cloud
+                # scored a 4.72 "swing" in footage with no golfer in
+                # it. The sightings it checks against come from
+                # `_person_seen_at`, and only the DECODE loop was
+                # filling it. On a copy-engine rig the list stayed
+                # empty for the life of the process, and an empty list
+                # does not mean "no information" to find_swings -- it
+                # means "we looked and nobody was there", which is a
+                # distinction it is right to make and was being told
+                # wrongly. So every peak that cleared the ratio was
+                # thrown out, and swing_select could never return a
+                # swing on a copy rig.
+                #
+                # Measured on hole 8, 20 Oct: 17 sessions, 0 swings,
+                # and in the five where peaks did clear the threshold
+                # ALL of them were rejected for nobody in the ROI --
+                # during sessions a person standing in that same ROI
+                # had triggered.
+                _seen = getattr(self, "_person_seen_at", None)
+                if _seen is not None:
+                    _seen.append(now)
+                return None
+            if now - state["last_seen"] >= no_person_timeout:
+                return "no_person"
+            return None
+
+        _stop.stats = state
+        return _stop
 
     def _record_and_upload(
         self, detector, no_person_timeout: float, det_period: float,
@@ -856,43 +1415,25 @@ class TeeAgent:
         first_frame_ts = snapshot[0][0]
 
         # Write at the camera's REAL delivered rate, measured from the
-        # (already de-duplicated) pre-roll timestamps, instead of the
-        # nominal config fps. The GoPro webcam delivers ~29 unique fps,
-        # so stamping a fixed 30 plays the clip slightly fast and — when
-        # combined with the now-removed duplicates — was the source of
-        # the periodic hitch. Measured rate => smooth, correct-duration
-        # playback. Clamped to sane bounds; falls back to nominal when
-        # the pre-roll is too short to measure.
-        #
-        # Guard against a bogus measurement: the first capture after boot
-        # (or after a long idle) can have a pre-roll of frames the camera
-        # delivered slowly during warmup — e.g. 151 frames spanning 150 s
-        # reads as 1 fps. Stamping the whole clip at that rate plays the
-        # real ~30 fps action in slow motion (and reports an 8-minute
-        # duration). Only trust the measured rate when it's within a sane
-        # band of nominal (±40%); otherwise keep nominal.
-        # Use the MEDIAN inter-frame interval, not the mean: a single
-        # stall inside the pre-roll drags the mean down and would stamp
-        # the whole clip slow. The median is the camera's true cadence.
-        write_fps = fps
-        if len(snapshot) >= 5:
-            _iv = sorted(
-                snapshot[i][0] - snapshot[i - 1][0]
-                for i in range(1, len(snapshot))
-            )
-            _med = _iv[len(_iv) // 2]
-            if _med > 1e-4:
-                measured = 1.0 / _med
-                if 0.6 * fps <= measured <= 1.4 * fps:
-                    write_fps = max(1.0, min(120.0, measured))
-                else:
-                    log.warning(
-                        "record: ignoring implausible measured_fps=%.2f "
-                        "(nominal=%.1f) — using nominal", measured, fps,
-                    )
+        # (already de-duplicated) pre-roll timestamps. See write_fps_for
+        # in common.py for why the measurement is trusted against
+        # absolute bounds rather than against the configured rate — the
+        # band around nominal is what stamped this camera's clips at 50
+        # while it delivered 29.9, and every one of them was jumpy.
+        # The delivery meter is handed in as the second opinion — see
+        # write_fps_for. Without it, a bursty RTSP stream can defeat the
+        # pre-roll median and silently fall back to the config.
+        write_fps, _measured, _why = write_fps_for(
+            snapshot, fps, delivered=self._delivery.read()[0],
+        )
+        # Kept for the heartbeat: the card should report the rate clips
+        # are REALLY stamped at, not the one the config hoped for.
+        self._last_write_fps = write_fps
         log.info(
-            "record: nominal_fps=%.1f measured_fps=%.2f preroll_frames=%d",
-            fps, write_fps, len(snapshot),
+            "record: nominal_fps=%.1f measured_fps=%s write_fps=%.2f "
+            "preroll_frames=%d (%s)",
+            fps, f"{_measured:.2f}" if _measured else "—",
+            write_fps, len(snapshot), _why,
         )
 
         clip_path = self.work_dir / f"{session_id}.mp4"
@@ -974,13 +1515,21 @@ class TeeAgent:
                 # strict trigger confidence already gated starting the clip.
                 # Fall back for detectors that don't take the override.
                 try:
-                    centroid = detector.detect(
+                    stance = detector.detect(
                         current[-1][1], conf_override=self.keepalive_conf
                     )
                 except TypeError:
-                    centroid = detector.detect(current[-1][1])
-                if centroid is not None:
+                    stance = detector.detect(current[-1][1])
+                if stance is not None:
                     last_person_seen = now
+                    # NOTHING SWINGS WITHOUT A PERSON. Kept so the
+                    # swing finder can throw out peaks with nobody
+                    # near them: on a camera aimed down the hole,
+                    # moving cloud scored a 4.72 "swing" in footage
+                    # containing no golfer at all.
+                    _seen = getattr(self, "_person_seen_at", None)
+                    if _seen is not None:
+                        _seen.append(now)
                 elif now - last_person_seen > no_person_timeout:
                     log.info(
                         "no person for %.1fs; stopping (recorded %.1fs)",
@@ -990,11 +1539,22 @@ class TeeAgent:
                     break
             time.sleep(0.02)
         clip_writer.close()
-        # No re-timing on upload: gap filling already made the file a
-        # correct constant-rate clip whose duration equals wall-clock.
-        real_fps = None
         real_span = last_written_ts - first_frame_ts
         n_frames_written = clip_writer.n_written
+        # DOES THE FILE'S OWN HEADER MATCH THE WALL CLOCK? Normally yes,
+        # because gap filling holds the previous frame through a stall —
+        # and then this is None and the upload is untouched. It speaks
+        # up only when the file is genuinely short of frames for the
+        # time it covers, which plays fast and jumpy. See reclock_fps.
+        real_fps = reclock_fps(n_frames_written, real_span, write_fps)
+        if real_fps:
+            log.warning(
+                "clip is short for its length: %d frames over %.2fs is "
+                "%.2f fps, but it is stamped %.2f — re-clocking on upload "
+                "so it plays in real time (%.2fs instead of %.2fs)",
+                n_frames_written, real_span, real_fps, write_fps,
+                real_span, n_frames_written / write_fps,
+            )
         _captured = n_frames_written - clip_writer.n_filled
         # Two rates, deliberately separate:
         #   camera  = what the SENSOR delivered to the capture thread
@@ -1026,10 +1586,7 @@ class TeeAgent:
         # which is polling /event-status — can release its writer at
         # roughly the same wall-clock moment. Best-effort: if the
         # call fails the green Pi will eventually hit its safety cap.
-        try:
-            self.client.event_stop(session_id)
-        except Exception as exc:
-            log.warning("event_stop failed for %s: %s", session_id, exc)
+        self._signal_event_stop(session_id)
 
         # Stop the parallel audio capture and fold the WAV into the
         # MP4. Each step is best-effort; failures leave the video

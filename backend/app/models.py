@@ -431,6 +431,35 @@ class Camera(Base):
     # the bounding box the tee-side person detector treats as "on the
     # tee". Green cameras leave this null.
     tee_box_roi: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # WHERE THE NOISE STOPS, as a fraction of frame height (0..1): the
+    # floor of the strip of sky the ascent sweep searches. Above it is
+    # the ball and the odd bird; below it is the treeline, the houses
+    # and the flag.
+    #
+    # It replaces a computed guess -- "a golfer's height above the
+    # hitting area" -- which is a proxy for the same thing and was
+    # measured off one reference frame. On Rivertowne 8 the proxy lands
+    # 150px inside the trees, and the sweep's per-frame budget of ten
+    # blobs then goes to tree edges rather than to the ball: a flight
+    # a scan of the same footage found on nearly every frame came
+    # through as four points.
+    #
+    # A FRACTION, NOT PIXELS, unlike tee_box_roi beside it -- that one
+    # records the frame size it was drawn at and has to be rescaled;
+    # this needs no such care. Per camera because the camera is bolted
+    # down: the tee markers move every morning, the horizon does not.
+    sky_line_frac: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True)
+    # AND THE TWO VERTICAL EDGES, same units, same reason — a treeline
+    # is not horizontal. On Rivertowne 8 the stand at the left reaches
+    # ~190px higher than the trees on the right, so one horizontal cut
+    # either keeps that stand or throws away a third of the useful sky.
+    # A ball from this tee never crosses the far left of the picture,
+    # so the cheapest answer is to refuse to look there.
+    search_left_frac: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True)
+    search_right_frac: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True)
     # GREEN cameras only. Maps this camera's image pixels onto the plane
     # of the green, in feet, so a ball's resting pixel becomes a real
     # position — which is what closest-to-the-pin measures and what lets
@@ -447,6 +476,21 @@ class Camera(Base):
     # yards and the scale changes across the frame, so nothing downstream
     # may guess a conversion without this.
     green_homography: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # GREEN cameras only. The putting surface, as a polygon clicked on a
+    # still: {"points": [[x,y], ...], "frame": {"w":..., "h":...}}.
+    #
+    # What it bounds is the rest-spot search, and the thing it rejects is
+    # not clutter -- a median plate handles the brush on its own -- but a
+    # ball that is genuinely there and genuinely not on the green. A
+    # white dot short of the surface is identical to one on it in every
+    # respect except position, so position is the only thing that can
+    # tell them apart, and an outline is the only way to say where the
+    # surface is.
+    #
+    # Drawn at whatever size the still was, and the size is stored with
+    # it, because the capture resolution changes and a polygon in bare
+    # pixels silently means somewhere else afterwards.
+    green_roi: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # TEE cameras only. Which side of the golfer's feet the ball sits on,
     # in the camera's own view: 'left' | 'right' | None.
     #
@@ -485,6 +529,63 @@ class Camera(Base):
     # Reset when focus mode is armed, so each session starts honest.
     focus_best: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     focus_best_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # EXPOSURE, AS THE CAMERA REPORTS IT. An IP camera owns its own
+    # sensor -- the agent cannot set a shutter through V4L2 the way it
+    # can on a USB module -- so this is a read-back, written whenever
+    # the agent asks the camera what it has. Stored whole, raw dump
+    # included: which keys a Hanwha exposes varies by firmware, and a
+    # setting we have no name for yet is still worth seeing.
+    #
+    # Null on a Pi camera, and on an IP camera nobody has asked yet.
+    camera_settings: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    camera_settings_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True)
+    # WHAT THE CAMERA IS REALLY SENDING, reported on every heartbeat:
+    # the size and rate OpenCV opened the stream at, the rate frames are
+    # actually arriving at, and the rate our config believes. Those
+    # three disagreeing is not a detail — a camera delivering 30 while
+    # the config says 50 is what stamps a clip fast. The camera's own
+    # profile (a SUNAPI read) is merged in when an operator asks.
+    stream_info: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    stream_info_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True)
+    # THE STILL. A camera that is not being watched still has a view,
+    # and an operator opening the Cameras page wants to see it — "is it
+    # pointed at the tee, is the lens wet, is it night" — without making
+    # a Pi push 10 fps to answer. So the agent sends ONE frame every so
+    # often whether anyone is looking or not, the newest is kept on disk
+    # (one file per camera, overwritten), and this is when it was taken.
+    #
+    # The bytes live on the instance's own disk and do not survive a
+    # redeploy; the next snapshot replaces them within the interval, so
+    # a missing file means "nothing yet", never "lost".
+    still_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True)
+    # WHERE THE ZOOM IS, counted rather than read. This lens takes
+    # relative nudges and has no endpoint that reports its position
+    # (attributes.cgi: ZoomAdjust True, Absolute/Query False), so the
+    # backend keeps a running total of what it has sent and ties it to
+    # the lens's own hard stops, which an operator marks once. See
+    # services/lens_zoom.py for the shape and for what it is not.
+    lens_zoom: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # WHAT vcgencmd SAYS ABOUT THIS PI'S POWER. Needs no sensor, unlike
+    # the battery columns above — which is why it exists: a rig without
+    # an INA226 fitted reports no voltage at all, and "no telemetry" and
+    # "telemetry says fine" look identical from here. Bit 16 is the
+    # valuable one: a brownout that already happened and left no other
+    # trace. See read_throttled() in the agent.
+    throttled: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    throttled_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True)
+    # WHAT THE UPLINK LOOKS LIKE FROM THE PI: the modem's own signal and
+    # data-usage figures, plus the USB reset count and uptime. All of it
+    # is read over USB and /proc, never over the cellular link, which is
+    # the point -- it arrives when that link is too starved to hold the
+    # SSH session every branch of the triage runbook used to start with.
+    # See read_modem() / read_usb_resets() in the agent.
+    link_info: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    link_info_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # Soft toggle distinct from `enabled`: when False the camera stays
     # online (heartbeats + live-watch still work) but the backend
@@ -558,6 +659,17 @@ class CameraEvent(Base):
         ForeignKey("video_clips.id"), nullable=True,
     )
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # How many times the recovery sweeper has restarted this event's
+    # produce. NOT a count of produce runs: the first one, and anything
+    # an operator asks for with Re-process, are not retries.
+    #
+    # IN THE DATABASE ON PURPOSE. What the sweeper recovers from is a
+    # process death, so a counter held in memory would be wiped by the
+    # exact event it exists to count -- and a clip that kills the
+    # process on produce would be fed back to produce every minute
+    # forever.
+    produce_retries: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False)
 
 
 class DeletedCameraSession(Base):
@@ -757,3 +869,21 @@ class ShotOfWeekVote(Base):
     # router so a re-vote moves the vote rather than being rejected.
     voter_key: Mapped[str] = mapped_column(String(80), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AppSetting(Base):
+    """A tiny key/value table for settings that belong to the SITE rather
+    than to a course, a camera or a person.
+
+    There is exactly one of these per key, edited from the admin screens
+    and read by everybody — the site's appearance being the first. It is
+    a table and not a config constant because the whole point is that it
+    changes without a deploy.
+    """
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+    value: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow)

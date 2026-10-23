@@ -22,6 +22,7 @@ import { Component, useCallback, useEffect, useMemo, useRef, useState }
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import { Brand } from "../components/Brand.jsx";
+import GreenRestModal from "../components/GreenRestModal.jsx";
 import { useInfiniteList } from "../hooks/useInfiniteList.js";
 
 /**
@@ -160,21 +161,31 @@ function addSeconds(iso, sec) {
 // LANDING_TAIL_SEC on the backend, which is what actually cuts.
 const LANDING_TAIL_SEC = 1.5;
 
+// WHAT THE CARD IS ACTUALLY DOING. "queued" used to be the catch-all
+// here -- the value returned for anything that was not producing and
+// had no clips -- and it rendered a grey "Queued" pill. So an upload
+// that FAILED, one that produced nothing, and one that was never
+// enqueued at all each told the operator it was waiting its turn.
+// Three different problems, one reassuring word, and the only one of
+// them that resolves itself on its own is the rare one.
+//
+// `queue_state` is the worker's own answer and is the only thing
+// entitled to say "queued".
 function uploadState(row, busy) {
   // The optimistic flag first: the POST returns before the worker flips
   // processing_status, and without this the card un-greys in that gap.
   if (busy) return "processing";
   // Anything mid-production blocks every action until it finishes.
   if (row.processing_status === "processing") return "processing";
+  if (row.queue_state === "running") return "processing";
   // Anything that finished a run (clips emitted) is "produced".
-  if (
-    row.processing_status === "completed" &&
-    (row.last_n_succeeded || 0) > 0
-  ) {
-    return "produced";
-  }
   if ((row.last_n_succeeded || 0) > 0) return "produced";
-  return "queued";
+  // Genuinely in the worker's queue, with a position to prove it.
+  if (row.queue_state === "queued") return "queued";
+  if (row.processing_status === "failed") return "failed";
+  // Nothing has happened to this and nothing is going to until
+  // somebody asks. Not the same as waiting.
+  return "idle";
 }
 
 // What a producing card says about itself. Sits on top of the greyed
@@ -8809,6 +8820,48 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
           </div>
         )}
 
+        {/* WHAT THE TRACKER WAS GIVEN, not what it built. Every other
+            picture here shows chains — things the tracker already
+            assembled — so a ball the DETECTOR never saw and a ball the
+            TRACKER would not link look exactly alike, and they need
+            opposite fixes. Open by default: it is the first question
+            worth asking when a chain comes back short. */}
+        {rep?.sweep?.dets_image_url && (
+          <details style={{ margin: "10px 0" }} open>
+            <summary className="small">
+              Every detection around the best chain — is the ball there
+              at all?
+            </summary>
+            <div className="tiny muted" style={{ margin: "6px 0" }}>
+              Grey dots are everything the sweep detected around its best
+              chain; red is what the chain kept. Grey dots lying along
+              the red line that were NOT kept means the detector saw the
+              ball and the tracker refused it. No grey dots means the
+              detector never saw it. This is the same view as zooming the
+              edit wizard to 2.7× and pressing Scan, drawn from the
+              sweep&apos;s own detections rather than a second pass with
+              different gates.
+            </div>
+            <a href={rep.sweep.dets_image_url} target="_blank"
+               rel="noreferrer">
+              <img src={rep.sweep.dets_image_url}
+                   alt="every detection around the best chain"
+                   style={{ width: "100%", borderRadius: 6 }} />
+            </a>
+            {/* AND THE SAME THING, INTERROGABLE. The still above can be
+                read; this one can be zoomed into and re-scanned, which
+                is the step that previously meant leaving for the edit
+                wizard and running a different pass with different
+                gates on the same footage. */}
+            {tuneUploadId && adminPassword && (
+              <Boundary name="ascent probe">
+                <AscentProbe sweep={rep.sweep} uploadId={tuneUploadId}
+                             adminPassword={adminPassword} />
+              </Boundary>
+            )}
+          </details>
+        )}
+
         {/* EVERY CHAIN, NOT JUST THE ONES THAT WON. When a shot is
             missing the accepted picture above shows nothing, which is
             also what a sweep that found the ball and threw it away
@@ -8860,9 +8913,21 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                           #{z.id ?? i + 1}
                         </td>
                         <td>f{z.first_frame}</td>
+                        {/* TWO TRIMS, NOT ONE, and they mean opposite
+                            things. n_trimmed is everything the tail
+                            trims dropped — "the rising run was shorter
+                            than the chain" — while n_lead_outliers is
+                            the subset that sat off the line, which is
+                            the only one that says a LINK was wrong.
+                            This read the total and called all of it
+                            leading. */}
                         <td title={z.n_trimmed
-                          ? `${z.n_trimmed} leading point(s) trimmed off a ${z.n_raw_points}-point chain`
-                          : ""}>
+                          ? `${z.n_points} of a ${z.n_raw_points}-point chain kept`
+                            + ` — ${z.n_trimmed} trimmed`
+                            + (z.n_lead_outliers
+                              ? `, ${z.n_lead_outliers} of them leading outliers off the line`
+                              : " by the rising-tail cut, none off the line")
+                          : `the detector found ${z.n_points}; nothing was trimmed`}>
                           {z.n_points}
                           {z.n_trimmed > 0 && (
                             <span className="muted"> −{z.n_trimmed}</span>
@@ -8926,10 +8991,33 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
           <details style={{ margin: "10px 0" }}>
             <summary className="small">
               Balls coming down on the green
+              {/* A SEPARATE COUNT, because it answers a separate
+                  question. The descent search can find nothing at all
+                  on a green ringed with brush — the wind moves more of
+                  the frame than the ball does — and the plate
+                  comparison still knows where the ball finished,
+                  because it needs no tracking whatever. */}
+              {rep.descents.n_rest != null && (
+                <span className={`pill ${rep.descents.n_rest
+                  ? "ok" : "warn"}`} style={{ marginLeft: 6 }}>
+                  {rep.descents.n_rest} at rest
+                </span>
+              )}
               <span className="muted">
                 {" "}— {rep.descents.reason || "…"}
               </span>
             </summary>
+            {rep.descents.descent_skipped_reason && (
+              <div className="tiny" style={{ margin: "4px 0",
+                                             color: "#fbbf24" }}>
+                {rep.descents.descent_skipped_reason}
+              </div>
+            )}
+            {rep.descents.rest_reason && (
+              <div className="tiny muted" style={{ margin: "4px 0" }}>
+                {rep.descents.rest_reason}
+              </div>
+            )}
             {/* ONE PICTURE PER SWING, of its own three seconds. The
                 single all-candidates frame it replaces could not answer
                 the question anyone actually asks, which is always about
@@ -9204,6 +9292,12 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                     <th align="left">tee spot</th>
                     <th align="left">impact</th>
                     <th align="left">landed</th>
+                    {/* WHERE IT FINISHED, which is not where it landed.
+                        A descent chain ends at the pitch mark and the
+                        ball runs on from there; this is the plate
+                        comparison, which sees the green once everything
+                        has settled. */}
+                    <th align="left">at rest</th>
                     <th align="left">{findOnly ? "" : "clip"}</th>
                   </tr>
                 </thead>
@@ -9235,12 +9329,14 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                             {c.ball[0]}, {c.ball[1]}
                           </span>
                         ) : <span className="muted">—</span>}</td>
-                        {/* EVERY ONE OF THESE IS AN ESTIMATE NOW. The
-                            column used to say which were measured and
-                            which were not, because a resting-ball scan
-                            ran first and sometimes answered. It does
-                            not run any more, so the distinction is gone
-                            and marking every row "est" says nothing. */}
+                        {/* EVERY ONE OF THESE IS AN ESTIMATE. The column
+                            used to say which were measured and which
+                            were not; it does not, and marking every row
+                            "est" would say nothing. A resting-ball scan
+                            does run again — but it answers where the
+                            ball FINISHED, not where it was struck, so it
+                            is its own column rather than a qualifier on
+                            this one. */}
                         <td>{c.impact_frame != null ? (
                           <span title="Where the chain, run back along its own heading, crosses the tee line. The run back is linear and a struck ball slows as it climbs, so this lands a little early.">
                             f{c.impact_frame}<span className="muted"> ~</span>
@@ -9254,6 +9350,28 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                           </>
                         ) : (
                           <span className="muted">tee-only</span>
+                        )}</td>
+                        {/* THE PICTURE, not the pixels. Two numbers
+                            mean nothing on their own; the same green
+                            with the pitch mark and the resting place
+                            ringed on it, and a dashed line showing the
+                            run-out between them, is the answer. */}
+                        <td title={c.rest_reason || ""}>{c.rest_spot ? (
+                          c.rest_image_url ? (
+                            <a href={c.rest_image_url} target="_blank"
+                               rel="noreferrer" title={c.rest_reason || ""}>
+                              <img src={c.rest_image_url} alt="where it
+                                   finished"
+                                   style={{ height: 54, borderRadius: 4,
+                                            display: "block" }} />
+                            </a>
+                          ) : (
+                            <span style={{ color: "#f59e0b" }}>
+                              {c.rest_spot[0]}, {c.rest_spot[1]}
+                            </span>
+                          )
+                        ) : (
+                          <span className="muted">—</span>
                         )}</td>
                         <td>{findOnly ? null : (c.clip_url
                           ? <a href={c.clip_url} target="_blank"
@@ -10400,11 +10518,8 @@ function Debug3Modal({ state, onClose }) {
                     "). It was carried through anyway so stages 2 and 3 " +
                     "could judge it on the ball and the club fan."
                   }
-                  style={{
-                    marginLeft: 8, padding: "1px 6px", borderRadius: 999,
-                    background: "rgba(214,158,46,0.18)", color: "#8a6116",
-                    fontWeight: 600,
-                  }}
+                  className="pill tiny warn"
+                  style={{ marginLeft: 8 }}
                 >
                   rescued · stage 1 said {sw.pose_gate || "no"}
                 </span>
@@ -11217,6 +11332,121 @@ function ImageLightbox({ url, title, onClose }) {
  * so a sparse timed chain can be filled in from the full detection set.
  * Used by the wizard's Step-2 plot view AND the standalone card modal.
  */
+/* ZOOM AND RE-SCAN THE SWEEP'S OWN VIEW.
+ *
+ * The sweep's pictures are stills: they show what it found and cannot
+ * be interrogated. Answering "is the ball actually there" meant leaving
+ * this modal, opening the edit wizard, zooming to 2.7x and pressing
+ * Scan — a different pass, with different gates, on the same footage,
+ * which is exactly what made the two impossible to compare.
+ *
+ * This is that interrogation in place, on the frame the chain was built
+ * from, with the SWEEP'S OWN detections already drawn as the dense
+ * layer. Pressing Scan then adds what a scan finds on the same pixels.
+ * Dots the scan finds and the sweep did not are the gap, visible side
+ * by side instead of across two screens and two sets of gates.
+ */
+function AscentProbe({ sweep, uploadId, adminPassword }) {
+  const [frame, setFrame] = useState(null);
+  const [err, setErr] = useState(null);
+  // WHICH FRAME IS ON SCREEN. Scanning used the chain's own window
+  // whatever the operator had navigated to, so stepping to the real
+  // flight and pressing Scan quietly scanned the chain's frames
+  // instead — and a sweep's best chain is not always the ball, which
+  // is the case that made this matter.
+  const [viewFrame, setViewFrame] = useState(null);
+  const chain = (sweep?.considered || [])[0] || null;
+  const pts = chain?.points || [];
+  const near = sweep?.near_dets || [];
+  const mid = pts.length ? pts[Math.floor(pts.length / 2)].frame : null;
+  // The window a scan covers: the chain's own frames with room either
+  // side, which is where a continuation would be if there is one.
+  const f0 = pts.length ? Math.max(0, pts[0].frame - 30) : 0;
+  const f1 = pts.length ? pts[pts.length - 1].frame + 30 : 240;
+
+  useEffect(() => {
+    if (mid == null) return undefined;
+    let live = true;
+    api.getLongUploadFrame(adminPassword, uploadId, mid, "tee")
+      .then((f) => live && setFrame(f))
+      .catch((e) => live && setErr(e.message));
+    return () => { live = false; };
+  }, [adminPassword, uploadId, mid]);
+
+  // useCallback, NOT AN INLINE ARROW. PlotHeatCanvas lists loadFrame in
+  // a useEffect dependency array, so a fresh identity every render
+  // re-fires that effect, which setStates, which renders, which makes
+  // another fresh identity. React tears the tree down and the admin
+  // page goes white — which is exactly what this did on first ship.
+  //
+  // And it must resolve to a URL STRING: the value goes straight into
+  // setFrameUrl and out as an <img src>, so handing back the whole
+  // frame object renders "[object Object]".
+  const loadFrame = useCallback(
+    (n) => api.getLongUploadFrame(adminPassword, uploadId, n, "tee")
+      .then((f) => f.image_url),
+    [adminPassword, uploadId],
+  );
+  const scanRegion = useCallback(
+    async (region, level) => {
+      // Centred on what is being LOOKED AT, falling back to the
+      // chain's window before a frame has been stepped to.
+      const _c = viewFrame ?? mid;
+      const out = await api.scanPlotRegion(adminPassword, uploadId, {
+        ...region,
+        sensitivity: level,
+        which: "tee",
+        start_frame: Math.max(0, _c - 45),
+        end_frame: _c + 45,
+      });
+      return out?.dots || [];
+    },
+    [adminPassword, uploadId, viewFrame, mid],
+  );
+
+  if (mid == null) return null;
+  if (err) return <div className="err-text small">{err}</div>;
+  if (!frame) {
+    return <div className="small" style={{ padding: 8 }}>Loading the frame…</div>;
+  }
+  return (
+    <div style={{ height: "min(70vh, 640px)", display: "flex" }}>
+      <PlotHeatCanvas
+        key={`ascent-probe-${uploadId}-${mid}`}
+        bgUrl={frame.image_url}
+        // The chain, as the bright layer.
+        dots={pts.map((p) => ({ frame: p.frame, x: p.x, y: p.y }))}
+        // EVERYTHING THE SWEEP DETECTED around it, as the dense layer.
+        // This is the comparison: if Scan turns up a column of dots
+        // where these are sparse, the sweep's detector is the gap.
+        denseDots={near}
+        frameW={frame.width}
+        frameH={frame.height}
+        marks={{}}
+        onToggleDot={() => {}}
+        track={[]}
+        loadFrame={loadFrame}
+        // THE WHOLE CLIP, not the chain's window. The chain the sweep
+        // got furthest with is not necessarily the ball — on #768 it
+        // was a piece of junk 19 seconds away from the flight — so the
+        // probe has to be able to go and look at the real one.
+        frameLo={0}
+        frameHi={sweep?.n_frames || (mid + 600)}
+        startFrame={mid}
+        onViewFrame={setViewFrame}
+        scanRegion={scanRegion}
+        note={`the sweep's best chain is f${pts[0].frame}-`
+          + `${pts[pts.length - 1].frame} (${near.length} detections `
+          + `around it, ${pts.length} kept) — but that is only its BEST, `
+          + `not necessarily the ball. Type a frame range above to go to `
+          + `the real flight, then Scan: it covers 45 frames either side `
+          + `of what you are looking at.`}
+        noteColour="#67e8f9"
+      />
+    </div>
+  );
+}
+
 const DENSE_DOT_ZOOM = 2.5;
 
 function PlotHeatCanvas({
@@ -11369,19 +11599,21 @@ function PlotHeatCanvas({
   }, [frameW, frameH, hasDims]);
   // Dense candidates + scanned dots that aren't already represented by
   // a timed dot (same frame within 2px) — no doubled-up targets.
-  const extraDots = [...(denseDots || []), ...scanDots].filter(
-    (c) =>
-      !(dots || []).some(
-        (p) =>
-          p.frame === c.frame &&
-          Math.abs(p.x - c.x) <= 2 &&
-          Math.abs(p.y - c.y) <= 2,
-      ),
-  );
+  const _notAlreadyShown = (c) =>
+    !(dots || []).some(
+      (p) =>
+        p.frame === c.frame &&
+        Math.abs(p.x - c.x) <= 2 &&
+        Math.abs(p.y - c.y) <= 2,
+    );
+  const extraDots = [...(denseDots || []), ...scanDots]
+    .filter(_notAlreadyShown);
+  // What a Scan turned up, on its own. Drawn at any magnification.
+  const scannedExtras = scanDots.filter(_notAlreadyShown);
   const showDense = zoom >= DENSE_DOT_ZOOM;
 
   async function doScan() {
-    if (!scanRegion || scanning || !hasDims || zoom < 1.99) return;
+    if (!scanRegion || scanning || !hasDims) return;
     // Current viewport in native pixels. transform is scale(zoom) with
     // origin (focus%), so the visible span is 1/zoom of the frame
     // starting at origin*(1 - 1/zoom).
@@ -11837,7 +12069,13 @@ function PlotHeatCanvas({
             be clicked off. zIndex keeps them above the amber dots where
             the two overlap, and the hit area has a floor so it stays
             clickable when zoomed in. */}
-        {hasDims && track.map((t, i) => {
+        {/* (track || []) — OPTIONAL, like every other array prop here.
+            The reading of `track` 300 lines above guards it and this
+            one did not, which went unnoticed because every call site
+            until now passed one. The first that did not took the whole
+            admin page down with "Cannot read properties of undefined
+            (reading 'map')". */}
+        {hasDims && (track || []).map((t, i) => {
           const still = marks[t.frame];
           const kept =
             !!still &&
@@ -11882,9 +12120,13 @@ function PlotHeatCanvas({
           );
         })}
         {/* Dense candidate layer — smaller, dimmer targets that only
-            appear once zoomed in, so the fit view stays readable. */}
-        {hasDims && showDots && showDense &&
-          extraDots.map((p, i) => {
+            appear once zoomed in, so the fit view stays readable.
+            SCANNED DOTS ARE NOT PART OF THAT BARGAIN. The dense pool
+            arrives on its own and is hidden until asked for; a scan is
+            the asking. Hiding its result behind a zoom threshold reads
+            as a scan that found nothing. */}
+        {hasDims && showDots &&
+          (showDense ? extraDots : scannedExtras).map((p, i) => {
             const q = marks[p.frame];
             const isQueued =
               !!q && Math.abs(q.x - p.x) <= 2 && Math.abs(q.y - p.y) <= 2;
@@ -11995,7 +12237,8 @@ function PlotHeatCanvas({
             );
           })}
       </div>
-      {(note || scanNote || (extraDots.length > 0 && !showDense)) && (
+      {(note || scanNote
+        || (extraDots.length > scannedExtras.length && !showDense)) && (
         <div
           style={{
             position: "absolute", left: 8, bottom: 8,
@@ -12010,7 +12253,9 @@ function PlotHeatCanvas({
           {scanNote
             ? `🔍 ${scanNote}`
             : note
-              || `🔍 zoom to ${DENSE_DOT_ZOOM}×+ to reveal ${extraDots.length} more clickable detections`}
+              || `🔍 zoom to ${DENSE_DOT_ZOOM}×+ to reveal ${
+                extraDots.length - scannedExtras.length
+              } more clickable detections`}
         </div>
       )}
       {/* FLOATING CONTROLS. These used to be a SIBLING above the image
@@ -12137,12 +12382,26 @@ function PlotHeatCanvas({
                 ? "rgba(245,158,11,0.7)"
                 : zoomBtn.background,
             }}
-            disabled={scanning || zoom < 1.99}
+            disabled={scanning}
             onClick={doScan}
             title={
-              zoom < 1.99
-                ? "Zoom to at least 2× first, then Scan finds every motion blob in the visible area"
-                : `Deep-scan the visible area (level ${scanLevel} of 3): frame-diff over the swing window with much looser gates than the tracer — every transient blob in view becomes a clickable dot. Finds nothing? Press again; it steps up a level. Takes a few seconds.`
+              `Deep-scan the visible area (level ${scanLevel} of 3): `
+              + "frame-diff over the swing window with much looser gates "
+              + "than the tracer — every transient blob in view becomes a "
+              + "clickable dot. Finds nothing? Press again; it steps up a "
+              + "level. Takes a few seconds."
+              + (zoom < 1.99
+                // SAY WHAT ZOOMING BUYS, rather than refusing to scan.
+                // The server keeps only the biggest few blobs per frame,
+                // so a wide view spends that budget on whatever else is
+                // moving — the group, the treeline — and a ball three
+                // pixels across loses. Zooming does not make the scan
+                // better; it makes the ball the biggest thing in it.
+                ? " Zoomed out, the per-frame budget goes to the largest"
+                  + " movers in view (the group, the trees) and a small"
+                  + " ball can be crowded out — zoom in on the flight if"
+                  + " this comes back thin."
+                : "")
             }
           >
             {scanning
@@ -13507,46 +13766,18 @@ function FinalizeStep({
 }
 
 function eventStatusBadge(status) {
-  // Inline-pill styling that mirrors the long-upload card's status
-  // chip (Queued / Production in Progress / Produced) so the two
-  // sections look like one family.
+  // THE LABEL AND THE STYLESHEET'S PILL VARIANT. This used to return a
+  // pair of rgba() strings, which meant the "Processed" green here was
+  // a different green from the "Processed" green on the camera list and
+  // neither followed the palette. `tone` is a class in styles.css,
+  // mixed from the logo's own bands; "" is the neutral capsule.
   switch (status) {
-    case "processed":
-      return {
-        label: "Processed",
-        bg: "rgba(40, 168, 92, 0.15)",
-        border: "rgba(40, 168, 92, 0.5)",
-      };
-    case "failed":
-      return {
-        label: "Failed",
-        bg: "rgba(220, 53, 69, 0.15)",
-        border: "rgba(220, 53, 69, 0.5)",
-      };
-    case "paired_uploaded":
-      return {
-        label: "Ready",
-        bg: "rgba(120, 120, 120, 0.15)",
-        border: "rgba(120, 120, 120, 0.5)",
-      };
-    case "tee_uploaded":
-      return {
-        label: "Tee uploaded",
-        bg: "rgba(255, 176, 0, 0.15)",
-        border: "rgba(255, 176, 0, 0.5)",
-      };
-    case "triggered":
-      return {
-        label: "Triggered",
-        bg: "rgba(255, 176, 0, 0.15)",
-        border: "rgba(255, 176, 0, 0.5)",
-      };
-    default:
-      return {
-        label: status || "—",
-        bg: "rgba(120, 120, 120, 0.15)",
-        border: "rgba(120, 120, 120, 0.5)",
-      };
+    case "processed":      return { label: "Processed", tone: "ok" };
+    case "failed":         return { label: "Failed", tone: "danger" };
+    case "paired_uploaded":return { label: "Ready", tone: "" };
+    case "tee_uploaded":   return { label: "Tee uploaded", tone: "warn" };
+    case "triggered":      return { label: "Triggered", tone: "warn" };
+    default:               return { label: status || "—", tone: "" };
   }
 }
 
@@ -13563,11 +13794,7 @@ function CameraEventCard({
   // request completes and the list refetches -- about three seconds, during
   // which the row looked untouched and the button looked unpressed.
   const badge = busy
-    ? {
-        label: "Production in Progress",
-        bg: "rgba(214, 158, 46, 0.15)",
-        border: "rgba(214, 158, 46, 0.5)",
-      }
+    ? { label: "Production in progress", tone: "warn" }
     : eventStatusBadge(ev.status);
   const triggeredAt = ev.triggered_at;
   // WHEN EACH CAMERA'S FIRST FRAME IS. The Pi reports it per camera and
@@ -13682,16 +13909,8 @@ function CameraEventCard({
             flexShrink: 0,
           }}
         >
-          <span
-            className="small"
-            style={{
-              padding: "4px 10px",
-              borderRadius: 999,
-              background: badge.bg,
-              border: `1px solid ${badge.border}`,
-              textAlign: "center",
-            }}
-          >
+          <span className={`pill small ${badge.tone}`}
+                style={{ justifyContent: "center" }}>
             {badge.label}
           </span>
           <button
@@ -15277,6 +15496,61 @@ export default function AdminProduction() {
   // text input; `courseQuery` is the debounced value actually sent to the
   // backend so typing doesn't refetch on every keystroke. `sortKey`
   // combines the sort field and direction into one dropdown value.
+  // THE QUEUE'S OWN STATE, polled because it changes without us: the
+  // camera path queues captures on its own all day.
+  const [restModal, setRestModal] = useState(null);
+  const [queue, setQueue] = useState(null);
+  const [pausing, setPausing] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    const read = async () => {
+      try {
+        const q = await api.produceQueue(adminPassword);
+        if (!dead) setQueue(q);
+      } catch {
+        /* the page has louder ways to report a dead backend */
+      }
+    };
+    read();
+    const t = setInterval(read, 5000);
+    return () => { dead = true; clearInterval(t); };
+  }, [adminPassword]);
+
+  // THE BACKLOG BUTTON. Captures stranded before the upload-time
+  // transcode had a backstop still show "No preview" with the clip
+  // itself sitting right there. One press goes and makes them.
+  const [sweeping, setSweeping] = useState(false);
+  const [sweepNote, setSweepNote] = useState("");
+  const sweepPreviews = async () => {
+    setSweeping(true);
+    setSweepNote("");
+    try {
+      const r = await api.sweepMissingPreviews(adminPassword, {});
+      setSweepNote(
+        `Started on up to ${r.limit} clip(s) from the last ${r.max_age_hours}h. ` +
+        "It shares the box with everything else, so give it a few minutes " +
+        "and reload.",
+      );
+    } catch (e) {
+      setError(e.message || "could not start the preview sweep");
+    } finally {
+      setSweeping(false);
+    }
+  };
+
+  const togglePause = async () => {
+    setPausing(true);
+    try {
+      const next = !(queue?.paused);
+      setQueue(await api.setProduceQueuePaused(adminPassword, next)
+        .then(() => api.produceQueue(adminPassword)));
+    } catch (e) {
+      setError(e.message || "could not change the queue");
+    } finally {
+      setPausing(false);
+    }
+  };
+
   const [courseSearch, setCourseSearch] = useState("");
   const [courseQuery, setCourseQuery] = useState("");
   const [sortKey, setSortKey] = useState("created_desc");
@@ -16122,13 +16396,61 @@ export default function AdminProduction() {
       </div>
 
       <div className="card">
-        <h3 style={{ marginBottom: 4 }}>Production Queue</h3>
-        <p className="small muted" style={{ marginBottom: 0 }}>
-          Every uploaded long video, newest first. Multi-swing rounds
-          auto-produce on upload; one-swing clips wait here until you
-          hit <b>Produce</b>. Produced clips land on{" "}
-          <Link to="/admin/broadcast-clips">Broadcast</Link>.
-        </p>
+        <div className="row" style={{ alignItems: "flex-start", gap: 12 }}>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <h3 style={{ marginBottom: 4 }}>Production Queue</h3>
+            <p className="small muted" style={{ marginBottom: 0 }}>
+              Every uploaded long video, newest first. Multi-swing rounds
+              auto-produce on upload; one-swing clips wait here until you
+              hit <b>Produce</b>. Produced clips land on{" "}
+              <Link to="/admin/broadcast-clips">Broadcast</Link>.
+            </p>
+          </div>
+          {/* PAUSE. Produce serialises and it is the heaviest thing the
+              box does, so a backlog of automatic captures means every
+              button here waits minutes. Pausing holds the automatic work
+              only — Produce, Find Ascents and the wizard still run, and
+              pressing Produce on a held card promotes it. */}
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={togglePause}
+              disabled={pausing || queue === null}
+              className={queue?.paused ? "" : "secondary"}
+              style={{ whiteSpace: "nowrap" }}
+            >
+              {queue?.paused
+                ? "▶ Resume auto-produce"
+                : "⏸ Pause auto-produce"}
+            </button>
+            <button
+              type="button"
+              onClick={sweepPreviews}
+              disabled={sweeping}
+              className="secondary"
+              style={{ whiteSpace: "nowrap" }}
+              title="Make the missing poster/H.264 previews for raws that never got one"
+            >
+              {sweeping ? "Starting…" : "⟳ Fix missing previews"}
+            </button>
+          </div>
+        </div>
+        {sweepNote && (
+          <p className="small muted" style={{ margin: "10px 0 0" }}>
+            {sweepNote}
+          </p>
+        )}
+        {queue?.paused && (
+          <p className="small warn-text" style={{ margin: "10px 0 0" }}>
+            Automatic produce is paused{queue.held
+              ? ` — ${queue.held} capture${queue.held === 1 ? "" : "s"} held`
+              : ""}. Your own Produce / Find Ascents runs still go through,
+            and pressing <b>Produce</b> on a held card jumps it ahead.
+            Nothing is lost; held captures resume in their original order.
+            A backend restart resumes too, so this can&apos;t be left on by
+            accident.
+          </p>
+        )}
       </div>
 
       {error && <div className="card err-text small">{error}</div>}
@@ -16330,13 +16652,7 @@ export default function AdminProduction() {
               </h4>
               {row.source?.kind === "camera" ? (
                 <span
-                  className="small"
-                  style={{
-                    padding: "2px 8px",
-                    borderRadius: 999,
-                    background: "rgba(56, 132, 255, 0.12)",
-                    border: "1px solid rgba(56, 132, 255, 0.4)",
-                  }}
+                  className="pill small live"
                   title={
                     row.source.triggered_at
                       ? `Triggered ${fmtDateTime(row.source.triggered_at)}`
@@ -16415,6 +16731,7 @@ export default function AdminProduction() {
                   recordingStartedAt={row.dual_camera ? row.green_recording_started_at : null}
                   onOpenViewer={openViewer}
                   footer={(
+                    <>
                     <button
                       className="small ghost"
                       style={{ width: "100%" }}
@@ -16425,7 +16742,19 @@ export default function AdminProduction() {
                         : "No green camera on this upload"}
                     >
                       ⚑ Set flagstick
-                    </button>
+                      </button>
+                      <button
+                        className="small ghost"
+                        style={{ width: "100%", marginTop: 4 }}
+                        disabled={!row.green_filename}
+                        onClick={() => setRestModal({ row })}
+                        title={row.green_filename
+                          ? "Compare the green before the shot with the green after it, and ring whatever is newly on it. Needs a green outline on the camera to be worth much."
+                          : "No green clip on this upload"}
+                      >
+                        ◎ Find ball on green
+                      </button>
+                    </>
                   )}
                 />
                 <ProducedTile
@@ -16538,45 +16867,31 @@ export default function AdminProduction() {
                 }}
               >
                 {state === "processing" && (
-                  <span
-                    className="small"
-                    style={{
-                      padding: "4px 10px",
-                      borderRadius: 999,
-                      background: "rgba(255, 176, 0, 0.15)",
-                      border: "1px solid rgba(255, 176, 0, 0.5)",
-                      textAlign: "center",
-                    }}
-                  >
-                    Production in Progress
+                  <span className="pill warn small">
+                    Production in progress
                   </span>
                 )}
                 {state === "produced" && (
-                  <span
-                    className="small"
-                    style={{
-                      padding: "4px 10px",
-                      borderRadius: 999,
-                      background: "rgba(40, 168, 92, 0.15)",
-                      border: "1px solid rgba(40, 168, 92, 0.5)",
-                      textAlign: "center",
-                    }}
-                  >
+                  <span className="pill ok small">
                     Produced · {row.last_n_succeeded}/{row.last_n_segments || row.last_n_succeeded} clips
                   </span>
                 )}
                 {state === "queued" && (
-                  <span
-                    className="small"
-                    style={{
-                      padding: "4px 10px",
-                      borderRadius: 999,
-                      background: "rgba(120, 120, 120, 0.15)",
-                      border: "1px solid rgba(120, 120, 120, 0.5)",
-                      textAlign: "center",
-                    }}
-                  >
-                    Queued
+                  <span className="pill warn small">
+                    Queued{row.queue_position
+                      ? ` · ${row.queue_position} of ${row.queue_depth}`
+                      : ""}
+                  </span>
+                )}
+                {state === "failed" && (
+                  <span className="pill bad small"
+                        title={row.last_error || ""}>
+                    Produce failed
+                  </span>
+                )}
+                {state === "idle" && (
+                  <span className="pill small">
+                    Not produced
                   </span>
                 )}
                 {/* Edit moved under Produced Video, where the clip it
@@ -16585,16 +16900,18 @@ export default function AdminProduction() {
                     missed. */}
                 {state === "produced" ? (
                   <button
-                    className="small"
+                    className="btn small"
                     onClick={() => handleProduce(row)}
                     disabled={greyed || busy}
                   >
-                    Re-Produce
+                    Re-produce
                   </button>
                 ) : (
-                  state === "queued" && (
+                  // Queued, failed or never started: all three want the
+                  // same button, and only one of them used to get it.
+                  ["queued", "failed", "idle"].includes(state) && (
                     <button
-                      className="small"
+                      className="btn small"
                       onClick={() => handleProduce(row)}
                       disabled={greyed || busy}
                     >
@@ -16788,28 +17105,15 @@ export default function AdminProduction() {
                   {(row.produced_clips || []).map((c, i) => (
                     <span
                       key={c.id}
-                      className="small"
                       // A PRODUCED CLIP WITH NO NUMBER IS A FAILURE,
                       // not a neutral state. Produce measures on its own
                       // now, so reaching here means it could not -- and
                       // a grey pill let that sit unnoticed among the
                       // ones that worked. Red is the queue telling you
                       // which shots still need a person.
-                      style={{
-                        padding: "3px 10px",
-                        borderRadius: 999,
-                        border: "1px solid "
-                          + (c.distance_from_pin_feet != null
-                            ? "rgba(40,168,92,0.55)"
-                            : "rgba(214,69,69,0.6)"),
-                        background: c.distance_from_pin_feet != null
-                          ? "rgba(40,168,92,0.14)"
-                          : "rgba(214,69,69,0.12)",
-                        color: c.distance_from_pin_feet != null
-                          ? undefined : "#b3261e",
-                        fontWeight: c.distance_from_pin_feet != null
-                          ? undefined : 600,
-                      }}
+                      className={`pill small ${
+                        c.distance_from_pin_feet != null ? "ok" : "danger"
+                      }`}
                       title={c.distance_from_pin_feet != null
                         ? "Measured automatically when this clip was produced."
                         : "Produce could not measure this one — open Measure / adjust and mark the pin and ball by hand."}
@@ -17047,6 +17351,14 @@ export default function AdminProduction() {
           onSaved={() => { setGreenCal(null); refreshAll(); }}
         />
       ))}
+      {restModal && (
+        <GreenRestModal
+          row={restModal.row}
+          adminPassword={adminPassword}
+          onClose={() => setRestModal(null)}
+        />
+      )}
+
       {pinModal && (
         <FlagstickModal
           row={pinModal.row}

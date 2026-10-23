@@ -72,7 +72,7 @@ from ..models import (
     DeletedCameraSession,
     VideoClip,
 )
-from ..services import storage
+from ..services import storage, tee_roi, workload
 from ..services.video import probe_video_info
 
 log = logging.getLogger("golfreelz.cameras")
@@ -92,6 +92,71 @@ FRAME_TTL = timedelta(seconds=5)
 # root, matching the pattern in routers/admin.py.
 CLIPS_DIR = Path(__file__).resolve().parents[2] / settings.upload_dir / "clips"
 CLIPS_DIR.mkdir(parents=True, exist_ok=True)
+
+# THE STILL: one JPEG per camera, overwritten, taken whether or not
+# anybody is watching. The Cameras page shows the camera's view the
+# moment it loads instead of an empty box with a Watch button, and the
+# cost is one frame every ten minutes rather than ten a second.
+#
+# On the instance's own disk, not object storage: it is a 60-100 KB file
+# with a lifetime of minutes, and losing it on a redeploy costs nothing
+# because the agent is asked for a new one as soon as it polls.
+STILLS_DIR = CLIPS_DIR.parent / "stills"
+STILLS_DIR.mkdir(parents=True, exist_ok=True)
+
+# How old a still may be before the agent is asked for a fresh one.
+#
+# BACK TO TEN MINUTES, the snapshot having been acquitted. It went to
+# thirty on 2 Oct because the instance was failing /health at almost
+# exactly this interval and a coincidence that exact was worth testing
+# rather than arguing about. The stall watchdog then named the real
+# culprit — the camera-events list spawning a hundred ffprobes per poll
+# and holding a database connection through all of them — and the
+# spacing turned out to mean nothing.
+#
+# Ten minutes is ~90 frames a day per camera over a dawn-to-dusk
+# season, a rounding error against a single uploaded clip of several
+# megabytes. The view of a tee box does not change faster than that
+# except while somebody is standing at it, which is what the live view
+# is for — and the agent still sends one unasked after a zoom nudge or
+# when the live view closes, which covers the times it would matter.
+STILL_MAX_AGE = timedelta(minutes=10)
+
+# A still is one full-resolution frame, encoded at a higher quality than
+# the live stream, so it gets more room than the 500 KB live cap.
+MAX_STILL_BYTES = 2_000_000
+
+
+def still_path(camera_id: int) -> Path:
+    return STILLS_DIR / f"camera-{int(camera_id)}.jpg"
+
+
+def still_wanted(cam: Camera) -> bool:
+    """Should the agent send a snapshot on this poll?
+
+    THE SERVER DECIDES, not the Pi's own timer, because the file and the
+    timer live on different machines with different lifetimes: the
+    instance restarts and the disk comes back empty while a Pi that has
+    been up for a week still believes it pushed one ten minutes ago. So
+    the question asked on every poll is about the file that actually
+    exists — which also means the interval is tunable here, with nothing
+    to re-provision in the field.
+    """
+    try:
+        st = still_path(cam.id).stat()
+    except OSError:
+        return True
+    age = time.time() - st.st_mtime
+    return age >= STILL_MAX_AGE.total_seconds()
+
+
+def _write_still(camera_id: int, body: bytes) -> None:
+    """Write-then-rename, so a reader mid-refresh never gets half a JPEG."""
+    final = still_path(camera_id)
+    tmp = final.with_name(final.name + ".part")
+    tmp.write_bytes(body)
+    tmp.replace(final)
+
 
 # Per-camera wake-up queues. The tee Pi's /event-trigger writes into
 # the paired green's queue; the green Pi's /poll-trigger awaits it.
@@ -182,6 +247,14 @@ def _post_process_raw_clip(filename: str) -> None:
     Designed to be called from a daemon thread so the Pi's
     upload-event HTTP response isn't blocked on a multi-second
     re-encode.
+
+    TAKES THE HEAVY GATE. It used to run alongside the production job
+    for the same event — two ffmpeg/OpenCV workloads splitting one core
+    while uvicorn waited for a slice, which is how a health check misses
+    its five seconds and Render restarts the instance mid-produce. It
+    also meant the SAME file could be transcoded twice at once, from
+    here and from _process_camera_event_job; now the second call finds
+    the marker and costs nothing.
     """
     from ..services.video import extract_thumbnail, transcode_for_web
 
@@ -189,8 +262,15 @@ def _post_process_raw_clip(filename: str) -> None:
     if not src.exists():
         log.warning("post-process: %s vanished before processing", filename)
         return
-    transcode_for_web(src)
-    extract_thumbnail(src)
+    workload.deprioritize()
+    with workload.heavy(f"post-process {filename}"):
+        # Re-checked under the gate: waiting out a produce is exactly
+        # the window in which the file can be deleted or replaced.
+        if not src.exists():
+            log.warning("post-process: %s vanished while queued", filename)
+            return
+        transcode_for_web(src)
+        extract_thumbnail(src)
 
 
 def _save_event_clip(
@@ -453,6 +533,285 @@ def battery_status(
     }
 
 
+def throttled_status(blob, updated_at=None) -> dict | None:
+    """The Pi's power verdict, for the card. None when it has not said.
+
+    THE DISTINCTION THAT MATTERS is between "clean" and "nothing
+    reported": the first is an answer and the second is a question, and
+    a card that shows neither cannot tell you which you have. So this
+    returns a shape whenever there is a reading, including a clean one,
+    and the card renders all of them.
+    """
+    if not isinstance(blob, dict):
+        return None
+    try:
+        value = int(blob.get("value") or 0)
+    except (TypeError, ValueError):
+        return None
+    now = bool(value & 1)
+    ever = bool(value & (1 << 16))
+    temp = _num(blob.get("temp_c"))
+    # THE PI 5's OWN LIMITS, not numbers we picked: it begins capping
+    # at 80C and throttles hard at 85C. A rig sitting at 78C is not
+    # faulty but it is one warm afternoon from being slow, which is
+    # exactly the trend worth seeing before it becomes an outage.
+    hot_now = temp is not None and temp >= 85.0
+    warm = temp is not None and temp >= 80.0
+    level = ("bad" if now or hot_now
+             else "warn" if ever or warm
+             else "ok")
+    summary = (
+        "under-voltage right now" if now
+        else f"throttling hot ({temp:.0f}°C)" if hot_now
+        else "browned out since boot" if ever
+        else f"warm ({temp:.0f}°C)" if warm
+        else "power clean"
+    )
+    return {
+        "raw": blob.get("raw") or hex(value),
+        "under_voltage_now": now,
+        "under_voltage_ever": ever,
+        "flags": blob.get("flags") or [],
+        # HOW CLOSE TO THE LIMIT, not just whether it was hit. `flags`
+        # says a cap happened; this says whether one is coming.
+        "temp_c": temp,
+        # What an operator should conclude, in one word.
+        "level": level,
+        "summary": summary,
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
+def _num(v):
+    """A float from whatever the modem put in that field, or None."""
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        # Firmware reports "-95", "-95 dBm" and "-95.0" interchangeably.
+        m = re.search(r"-?\d+(?:\.\d+)?", str(v))
+        return float(m.group()) if m else None
+    except (TypeError, ValueError):
+        return None
+
+
+# WHERE THE CELLULAR THRESHOLDS COME FROM. These are the ordinary LTE
+# ones, not something tuned to this course: RSRP is the wanted signal
+# and SINR is how much of it survives the noise, and the pair is what
+# separates "this mount is in a bad spot" from "the tower is busy".
+_RSRP_BANDS = ((-90.0, "ok"), (-105.0, "warn"))     # above -90 is good
+_SINR_BANDS = ((13.0, "ok"), (0.0, "warn"))         # above 13 is good
+
+
+def _signal_level(rsrp, sinr) -> str:
+    """ok / warn / bad from the two numbers that matter, worst wins."""
+    worst = "ok"
+    order = {"ok": 0, "warn": 1, "bad": 2}
+    for value, bands in ((rsrp, _RSRP_BANDS), (sinr, _SINR_BANDS)):
+        if value is None:
+            continue
+        lvl = "bad"
+        for edge, name in bands:
+            if value >= edge:
+                lvl = name
+                break
+        if order[lvl] > order[worst]:
+            worst = lvl
+    return worst
+
+
+def link_status(blob, updated_at=None) -> dict | None:
+    """What the uplink says about itself. None when nothing reported.
+
+    THIS REPLACES AN SSH SESSION, which is the only reason it exists.
+    Every branch of the triage runbook used to start "SSH into the
+    affected Pi", and on the tee that is the first thing a starved link
+    kills. The agent reads the modem over USB and the counters out of
+    /proc, so all of this arrives on a heartbeat that was being sent
+    anyway, at a moment when nothing else can get through.
+
+    THREE DIFFERENT PROBLEMS WEAR THE SAME SYMPTOM, and the whole job
+    here is to tell them apart:
+
+      weak signal        -> an antenna or a mount position
+      good signal, no
+        throughput       -> a data cap or a carrier throttle
+      modem re-enumerating -> the power chain, per the runbook's
+                              "stop here and do not swap anything" test
+
+    So a clean reading is reported as loudly as a bad one: "the signal
+    is fine" is what rules the first one out, and a card that shows
+    nothing when all is well cannot do that.
+    """
+    if not isinstance(blob, dict):
+        return None
+    rsrp, rsrq = _num(blob.get("rsrp")), _num(blob.get("rsrq"))
+    sinr, rssi = _num(blob.get("sinr")), _num(blob.get("rssi"))
+    resets = blob.get("usb_resets")
+    resets = int(resets) if isinstance(resets, (int, float)) else None
+    uptime = _num(blob.get("uptime_seconds"))
+    have_signal = any(v is not None for v in (rsrp, sinr, rsrq, rssi))
+
+    if have_signal:
+        level = _signal_level(rsrp, sinr)
+        summary = {
+            "ok": "signal good",
+            "warn": "signal marginal",
+            "bad": "signal poor",
+        }[level]
+        # THE SENTENCE THAT SAYS WHAT TO DO, because the numbers alone
+        # send people to swap the modem either way.
+        verdict = (
+            "Weak signal. An antenna or a different mount position, not "
+            "another modem." if level == "bad"
+            else "Marginal signal — enough for heartbeats, not for "
+                 "sustained upload." if level == "warn"
+            else "Signal is fine, so slow uploads here are a cap, a "
+                 "carrier throttle, or congestion — not the mount."
+        )
+    elif blob.get("gateway") and not blob.get("ok", True):
+        level, summary = "unknown", "modem found but unreadable"
+        verdict = (
+            f"The modem answered at {blob['gateway']} but not with figures "
+            "we recognise"
+            + (f" ({blob['error']})" if blob.get("error") else "")
+            + ". Read it on site, or over SSH when the link allows."
+        )
+    elif resets is None and uptime is None:
+        return None
+    else:
+        level, summary = "unknown", "no modem reading"
+        verdict = "This rig reported no modem signal."
+
+    # THE RUNBOOK'S BANDWIDTH-OR-HARDWARE TEST, carried home by itself.
+    # Zero is the finding, not the absence of one: it means the modem
+    # never re-enumerated, so a link that is merely full is the whole
+    # story and nothing should be swapped.
+    if resets is not None:
+        if resets == 0:
+            verdict += (" The USB bus has not reset since boot, so the "
+                        "modem is not re-enumerating.")
+        else:
+            verdict += (f" The USB bus has reset {resets} time(s) since "
+                        "boot — if that climbs during an upload, the modem "
+                        "really is dropping off and the power chain is next.")
+            if level == "ok":
+                level = "warn"
+
+    return {
+        "level": level,
+        "summary": summary,
+        "verdict": verdict,
+        "rsrp": rsrp, "rsrq": rsrq, "sinr": sinr, "rssi": rssi,
+        "bars": blob.get("bars"),
+        "band": blob.get("band"),
+        "carrier": blob.get("carrier"),
+        # AS THE MODEM GAVE IT. The firmware may mean bytes, MB, or a
+        # billing-cycle total, and we have not confirmed which on this
+        # unit — so it is shown, not converted.
+        "usage": blob.get("usage"),
+        "usb_resets": resets,
+        "uptime_seconds": uptime,
+        "gateway": blob.get("gateway"),
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
+def stream_status(info, updated_at=None) -> dict | None:
+    """What the camera is sending, and whether the numbers agree.
+
+    THE DISAGREEMENT IS THE POINT, but it is no longer the one it used
+    to be. Clips were stamped at `config_fps` and filled from
+    `delivered_fps`, so the two differing made the footage itself wrong
+    — jumpy, and running fast. The agent now measures the camera's
+    cadence per recording and stamps that, which is `stamped_fps`.
+
+    So a config that disagrees with delivery is no longer a playback
+    fault. It is a SIZING fault: the ring buffer, the "the camera
+    stalled" threshold and this readout are all built from a number
+    describing a camera that is not there. Worth fixing, worth saying
+    plainly, and no longer worth alarm.
+    """
+    if not isinstance(info, dict):
+        return None
+    cfg = info.get("config_fps")
+    got = info.get("delivered_fps")
+    stamped = info.get("stamped_fps")
+    mismatch = None
+    if cfg and got and cfg > 0:
+        off = abs(got - cfg) / cfg
+        if off >= 0.1:
+            mismatch = (
+                f"delivering {got:.1f} fps but configured for {cfg:.0f} — "
+                f"{'slower' if got < cfg else 'faster'} by "
+                f"{off * 100:.0f}%"
+            )
+    return {
+        "open_w": info.get("open_w"),
+        "open_h": info.get("open_h"),
+        "open_fps": info.get("open_fps"),
+        "config_fps": cfg,
+        "delivered_fps": got,
+        "stamped_fps": stamped,
+        "mismatch": mismatch,
+        # The other half of the pipeline. open_* is what the camera
+        # sends; these are what the clip is cut down to before it
+        # crosses the link, and the two disagreeing is a real finding
+        # rather than a detail — see downscaled below.
+        "upload_scale_height": info.get("upload_scale_height"),
+        "upload_bitrate_kbps": info.get("upload_bitrate_kbps"),
+        "downscaled": bool(
+            info.get("upload_scale_height")
+            and info.get("open_h")
+            and int(info["upload_scale_height"]) < int(info["open_h"])
+        ),
+        # The camera's own answer, when somebody has asked it.
+        "profile": info.get("profile"),
+        # WHICH CAPTURE ENGINE THE PI IS RUNNING, in the Pi's own words.
+        # Absent on an agent old enough to predate the second engine,
+        # which reads as "decode" — correct, since that is all it has.
+        "engine": info.get("engine") or "decode",
+        # Ring health, only ever present on the copy engine.
+        "ring": info.get("ring"),
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
+def exposure_status(settings_blob, updated_at=None) -> dict | None:
+    """The camera's own exposure reading, for the dashboard. None until
+    something has asked it.
+
+    THE SHAPE IS THE AGENT'S, not ours: which keys a Hanwha exposes
+    varies by firmware, so the agent reports what it found and this does
+    no more than flatten the useful bits out front and keep the raw dump
+    behind them. `ok: false` with an error is a perfectly good answer —
+    it means the camera refused or we named a key it does not have, and
+    an operator needs to see that rather than a blank.
+    """
+    if not isinstance(settings_blob, dict):
+        return None
+    values = settings_blob.get("values") or {}
+    keys = settings_blob.get("keys") or {}
+    return {
+        "ok": bool(settings_blob.get("ok")),
+        "error": settings_blob.get("error"),
+        # Flattened for the card: the mode, the fixed value if there is
+        # one, the slow-end cap if there is one, and WDR.
+        "mode": values.get("mode_key"),
+        "speed": values.get("value_key"),
+        "slow_limit": values.get("slow_limit_key"),
+        "wdr": values.get("wdr_key"),
+        # Which key each of those came from, because on an unfamiliar
+        # firmware that is the thing worth knowing.
+        "keys": keys,
+        # What was last sent, when this reading followed a change.
+        "sent": settings_blob.get("sent"),
+        "raw": settings_blob.get("raw") or {},
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
 def focus_status(
     score: float | None,
     brightness: float | None,
@@ -506,6 +865,11 @@ def heartbeat(
     battery_current_a: float | None = Form(None),
     focus_score: float | None = Form(None),
     focus_brightness: float | None = Form(None),
+    camera_settings: str | None = Form(None),
+    stream_info: str | None = Form(None),
+    lens_info: str | None = Form(None),
+    throttled: str | None = Form(None),
+    link_info: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Cheap keepalive the Pi calls every ~60 s. Touches last_seen_at
@@ -571,11 +935,102 @@ def heartbeat(
                 )
             except Exception as exc:  # noqa: BLE001
                 log.warning("battery: low alert send failed: %s", exc)
+    # THE CAMERA'S OWN WORDS, not the command we sent. The agent asks
+    # the camera what its exposure is after every change (and on a bare
+    # read), and this is that answer — stored whole, including the raw
+    # key/value dump, because a setting we have no name for yet is still
+    # worth an operator being able to see.
+    if camera_settings:
+        try:
+            parsed = json.loads(camera_settings)
+            if isinstance(parsed, dict):
+                cam.camera_settings = parsed
+                cam.camera_settings_at = _utcnow_naive()
+        except (ValueError, TypeError) as exc:
+            log.warning(
+                "cameras: camera %s sent unparseable settings: %s",
+                cam.id, exc,
+            )
+    # THE PI'S OWN VERDICT ON ITS POWER, which needs no extra hardware
+    # and so arrives from every rig rather than only the ones with an
+    # INA226 fitted.
+    if throttled:
+        try:
+            parsed = json.loads(throttled)
+            if isinstance(parsed, dict):
+                cam.throttled = parsed
+                cam.throttled_at = _utcnow_naive()
+        except (ValueError, TypeError) as exc:
+            log.warning(
+                "cameras: camera %s sent unparseable throttled: %s",
+                cam.id, exc,
+            )
+    # THE UPLINK'S OWN ACCOUNT OF ITSELF. Read over USB, so it crosses
+    # no cellular bytes and arrives from a rig too starved to answer
+    # anything else.
+    if link_info:
+        try:
+            parsed = json.loads(link_info)
+            if isinstance(parsed, dict):
+                cam.link_info = parsed
+                cam.link_info_at = _utcnow_naive()
+        except (ValueError, TypeError) as exc:
+            log.warning(
+                "cameras: camera %s sent unparseable link_info: %s",
+                cam.id, exc,
+            )
+    # WHAT THE LENS SAID WHEN ASKED WHERE IT IS — which on this model is
+    # expected to be nothing, since it declares no absolute position.
+    # Merged BESIDE the counted position rather than over it: the count
+    # is the backend's and the reading is the camera's, and the card
+    # prefers the reading only when there actually is one.
+    if lens_info:
+        try:
+            parsed = json.loads(lens_info)
+            if isinstance(parsed, dict):
+                merged = dict(cam.lens_zoom or {})
+                parsed["at"] = _utcnow_naive().isoformat()
+                merged["reported"] = parsed
+                cam.lens_zoom = merged
+        except (ValueError, TypeError) as exc:
+            log.warning(
+                "cameras: camera %s sent unparseable lens info: %s",
+                cam.id, exc,
+            )
+    if stream_info:
+        try:
+            parsed = json.loads(stream_info)
+            if isinstance(parsed, dict):
+                # MERGED, not replaced. The cheap fields ride every
+                # heartbeat; the camera's own profile arrives once when
+                # an operator asks for it and should survive the next
+                # heartbeat that does not carry one.
+                merged = dict(cam.stream_info or {})
+                merged.update({k: v for k, v in parsed.items()
+                               if v is not None or k != "profile"})
+                if parsed.get("profile"):
+                    merged["profile"] = parsed["profile"]
+                cam.stream_info = merged
+                cam.stream_info_at = _utcnow_naive()
+        except (ValueError, TypeError) as exc:
+            log.warning(
+                "cameras: camera %s sent unparseable stream info: %s",
+                cam.id, exc,
+            )
     db.commit()
     return {
         "ok": True,
         "camera_id": cam.id,
         "enabled": cam.enabled,
+        # Read at startup, before the status poll has run once: a tee
+        # agent whose card carries no zones can still come up on the
+        # ones drawn in the app.
+        "tee_box_roi": (
+            {"boxes": tee_roi.boxes(cam.tee_box_roi),
+             "frame": (lambda f: {"w": f[0], "h": f[1]} if f else None)(
+                 tee_roi.frame_size(cam.tee_box_roi))}
+            if tee_roi.boxes(cam.tee_box_roi) else None
+        ),
         # Pi can read this to skip its person-detection loop entirely
         # while paused. Older agents that ignore it are still covered:
         # /event-trigger refuses to create events when this is False.
@@ -611,15 +1066,33 @@ _LENS_QUEUES: dict[int, list[dict]] = {}
 LENS_QUEUE_MAX = 24
 
 
-def request_lens(camera_id: int, op: str, amount: int = 0) -> int:
-    """Queue one lens nudge. Returns the queue depth after adding."""
+def request_lens(camera_id: int, op: str, amount: int = 0,
+                 params: dict | None = None, repeat: int = 1) -> int:
+    """Queue one camera command. Returns the queue depth after adding.
+
+    `amount` is the step size for a zoom or focus nudge. `params`
+    carries the commands that are not a nudge — an exposure change has
+    named values ("manual", "1/500") rather than a step — and rides the
+    same queue so ordering still holds across both kinds.
+
+    `repeat` is how many times to apply that same step. The lens accepts
+    three magnitudes and nothing between them, so a move of any size is
+    a run of identical nudges; sending the run as one queued command
+    rather than thirty keeps the queue (and the poll that drains it)
+    about the operator's gestures instead of about the lens's gearing.
+    """
     with _LENS_LOCK:
         q = _LENS_QUEUES.setdefault(int(camera_id), [])
         if len(q) >= LENS_QUEUE_MAX:
             # Drop the OLDEST. A stale zoom from two minutes ago is worth
             # less than the one just clicked.
             del q[0]
-        q.append({"op": op, "amount": int(amount)})
+        cmd = {"op": op, "amount": int(amount)}
+        if repeat and int(repeat) > 1:
+            cmd["repeat"] = int(repeat)
+        if params:
+            cmd["params"] = {str(k): str(v) for k, v in params.items()}
+        q.append(cmd)
         return len(q)
 
 
@@ -639,6 +1112,32 @@ def request_focus_mode(camera_id: int, seconds: int) -> None:
     """
     with _FOCUS_LOCK:
         _FOCUS_UNTIL[int(camera_id)] = time.time() + max(1, int(seconds))
+
+
+def extend_focus_mode(camera_id: int, seconds: int) -> bool:
+    """Keep focus mode armed for at least `seconds` more, and say whether
+    it had been off.
+
+    For the lens controls, which arm it as a side effect: pressing a
+    focus nudge is the whole reason anyone wants the fast readout, so
+    asking for it separately was a step that only ever got skipped.
+
+    NEVER SHORTENS. A short top-up after a nudge must not cut a window
+    somebody armed deliberately, so the later of the two deadlines wins.
+
+    The return value exists for the session peak. The peak is reset when
+    a focus session STARTS and not on every nudge inside one -- resetting
+    it per press would wipe the number that tells you that you have
+    already gone past the best.
+    """
+    now = time.time()
+    until = now + max(1, int(seconds))
+    with _FOCUS_LOCK:
+        current = _FOCUS_UNTIL.get(int(camera_id), 0.0)
+        was_off = current <= now
+        if until > current:
+            _FOCUS_UNTIL[int(camera_id)] = until
+    return was_off
 
 
 def _focus_remaining(camera_id: int) -> int:
@@ -693,6 +1192,19 @@ def watch_status(token: str, db: Session = Depends(get_db)):
     return {
         "watching": watching,
         "capture_seconds": capture_seconds,
+        # THE TRIGGER ZONES, on every poll rather than on a change. The
+        # agent cannot ask "what changed since?" — it can restart, or
+        # come back from a curfew, or have been provisioned with a stale
+        # card — so the current answer every second is simpler than any
+        # protocol for telling it only once, and it is a few hundred
+        # bytes. Null means the camera has none set and the agent keeps
+        # whatever its own config gave it.
+        "tee_box_roi": (
+            {"boxes": tee_roi.boxes(cam.tee_box_roi),
+             "frame": (lambda f: {"w": f[0], "h": f[1]} if f else None)(
+                 tee_roi.frame_size(cam.tee_box_roi))}
+            if tee_roi.boxes(cam.tee_box_roi) else None
+        ),
         # Empty list on almost every poll; only non-empty right after an
         # operator touches the zoom or focus controls.
         "lens_commands": lens_commands,
@@ -700,25 +1212,143 @@ def watch_status(token: str, db: Session = Depends(get_db)):
         # the agent stays in, not a one-shot, and it has to survive every
         # poll until it expires.
         "focus_seconds": _focus_remaining(cam.id),
+        # THE OPERATOR'S PAUSE, STATED ON EVERY POLL. /event-trigger
+        # already answers a paused camera with `triggering_disabled`,
+        # and that is the authoritative answer whenever the Pi can
+        # reach us. This is for when it cannot: a trigger POST that
+        # times out tells the agent nothing, and it has to decide
+        # whether to record the swing anyway. Being told the current
+        # answer once a second means that decision is made against
+        # something at most a second stale instead of against nothing.
+        # See TriggerGate in the agent.
+        "triggering_enabled": bool(cam.triggering_enabled),
+        # THE SNAPSHOT ASK. True when the picture the Cameras page would
+        # show is missing or stale; the agent answers with one frame to
+        # /still and goes back to sleep. Not consumed on read — it stays
+        # true until a frame actually lands, so a failed push retries.
+        "still_wanted": still_wanted(cam),
     }
 
 
+# THE TWO FRAME ENDPOINTS DO THEIR DATABASE WORK IN A THREAD.
+#
+# An `async def` runs ON the event loop, and every line of it that is
+# not awaited runs there too -- including a SQLAlchemy query, which is a
+# network round trip to Postgres with a pre-ping in front of it. While
+# that is in flight nothing else in the process gets served, /health
+# included, and Render kills an instance that cannot answer /health in
+# five seconds.
+#
+# One round trip is a millisecond and harmless. These two are the ones
+# that repeat: the live view pushes TEN FRAMES A SECOND while an
+# operator watches, each one previously taking a trip to the database on
+# the loop before it would accept the bytes. A connection pool that goes
+# briefly dry (produce holds sessions for minutes) turns each of those
+# into a ten-second `pool_timeout` wait -- on the event loop, with the
+# health check behind it.
+#
+# So the session is opened inside the thread rather than injected by
+# Depends: the dependency would hold a pooled connection for the whole
+# request, body upload included, which on a cellular modem that dies
+# every thirty seconds is a connection held for as long as the modem
+# takes to come back.
+
+
+def _camera_id_for_body(token: str) -> int:
+    """Resolve the token and note the camera was heard from. Thread-only."""
+    db = SessionLocal()
+    try:
+        cam = _get_camera_by_token(token, db)
+        cam_id = cam.id
+        db.commit()
+        return cam_id
+    finally:
+        db.close()
+
+
+# HOW LONG THE SERVER WILL WAIT FOR A FRAME THAT HAS STOPPED ARRIVING.
+#
+# The tee's uplink is a USB cellular modem that reboots itself under
+# load: alive for ~23s at ~125 KB/s, then gone for ~8s while it
+# re-enumerates. That is already designed for on the clip path, which is
+# why uploads are resumable. A frame push is not resumable and does not
+# need to be — it is one small body and the next one is along shortly —
+# but it does need to be ABANDONED when the modem goes, because a
+# half-sent body with no client behind it any more is a request this
+# process holds open with nothing to finish it.
+#
+# Without this, `await request.body()` waits for a peer that is not
+# coming back until TCP works out the connection is dead, which is
+# minutes. Each of those was, until this week, also holding a pooled
+# database connection for the duration.
+FRAME_BODY_TIMEOUT = 20.0
+STILL_BODY_TIMEOUT = 60.0
+
+
+async def _read_body(request: Request, seconds: float) -> bytes:
+    try:
+        return await asyncio.wait_for(request.body(), timeout=seconds)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            408, f"the frame stopped arriving (gave it {seconds:.0f}s)",
+        ) from None
+
+
 @router.post("/{token}/live-frame")
-async def post_live_frame(
-    token: str,
-    request: Request,
-    db: Session = Depends(get_db),
-):
+async def post_live_frame(token: str, request: Request):
     """Pi POSTs JPEG bytes as the request body."""
-    cam = _get_camera_by_token(token, db)
-    body = await request.body()
+    body = await _read_body(request, FRAME_BODY_TIMEOUT)
     if not body:
         raise HTTPException(400, "empty frame")
     if len(body) > 500_000:
         raise HTTPException(413, "frame too large (max 500KB)")
+    cam_id = await asyncio.to_thread(_camera_id_for_body, token)
     with _LIVE_LOCK:
-        _LIVE_FRAMES[cam.id] = (body, _utcnow_naive())
+        _LIVE_FRAMES[cam_id] = (body, _utcnow_naive())
     return {"ok": True}
+
+
+@router.post("/{token}/still")
+async def post_still(token: str, request: Request):
+    """The periodic snapshot: JPEG bytes in the body, kept on disk.
+
+    Separate from /live-frame because they have opposite lifetimes. A
+    live frame is worth five seconds and is never written down; this one
+    is the camera's view until the next one replaces it, and has to
+    survive the operator closing the page.
+
+    The size is checked against the declared length before a byte is
+    read, so a camera that has gone wrong cannot make the process hold
+    two megabytes before being told no.
+    """
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except (TypeError, ValueError):
+        declared = 0
+    if declared > MAX_STILL_BYTES:
+        raise HTTPException(413, "still too large (max 2MB)")
+    # Longer than a live frame's: this one is worth waiting out a modem
+    # reboot for, since the next attempt is ten minutes away.
+    body = await _read_body(request, STILL_BODY_TIMEOUT)
+    if not body:
+        raise HTTPException(400, "empty frame")
+    if len(body) > MAX_STILL_BYTES:
+        raise HTTPException(413, "still too large (max 2MB)")
+
+    def _store() -> int:
+        db = SessionLocal()
+        try:
+            cam = _get_camera_by_token(token, db)
+            _write_still(cam.id, body)
+            cam.still_at = _utcnow_naive()
+            db.commit()
+            return cam.id
+        finally:
+            db.close()
+
+    cam_id = await asyncio.to_thread(_store)
+    log.info("cameras: still stored for camera %s (%d bytes)", cam_id, len(body))
+    return {"ok": True, "bytes": len(body)}
 
 
 @router.post("/{token}/event-trigger")
@@ -953,7 +1583,7 @@ async def poll_trigger(
 
 
 @router.post("/{token}/upload-event")
-async def upload_event(
+def upload_event(
     token: str,
     session_id: str = Form(...),
     recording_started_at: float | None = Form(None),
@@ -977,7 +1607,14 @@ async def upload_event(
 
     event, role = _resolve_event_role(cam, sid, db)
 
-    data = await video.read()
+    # SYNC ON PURPOSE. As an `async def` this ran on the event loop, and
+    # _save_event_clip's write_bytes of a multi-MB clip blocked it — the
+    # whole server, health check included, stopped for the length of that
+    # disk write. A plain `def` is handed to the threadpool instead, where
+    # blocking is what the thread is for. Starlette has already buffered
+    # the body by the time we are called, so this reads from its spooled
+    # temp file rather than the network.
+    data = video.file.read()
     if not data:
         raise HTTPException(400, "empty upload")
     if len(data) > MAX_EVENT_CLIP_BYTES:
@@ -1017,7 +1654,7 @@ def upload_status(
 
 
 @router.post("/{token}/upload-chunk")
-async def upload_chunk(
+def upload_chunk(
     token: str,
     upload_id: str = Form(...),
     offset: int = Form(...),
@@ -1043,9 +1680,15 @@ async def upload_chunk(
         )
     part, meta = _part_paths(cam.id, upload_id)
 
-    # Read the body BEFORE taking the lock — this awaits on the network
-    # and must not hold up other cameras' appends.
-    body = await chunk.read()
+    # SYNC ON PURPOSE — see upload_event. This one mattered more: as an
+    # `async def` it took _PARTS_LOCK and appended to disk ON THE EVENT
+    # LOOP, so two cameras uploading at once meant one of them blocked
+    # the entire server while it waited for the lock. Starlette has
+    # already buffered the body, so this read is from a temp file.
+    #
+    # Still read it before taking the lock: no reason to hold the lock
+    # across a copy other cameras are waiting on.
+    body = chunk.file.read()
     if not body:
         raise HTTPException(400, "empty chunk")
     if len(body) > PART_MAX_CHUNK_BYTES:
@@ -1126,14 +1769,167 @@ def upload_complete(
 # ---------------------------------------------------------------------
 
 
-def _process_camera_event_job(event_id: int) -> None:
+# ONE PRODUCE JOB PER EVENT, whoever asks. Three paths start one -- the
+# upload that completes a pair, the Re-process button, and the recovery
+# sweep below -- and they can overlap, because the sweep's whole job is
+# to kick events that LOOK abandoned, and a produce that is merely slow
+# looks exactly like one that is dead (the produce queue serialises, so
+# the Nth event waits N produce durations). Two jobs on one event means
+# two writers on one LongVideoUpload row.
+#
+# A set in memory is the whole truth here because the backend is one
+# uvicorn process (start.sh, no --workers). If that ever becomes
+# several, this guard has to move into the database with it.
+_event_job_inflight: set[int] = set()
+_event_job_lock = threading.Lock()
+
+
+def _process_camera_event_job(event_id: int,
+                              allow_tee_only: bool = False,
+                              manual: bool = False) -> None:
+    """Produce one camera event — unless it is already being produced.
+
+    The guard lives here rather than at the three call sites so that
+    none of them can forget it, and so a fourth caller cannot quietly
+    reintroduce double-production.
+    """
+    with _event_job_lock:
+        if event_id in _event_job_inflight:
+            log.info(
+                "cameras: event %s is already producing in this process — "
+                "not starting a second job", event_id,
+            )
+            return
+        _event_job_inflight.add(event_id)
+    try:
+        _run_camera_event_job(event_id, allow_tee_only, manual)
+    finally:
+        with _event_job_lock:
+            _event_job_inflight.discard(event_id)
+
+
+def _preview_is_missing(name: str) -> bool:
+    """Does this raw still need its browser preview made?
+
+    Two artefacts, and either one absent means the tile on Production
+    is broken: the poster JPG the card shows, and the H.264 the browser
+    will actually play. Checks the bucket as well as local disk, or a
+    redeploy that emptied the ephemeral disk would look like a course
+    full of missing previews and redo every one of them.
+    """
+    from ..services.video import _already_web_ready
+
+    src = CLIPS_DIR / name
+    if not src.exists():
+        return False              # nothing local to inspect or to fix
+
+    # PLAYABLE? The marker is local-only by design (the storage sweeper
+    # skips it), so after a redeploy its absence says nothing at all --
+    # ask the file itself before deciding there is work to do.
+    if not (src.with_suffix(src.suffix + ".h264-ok").exists()
+            or _already_web_ready(src)):
+        return True
+
+    # POSTER? Checked in the bucket too, or a redeploy looks like a
+    # course full of missing thumbnails and redoes every one of them.
+    thumb = Path(name).with_suffix(".jpg").name
+    return not ((CLIPS_DIR / thumb).exists() or storage.exists(thumb))
+
+
+def sweep_missing_previews(limit: int = 60, max_age_hours: int = 72) -> dict:
+    """Make the previews for raws that never got one.
+
+    THE BACKLOG THIS EXISTS FOR. The transcode runs from upload_event
+    in its own thread, parked on the heavy gate behind whatever is
+    producing -- and a restart kills it there. The clip itself is
+    untouched and sits on the Production card perfectly intact, with
+    "No preview" where its tile should be, and until now nothing ever
+    came back for it.
+
+    New captures are covered by the backstop in _run_camera_event_job.
+    This is for the ones stranded before that existed, so it is a
+    button rather than a timer: bounded, oldest-reasonable-window only,
+    and it reports what it found rather than running silently.
+    """
+    from ..models import CameraEvent as _CE
+
+    done, failed, scanned = [], [], 0
+    cutoff = _utcnow_naive() - timedelta(hours=max(1, int(max_age_hours)))
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(_CE)
+            .filter(_CE.triggered_at >= cutoff)
+            .order_by(_CE.triggered_at.desc())
+            .limit(500)
+            .all()
+        )
+        names = []
+        for r in rows:
+            for n in (r.tee_clip_filename, r.green_clip_filename):
+                if n:
+                    names.append(n)
+    finally:
+        db.close()
+
+    for name in names:
+        if len(done) >= max(1, int(limit)):
+            break
+        scanned += 1
+        try:
+            # Pull it back from the bucket first: after a redeploy the
+            # file is there and not here, and a preview cannot be made
+            # from a file that is not on disk.
+            storage.ensure_local(CLIPS_DIR, name)
+            if not _preview_is_missing(name):
+                continue
+            _post_process_raw_clip(name)
+            done.append(name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("preview sweep: %s failed: %s", name, exc)
+            failed.append(name)
+
+    log.info("preview sweep: %d scanned, %d made, %d failed",
+             scanned, len(done), len(failed))
+    return {"scanned": scanned, "made": len(done),
+            "failed": len(failed), "files": done}
+
+
+def _ensure_previews(filenames) -> None:
+    """Make sure each raw has its browser preview, best-effort.
+
+    Cheap when the upload-time hook already did it -- transcode_for_web
+    short-circuits on its marker, and a copy-engine clip is already
+    H.264 + faststart so it never encodes at all. Worth doing anyway:
+    the upload-time thread can die on the heavy gate during a restart,
+    and nothing else was ever going to notice.
+    """
+    for name in filenames:
+        try:
+            _post_process_raw_clip(name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cameras: preview backstop failed for %s: %s",
+                        name, exc)
+
+
+def _run_camera_event_job(event_id: int,
+                          allow_tee_only: bool = False,
+                          # DID A PERSON PRESS RE-PROCESS? Then a paused
+                          # queue must not hold it: the button says it
+                          # forces one now, and a button that quietly
+                          # does nothing is worse than no button.
+                          manual: bool = False) -> None:
     """Hand off a fully-uploaded CameraEvent to the long-upload
     pipeline so it benefits from the existing multi-swing auto-detect
     + admin edit-wizard. Creates a LongVideoUpload row pointing at the
     raw files the Pis already saved, links it back via
-    LongVideoUpload.camera_event_id, then kicks off the standard
-    background job. The Production page reads it as a long-upload —
-    same card, same buttons (Edit, Re-Produce, Broadcast, Delete).
+    LongVideoUpload.camera_event_id, queues it and RETURNS. The
+    Production page reads it as a long-upload — same card, same buttons
+    (Edit, Re-Produce, Broadcast, Delete).
+
+    Short-lived by design: no media work, no waiting on produce. The
+    event's terminal status is derived from the upload row afterwards
+    (`_sync_camera_event_from_upload`), not stamped by this thread.
 
     Idempotent: if the event already has a linked LongVideoUpload, we
     re-use it instead of creating a duplicate.
@@ -1154,33 +1950,57 @@ def _process_camera_event_job(event_id: int) -> None:
             log.warning("cameras: event %s vanished before processing", event_id)
             return
 
-        # Rehydrate raws from object storage if the ephemeral disk lost them
-        # (e.g. reprocessing an event after a redeploy).
-        if event.tee_clip_filename:
-            storage.ensure_local(CLIPS_DIR, event.tee_clip_filename)
-        if event.green_clip_filename:
-            storage.ensure_local(CLIPS_DIR, event.green_clip_filename)
-
-        tee_path = (
-            CLIPS_DIR / event.tee_clip_filename if event.tee_clip_filename else None
-        )
-        if tee_path is None or not tee_path.exists():
-            event.status = "failed"
-            event.last_error = "tee clip missing on disk"
-            db.commit()
-            return
-
-        # Re-encode the raws to browser-friendly H.264 + extract a
-        # thumbnail in this thread before production opens them. Cheap
-        # no-op when the upload-time hook already did it.
-        if event.tee_clip_filename:
-            _post_process_raw_clip(event.tee_clip_filename)
-        if event.green_clip_filename:
-            _post_process_raw_clip(event.green_clip_filename)
-
+        # NOTHING IN FRONT OF THE QUEUE. This used to rehydrate both
+        # raws from object storage and re-encode them to H.264, in this
+        # thread, before the event was queued at all -- two ffmpeg-scale
+        # jobs under the heavy gate, on the critical path of every
+        # capture. Both were already being done elsewhere:
+        #
+        #   - produce rehydrates its own sources under its own gate and
+        #     times it as its own stage (admin.py `_debugx_job`), and
+        #     fails the row with "tee source missing on disk" if they
+        #     are not there -- which now reaches the event through
+        #     `_sync_camera_event_from_upload`;
+        #   - upload_event already starts `_post_process_raw_clip` for
+        #     each clip as it lands, and that transcode is for the admin
+        #     PREVIEW, not for production: produce reads via cv2, which
+        #     is perfectly happy with the Pi's mp4v.
+        #
+        # So the work was duplicated, and the minutes it took were
+        # exactly the window in which a restart stranded the event at
+        # 'paired_uploaded' with nobody holding it. An uploaded pair is
+        # queued now, immediately, and shows up on Production as queued.
+        #
+        # has_green comes off the FILENAME rather than a disk probe: on
+        # a re-process after a redeploy the file is in the bucket and
+        # not yet on disk, and probing would have quietly downgraded a
+        # paired event to tee-only.
         green_filename = event.green_clip_filename
-        green_path = CLIPS_DIR / green_filename if green_filename else None
-        has_green = green_path is not None and green_path.exists()
+        event_tee_name = event.tee_clip_filename
+        has_green = bool(green_filename)
+
+        # A PAIRED HOLE IS NOT READY ON ONE CLIP. Produced tee-only, it
+        # makes a card with an empty green tile and a composite that
+        # cannot be made -- and when the green lands a minute later the
+        # whole thing is produced again, so the half-answer cost more
+        # than waiting would have.
+        #
+        # Only the tee-only FALLBACK may force it, long after the green
+        # has stopped being plausible, and a human pressing Re-process.
+        # Both say so explicitly; nothing arrives here half-ready by
+        # accident any more.
+        if event.green_camera_id is not None and not has_green:
+            if not allow_tee_only:
+                log.info(
+                    "cameras: event %s is paired and the green clip is not "
+                    "in yet — not queueing (the fallback will force it if "
+                    "the green never arrives)", event_id,
+                )
+                return
+            log.info(
+                "cameras: event %s — producing TEE-ONLY on purpose, the "
+                "green never arrived", event_id,
+            )
 
         # Re-use a previously-linked LongVideoUpload row if any (handles
         # Re-Produce flowing back through this code path).
@@ -1228,93 +2048,61 @@ def _process_camera_event_job(event_id: int) -> None:
             event.id, lvu.id,
         )
 
-        # Status flips to 'processed' (or 'failed') from inside the
-        # produce job's LongVideoUpload bookkeeping; mirror that onto the
-        # CameraEvent at the end. We block this thread on the job so the
-        # camera-event row gets its terminal status set in one pass.
-        try:
-            # THE produce path — the same one Debug3 and Re-Produce run.
-            # This used to call _run_long_upload_job with motion-only
-            # audio+motion detection; swings come from the pose detector
-            # now, and the flight from Debug3, so a capture behaves
-            # identically however it was started. A camera covers one
-            # par-3, so its hole is passed through rather than inferred.
-            # wait=True: produce is queued and serialised with every
-            # other upload, but this thread blocks until its turn is
-            # done so the CameraEvent's terminal status is stamped from
-            # the actual outcome rather than from "we started it".
-            # Read what we need, then RELEASE THE POOLED CONNECTION
-            # before blocking. The produce queue serialises jobs, so
-            # this wait grows with queue depth — the Nth camera event
-            # waits N produce durations. Holding a session across it
-            # exhausts the pool (SQLAlchemy defaults to 5 + 10
-            # overflow), and once it is dry EVERY endpoint 500s:
-            # heartbeat, poll-trigger, upload-event, the admin UI. A
-            # camera politely waiting its turn took the whole backend
-            # down, which is how it presented in the field.
-            _lvu_id = lvu.id
-            _hole = int(event.hole_number)
-            db.close()
-            try:
-                enqueue_produce_job(
-                    upload_id=_lvu_id, hole_number=_hole, wait=True,
-                )
-            finally:
-                db = SessionLocal()
-        except Exception as exc:
-            log.exception(
-                "cameras: event %s produce job crashed: %s", event_id, exc,
-            )
-            try:
-                db.close()
-            except Exception:  # noqa: BLE001
-                pass
-            db = SessionLocal()
-
-        # Fresh session, so no stale identity map to expire.
-        event = db.get(CameraEvent, event_id)
-        lvu = db.get(LongVideoUpload, _lvu_id)
-        if event is None or lvu is None:
-            return
-
-        # The auto-swing detector treats "no paired audio+motion peaks"
-        # as a hard failure, which is right for the long-upload UI but
-        # wrong for the camera path: the Pi already captured + uploaded
-        # the raws (visible on the production page), there just wasn't
-        # an actual swing to produce a clip from. Treat this as a
-        # successful capture so the event isn't flagged red.
-        no_swings = (
-            lvu.processing_status == "failed"
-            and (lvu.last_error or "").startswith("no swings detected")
-        )
-
-        if lvu.processing_status == "completed" or no_swings:
-            event.status = "processed"
-            event.last_error = None
-            # Pick the first produced clip for the back-compat
-            # produced_clip_id pointer (the listing surfaces the full
-            # set via the linked long-upload).
-            from ..models import VideoClip
-            first_clip = (
-                db.query(VideoClip)
-                .filter(VideoClip.long_upload_id == lvu.id)
-                .order_by(VideoClip.captured_at.asc().nulls_last())
-                .first()
-            )
-            if first_clip is not None:
-                event.produced_clip_id = first_clip.id
-        else:
-            event.status = "failed"
-            event.last_error = (lvu.last_error or "long-upload job did not complete")[:2000]
+        # HANDED OVER, NOT WAITED ON. This used to pass wait=True and
+        # block this thread through the queue wait AND the whole
+        # produce -- tens of minutes behind a deep queue -- purely so it
+        # could stamp the event's terminal status from the outcome. That
+        # made a daemon thread in the web process the only record that
+        # the work existed: a deploy, an OOM or a health-check bounce
+        # killed it and the event sat at 'paired_uploaded' for good,
+        # which is the "Both clips in - STUCK" pill. Worse, the deeper
+        # the queue the longer the exposure, so a backlog made each of
+        # its members MORE likely to be lost, and one restart took the
+        # whole parked set at once -- hence stuck events arriving in
+        # runs of consecutive ids.
+        #
+        # The status is derived now instead of stamped: the upload row
+        # is durable, it is already linked by camera_event_id, and
+        # `_finish_wizard_produce` -- which every exit path from produce
+        # goes through -- mirrors its outcome onto this event. Nothing
+        # has to survive anything.
+        _lvu_id = lvu.id
+        _hole = int(event.hole_number)
+        event.status = "queued"
+        event.last_error = None
         db.commit()
+        db.close()
+        try:
+            enqueue_produce_job(
+                upload_id=_lvu_id, hole_number=_hole, wait=False,
+                # Automatic unless a person asked for this one by
+                # name. A paused queue holds the automatic ones; a
+                # Re-process is the operator in front of the machine
+                # and goes through.
+                manual=manual,
+            )
+        finally:
+            db = SessionLocal()
         log.info(
-            "cameras: event %s done — status=%s lvu=%s segs=%s produced=%s",
-            event.id,
-            event.status,
-            lvu.id,
-            lvu.last_n_segments,
-            lvu.last_n_succeeded,
+            "cameras: event %s queued for produce — lvu=%s hole=%s green=%s",
+            event_id, _lvu_id, _hole, bool(has_green),
         )
+
+        # THE PREVIEW, AFTER THE QUEUE AND NEVER IN FRONT OF IT.
+        # upload_event already starts this as each clip lands, but that
+        # thread parks on the heavy gate behind whatever is producing,
+        # and a restart kills it there -- leaving a raw with no poster
+        # and no H.264, which is the "No preview" tile on Production
+        # with the clip itself sitting right there, intact. This used
+        # to be covered because the job did the transcode itself, in
+        # front of the queue; doing it behind, in its own thread, keeps
+        # the backstop without the cost. For a copy-engine tee clip it
+        # is now a probe and nothing else.
+        _names = [n for n in (event_tee_name, green_filename) if n]
+        threading.Thread(
+            target=_ensure_previews, args=(_names,), daemon=True,
+            name=f"preview-backstop-{event_id}",
+        ).start()
     except Exception as exc:  # pragma: no cover
         log.exception("cameras: event %s processing crashed: %s", event_id, exc)
         try:
@@ -1330,82 +2118,241 @@ def _process_camera_event_job(event_id: int) -> None:
         db.close()
 
 
-# Tee-only fallback ---------------------------------------------------------
-# Events currently being force-produced tee-only, so the periodic sweep
-# doesn't kick the same one twice while it's still running.
-_fallback_inflight: set[int] = set()
-_fallback_lock = threading.Lock()
+# Stalled-event recovery ----------------------------------------------------
+# How many events one sweep may restart. The produce queue serialises,
+# so recovering a backlog all at once puts every stale event AHEAD of
+# the capture somebody is standing on the tee waiting for. Two a minute
+# drains a bad night without ever being the reason a live shot is late.
+_RECOVER_PER_SWEEP = 2
 
 
-def _tee_only_fallback_sweep() -> None:
-    """Produce a TEE-ONLY clip for any paired event whose green half never
-    arrived within the fallback window. _process_camera_event_job already
-    handles a missing green (green_clip_filename is None -> tee-only), so we
-    just kick it. If green shows up later, upload_event flips the event back
-    to paired and re-produces with both."""
-    secs = int(settings.camera_tee_only_fallback_seconds or 0)
-    if secs <= 0:
+def _recoverable_events(db, status: str, cutoff, floor, max_retries: int,
+                        require_tee: bool,
+                        # DON'T GIVE UP ON A GREEN THAT IS STILL THERE.
+                        # When set, a PAIRED event whose green camera
+                        # has been seen since this moment is left alone:
+                        # its clip is most likely still on the wire, and
+                        # producing tee-only now means producing again
+                        # when it lands -- twice the work for a worse
+                        # first answer. Unpaired events are untouched by
+                        # this; they were never waiting for anything.
+                        green_alive_since=None,
+                        # ...and the ceiling on that patience. An event
+                        # older than this produces from the tee however
+                        # healthy the green looks, because a rig can
+                        # heartbeat perfectly while its upload is dead,
+                        # and a tee-only clip beats no clip.
+                        wait_floor=None) -> list[int]:
+    """Event ids stuck in `status`: triggered before `cutoff` (old enough
+    to be a problem) and after `floor` (recent enough to be worth
+    producing). Oldest first, and only those still inside their retry
+    budget.
+
+    Split out from the sweep so the window, the floor, the budget and
+    the green-still-coming rule can be tested without a produce
+    pipeline behind them.
+    """
+    q = (db.query(CameraEvent)
+         .filter(CameraEvent.status == status,
+                 CameraEvent.triggered_at < cutoff,
+                 CameraEvent.triggered_at >= floor))
+    if require_tee:
+        q = q.filter(CameraEvent.tee_clip_filename.isnot(None))
+    rows = [e for e in q.order_by(CameraEvent.triggered_at.asc()).all()
+            if int(getattr(e, "produce_retries", 0) or 0) < max_retries]
+    if green_alive_since is None:
+        return [e.id for e in rows]
+    out: list[int] = []
+    for e in rows:
+        _gid = getattr(e, "green_camera_id", None)
+        _past_ceiling = (wait_floor is not None
+                         and e.triggered_at < wait_floor)
+        if _gid is not None and not _past_ceiling:
+            _cam = db.get(Camera, _gid)
+            _seen = getattr(_cam, "last_seen_at", None) if _cam else None
+            if _seen is not None and _seen >= green_alive_since:
+                log.info(
+                    "cameras: event %s waiting on green camera %s, seen "
+                    "%.0fs ago — not producing tee-only yet",
+                    e.id, _gid,
+                    (_utcnow_naive() - _seen).total_seconds())
+                continue
+        out.append(e.id)
+    return out
+
+
+def _camera_event_recovery_sweep() -> None:
+    """Restart camera events that nothing else is going to finish.
+
+    TWO WAYS AN EVENT DIES QUIETLY. Only the first was ever swept.
+
+    `tee_uploaded` — the green half never arrived (dead cellular,
+    unplugged, weak signal). _run_camera_event_job already handles a
+    missing green (green_clip_filename is None -> tee-only), so we just
+    kick it. If green shows up later, upload_event flips the event back
+    to paired and re-produces with both.
+
+    `paired_uploaded` — BOTH clips landed, and the job that was going to
+    finish the event died. Produce runs in a daemon thread owned by the
+    upload request, so a deploy, a restart or an OOM takes it with it.
+    Startup's _reap_orphaned_jobs clears the LongVideoUpload row that
+    thread left behind, but nothing ever looked at the CameraEvent: it
+    sat at 'paired_uploaded' forever, which is the "Both clips in ·
+    STUCK" pill on the Cameras page, with the Re-process button the only
+    way out. Seen on 19 Oct as four consecutive events on Rivertowne
+    hole 8 — every clip uploaded, nothing produced, nobody told.
+
+    THE RETRY BUDGET IS NOT OPTIONAL. The failure being recovered from
+    is a process death, and a clip that kills the process on produce
+    would otherwise be handed back to produce every minute forever: a
+    crash loop built out of a recovery mechanism. The count lives in the
+    database for the same reason -- an in-memory counter is wiped by the
+    very event it is supposed to be counting.
+    """
+    from .admin import produce_queue_status
+
+    _fallback = int(settings.camera_tee_only_fallback_seconds or 0)
+    _alive = int(settings.camera_green_alive_seconds or 0)
+    _ceiling = int(settings.camera_tee_only_max_wait_seconds or 0)
+    _stall = int(settings.camera_paired_stall_seconds or 0)
+    if _fallback <= 0 and _stall <= 0:
         return
-    cutoff = _utcnow_naive() - timedelta(seconds=secs)
+    # NOT WHILE PRODUCE IS BUSY — and this is the whole reason the sweep
+    # is safe to run at all. The produce queue is a priority queue keyed
+    # on the upload's created_at, so a recovered event from this morning
+    # sorts AHEAD of the shot somebody has just hit. Feeding it on a
+    # timer put a day's backlog in front of live golf: sixteen captures
+    # deep, each one a couple of minutes of 1080p to pose-detect on a
+    # shared core, with the group on the tee at the back of it.
+    #
+    # Recovery is never urgent. Let it have the gaps instead: one quiet
+    # queue, two events, and the next quiet queue after that.
+    #
+    # EXCEPT THAT A QUEUE CAN STOP BEING QUIET. On a busy morning the
+    # produce queue has something in it all day, so "wait for a gap"
+    # became "never", and events sat at "Both clips in - STUCK" with
+    # nothing coming for them -- which is not what this gate was for.
+    # It was protecting live golf from a backlog, not protecting the
+    # backlog from ever being cleared.
+    #
+    # So past camera_recover_urgent_seconds an event is taken anyway,
+    # ONE at a time rather than _RECOVER_PER_SWEEP, because the whole
+    # point is that it is sharing the queue rather than owning it.
+    _urgent = int(settings.camera_recover_urgent_seconds or 0)
+    _q = produce_queue_status()
+    # NOT WHILE THE OPERATOR HAS IT PAUSED. The held jobs would be
+    # re-queued and held again, and each attempt SPENDS A RETRY -- so a
+    # long pause would quietly exhaust every stalled event's budget and
+    # leave them unrecoverable the moment work resumed.
+    if _q.get("paused"):
+        return
+    _busy = bool(_q.get("depth") or _q.get("running_upload_id") is not None)
+    if _busy and _urgent <= 0:
+        return
+    _budget = int(settings.camera_produce_max_retries or 0)
+    now = _utcnow_naive()
+
+    def _cut(window: int) -> int:
+        """How old an event has to be, given how busy produce is.
+
+        Quiet: its own window. Busy: the urgent age, which is longer --
+        so a busy queue narrows recovery to the events that have really
+        been abandoned rather than stopping it.
+        """
+        return max(window, _urgent) if _busy else window
+
+    # NOTHING OLDER THAN THIS. Without a floor the first deploy carrying
+    # this sweeper re-produces every stalled event the database has ever
+    # held -- weeks of them, ahead of today's golf. A stuck capture is
+    # worth rescuing on the day; last month's is a decision for a human
+    # with the Re-process button.
+    floor = now - timedelta(
+        hours=max(0, int(settings.camera_recover_max_age_hours or 0)))
+    # (event id, what to say about it). Tee-only first: those events are
+    # waiting on a deadline, not on a corpse, and are the older problem.
+    # (event id, what to say about it, may it produce without a green)
+    todo: list[tuple[int, str, bool]] = []
     db = SessionLocal()
     try:
-        ids = [
-            e.id
-            for e in db.query(CameraEvent)
-            .filter(
-                CameraEvent.status == "tee_uploaded",
-                CameraEvent.tee_clip_filename.isnot(None),
-                CameraEvent.triggered_at < cutoff,
-            )
-            .all()
-        ]
+        if _fallback > 0:
+            todo += [
+                (eid, "green never arrived — producing from tee alone", True)
+                for eid in _recoverable_events(
+                    db, "tee_uploaded",
+                    now - timedelta(seconds=_cut(_fallback)),
+                    floor, _budget, require_tee=True,
+                    green_alive_since=now - timedelta(seconds=_alive),
+                    wait_floor=now - timedelta(seconds=_ceiling))
+            ]
+        if _stall > 0:
+            todo += [
+                (eid, "both clips in but produce never finished — "
+                      "restarting it", False)
+                for eid in _recoverable_events(
+                    db, "paired_uploaded",
+                    now - timedelta(seconds=_cut(_stall)),
+                    floor, _budget, require_tee=False)
+            ]
     finally:
         db.close()
 
-    for eid in ids:
-        with _fallback_lock:
-            if eid in _fallback_inflight:
+    # One at a time while produce is busy: this is sharing the queue,
+    # not taking it over.
+    for eid, why, _tee_only in todo[:(1 if _busy else _RECOVER_PER_SWEEP)]:
+        # Spend the retry BEFORE starting the job, not after it comes
+        # back: a job that kills the process never comes back, and that
+        # is precisely the case the budget exists to bound.
+        db = SessionLocal()
+        try:
+            ev = db.get(CameraEvent, eid)
+            if ev is None:
                 continue
-            _fallback_inflight.add(eid)
+            ev.produce_retries = int(
+                getattr(ev, "produce_retries", 0) or 0) + 1
+            _n = ev.produce_retries
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cameras: could not count a retry for event %s: %s",
+                        eid, exc)
+            continue
+        finally:
+            db.close()
 
-        def _run(event_id: int = eid) -> None:
-            try:
-                log.info(
-                    "cameras: tee-only fallback — green never arrived for "
-                    "event %s, producing from tee alone", event_id,
-                )
-                _process_camera_event_job(event_id)
-            finally:
-                with _fallback_lock:
-                    _fallback_inflight.discard(event_id)
-
+        log.info("cameras: recovery sweep — event %s: %s (attempt %s of %s)",
+                 eid, why, _n, _budget)
         threading.Thread(
-            target=_run, daemon=True, name=f"tee-only-fallback-{eid}"
+            target=_process_camera_event_job, args=(eid, _tee_only),
+            daemon=True, name=f"event-recovery-{eid}",
         ).start()
 
 
-def start_tee_only_fallback_sweeper(interval_sec: float = 60.0) -> None:
-    """Periodically produce tee-only for events whose green half is overdue.
-    No-op when the fallback is disabled (camera_tee_only_fallback_seconds=0).
-    Idempotent to start."""
-    if int(settings.camera_tee_only_fallback_seconds or 0) <= 0:
+def start_camera_event_recovery_sweeper(interval_sec: float = 60.0) -> None:
+    """Periodically restart camera events nothing is finishing: a paired
+    event whose green half is overdue, and one whose produce died with
+    the process. No-op when both windows are disabled. Idempotent to
+    start."""
+    if (int(settings.camera_tee_only_fallback_seconds or 0) <= 0
+            and int(settings.camera_paired_stall_seconds or 0) <= 0):
         return
-    if getattr(start_tee_only_fallback_sweeper, "_started", False):
+    if getattr(start_camera_event_recovery_sweeper, "_started", False):
         return
-    start_tee_only_fallback_sweeper._started = True  # type: ignore[attr-defined]
+    start_camera_event_recovery_sweeper._started = True  # type: ignore[attr-defined]
 
     def _loop() -> None:
         log.info(
-            "cameras: tee-only fallback sweeper started (%ss window)",
+            "cameras: event recovery sweeper started (tee-only after %ss, "
+            "stalled produce after %ss, %s attempts each)",
             settings.camera_tee_only_fallback_seconds,
+            settings.camera_paired_stall_seconds,
+            settings.camera_produce_max_retries,
         )
         while True:
             try:
-                _tee_only_fallback_sweep()
+                _camera_event_recovery_sweep()
             except Exception as exc:  # noqa: BLE001
-                log.warning("cameras: tee-only fallback sweep failed: %s", exc)
+                log.warning("cameras: event recovery sweep failed: %s", exc)
             time.sleep(interval_sec)
 
     threading.Thread(
-        target=_loop, daemon=True, name="tee-only-fallback-sweeper"
+        target=_loop, daemon=True, name="camera-event-recovery-sweeper"
     ).start()

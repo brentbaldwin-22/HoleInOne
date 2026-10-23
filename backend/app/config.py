@@ -120,7 +120,59 @@ class Settings(BaseSettings):
     # tee half, produce a TEE-ONLY clip so a green dropout costs you the
     # green angle, not the shot. If green shows up later, the event
     # re-produces with both. 0 disables the fallback.
-    camera_tee_only_fallback_seconds: int = 180
+    # HOW LONG TO WAIT FOR THE GREEN before producing from the tee
+    # alone. Was 180, which is not long enough to upload anything: a
+    # two-minute tee clip is 56 MB, and the green has one of its own to
+    # push over the same kind of link. Three minutes guaranteed that a
+    # paired hole produced tee-only and then produced AGAIN when the
+    # green landed -- twice the work for a worse first answer.
+    camera_tee_only_fallback_seconds: int = 900
+    # ...unless the green rig is plainly still alive, in which case its
+    # clip is probably still climbing the wire and there is nothing to
+    # recover from. A camera seen this recently counts as alive.
+    camera_green_alive_seconds: int = 240
+    # The ceiling on that patience. A green that heartbeats happily
+    # while its upload is dead would otherwise hold the event forever,
+    # and a tee-only clip is worth more than no clip.
+    camera_tee_only_max_wait_seconds: int = 3600
+    # WHEN A STUCK EVENT STOPS WAITING ITS TURN. The recovery sweep
+    # refuses to run while produce is busy, because the produce queue
+    # sorts oldest-first and feeding it recovery work puts this
+    # morning's backlog in front of the group on the tee. Right, until
+    # the queue is never idle -- and then nothing is ever recovered and
+    # an event sits at "Both clips in - STUCK" until somebody presses
+    # Re-process. Past this age an event is recovered anyway, one at a
+    # time, because half an hour of both-clips-in and nothing happening
+    # is worth a slot ahead of a fresh capture. 0 restores the old
+    # wait-for-quiet behaviour.
+    camera_recover_urgent_seconds: int = 1800
+
+    # Stalled-produce recovery. Both clips land, the event goes to
+    # "paired_uploaded", and the produce job that finishes it runs in a
+    # daemon thread owned by that upload request -- so a deploy, a
+    # restart or an OOM kills it and the event stays at
+    # "paired_uploaded" with nobody coming back for it. That is the
+    # "Both clips in · STUCK" pill on the Cameras page, and until this
+    # existed the only way out was an operator noticing it and pressing
+    # Re-process. After this many seconds in that state, restart the
+    # produce. A job still running in this process is never touched,
+    # whatever its age, so this window does not have to clear a slow
+    # produce -- it only decides how long a DEAD one waits. 0 disables.
+    camera_paired_stall_seconds: int = 600
+
+    # How many times the recovery sweeper may restart one event. A clip
+    # that kills the process on produce is otherwise handed straight
+    # back to produce on the next sweep, for ever: a crash loop made out
+    # of the recovery mechanism. Counted per event in the database (see
+    # CameraEvent.produce_retries). 0 disables recovery entirely.
+    camera_produce_max_retries: int = 3
+
+    # How far back the recovery sweeper will reach. A capture that
+    # stalled this morning is worth rescuing; one from last month is a
+    # decision for a human with the Re-process button, and without a
+    # floor the first deploy carrying the sweeper would re-produce every
+    # stalled event the database has ever held, ahead of today's golf.
+    camera_recover_max_age_hours: int = 24
 
     # "Pull new from prod" — the DEV backend fetches new camera clips from a
     # source (prod) backend and imports them, replacing the manual mirror

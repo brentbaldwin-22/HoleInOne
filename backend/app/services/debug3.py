@@ -1980,6 +1980,50 @@ DIFF_SENS = {
 }
 
 
+def _merge_blobs(hits: list, merge_px: float,
+                 prefer_area: float = 0.0) -> list:
+    """Collapse one frame's co-located blobs into one detection each.
+
+    `hits` is [(area, cx, cy)] for a single frame; returns the same
+    shape. See `merge_px` in detect_movers_by_diff for why.
+
+    LEADER CLUSTERING, not single-link. Single-link would chain: a
+    treeline of components each `merge_px` from the next walks into one
+    cluster spanning the frame, whose centroid is nowhere in particular.
+    Seeding with the most ball-like blob and admitting a member only
+    when it is within `merge_px` of the cluster's CENTROID bounds every
+    cluster to roughly a ball's own reach, which is the whole claim
+    being made about what belongs together.
+    """
+    # NO GUARD ON merge_px OR ON len(hits) HERE. The leader loop below
+    # is already correct for both -- a reach of zero admits only blobs
+    # that coincide exactly, and one blob makes one cluster. The caller
+    # skips the call entirely in those cases, which is a speed
+    # shortcut, and a second copy of the same test here was a condition
+    # no test could reach: each copy covered for the other.
+    #
+    # Most ball-like first, so a ball seeds its own cluster rather than
+    # being admitted into a tree's.
+    order = (sorted(hits, key=lambda h: abs(h[0] - prefer_area))
+             if prefer_area > 0 else sorted(hits, reverse=True))
+    # Each cluster carries its running weighted centroid and the biggest
+    # component in it.
+    clusters: list = []  # [sum_a, sum_ax, sum_ay, max_a]
+    for a, cx, cy in order:
+        _w = float(a) if a > 0 else 1.0
+        for c in clusters:
+            _cx, _cy = c[1] / c[0], c[2] / c[0]
+            if abs(cx - _cx) <= merge_px and abs(cy - _cy) <= merge_px:
+                c[0] += _w
+                c[1] += _w * cx
+                c[2] += _w * cy
+                c[3] = max(c[3], int(a))
+                break
+        else:
+            clusters.append([_w, _w * cx, _w * cy, int(a)])
+    return [(c[3], c[1] / c[0], c[2] / c[0]) for c in clusters]
+
+
 def detect_movers_by_diff(
     input_path: Path,
     f0: int,
@@ -2014,6 +2058,93 @@ def detect_movers_by_diff(
     # and drops both ghosts. Costs one extra decoded frame in memory,
     # and reports the middle of the three, so results lag by one frame.
     three_frame: bool = False,
+    # WHERE THE CAP BIT, filled in when a dict is passed.
+    #
+    # `per_frame` keeps the biggest N blobs a frame and drops the rest.
+    # That is the right order -- inside a ball-sized window the ball is
+    # the big one -- but it is extremal, and a band with a treeline in
+    # it has plenty of things bigger than a ball at 180 yards. When the
+    # cap binds on most frames, the ball is not being gated out by any
+    # of the chain gates: it is never emitted at all, and no amount of
+    # tuning the gates can reach it.
+    #
+    # That question has been asked of this function three times by
+    # hand. It answers it itself now: {frames, capped, max_hits}.
+    stats: dict | None = None,
+    # KILL THE "WHERE IT WAS" GHOST WITHOUT THE THREE-FRAME AND.
+    #
+    # A two-frame diff lights a mover twice: where it is, and where it
+    # was. The second one sits exactly on the PREVIOUS frame's real
+    # detection, which is what makes it removable without a third
+    # frame: drop any detection within this many pixels of one in the
+    # frame before.
+    #
+    # Three-frame differencing solves the same problem by ANDing the
+    # diffs either side, which also demands the ball clear threshold in
+    # both at the same pixels — a strictly harder test than either
+    # alone. On #768 that is the difference between a scan finding the
+    # flight on thirty frames and the sweep finding it on four.
+    #
+    # It cannot hurt a ball: anything moving faster than this is
+    # untouched, and an ascent crosses 25-50px a frame. What it does
+    # remove, as a bonus, is a treeline — a leaf edge lit by a pixel of
+    # camera shake sits within a pixel or two of where it was, every
+    # frame, which is precisely the signature being described.
+    #
+    # 0 disables it.
+    ghost_px: float = 0.0,
+    # KEEP WHAT LOOKS LIKE A BALL, NOT WHAT IS BIGGEST.
+    #
+    # The per-frame cut is extremal: it keeps the `per_frame` largest
+    # blobs and drops the rest. Inside a ball-sized window the ball IS
+    # the big one, which is where that rule came from. Across a band
+    # with a treeline in it the rule inverts — a leaf edge lit by a
+    # pixel of camera shake is hundreds of pixels of blob, and a ball
+    # at 180 yards is a few — so the cut keeps the trees and throws the
+    # ball away. The bigger the search area, the more certain that is,
+    # and raising the cap only admits more noise above it.
+    #
+    # Measured on #768: the worst frame offered 90 blobs against a keep
+    # of 40, and the operator's own scan finds the flight on thirty
+    # frames at 2x (a small crop, where the ball is the big one) and
+    # loses it at 1x (the whole frame, where it is not).
+    #
+    # Set this to roughly the ball's own blob area and the cut ranks by
+    # NEARNESS to it instead: ball-sized things win, and a tree edge
+    # loses however large it is. 0 keeps the old largest-first rule.
+    prefer_area: float = 0.0,
+    # ONE BALL, ONE POINT. The operator's observation, and the thing
+    # every fit downstream has been fighting:
+    #
+    #   "the moving ball creates a 2 or 3 spots/points per frame. so the
+    #    trailing dot in one frame could be lower than the leading dot
+    #    in the previous frame (making it look like it's decelerating)."
+    #
+    # A ball crossing 26px during one exposure is a SMEAR, and a
+    # threshold across a smear breaks into two or three components. Each
+    # is reported as its own detection at its own centroid, so a flight
+    # that is one object arrives as a cloud three deep -- and then:
+    #
+    #   - the sequential tracker has three candidates a frame and can
+    #     link leading-to-trailing, which reads as a step of 8px where
+    #     the ball moved 26;
+    #   - y stops being monotonic between adjacent frames, which is what
+    #     made a straight flight look like it was decelerating and sent
+    #     the line fitter after a curve;
+    #   - each ball costs three of the `per_frame` slots instead of one.
+    #
+    # Merging them is a per-FRAME operation, so it cannot join a ball to
+    # itself in the next frame however large this is. Within a frame the
+    # only thing this close to a ball is the rest of that ball -- or, on
+    # a two-frame diff, its ghost one full step away, which is why this
+    # stays well under a step and why the ghost drop runs anyway.
+    #
+    # Position is the area-weighted centroid of the cluster, which is
+    # the middle of the smear. Area is its LARGEST member, not the sum:
+    # `prefer_area` is calibrated against what a ball's own component
+    # measures, and summing would make every merged ball look like a
+    # tree. 0 disables.
+    merge_px: float = 0.0,
 ) -> list:
     """Frame-to-frame difference. The detector that actually sees the ball.
 
@@ -2038,6 +2169,9 @@ def detect_movers_by_diff(
     thr, _pf_default, area_max = DIFF_SENS[int(sens)]
     per_frame = int(per_frame) if per_frame else _pf_default
     out: list = []
+    # A one-slot box, because _emit closes over this and rebinding a
+    # plain local inside a nested function would shadow it instead.
+    _last_emitted: list = [[]]
     if not HAS_CV:
         return out
     try:
@@ -2061,6 +2195,7 @@ def detect_movers_by_diff(
                 def _emit(th_, f_):
                     n, _l, st, cen = cv2.connectedComponentsWithStats(th_)
                     hits = []
+                    _prev_pts = _last_emitted[0]
                     for i in range(1, n):
                         a = int(st[i, cv2.CC_STAT_AREA])
                         if 1 <= a <= area_max:
@@ -2072,12 +2207,52 @@ def detect_movers_by_diff(
                     # speckle is the small one, so keeping the smallest
                     # few of several hundred keeps the speckle and throws
                     # the ball away.
-                    hits.sort(reverse=True)
+                    #
+                    # ...unless a target area says what a ball looks
+                    # like here, in which case rank by nearness to it:
+                    # across a whole band the largest-first rule inverts
+                    # and keeps the treeline. See `prefer_area`.
+                    # ONE BALL, ONE POINT -- before the ranking and
+                    # before the cut, so a ball's smear competes as one
+                    # thing and wins one slot. See `merge_px`.
+                    if merge_px > 0 and len(hits) > 1:
+                        _n_in = len(hits)
+                        hits = _merge_blobs(hits, merge_px,
+                                            prefer_area=prefer_area)
+                        if stats is not None:
+                            stats["merged"] = (stats.get("merged", 0)
+                                               + _n_in - len(hits))
+                    if prefer_area > 0:
+                        hits.sort(key=lambda h: abs(h[0] - prefer_area))
+                    else:
+                        hits.sort(reverse=True)
+                    if stats is not None:
+                        stats["frames"] = stats.get("frames", 0) + 1
+                        stats["max_hits"] = max(stats.get("max_hits", 0),
+                                                len(hits))
+                        if len(hits) > per_frame:
+                            stats["capped"] = stats.get("capped", 0) + 1
+                            stats["dropped"] = (stats.get("dropped", 0)
+                                                + len(hits) - per_frame)
+                    _kept = []
                     for a, cx, cy in hits[:per_frame]:
-                        out.append({"frame": int(f_),
-                                    "x": int(round(x0 + cx)),
-                                    "y": int(round(y0 + cy)),
+                        _x, _y = int(round(x0 + cx)), int(round(y0 + cy))
+                        if ghost_px > 0 and any(
+                                abs(_x - px) <= ghost_px
+                                and abs(_y - py) <= ghost_px
+                                for px, py in _prev_pts):
+                            continue
+                        _kept.append((_x, _y))
+                        out.append({"frame": int(f_), "x": _x, "y": _y,
                                     "area": int(a)})
+                    # The REAL detections of this frame, which are the
+                    # next frame's ghosts. Kept before the per-frame cut
+                    # would have thrown some away: a ghost whose
+                    # original lost the cut is still a ghost.
+                    _last_emitted[0] = [
+                        (int(round(x0 + cx)), int(round(y0 + cy)))
+                        for _a, cx, cy in hits[:per_frame]
+                    ] if ghost_px > 0 else []
 
                 if three_frame:
                     _win.append((f, gray))
@@ -3599,6 +3774,293 @@ ASCENT_HEAD_ROOM_FRAC = 0.33
 ASCENT_BAND_FALLBACK_FRAC = 0.45
 
 
+# HOW MUCH OF THE BAND A REAL CHAIN CAN ACTUALLY USE.
+#
+# Not all of it, which is what makes `rise > band_h` the wrong test. A
+# chain is built from detections whose centres lie inside the band, and
+# the ball is first seen some way in and last seen some way short of the
+# far edge -- so a chain spanning the whole band edge to edge does not
+# happen. The case this was written for proves the point: a 143px band
+# under a 142.56px gate is not mathematically impossible, it is
+# impossible in the way that matters, and a strict comparison stays
+# silent through exactly the run that needed it.
+_BAND_USABLE_FRAC = 0.9
+
+
+# OVER HOW MANY FRAMES AN ASCENT'S SPEED IS WORTH MEASURING, for the
+# back-trace to the tee. Same three frames and the same reason as
+# DESCENT_RATE_SPAN_FRAMES: between adjacent detections the number is
+# dominated by which end of the ball's smear the centroid landed on,
+# and over three frames it is the ball.
+IMPACT_RATE_SPAN_FRAMES = 3
+
+# HOW MANY SPEED SAMPLES THE DRAG FIT NEEDS. Two points define a line
+# and say nothing about whether it is one.
+IMPACT_MIN_RATE_SAMPLES = 3
+
+
+def _impact_frame(pts: list, tee_y: float,
+                  span: int = IMPACT_RATE_SPAN_FRAMES):
+    """When the ball was struck, from how it is slowing down.
+
+    Returns (frame, model) or (None, None).
+
+    WHY NOT A STRAIGHT LINE BACK. A struck ball is fastest the instant
+    it leaves and slows the whole way up, so its speed across the band
+    is lower than its speed below it -- and running the band's speed
+    back over the gap to the tee puts the strike EARLIER than it
+    happened. Measured on #768: the chain's first four points average
+    17px/frame, 351px of gap over that is 20.6 frames, and the answer
+    comes out f1525 where the ball was actually struck at f1536.
+    Eleven frames, all of it the model and none of it the detector.
+
+    The error is in FRAMES and grows with the frame rate, which is why
+    it got worse when these cameras went to 60fps: the same gap takes
+    twice as many frames to cross, so the same proportional error is
+    twice as many frames of it.
+
+    TWO THINGS WERE WRONG, and they are worth separating because they
+    are different sizes. Measured on #768 against the true f1536:
+
+        four-point slope (what it did)    f1525.4    -10.6
+        speed fitted to the whole chain   f1532.2     -3.8
+        and then the drag term            f1536.2     +0.2
+
+    So 6.8 frames of it was the SPEED ESTIMATE -- four points at the
+    bottom of a chain, two of which were the same smear reported
+    twice, giving 17px/frame where the chain's own fit says 25.4 --
+    and 4.0 frames was the model. Fixing only the second would have
+    left most of it.
+
+    WHAT IS ACTUALLY HAPPENING. A ball in flight is slowed by drag,
+    which goes as the square of speed: du/dt = -k*u*u. That integrates
+    to 1/u being LINEAR in time -- a straight-line fit, just not of the
+    thing anyone fits first.
+
+    AND IT IS A LOOSE FIT, stated plainly because the answer it gives
+    is a good one and that is easy to over-read: R-squared is 0.70 on
+    #768's speed samples, with the worst residual a quarter of the
+    range they span. The scatter is the smear again -- which end of it
+    the centroid landed on -- and the trend survives it. What carries
+    the result is u0 and the shape, not a tight fit.
+
+    Given 1/u = 1/u0 + k*t, the distance covered is (1/k)*ln(1 + k*u0*t),
+    and setting that to the gap below the chain gives the strike
+    directly. Two properties worth having: with k at zero it reduces
+    exactly to distance over speed, so there is no discontinuity
+    between this and a straight line; and going backwards it is
+    BOUNDED -- it can never say more than 1/(k*u0) frames ago, whatever
+    the gap -- where a straight line is unbounded in the one direction
+    that matters.
+
+    Measured on #768, both of the chains the sweep produced for it, on
+    separate builds: f1536.2 and f1535.9 against a true f1536. That is
+    ONE swing. The model is physics and the span comes from
+    DESCENT_RATE_SPAN_FRAMES, so neither was chosen to fit it -- but a
+    second known impact frame would be worth more than anything else
+    that could be done to this function.
+    """
+    if len(pts) < 2:
+        return None, None
+    y0 = float(pts[0]["y"])
+    f0 = float(pts[0]["frame"])
+    # Already at or below the tee line: there is nothing to run back.
+    if y0 >= tee_y:
+        return None, None
+    rate: list = []
+    j = 0
+    for i in range(len(pts)):
+        j = max(j, i + 1)
+        while (j < len(pts)
+               and int(pts[j]["frame"]) - int(pts[i]["frame"]) < span):
+            j += 1
+        if j >= len(pts):
+            break
+        _df = int(pts[j]["frame"]) - int(pts[i]["frame"])
+        _u = (float(pts[i]["y"]) - float(pts[j]["y"])) / _df
+        if _u > 0.5:
+            rate.append(((int(pts[i]["frame"]) + int(pts[j]["frame"]))
+                         / 2.0 - f0, _u))
+    if len(rate) < IMPACT_MIN_RATE_SAMPLES:
+        return None, None
+    n = float(len(rate))
+    _sx = sum(t for t, _ in rate)
+    _sy = sum(1.0 / u for _, u in rate)
+    _sxx = sum(t * t for t, _ in rate)
+    _sxy = sum(t / u for t, u in rate)
+    _det = n * _sxx - _sx * _sx
+    if abs(_det) < 1e-9:
+        return None, None
+    k = (n * _sxy - _sx * _sy) / _det
+    inv_u0 = (_sy - k * _sx) / n
+    if inv_u0 <= 0:
+        return None, None
+    u0 = 1.0 / inv_u0
+    gap = y0 - tee_y            # negative: the tee is BELOW the chain
+    _straight = gap / u0
+    # NO DECELERATION WORTH THE NAME, which is a short chain, or one
+    # the noise went the other way on, or a ball that really is not
+    # slowing much over the band. Not a failure: fall through to
+    # distance over speed -- but over the speed fitted to the WHOLE
+    # chain, which is six of the eleven frames on its own.
+    #
+    # The second half of this test is what keeps the label honest.
+    # With k near zero the drag form IS distance over speed, to as
+    # many decimal places as you like, and reporting "drag" for a
+    # number a straight line would have given is a claim the run did
+    # not earn.
+    if k <= 0:
+        return f0 + _straight, "constant speed"
+    _bent = (math.exp(k * gap) - 1.0) / (k * u0)
+    if abs(_bent - _straight) < 0.5:
+        return f0 + _straight, "constant speed"
+    return f0 + _bent, "drag"
+
+
+def _ascent_band(frame_h: int, roi: dict | None,
+                 sky_frac: float | None = None) -> tuple[int, float]:
+    """(band height, tee line y) — the strip of sky the ascent searches.
+
+    ONE COPY. find_ascents and sweep_ascents each had this arithmetic
+    written out, which is two places for a band to be defined and one
+    of them to be changed. It is also the formula `_band_too_thin`
+    exists to check, and a check that re-derives what it is checking
+    checks nothing.
+
+    THE FLOOR IS THE SKYLINE WHEN SOMEBODY HAS DRAWN ONE, and a
+    computed guess otherwise. The guess is "a golfer's height above the
+    tee box", which is a PROXY for the thing that actually matters:
+    above the noise. Everything that makes a tee view hard to track --
+    players walking, a club swinging, shadows -- is below that line, and
+    a ball on its way out crosses above them against plain sky.
+
+    The proxy was measured off one reference frame where the hitting
+    area sat at 0.79 of frame height. On Rivertowne 8 it lands 150px
+    INSIDE the treeline, and the band then carries both stands of trees,
+    the houses and the flag -- all of them competing for a per-frame
+    budget of ten blobs, largest-first, against a ball at 180 yards. A
+    tree edge lit by a pixel of camera shake is the bigger blob every
+    time. Measured there: a flight detected on nearly every frame by a
+    scan of the same footage came through the sweep as FOUR points.
+
+    The skyline is the line a person can see and the camera cannot
+    compute. It is per-camera because the camera is bolted down.
+
+    Clamped to the tee line: a skyline drawn below where the ball is
+    struck would have the search looking at the golfer, which is the
+    one thing the band exists to exclude.
+    """
+    tee_top = (float(roi.get("y", 0.0)) * frame_h if roi
+               else (ASCENT_BAND_FALLBACK_FRAC
+                     + ASCENT_HEAD_ROOM_FRAC) * frame_h)
+    if sky_frac is not None and 0.0 < float(sky_frac) < 1.0:
+        _floor = min(float(sky_frac) * frame_h, tee_top)
+    else:
+        _floor = tee_top - ASCENT_HEAD_ROOM_FRAC * frame_h
+    band_h = int(max(40, min(frame_h - 1, _floor)))
+    return band_h, tee_top
+
+
+def _ascent_x_span(frame_w: int, left_frac: float | None,
+                   right_frac: float | None) -> tuple[int, int]:
+    """(x0, x1) — the columns of the band worth searching.
+
+    THE SKYLINE IS NOT ENOUGH ON ITS OWN, because a treeline is not
+    horizontal. On Rivertowne 8 the stand at the left reaches ~190px
+    higher than the trees on the right, so one horizontal cut either
+    keeps that stand in the band or throws away a third of the useful
+    sky with it. Measured there: a line drawn above the nearer trees
+    left 178 chains in the picture, nearly all of them tree edges, and
+    the ball's own chain was not among them.
+
+    A ball from THIS tee crosses a known part of the picture. Blanking
+    the rest is not a filter on what is found -- it is a refusal to
+    look, which is cheaper and cannot be argued with by a gate.
+
+    Fractions of frame width, either may be None. Reversed or
+    zero-width spans are ignored rather than obeyed: a span that
+    searches nothing finds nothing and says nothing about why.
+    """
+    x0 = 0
+    x1 = int(frame_w)
+    try:
+        if left_frac is not None and 0.0 <= float(left_frac) < 1.0:
+            x0 = int(float(left_frac) * frame_w)
+        if right_frac is not None and 0.0 < float(right_frac) <= 1.0:
+            x1 = int(float(right_frac) * frame_w)
+    except (TypeError, ValueError):
+        return 0, int(frame_w)
+    if x1 - x0 < 40:
+        return 0, int(frame_w)
+    return x0, x1
+
+
+# How far either side of a chain to show what else was moving, and how
+# many frames past its ends. Wide enough that a flight the tracker cut
+# short shows its continuation, tight enough to stay readable.
+NEAR_DETS_PAD_PX = 160
+NEAR_DETS_PAD_FRAMES = 12
+
+
+def _dets_near_chain(dets: list, chain: dict | None) -> list:
+    """Every detection around one chain, in its frames and a pad either
+    end. The raw material of that chain, so a picture can show whether
+    the ball was missing from the DETECTOR or only from the TRACKER."""
+    if not chain or not (chain.get("points") or []):
+        return []
+    pts = chain["points"]
+    f0 = min(p["frame"] for p in pts) - NEAR_DETS_PAD_FRAMES
+    f1 = max(p["frame"] for p in pts) + NEAR_DETS_PAD_FRAMES
+    x0 = min(p["x"] for p in pts) - NEAR_DETS_PAD_PX
+    x1 = max(p["x"] for p in pts) + NEAR_DETS_PAD_PX
+    # No y bound: the question is usually "where did it go above the
+    # last point", and clamping y is how that answer gets cropped out.
+    return [{"frame": int(d["frame"]), "x": int(d["x"]), "y": int(d["y"]),
+             "area": int(d.get("area") or 0)}
+            for d in dets
+            if f0 <= d["frame"] <= f1 and x0 <= d["x"] <= x1][:1200]
+
+
+def _band_too_thin(band_h: int, frame_h: int, min_rise_frac: float,
+                   tee_top: float) -> str | None:
+    """Can anything in a band this thin clear the rise gate? If not, say
+    so in the words that name the fix.
+
+    THE ARITHMETIC NOBODY CHECKS. The band is `tee_top` minus a golfer's
+    height, and the rise gate is a fraction of the WHOLE frame -- two
+    numbers with no relation to each other, so there is nothing stopping
+    the second from being larger than the first. When it is, every chain
+    fails `rise` no matter how good the swing, and the report reads like
+    a tuning problem: "1 chain, failed rise" is the same sentence
+    whether the bar is a little high or the band is physically too short
+    to contain it.
+
+    Seen on hole 8: no hitting area was set for the day, so the ROI fell
+    back to the tee camera's PERSON trigger zones, whose top edge is at
+    a standing golfer's head (0.46 of frame) rather than at the ground
+    (0.79). The band code then subtracted a golfer's height from a box
+    that already started above the golfer -- headroom twice -- leaving a
+    143px band under a 142px rise gate. An hour went into the swing
+    before anyone looked at the geometry.
+    """
+    need = min_rise_frac * frame_h
+    if band_h <= 0 or need <= band_h * _BAND_USABLE_FRAC:
+        return None
+    return (
+        f"THE BAND IS TOO THIN FOR THE RISE GATE: it is {int(band_h)}px "
+        f"and a chain must rise {int(need)}px inside it — "
+        f"{need / band_h:.0%} of the whole band, which no real chain "
+        f"reaches, so nothing in it can pass however good the swing. "
+        f"The band is the tee line "
+        f"({int(tee_top)}px, {tee_top / max(1, frame_h):.2f} of the "
+        f"frame) less a golfer's height. A tee line that high usually "
+        f"means the hitting area is a PERSON box -- drawn round a "
+        f"standing golfer rather than on the ground -- so draw the "
+        f"hitting area on the grass at the tee, or lower "
+        f"ascent_min_rise_frac for this hole. "
+    )
+
+
 def find_ascents(
     input_path: Path,
     fps: float,
@@ -3607,6 +4069,11 @@ def find_ascents(
     window_frames: int = ASCENT_WINDOW_FRAMES,
     min_points: int = ASCENT_MIN_POINTS,
     roi: dict | None = None,
+    # WHERE THE NOISE STOPS, as a fraction of frame height, or None to
+    # fall back to the computed guess. See `_ascent_band`.
+    sky_frac: float | None = None,
+    left_frac: float | None = None,
+    right_frac: float | None = None,
 ) -> dict:
     """Did a ball rise away from `ball_xy` just after `impact_frame`?
 
@@ -3647,19 +4114,19 @@ def find_ascents(
             return out
         # The band: full width, from the top of the frame down to a
         # golfer's height above the tee box.
-        _tee_top = (float(roi.get("y", 0.0)) * frame_h if roi
-                    else (ASCENT_BAND_FALLBACK_FRAC
-                          + ASCENT_HEAD_ROOM_FRAC) * frame_h)
-        band_h = int(max(40, min(frame_h - 1,
-                                 _tee_top - ASCENT_HEAD_ROOM_FRAC * frame_h)))
-        out["band"] = [0, 0, int(frame_w), band_h]
+        band_h, _tee_top = _ascent_band(frame_h, roi, sky_frac)
+        _x0, _x1 = _ascent_x_span(frame_w, left_frac, right_frac)
+        out["band"] = [_x0, 0, _x1 - _x0, band_h]
+        out["band_warning"] = _band_too_thin(
+            band_h, frame_h, ASCENT_MIN_RISE_FRAC, _tee_top)
         dets = detect_movers_by_diff(input_path, f0, f1, sens=2,
                                      per_frame=DESCENT_DIFF_PER_FRAME,
-                                     roi=(0, 0, int(frame_w), band_h),
+                                     roi=(_x0, 0, _x1 - _x0, band_h),
                                      three_frame=True)
         if not dets:
             out["reason"] = (
-                f"nothing moved in the band above the golfers "
+                (out.get("band_warning") or "")
+                + f"nothing moved in the band above the golfers "
                 f"(the top {band_h}px) after the strike")
             return out
         tracks = build_tracks(dets, 14.0, min_len=int(min_points),
@@ -3760,7 +4227,8 @@ def find_ascents(
         if best is None:
             out["considered"] = considered
             out["reason"] = (
-                f"{len(tracks)} track(s) after the strike, none of them a "
+                (out.get("band_warning") or "")
+                + f"{len(tracks)} track(s) after the strike, none of them a "
                 f"ball leaving this spot"
                 + ("; closest: " + "; ".join(
                     f"{c['n_points']}pts {c.get('why', 'not judged')}"
@@ -3784,7 +4252,73 @@ def find_ascents(
 # little up there that is not the ball, and a whole video's worth of
 # detections has to be small enough for the tracker to link without
 # choking. Ten is what the operator's own map uses.
-SWEEP_PER_FRAME = 10
+# HOW MANY BLOBS A FRAME SURVIVE, largest-first. Raised from 10 to 40
+# on 19 Oct, and it was the wrong number in two ways at once.
+#
+# IT WAS STRICTER THAN THE OPERATOR'S OWN SCAN. The sweep runs at
+# sensitivity 3, whose detector default is SIXTEEN per frame; this
+# overrode it down to ten. So the search that decides whether a swing
+# exists was deliberately seeing less than the scan an operator presses
+# when they want to find something, on the same footage, with the same
+# threshold and the same area band. Nothing ever justified that.
+#
+# AND LARGEST-FIRST IS A PROXY THAT INVERTS AT RANGE. Inside a
+# ball-sized window the ball is the big one; across a band with a
+# treeline in it, a tree edge lit by a pixel of shake is far bigger
+# than a ball at 180 yards, and the cut keeps the trees. The field
+# evidence is the operator's: in the edit wizard the same flight yields
+# 30+ points when zoomed in and a handful at 1x. Zooming changes no
+# threshold and no gate -- it shrinks the CROP, so fewer things compete
+# for the cap, which is this constant described from the other side.
+#
+# Tunable per hole now (`ascent_per_frame`), because the right value is
+# a property of what else moves in a particular band, and the only
+# honest way to set it is to look at one.
+SWEEP_PER_FRAME = 40
+
+# HOW FAR OFF ITS OWN LINE a chain may reach, in pixels, when the sweep
+# links detections. The descent search has passed one since the day a
+# ball walked into a bush and jumped 355px across the picture; the
+# ascent sweep passed none, and so ran with the corridor test off AND
+# with the ordering that depends on it off — established tracks picked
+# purely by LENGTH, which hands an ambiguous detection to whatever has
+# been running longest rather than to whatever is actually predicting.
+#
+# Measured on #768: the detector offers the flight on ~20 frames and
+# the chain keeps 4, with its own points unevenly spaced — the
+# signature of a link taken off the line early, a velocity estimate
+# wrecked by it, and every prediction after that aimed at nothing.
+#
+# An ascent is the straightest thing in this file. It is the first
+# third of a second of a struck ball: no gravity curve worth the name,
+# no bounce, no wind yet. If a corridor is right for a descent it is
+# more right here. Same 10px, because that number was measured on this
+# footage and this detector rather than guessed.
+ASCENT_CORRIDOR_PX = 10.0
+
+# HOW CLOSE TWO BLOBS IN ONE FRAME ARE ONE BALL, in pixels. See
+# `merge_px` in detect_movers_by_diff for the whole argument; this is
+# where the number comes from.
+#
+# The constraint is two-sided, and the lower bound is set by the thing
+# being merged. A ball travelling 26px during one exposure leaves a
+# streak 26px long, so the pieces of ONE ball can sit a full step
+# apart end to end -- and a reach that only covers half of that leaves
+# the smear in two pieces, which is the failure being fixed. Admission
+# is against the cluster's running centroid, so a reach of R takes a
+# streak of roughly 2R when the seed is in the middle of it and R plus
+# a component when the seed is at one end. 20 covers a 26px streak
+# either way.
+#
+# The upper bound is a ball and ITS OWN GHOST, which a two-frame diff
+# puts one step behind it. That is what keeps this from being set to
+# anything: averaging those together would halve every measured step
+# and put the rate gate on the wrong side of its floor. It is also why
+# three-frame differencing is the default -- when the smear is as long
+# as the step, the ball and its ghost are one contiguous streak in the
+# source pixels and no merge rule can separate what the detector
+# already joined.
+ASCENT_MERGE_PX = 20.0
 
 # HOW LONG A CHAIN IN THE SWEEP MAY RUN, in frames. A ball crosses the
 # band above the golfers in well under a second; at 50fps sixty frames is
@@ -4286,6 +4820,819 @@ def _dedupe_ascents(asc: list, gap_px: float = 40.0) -> list:
     return out
 
 
+# ── pulling a flight out of the cloud, instead of walking into it ────
+#
+# WHAT THE OPERATOR'S EYE DOES, AND THE TRACKER CANNOT. build_tracks is
+# sequential: it walks the frames in order and extends each chain by one
+# detection at a time, choosing locally. Every choice is made without
+# knowing how it turns out, so one bad link ends a flight -- and a
+# detection taken by a longer chain is gone whatever it was.
+#
+# Measured on #768 after the detector was fixed: a clean column of
+# detections from f1555 to f1581, and the best chain the tracker built
+# out of it was FOUR points spanning sixteen frames, gaps of four and
+# ten, refused on rate, sparse and gap. The flight is obvious in the
+# picture and the walk cannot see it, because seeing it means looking at
+# all the points at once.
+#
+# So look at them at once. A struck ball is, over the third of a second
+# it spends crossing the band, almost exactly a straight line at
+# constant speed: two numbers of velocity and a starting point. Propose
+# one from a pair of detections, count how many others lie on it, keep
+# the proposals with the most. Nothing sequential, nothing to steal,
+# and a frame the detector missed costs one inlier rather than the rest
+# of the chain.
+
+# How far off the proposed line a detection may sit and still count.
+# Tight: the line is fitted to a ball, and anything that needs more
+# slack than this is a different object.
+FIT_TOL_PX = 7.0
+# The speed band a seed pair must imply, in px/frame upward. Below is a
+# cloud drifting; above is nothing a camera at this distance sees.
+FIT_MIN_STEP = 4.0
+FIT_MAX_STEP = 120.0
+# How far either side of a seed to extend, in frames. A ball crosses
+# the band in well under a second; this is generous at 60fps.
+FIT_WINDOW = 70
+# A runaway guard, not a budget: with ball-sized ranking the band holds
+# few enough detections that this is rarely approached.
+FIT_MAX_SEEDS = 60000
+# Die early. Most seeds are two unrelated specks and prove it within a
+# couple of steps, which is what keeps the whole pass affordable.
+FIT_MAX_MISSES = 4
+
+
+def fit_ascent_chains(dets: list, min_points: int,
+                      tol_px: float = FIT_TOL_PX,
+                      window: int = FIT_WINDOW,
+                      # CURVE REFINEMENT AND GEOMETRIC DEDUPE, OFF BY
+                      # DEFAULT AFTER A REGRESSION. Together they turned
+                      # six fragments of one flight into a single
+                      # fourteen-point chain on the real detections from
+                      # #768 — and on the WHOLE cloud took the sweep
+                      # from two accepted chains to none. A quadratic
+                      # fitted to five noisy points can curve hard
+                      # enough to collect unrelated detections within
+                      # tolerance, and three passes of ten frames'
+                      # reach compounds it.
+                      #
+                      # Kept, because the 29-point regression test it
+                      # was built from still holds, and opt-in until it
+                      # can be made safe on a full band.
+                      refine: bool = False) -> list:
+    """Chains found by FITTING lines to the detection cloud.
+
+    Returns the same {points, span_px, rise_px} shape build_tracks does,
+    so the gates downstream cannot tell where a chain came from.
+
+    Deliberately additive: these are handed to the gates alongside the
+    tracker's own chains, not instead of them. A fit is better at a
+    straight fast thing in a crowd and has nothing to say about anything
+    else, and the gates are what decide either way.
+    """
+    by_frame: dict = {}
+    for d in dets or []:
+        by_frame.setdefault(int(d["frame"]), []).append(d)
+    frames = sorted(by_frame)
+    if len(frames) < min_points:
+        return []
+
+    found: list = []
+    claimed: set = set()
+    seeds = 0
+
+    def _key(d):
+        return (int(d["frame"]), int(d["x"]), int(d["y"]))
+
+    for f in frames:
+        for a in by_frame[f]:
+            if _key(a) in claimed:
+                continue
+            for df in (1, 2):
+                for b in by_frame.get(f + df, ()):
+                    if _key(b) in claimed:
+                        continue
+                    vy = (b["y"] - a["y"]) / df
+                    vx = (b["x"] - a["x"]) / df
+                    # RISING, AND STEEPLY. A ball leaving a tee climbs
+                    # away; anything crossing the picture on a diagonal
+                    # is going somewhere else, and refusing it here is
+                    # cheaper than fitting it and refusing it later.
+                    if not (FIT_MIN_STEP <= -vy <= FIT_MAX_STEP):
+                        continue
+                    if abs(vx) > abs(vy):
+                        continue
+                    seeds += 1
+                    if seeds > FIT_MAX_SEEDS:
+                        return _dedupe_fits(found, refine)
+                    pts = _grow_fit(by_frame, a, vx, vy, f, tol_px, window)
+                    # A LINE GETS IT STARTED; A CURVE KEEPS IT. See
+                    # _refine_fit: a struck ball is not at constant
+                    # velocity for long enough to matter here.
+                    if refine:
+                        pts = _refine_fit(by_frame, pts, tol_px)
+                    if len(pts) >= min_points:
+                        found.append(pts)
+                        for q in pts:
+                            claimed.add(_key(q))
+                        break
+                else:
+                    continue
+                break
+    return _dedupe_fits(found, refine)
+
+
+def _grow_fit(by_frame: dict, a: dict, vx: float, vy: float, f0: int,
+              tol_px: float, window: int) -> list:
+    """Every detection lying on the line through `a` with velocity
+    (vx, vy), walked outward in both directions from the seed."""
+    out = [a]
+    for direction in (1, -1):
+        misses = 0
+        for step in range(1, window + 1):
+            g = f0 + direction * step
+            cands = by_frame.get(g)
+            if not cands:
+                misses += 1
+                if misses > FIT_MAX_MISSES:
+                    break
+                continue
+            px = a["x"] + vx * (g - f0)
+            py = a["y"] + vy * (g - f0)
+            best = None
+            best_d = tol_px
+            for c in cands:
+                d = math.hypot(c["x"] - px, c["y"] - py)
+                if d <= best_d:
+                    best, best_d = c, d
+            if best is None:
+                misses += 1
+                if misses > FIT_MAX_MISSES:
+                    break
+                continue
+            misses = 0
+            out.append(best)
+    out.sort(key=lambda q: q["frame"])
+    return out
+
+
+# How far past a fit's own ends to look for more of it, in frames. A
+# curve fitted to twenty points says little about where the thing was
+# fifty frames earlier, so this is deliberately short and applied
+# repeatedly rather than once and far.
+REFINE_REACH = 10
+REFINE_PASSES = 3
+
+
+def _refine_fit(by_frame: dict, pts: list, tol_px: float) -> list:
+    """Re-collect a fit's inliers against a CURVE through its points.
+
+    A LINE IS THE WRONG SHAPE, and the fragments say so. Measured on
+    #768: the flight's own y-steps run 26, 24, 25, 23, 22, 19, 21, 18,
+    17, 18 — the ball decelerates, from perspective as much as physics.
+    A constant-velocity line holds about eight frames inside a 7px
+    tolerance and then walks off the ball, so one flight came back as
+    SIX overlapping fragments, two of which passed the gates as
+    separate swings 40ms apart and four of which were refused on `rise`
+    for being too short. All six were the same shot.
+
+    A quadratic in frame absorbs that exactly, and costs one polyfit.
+    The line still does the finding: it only has to survive long enough
+    to collect the handful of points a curve can be fitted to.
+
+    Grows in short reaches rather than one long extrapolation, because
+    a curve is only trustworthy near the points that made it.
+    """
+    import numpy as np
+
+    for _ in range(REFINE_PASSES):
+        if len(pts) < 5:
+            return pts
+        fs = [float(p["frame"]) for p in pts]
+        try:
+            cx = np.polyfit(fs, [float(p["x"]) for p in pts], 2)
+            cy = np.polyfit(fs, [float(p["y"]) for p in pts], 2)
+        except Exception:  # noqa: BLE001 - degenerate fit, keep the line
+            return pts
+        lo = int(min(fs)) - REFINE_REACH
+        hi = int(max(fs)) + REFINE_REACH
+        grown: list = []
+        for g in range(lo, hi + 1):
+            cands = by_frame.get(g)
+            if not cands:
+                continue
+            px = float(np.polyval(cx, g))
+            py = float(np.polyval(cy, g))
+            best = None
+            best_d = tol_px
+            for c in cands:
+                d = math.hypot(c["x"] - px, c["y"] - py)
+                if d <= best_d:
+                    best, best_d = c, d
+            if best is not None:
+                grown.append(best)
+        # NEVER SHORTER. A pass that loses points means the curve is a
+        # worse description than what it was fitted to, so keep what we
+        # had; it is also what stops the loop once nothing more is
+        # being found.
+        #
+        # UNREACHABLE IN PRACTICE, as far as I can make it go: an
+        # outlier 600px off the line still drags the quadratic only far
+        # enough that every original point is re-collected. Left in as
+        # the loop's terminator and a guard against a fit shape that is
+        # less forgiving than this one.
+        if len(grown) <= len(pts):
+            return pts
+        pts = grown
+    return pts
+
+
+# How near a kept chain a point has to pass to count as the same
+# object, and how far either side in frames to look for it. Both are
+# loose on purpose: this is asking "is this the same flight", not "is
+# this the same detection".
+DEDUPE_NEAR_PX = 14.0
+DEDUPE_NEAR_DF = 2
+
+
+def _same_object(pts: list, kept: list) -> bool:
+    """Is this fit mostly retracing one already kept?
+
+    GEOMETRY, NOT IDENTITY. Comparing point-keys fails exactly where it
+    matters: the detector reports the ball at (1370,393) on f1550 AND
+    on f1551, so two fits of the same flight can share not one key
+    while tracing the same line a pixel apart. Measured on #768 — three
+    "separate" chains over the same twenty frames, two of which the
+    gates passed as swings 40 milliseconds apart.
+
+    WHY THE SAME SPOT TWICE: a moving ball is a smear, and the
+    difference lights two or three blobs across it — leading edge,
+    trailing edge, sometimes the middle. So the trailing blob of one
+    frame can sit below the leading blob of the previous one, which is
+    also why a flight's apparent step shortens as it climbs. Some of
+    that "deceleration" is which end of the smear got picked, not the
+    ball slowing down. Hence a radius and a frame window here, rather
+    than an equality.
+    """
+    hit = 0
+    for q in pts:
+        for k in kept:
+            if any(abs(r["frame"] - q["frame"]) <= DEDUPE_NEAR_DF
+                   and math.hypot(r["x"] - q["x"], r["y"] - q["y"])
+                   <= DEDUPE_NEAR_PX
+                   for r in k):
+                hit += 1
+                break
+    return hit > len(pts) // 2
+
+
+def _dedupe_fits(found: list, geometric: bool = False) -> list:
+    """Longest first, dropping any fit that mostly retraces one already
+    kept -- one object should yield one chain, the same rule
+    build_tracks works to.
+
+    NO LENGTH FLOOR HERE. It took a `min_points` and ignored it, so I
+    made it enforce one -- and then neither that check nor the one
+    upstream could be killed by a mutation, because each covered for
+    the other. A floor in two places is a floor that cannot be tested
+    in either. It lives where it has an effect: at the point a fit is
+    accepted, before it claims its detections and blocks the flight
+    that needed them.
+    """
+    found.sort(key=len, reverse=True)
+    kept: list = []
+    _paths: list = []
+    seen: set = set()
+    for pts in found:
+        if geometric:
+            if _same_object(pts, _paths):
+                continue
+            _paths.append(pts)
+        else:
+            # The original rule: identity, not geometry. Blind to a
+            # flight reported at the same spot on two frames, but it
+            # cannot merge two chains that are genuinely different.
+            ks = {(q["frame"], q["x"], q["y"]) for q in pts}
+            if len(ks & seen) > len(ks) // 2:
+                continue
+            seen |= ks
+        kept.append({
+            "points": pts,
+            "span_px": math.hypot(pts[-1]["x"] - pts[0]["x"],
+                                  pts[-1]["y"] - pts[0]["y"]),
+            "rise_px": float(pts[0]["y"] - pts[-1]["y"]),
+            "from_fit": True,
+        })
+    return kept
+
+
+# HOW FAR OFF THE JOINT LINE a chain may sit and still be the same
+# flight, in pixels. Measured on #768's own four chains, which lie
+# within 4px of one line over 389px of rise; 12 leaves room for the
+# smear without admitting a second object that merely crosses.
+ASCENT_STITCH_PX = 12.0
+
+# HOW LONG A HOLE THE JOIN MAY REACH ACROSS, in frames.
+#
+# THIS NUMBER WAS REMOVED ONCE AND IS BACK FOR A REASON. It was 12
+# against a gap gate of 5, so the join reached across holes the gates
+# then refused and built chains that could not pass -- on #768 a flight
+# joined a tail nine frames past its end and one 22-point chain with
+# 484px of rise was thrown out where four pieces of it had been
+# accepted. The conclusion then was that the reach must equal the gate.
+#
+# That was right while nothing could close a hole. The operator then
+# showed that the hole is not real: zoom to 2.7x, scan, and f1572-f1579
+# are all there. The sweep misses them because it runs a THREE-frame
+# difference over the whole band, and up high where the ball is faint
+# that asks it to clear threshold in the diff against the frame before
+# AND the frame after at the same pixels. A two-frame pass in a crop --
+# which is exactly what the operator's own scan is -- finds them.
+#
+# So the reach is wide again, and fill_chain_holes closes what it
+# spans. The guarantee that the result is something the gates can keep
+# has moved to where it belongs: _longest_rising will not step further
+# than the gap gate allows, whatever it was handed. A hole that gets
+# filled is kept; one that does not is trimmed exactly as before.
+ASCENT_STITCH_GAP_FRAMES = 15
+
+# HOW FAR OFF THE LINE between the two ends of a hole to look, in
+# pixels. The ball is somewhere on the segment joining them -- that is
+# what makes this cheap -- and the pad only has to cover how far a real
+# flight bows away from a straight line over a fifth of a second, plus
+# the smear.
+ASCENT_FILL_PAD_PX = 48
+
+# HOW CLOSE TO THE PREDICTED POSITION a re-read point has to land to
+# be taken, in pixels. NOT the same as the crop pad, and much smaller.
+# The crop has to be generous or it clips the ball; acceptance has to
+# be tight or an empty hole fills with whatever noise the two-frame
+# pass turned up inside a generous box -- and a hole filled with noise
+# is worse than a hole, because the walk then bridges it and the gap
+# gate stops meaning anything.
+ASCENT_FILL_TOL_PX = 16.0
+
+# HOW MANY HOLES ONE SWEEP MAY RE-SCAN. Each one seeks into the clip
+# and decodes a run of frames, so this is the difference between a pass
+# that costs a moment and one that costs a minute on a band full of
+# junk chains. Only groups the gates could plausibly accept are worth
+# re-reading at all, which is most of the saving; this is the ceiling
+# behind it.
+ASCENT_FILL_MAX_HOLES = 24
+
+# HOW MANY POINTS A UNION NEEDS before its holes are worth re-reading.
+# A three-point group is noise agreeing with itself.
+ASCENT_FILL_MIN_POINTS = 6
+
+
+def fill_chain_holes(input_path, pts: list, max_hole: int,
+                     sens: int = 3, pad_px: float = ASCENT_FILL_PAD_PX,
+                     tol_px: float = ASCENT_FILL_TOL_PX,
+                     budget: list | None = None) -> list:
+    """Re-read the holes in a chain, the way an operator zooms and scans.
+
+    THE HOLE IS A DETECTION HOLE, NOT A GAP IN THE FLIGHT. The sweep
+    runs a three-frame difference, which is the right default -- it
+    kills the "where it was" ghost that otherwise measures a ball's
+    velocity as zero -- but it is strictly harder than a two-frame one,
+    and a faint ball high in the band fails it. The operator's own scan
+    is two-frame in a crop, and it finds those frames every time.
+
+    So for each hole: take the straight line between the two points
+    either side of it, crop to that segment plus a pad, and run the
+    two-frame pass over just those frames. The ball is the only thing
+    in a box that size that is moving along that line.
+
+    No ghost handling, because the match is to a PREDICTED position
+    rather than to whatever is nearest: a two-frame ghost sits at the
+    previous frame's position, a whole step away from where the ball is
+    predicted to be, and loses.
+
+    THE CROP IS GENEROUS AND THE ACCEPTANCE IS NOT. `pad_px` only has
+    to avoid clipping the ball out of the box; `tol_px` is what decides
+    whether what turned up in the box is the ball. An empty hole must
+    come back empty, or the walk bridges everything and the gap gate
+    stops meaning anything.
+
+    Returns the extra points, in the same shape the detector emits.
+    """
+    out: list = []
+    if not HAS_CV or len(pts) < 2:
+        return out
+    for a, b in zip(pts, pts[1:]):
+        fa, fb = int(a["frame"]), int(b["frame"])
+        if fb - fa < 2 or fb - fa > max_hole:
+            continue
+        if budget is not None:
+            if budget[0] <= 0:
+                break
+            budget[0] -= 1
+        x0 = int(min(a["x"], b["x"]) - pad_px)
+        x1 = int(max(a["x"], b["x"]) + pad_px)
+        y0 = int(min(a["y"], b["y"]) - pad_px)
+        y1 = int(max(a["y"], b["y"]) + pad_px)
+        x0, y0 = max(0, x0), max(0, y0)
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            continue
+        # One frame either side, because a two-frame difference has
+        # nothing to say about the first frame it is given.
+        dets = detect_movers_by_diff(
+            input_path, fa, fb, sens=int(sens),
+            roi=(x0, y0, x1 - x0, y1 - y0),
+            per_frame=8, three_frame=False, cap=4000,
+            merge_px=ASCENT_MERGE_PX)
+        by_frame: dict = {}
+        for d in dets:
+            by_frame.setdefault(int(d["frame"]), []).append(d)
+        for f in range(fa + 1, fb):
+            cands = by_frame.get(f)
+            if not cands:
+                continue
+            # Where the ball should be, if it kept going.
+            t = (f - fa) / float(fb - fa)
+            px = float(a["x"]) + t * (float(b["x"]) - float(a["x"]))
+            py = float(a["y"]) + t * (float(b["y"]) - float(a["y"]))
+            best = min(cands, key=lambda q: math.hypot(q["x"] - px,
+                                                       q["y"] - py))
+            if math.hypot(best["x"] - px, best["y"] - py) <= tol_px:
+                out.append(best)
+    return out
+
+
+
+def _chain_axis(pts: list):
+    """The line through a chain, as (x0, y0, ux, uy) with (ux, uy) unit.
+
+    Least squares through the centroid, which is the right fit for a
+    thing that is nearly vertical -- y = mx + c is not, and a ball
+    leaving a tee is within a few degrees of straight up.
+    """
+    n = float(len(pts))
+    cx = sum(float(q["x"]) for q in pts) / n
+    cy = sum(float(q["y"]) for q in pts) / n
+    sxx = sum((float(q["x"]) - cx) ** 2 for q in pts)
+    syy = sum((float(q["y"]) - cy) ** 2 for q in pts)
+    sxy = sum((float(q["x"]) - cx) * (float(q["y"]) - cy) for q in pts)
+    # The principal axis: the eigenvector of the scatter matrix with the
+    # larger eigenvalue, which for a flight is the direction of travel.
+    theta = 0.5 * math.atan2(2.0 * sxy, sxx - syy)
+    return cx, cy, math.cos(theta), math.sin(theta)
+
+
+def _off_axis(axis, q) -> float:
+    """How far a point sits off a chain's line, in pixels."""
+    cx, cy, ux, uy = axis
+    dx, dy = float(q["x"]) - cx, float(q["y"]) - cy
+    return abs(dx * uy - dy * ux)
+
+
+def _one_flight(a: list, b: list, tol_px: float, gap_frames: int) -> bool:
+    """Are these two chains pieces of the same ball leaving the tee?
+
+    BOTH WAYS, because one chain's line is only as good as its spread:
+    a six-point piece covering a fifth of the flight can have any
+    number of longer chains lying along it by accident, and asking the
+    long one whether the short one is on ITS line is the test that
+    catches that.
+    """
+    af0, af1 = a[0]["frame"], a[-1]["frame"]
+    bf0, bf1 = b[0]["frame"], b[-1]["frame"]
+    # In time: overlapping, or separated by a hole the gates would
+    # accept inside one chain. Joining across a longer one can only
+    # produce a chain the walk below then trims back, so the far piece
+    # is lost rather than kept separately -- which is how a second
+    # swing down the same line would disappear.
+    if max(af0, bf0) - min(af1, bf1) > gap_frames:
+        return False
+    ax, bx = _chain_axis(a), _chain_axis(b)
+    return (all(_off_axis(ax, q) <= tol_px for q in b)
+            and all(_off_axis(bx, q) <= tol_px for q in a))
+
+
+def _longest_rising(pts: list, max_step: int) -> list:
+    """The longest run through these points that only ever goes up.
+
+    ONE POINT A FRAME, AND NO STEPPING BACK DOWN, in one operation --
+    because they are the same question. The detector reports a ball two
+    or three times a frame (the smear) and sometimes at the same place
+    on two frames, so a union of overlapping chains holds both the
+    leading and the trailing end of the same ball and, here and there,
+    yesterday's position again. Choosing per frame first and then
+    pruning what goes backwards gets the order wrong: the right point
+    for a frame is the one the REST of the flight agrees with.
+
+    So: the longest subsequence with strictly increasing frame and
+    strictly decreasing y. It cannot take two points from one frame,
+    cannot take a point that steps back down, and when a frame offers a
+    leading and a trailing end it keeps whichever leaves more of the
+    flight intact. Measured on #768: four chains of 6-8 points become
+    one of 16 over 25 frames, rise 389px.
+
+    AND NO STEP LONGER THAN `max_step` FRAMES, which is the gap gate's
+    own limit. Without it the walk reaches across a hole the gates will
+    refuse and takes the whole chain down with it -- on #768 a tail at
+    f1580, nine frames past the end of the flight and collinear with
+    it, turned four accepted pieces into one chain refused for `gap`.
+    The join is not allowed to build what the gates cannot keep.
+    """
+    if not pts:
+        return []
+    # BY FRAME, AND WITHIN A FRAME THE LEADING END FIRST. This ordering
+    # carries two of the three rules, which is why there is no frame
+    # comparison in the loop below:
+    #
+    #   - j < i implies frame[j] <= frame[i], so the walk can only ever
+    #     go forward in time;
+    #   - within one frame the smaller y sorts first, and the test
+    #     below wants y to DECREASE, so two points from the same frame
+    #     can never both be taken.
+    #
+    # A `frame[j] < frame[i]` test as well reads like a third rule and
+    # is unreachable: no mutation of it changes any result. The leading
+    # end first is the part that does work -- it is what makes a tie in
+    # length resolve towards the ball rather than its tail, and
+    # reversing it changes the chain #768 comes back with.
+    order = sorted(pts, key=lambda q: (int(q["frame"]), int(q["y"])))
+    best = [1] * len(order)
+    prev = [-1] * len(order)
+    for i in range(len(order)):
+        for j in range(i):
+            if (int(order[j]["y"]) > int(order[i]["y"])
+                    and (int(order[i]["frame"]) - int(order[j]["frame"])
+                         <= max_step)
+                    and best[j] + 1 > best[i]):
+                best[i] = best[j] + 1
+                prev[i] = j
+    i = max(range(len(order)), key=lambda k: best[k])
+    out: list = []
+    while i >= 0:
+        out.append(order[i])
+        i = prev[i]
+    return out[::-1]
+
+
+# HOW MANY FRAMES AT A TIME the extension reads ahead. Small enough
+# that a constant-velocity guess has not drifted past the tolerance by
+# the end of it, large enough that the seek is amortised.
+ASCENT_EXTEND_CHUNK_FRAMES = 5
+
+# HOW FAR OFF THE PREDICTED POSITION an extension point may land. Wider
+# than the hole fill's, because a hole is bounded at BOTH ends and an
+# extension is a guess running forward: a ball decelerating 20% over
+# five frames falls about ten pixels short of a constant-velocity
+# prediction, and the tolerance has to swallow that without swallowing
+# the sky.
+ASCENT_EXTEND_TOL_PX = 24.0
+
+# HOW MANY CHAINS ONE SWEEP MAY FOLLOW. Each chunk is a seek and a
+# short decode, and a band full of junk has no shortage of chains that
+# stop. The ball's is among the longest; the rest are not worth the
+# read.
+ASCENT_EXTEND_MAX_CHAINS = 4
+
+
+def _chain_velocity(pts: list, span: int = 4):
+    """Pixels per frame, from the last few points of a chain."""
+    if len(pts) < 2:
+        return None
+    a = pts[max(0, len(pts) - span)]
+    b = pts[-1]
+    df = int(b["frame"]) - int(a["frame"])
+    if df <= 0:
+        return None
+    return ((float(b["x"]) - float(a["x"])) / df,
+            (float(b["y"]) - float(a["y"])) / df)
+
+
+def extend_chain(input_path, pts: list, max_frames: int,
+                 sens: int = 3, pad_px: float = ASCENT_FILL_PAD_PX,
+                 tol_px: float = ASCENT_EXTEND_TOL_PX,
+                 chunk: int = ASCENT_EXTEND_CHUNK_FRAMES,
+                 budget: list | None = None) -> list:
+    """Follow a chain PAST its last point, the way an operator does.
+
+    THE HOLE FILL DOES NOT COVER THIS, and the difference cost a real
+    ascent. fill_chain_holes re-reads the gaps BETWEEN a chain's
+    points; it has nothing to say about a chain that simply stops. On
+    event 815 the sweep found the first seven frames of a ball leaving
+    the tee -- f3763 to f3769, climbing 78px, passing every gate it was
+    judged on except one -- and ended there. The flight carried on for
+    another forty frames and roughly four hundred pixels, which the
+    operator's own 2x scan shows in full. 78px fails ASCENT_MIN_RISE_FRAC
+    (142px at 1080p). 400px does not even come close to failing it.
+
+    Nothing was wrong with the chain. The sweep just stopped looking,
+    and because there was no chain above it to join to, the stitcher
+    had nothing to work with either.
+
+    So: take the chain's own heading, predict where the ball goes next,
+    crop to that path and read it again two-frame -- the same trick as
+    the hole fill and the same reason it works, that inside a box the
+    size of a ball's next few positions the ball is the only thing
+    moving along that line.
+
+    WHY THE BOX IS HONEST. It spans from the last known point to the
+    CONSTANT-VELOCITY prediction, plus a pad. A real ball decelerates,
+    so it falls SHORT of that prediction -- inside the box, always.
+    Only something speeding up could leave it, and a struck ball
+    climbing away from a camera does not.
+
+    Walks in chunks so each one costs a single seek, re-fitting the
+    heading at every chunk boundary so the deceleration is tracked
+    rather than fought. Stops at the first chunk that finds nothing.
+
+    Returns the extra points, oldest first.
+    """
+    out: list = []
+    if not HAS_CV or len(pts) < 2 or max_frames <= 0:
+        return out
+    cur = list(pts)
+    while len(out) < max_frames:
+        v = _chain_velocity(cur)
+        if v is None:
+            break
+        vx, vy = v
+        # Not rising any more: whatever this is, the ascent is over.
+        if vy >= -0.5:
+            break
+        if budget is not None:
+            if budget[0] <= 0:
+                break
+            budget[0] -= 1
+        last = cur[-1]
+        f0 = int(last["frame"])
+        f1 = f0 + int(chunk)
+        x_end = float(last["x"]) + vx * chunk
+        y_end = float(last["y"]) + vy * chunk
+        x0 = int(min(float(last["x"]), x_end) - pad_px)
+        x1 = int(max(float(last["x"]), x_end) + pad_px)
+        y0 = int(min(float(last["y"]), y_end) - pad_px)
+        y1 = int(max(float(last["y"]), y_end) + pad_px)
+        x0, y0 = max(0, x0), max(0, y0)
+        if x1 - x0 < 8 or y1 - y0 < 8 or y1 <= 0:
+            break
+        dets = detect_movers_by_diff(
+            input_path, f0, f1, sens=int(sens),
+            roi=(x0, y0, x1 - x0, y1 - y0),
+            per_frame=8, three_frame=False, cap=4000,
+            merge_px=ASCENT_MERGE_PX)
+        by_frame: dict = {}
+        for d in dets:
+            by_frame.setdefault(int(d["frame"]), []).append(d)
+        added = 0
+        for f in range(f0 + 1, f1 + 1):
+            cands = by_frame.get(f)
+            if not cands:
+                continue
+            _df = f - int(last["frame"])
+            px = float(last["x"]) + vx * _df
+            py = float(last["y"]) + vy * _df
+            best = min(cands, key=lambda q: math.hypot(q["x"] - px,
+                                                       q["y"] - py))
+            if math.hypot(best["x"] - px, best["y"] - py) > tol_px:
+                continue
+            # AND IT MUST STILL BE GOING UP. A match that sits level
+            # with or below the point before it is not the next
+            # position of a climbing ball, whatever else it is.
+            #
+            # NO TEST KILLS THIS LINE, and it is kept anyway. Said
+            # plainly because this file has twice carried a check that
+            # nothing could reach, and both times the honest answer was
+            # to delete it.
+            #
+            # Here the reason is coverage, not redundancy. The case it
+            # exists for is a candidate inside `tol_px` of the
+            # prediction that is nevertheless not above the last point
+            # -- which needs the per-frame step to be SHORTER than the
+            # tolerance, i.e. a ball near its apex. Every fixture built
+            # for it so far has been defeated by the chunked walk: the
+            # last accepted point is usually two frames back, so the
+            # stray still rises against it and is taken legitimately.
+            # The guard's promise is asserted (no accepted point ever
+            # sits at or below the one before it); the branch itself is
+            # not exercised.
+            if int(best["y"]) >= int(cur[-1]["y"]):
+                continue
+            cur.append(best)
+            out.append(best)
+            added += 1
+        if added == 0:
+            break
+    return out
+
+
+def stitch_ascent_chains(chains: list, tol_px: float = ASCENT_STITCH_PX,
+                         gap_frames: int = ASCENT_MAX_STEP_FRAMES,
+                         # HOW FAR THE GROUPING MAY REACH, which is not
+                         # the same question as how far the walk may
+                         # step. See ASCENT_STITCH_GAP_FRAMES: the
+                         # grouping reaches across a hole a re-read
+                         # might close, and the walk is what guarantees
+                         # the result is something the gates can keep.
+                         join_frames: int | None = None,
+                         # GIVEN THE POINTS OF A JOINED GROUP, RETURN
+                         # MORE. fill_chain_holes, when the sweep has a
+                         # video to re-read; None leaves the holes as
+                         # they are and the walk trims them.
+                         fill=None,
+                         # WHAT THE RE-READ FOUND, filled in when a
+                         # dict is passed: {groups, points}. The same
+                         # idiom as detect_movers_by_diff's `stats`,
+                         # and for the same reason -- "it ran" and "it
+                         # found something" are different answers, and
+                         # the second one is the interesting one.
+                         stats: dict | None = None) -> list:
+    """Join the chains that are one flight, and report it once.
+
+    THE LAST PLACE THE FLIGHT COMES APART. The detector now finds it --
+    #768 offers the ball on nearly every frame of f1546-f1570 -- and the
+    sweep still returned FOUR chains of six to eight points, each
+    traced back to the tee as its own swing, 0.14s apart. Reported to
+    an operator as four swings of one ball.
+
+    They come apart because at every frame the tracker chooses between
+    the leading and the trailing end of the same smear, and two chains
+    that choose differently diverge by a step and never come back. No
+    amount of tuning the choice fixes that; what fixes it is noticing
+    afterwards that the pieces are one line.
+
+    Replaces the group with the joined chain rather than adding to it,
+    because the whole point is that there was only ever one ball.
+    """
+    rows = [c for c in chains if (c.get("points") or [])]
+    if tol_px <= 0 or len(rows) < 2:
+        return list(chains)
+    _join = int(join_frames if join_frames is not None else gap_frames)
+    # LONGEST FIRST, for a settled answer rather than a better one.
+    # Grouping is greedy, so a chain joins the FIRST group it matches,
+    # and two passes feed this -- the tracker's chains and the fitter's
+    # -- in whatever order they happen to come out. Without an order of
+    # its own the join would depend on that, and the same clip could
+    # answer differently between runs.
+    #
+    # Longest first is the sensible choice of order and not a measured
+    # one: no fixture here tells it from shortest first, because the
+    # two-way line test already refuses the bad joins an order could
+    # otherwise let through. Claimed no higher than that.
+    rows.sort(key=lambda c: -len(c["points"]))
+    groups: list = []
+    for c in rows:
+        for g in groups:
+            if any(_one_flight(c["points"], m["points"], tol_px,
+                               _join) for m in g):
+                g.append(c)
+                break
+        else:
+            groups.append([c])
+    out: list = []
+    for g in groups:
+        if len(g) == 1:
+            out.append(g[0])
+            continue
+        seen: set = set()
+        union: list = []
+        for c in g:
+            for q in c["points"]:
+                k = (int(q["frame"]), int(q["x"]), int(q["y"]))
+                if k not in seen:
+                    seen.add(k)
+                    union.append(q)
+        # NO "DID THE JOIN LOSE POINTS" CHECK HERE, because it cannot.
+        # Every piece is a subset of the union, so the longest rising
+        # run through the union is at least as long as the longest
+        # rising run through any piece. The only way the joined chain
+        # comes back shorter than a piece's raw length is if that piece
+        # was not strictly rising -- it held a flat step or a repeated
+        # frame -- and dropping those is the point of this pass, not a
+        # failure of it. A guard here fired on nothing and could be
+        # removed by any mutation without a test noticing.
+        # AND READ THE HOLES AGAIN BEFORE WALKING IT. A hole that is
+        # only a hole in the three-frame pass closes here, and the walk
+        # then keeps what it bridges instead of trimming it off.
+        if fill is not None and len(union) >= ASCENT_FILL_MIN_POINTS:
+            if stats is not None:
+                stats["groups"] = stats.get("groups", 0) + 1
+            _seen = {(int(q["frame"]), int(q["x"]), int(q["y"]))
+                     for q in union}
+            for q in fill(sorted(union, key=lambda z: int(z["frame"]))):
+                k = (int(q["frame"]), int(q["x"]), int(q["y"]))
+                if k not in _seen:
+                    _seen.add(k)
+                    union.append(q)
+                    if stats is not None:
+                        stats["points"] = stats.get("points", 0) + 1
+        pts = _longest_rising(union, gap_frames)
+        out.append({
+            "points": pts,
+            "span_px": round(math.hypot(pts[-1]["x"] - pts[0]["x"],
+                                        pts[-1]["y"] - pts[0]["y"]), 1),
+            "rise_px": round(float(pts[0]["y"] - pts[-1]["y"]), 1),
+            "stitched_from": len(g),
+        })
+    out.sort(key=lambda c: -len(c["points"]))
+    return out
+
+
 def sweep_ascents(
     input_path: Path,
     fps: float,
@@ -4297,12 +5644,14 @@ def sweep_ascents(
     # again.
     #
     # What level 3 changes here is the diff threshold (8 -> 5) and the
-    # blob area cap (900 -> 1400). Neither costs what it would on the
-    # green view, because this sweep runs `three_frame=True`: a blob has
-    # to appear in the SAME place in the diff against the frame before
-    # AND the frame after, which is a condition random sensor and
-    # compression noise almost never meets. A lower threshold on an AND
-    # of two diffs buys dim balls without buying speckle.
+    # blob area cap (900 -> 1400). This used to be affordable because
+    # the sweep ANDed the diffs either side of a frame, a condition
+    # sensor and compression noise almost never meet -- but that AND
+    # also refused faint balls, which is what a ball is by the top of
+    # its climb, and it is off by default now. See ascent_three_frame
+    # for the measurement. What holds the speckle back instead is
+    # ascent_ghost_px, which drops anything sitting where the last
+    # detection was, plus the chain gates downstream.
     #
     # The one thing to watch is SWEEP_PER_FRAME, which stays at 10 at
     # every level: if level 3 puts more than ten qualifying blobs in the
@@ -4318,6 +5667,13 @@ def sweep_ascents(
     min_points: int | None = None,
     # THIS HOLE'S GATES, or None for the module defaults. See GATE_SPEC.
     gates: dict | None = None,
+    # WHERE THE NOISE STOPS, as a fraction of frame height, or None to
+    # fall back to the computed guess. See `_ascent_band`.
+    sky_frac: float | None = None,
+    # AND WHICH COLUMNS ARE WORTH SEARCHING, as fractions of frame
+    # width. See `_ascent_x_span`.
+    left_frac: float | None = None,
+    right_frac: float | None = None,
 ) -> dict:
     """Every ball leaving the tee in the WHOLE video, found from above.
 
@@ -4363,6 +5719,16 @@ def sweep_ascents(
     ASCENT_MIN_DENSITY = _G["ascent_min_density"]
     ASCENT_MAX_STEP_FRAMES = _G["ascent_max_step_frames"]
     ASCENT_MAX_BACKRUN_SEC = _G["ascent_max_backrun_sec"]
+    _per_frame = int(_G["ascent_per_frame"])
+    _three = bool(int(_G["ascent_three_frame"]))
+    # Only with two-frame differencing: the AND leaves no ghost behind.
+    _ghost = 0.0 if _three else float(_G["ascent_ghost_px"])
+    _prefer = float(_G["ascent_prefer_area"])
+    _merge = float(_G["ascent_merge_px"])
+    _corridor = float(_G["ascent_corridor_px"])
+    _fit = bool(int(_G["ascent_fit_lines"]))
+    _curve = bool(int(_G["ascent_fit_curve"]))
+    _stitch = float(_G["ascent_stitch_px"])
     if min_points is None:
         min_points = ASCENT_MIN_POINTS
     out = {"ok": False, "ascents": [], "n_tracks": 0, "n_dets": 0,
@@ -4387,13 +5753,23 @@ def sweep_ascents(
         if frame_h <= 0 or n_frames <= 1:
             out["reason"] = "the tee video reports no frames"
             return out
-        _tee_top = (float(roi.get("y", 0.0)) * frame_h if roi
-                    else (ASCENT_BAND_FALLBACK_FRAC
-                          + ASCENT_HEAD_ROOM_FRAC) * frame_h)
-        band_h = int(max(40, min(frame_h - 1,
-                                 _tee_top - ASCENT_HEAD_ROOM_FRAC * frame_h)))
-        out["band"] = [0, 0, int(frame_w), band_h]
+        band_h, _tee_top = _ascent_band(frame_h, roi, sky_frac)
         out["tee_line_y"] = int(_tee_top)
+        # REPORTED, NOT REFUSED. The rise gate is tunable per hole, so
+        # "impossible" is only true of the gates in force -- an operator
+        # may legitimately answer this by lowering the bar rather than
+        # redrawing the box, and refusing to run would take the picture
+        # that explains it away along with the choice.
+        out["band_warning"] = _band_too_thin(
+            band_h, frame_h, ASCENT_MIN_RISE_FRAC, _tee_top)
+        # WHERE THE FLOOR CAME FROM. A band is the single biggest thing
+        # deciding what this sweep can find, and "0 to 489" says nothing
+        # about whether that was drawn by a person or guessed from a box.
+        out["band_floor_source"] = (
+            "the skyline drawn for this camera"
+            if (sky_frac is not None and 0.0 < float(sky_frac) < 1.0)
+            else "a golfer's height above the hitting area (no skyline "
+                 "drawn for this camera)")
         # THE HITTING AREA, if one has been drawn for this hole. Without
         # it there is nothing to be outside of, and the gate below is
         # skipped -- reported, so a run that checked nothing does not
@@ -4402,16 +5778,106 @@ def sweep_ascents(
         out["hitting_area_px"] = ([int(_span[0]), int(_span[1])]
                                   if _span else None)
         out["n_outside_area"] = 0
+        _x0, _x1 = _ascent_x_span(frame_w, left_frac, right_frac)
+        out["band"] = [_x0, 0, _x1 - _x0, band_h]
+        _stats: dict = {}
         dets = detect_movers_by_diff(input_path, 0, n_frames - 1,
                                      sens=int(sens),
-                                     per_frame=SWEEP_PER_FRAME,
-                                     roi=(0, 0, int(frame_w), band_h),
-                                     cap=200000, three_frame=True)
+                                     per_frame=_per_frame,
+                                     roi=(_x0, 0, _x1 - _x0, band_h),
+                                     cap=200000, three_frame=_three,
+                                     ghost_px=_ghost, prefer_area=_prefer,
+                                     merge_px=_merge, stats=_stats)
         out["n_dets"] = len(dets)
+        # THE ANSWER TO "WHY IS THE BALL NOT IN HERE AT ALL". When the
+        # cap binds on most frames the ball is not losing a gate, it is
+        # never being emitted, and every gate on the page is beside the
+        # point. See `detect_movers_by_diff`'s `stats`.
+        _fr = int(_stats.get("frames") or 0)
+        out["per_frame_cap"] = _per_frame
+        out["three_frame"] = _three
+        out["ghost_px"] = _ghost
+        out["prefer_area"] = _prefer
+        out["merge_px"] = _merge
+        # HOW MANY BLOBS TURNED OUT TO BE SOMETHING ELSE'S HALF. The
+        # number that says whether the smear was real: zero means every
+        # detection stood alone and this changed nothing.
+        out["merged_away"] = int(_stats.get("merged") or 0)
+        out["corridor_px"] = _corridor
+        out["fit_lines"] = _fit
+        out["fit_curve"] = _curve
+        out["cap_hit_frames"] = int(_stats.get("capped") or 0)
+        out["cap_hit_frac"] = (round(_stats.get("capped", 0) / _fr, 3)
+                               if _fr else None)
+        out["max_hits_in_a_frame"] = int(_stats.get("max_hits") or 0)
+        out["dropped_to_cap"] = int(_stats.get("dropped") or 0)
         _t_det = time.perf_counter() - _t0
         tracks = build_tracks(dets, 14.0, min_len=int(min_points),
                               max_gap=DESCENT_MAX_GAP,
-                              max_span=SWEEP_MAX_SPAN)
+                              max_span=SWEEP_MAX_SPAN,
+                              corridor_px=_corridor)
+        # AND THE FITS, judged by the same gates. A chain is a chain:
+        # nothing downstream knows or cares which pass produced it.
+        _fits = (fit_ascent_chains(dets, int(min_points), refine=_curve)
+                 if _fit else [])
+        out["n_fits"] = len(_fits)
+        tracks = tracks + _fits
+        # AND THEN ONE FLIGHT, ONCE. Both passes cut the same flight
+        # into pieces at the same places, because both are choosing
+        # between the two ends of one smear frame by frame. See
+        # stitch_ascent_chains.
+        _n_before = len(tracks)
+        _fill_stats: dict = {}
+        # ONE BUDGET FOR THE WHOLE SWEEP, shared across every group it
+        # re-reads: each hole is a seek into the clip and a run of
+        # decoded frames, and a band full of junk chains has no
+        # shortage of holes.
+        _fill_budget = [ASCENT_FILL_MAX_HOLES]
+        tracks = stitch_ascent_chains(
+            tracks, _stitch, int(ASCENT_MAX_STEP_FRAMES),
+            join_frames=ASCENT_STITCH_GAP_FRAMES,
+            fill=lambda pts: fill_chain_holes(
+                input_path, pts, int(ASCENT_STITCH_GAP_FRAMES),
+                sens=int(sens), budget=_fill_budget),
+            stats=_fill_stats)
+        out["stitch_px"] = _stitch
+        out["n_stitched"] = _n_before - len(tracks)
+        # WHAT THE RE-READ FOUND. "8 points in 2 holes" says the
+        # three-frame pass was the only reason they were missing; zero
+        # says the hole was really empty and the walk was right to trim
+        # it. See fill_chain_holes.
+        out["n_refilled"] = int(_fill_stats.get("points") or 0)
+        out["n_holes_read"] = (ASCENT_FILL_MAX_HOLES - _fill_budget[0])
+        # AND FOLLOW THE ONES THAT JUST STOPPED. A chain that ends
+        # mid-flight is the failure the hole fill cannot see: there is
+        # no gap to fill and nothing above it to join to, so it is
+        # judged on however much of the ascent the detector happened to
+        # get. On event 815 that was seven frames and 78px of a 400px
+        # flight, refused for rise. See extend_chain.
+        #
+        # Only the chains long enough to be a candidate, longest first,
+        # and out of the same budget as the hole reads -- the rest are
+        # junk and following them is a seek each.
+        _ext = 0
+        for _c in sorted(tracks, key=lambda c: -len(c.get("points") or []))[
+                :ASCENT_EXTEND_MAX_CHAINS]:
+            _p = _c.get("points") or []
+            if len(_p) < int(min_points) or _fill_budget[0] <= 0:
+                continue
+            _more = extend_chain(
+                input_path, _p,
+                max_frames=max(0, SWEEP_MAX_SPAN
+                               - (int(_p[-1]["frame"]) - int(_p[0]["frame"]))),
+                sens=int(sens), budget=_fill_budget)
+            if _more:
+                _p.extend(_more)
+                _c["rise_px"] = round(float(_p[0]["y"] - _p[-1]["y"]), 1)
+                _c["span_px"] = round(math.hypot(_p[-1]["x"] - _p[0]["x"],
+                                                 _p[-1]["y"] - _p[0]["y"]), 1)
+                _ext += len(_more)
+        # HOW MUCH FURTHER THE FLIGHTS WENT than the sweep had them
+        # going. Zero means every chain really did end where it ended.
+        out["n_extended"] = _ext
         out["n_tracks"] = len(tracks)
         out["timing"] = {"detect": round(_t_det, 2),
                          "linking": round(time.perf_counter()
@@ -4505,17 +5971,28 @@ def sweep_ascents(
             if _tilt > ASCENT_MAX_TILT_DEG:
                 _why.append("tilt")
             _from_x = _from_f = None
+            _from_model = None
             if _vy < -0.5:
-                # SOLVE FOR THE TEE LINE, minding the sign. y(t) = y0 +
-                # vy*t with vy negative, so reaching a LOWER point on the
-                # screen (larger y) needs t negative -- going back in
-                # time, which is the whole point. Written the other way
-                # round it steps forward by the same amount and reports
-                # the ball arriving at the tee line five frames AFTER it
-                # left, from 40px the wrong side of where it started.
-                _steps = (_tee_top - float(pts[0]["y"])) / _vy
-                _from_x = int(round(float(pts[0]["x"]) + _vx * _steps))
-                _from_f = int(round(float(pts[0]["frame"]) + _steps))
+                # WHERE, AND WHEN, ARE DIFFERENT QUESTIONS, and they
+                # were being answered with one number.
+                #
+                # WHERE depends only on the chain's HEADING: run back
+                # along dx/dy until the tee line, no time involved.
+                # That is why the spot this reports has always been
+                # right even while the frame was eleven out.
+                _gap = _tee_top - float(pts[0]["y"])
+                _from_x = int(round(float(pts[0]["x"])
+                                    + (_vx / _vy) * _gap))
+                # WHEN depends on SPEED, and a struck ball does not
+                # hold one. See _impact_frame.
+                _f, _from_model = _impact_frame(pts, _tee_top)
+                if _f is None:
+                    # Not enough of a chain to measure a speed on.
+                    # Back to the heading's own, which is what this
+                    # did for every chain before.
+                    _f = float(pts[0]["frame"]) + _gap / _vy
+                    _from_model = "heading"
+                _from_f = int(round(_f))
             # TOO LONG AGO TO HAVE BEEN A TEE SHOT. See the constant.
             if (_from_f is None
                     or (int(pts[0]["frame"]) - _from_f)
@@ -4565,6 +6042,12 @@ def sweep_ascents(
                 "from_sec": (round(_from_f / float(fps or 30.0), 2)
                              if _from_f is not None else None),
                 "from_is_approx": True,
+                # WHICH MODEL PUT IT THERE. "drag" is the fitted one
+                # and lands within a frame; the others are what is
+                # left when a chain is too short to fit anything, and
+                # they run early. A number that does not say which it
+                # is cannot be read.
+                "from_model": _from_model,
                 "points": [{"frame": int(q["frame"]), "x": int(q["x"]),
                             "y": int(q["y"])} for q in pts],
                 "tilt_deg": round(_tilt, 1),
@@ -4586,7 +6069,29 @@ def sweep_ascents(
         # the order in which a missing ascent is worth looking for, and
         # it is also the order the picture draws them in, so an accepted
         # chain is never buried under a rejected one.
+        # WHAT THE TRACKER WAS HANDED, around the chains that got
+        # furthest. The sweep has always reported what it ASSEMBLED and
+        # never what it was given, so "the ball is not in the chain" and
+        # "the ball was never detected" look identical from outside --
+        # and they need opposite fixes. Five attempts to tell them apart
+        # by simulation failed; the detections themselves settle it in
+        # one glance.
+        #
+        # A slice, not the lot: 89,596 detections is a megabyte of
+        # coordinates and all but a handful are somewhere else entirely.
         _considered.sort(key=lambda z: (len(z["why"]), -z["n_points"]))
+        out["near_dets"] = _dets_near_chain(
+            dets, _considered[0] if _considered else None)
+        # WHAT SIZE THINGS ACTUALLY ARE here, so `ascent_prefer_area`
+        # can be chosen off the footage rather than guessed. Computed
+        # after the slice, which is where the sample lives.
+        _areas = sorted(int(d.get("area") or 0) for d in out["near_dets"])
+        out["area_profile"] = {
+            "n": len(_areas),
+            "p10": _areas[len(_areas) // 10] if _areas else None,
+            "median": _areas[len(_areas) // 2] if _areas else None,
+            "p90": _areas[(len(_areas) * 9) // 10] if _areas else None,
+        }
         # A NUMBER EACH, IN THE ORDER THE TABLE SHOWS THEM. The picture
         # and the table have been two lists of the same chains with no
         # way to get from a row to a line -- so "why was THAT one
@@ -4618,7 +6123,8 @@ def sweep_ascents(
         out["n_merged"] = _n_raw - len(out["ascents"])
         out["ok"] = True
         out["reason"] = (
-            (f"{out['n_merged']} duplicate chain(s) merged; "
+            (out.get("band_warning") or "")
+            + (f"{out['n_merged']} duplicate chain(s) merged; "
              if out["n_merged"] else "")
             + (f"{out['n_outside_area']} pointed back outside the "
                f"hitting area; " if out["n_outside_area"] else "")
@@ -4627,7 +6133,19 @@ def sweep_ascents(
                "chain came from was not checked against one; ")
             + f"{len(out['ascents'])} ball(s) seen leaving, from "
             f"{len(tracks)} chain(s) in {len(dets)} detection(s) over "
-            f"{n_frames} frames of the band above the golfers")
+            f"{n_frames} frames of the band above the golfers"
+            # THE CAP, WHENEVER IT IS DOING ANYTHING. A sweep that finds
+            # nothing reads identically whether the gates refused the
+            # ball or the detector never offered it, and only the second
+            # one is unfixable from the gate editor.
+            + (f". THE {_per_frame}-BLOB PER-FRAME CAP BOUND ON "
+               f"{out['cap_hit_frac']:.0%} OF FRAMES "
+               f"(worst frame had {out['max_hits_in_a_frame']}; "
+               f"{out['dropped_to_cap']} detections dropped) — a ball "
+               f"smaller than the biggest {SWEEP_PER_FRAME} things in "
+               f"the band is never emitted, so no gate here can reach "
+               f"it. Narrow the search area or raise ascent_per_frame."
+               if (out.get("cap_hit_frac") or 0) > 0.2 else ""))
     except Exception as exc:  # noqa: BLE001
         out["reason"] = f"sweep failed: {exc}"
     out["seconds"] = round(time.perf_counter() - _t0, 2)
@@ -6108,6 +7626,111 @@ __all__ = [
 # per-hole copy of them would be a per-hole fork of the detector.
 GATE_SPEC = {
     # key                        default                  lo     hi   int
+    # NOT A FILTER ON CHAINS, unlike everything else here: this one is
+    # the DETECTOR's per-frame keep. Every other gate can only refuse a
+    # chain that exists, and when this is too low the ball's chain never
+    # exists to be refused -- which made the one knob that could have
+    # helped the one knob nobody could reach.
+    "ascent_per_frame":         (SWEEP_PER_FRAME,          4,    200, True),
+    # THREE-FRAME DIFFERENCING, ON OR OFF (1/0). OFF, NOW MEASURED.
+    #
+    # The scan an operator runs by hand diffs against the previous
+    # frame only; this sweep used to AND that with the diff against the
+    # NEXT one. The AND kills the "where it was" ghost that otherwise
+    # measures a ball's velocity as zero -- on a synthetic ascent,
+    # eight frames of perfect detections yielded ZERO tracks without
+    # it -- so it shipped on, with a note that nobody had measured what
+    # it cost on a real flight.
+    #
+    # IT COST THE FLIGHTS. Hole 8, 20 Oct, one clip, one gate changed:
+    #
+    #     three_frame=1    3 chains weighed,  0 accepted
+    #     three_frame=0   18 chains weighed,  2 accepted
+    #
+    # and the chain that had been five points and 78px of rise --
+    # refused for `rise` while passing every other gate -- came back as
+    # twenty-two points and 504px. The same clip, the same thresholds,
+    # the same everything else. Asking the ball to clear threshold in
+    # BOTH diffs at the same pixels is simply too much to ask of a
+    # faint one, which is what a ball is by the top of its climb.
+    #
+    # The ghost it was there to kill is handled by ascent_ghost_px
+    # below, which drops a detection sitting where the last one was --
+    # cheaper, and it cannot refuse a ball for being dim.
+    #
+    # Still a switch, because the argument that put it on was a real
+    # one and a different camera may yet want it.
+    "ascent_three_frame":       (0,                        0,      1, True),
+    # HUNT THE BALL COMING DOWN, OR NOT (1/0). OFF.
+    #
+    # The descent search tracks the ball through its fall on the green
+    # camera, and on a green ringed with wind-blown brush it is the
+    # hardest thing this system does -- more of the frame moves than
+    # the ball does. On Rivertowne 8 it does not merely fail, it
+    # answers WRONGLY: event 1161 put the landing up in the fairway
+    # well above the green, which then draws a comet along a path the
+    # ball never took and offers a pitch mark that is not one.
+    #
+    # The resting-ball search needs none of it. It compares the green
+    # before the shot with the green once the ball is down and still,
+    # and what is newly on the putting surface is the answer -- no
+    # tracking, no linking, no chain to lose. Measured against the
+    # operator's own runs it agrees to three pixels.
+    #
+    # WHAT TURNING IT OFF COSTS, stated plainly: there is no comet on
+    # the green half of the composite and no pitch mark, so "where it
+    # landed" is gone and only "where it finished" remains. The green
+    # half of the clip is unaffected -- that cut is placed by the tee's
+    # own clock, not by the descent.
+    #
+    # A switch rather than a deletion: a green without brush behind it
+    # is a different proposition, and this is the hole that has one.
+    "ascent_descent_search":    (0,                        0,      1, True),
+    # HOW CLOSE TO THE PREVIOUS FRAME'S DETECTION counts as that
+    # frame's ghost, in pixels, with two-frame differencing. Only read
+    # when ascent_three_frame is 0 — the AND has no ghosts to remove —
+    # which since 20 Oct is the default, so this is now the ghost
+    # handling rather than a fallback for it.
+    # An ascent crosses 25-50px a frame, so nothing at this scale can
+    # be the ball; what it removes is a mover that barely moved, which
+    # is a ghost or a leaf. 0 disables.
+    "ascent_ghost_px":          (4,                        0,     40, True),
+    # THE BALL'S OWN BLOB AREA, in pixels, or 0 to keep the biggest
+    # blobs instead. See `prefer_area` in detect_movers_by_diff: this
+    # is the number that stops a treeline winning the per-frame cut
+    # against a ball at 180 yards.
+    "ascent_prefer_area":       (0,                        0,  20000, True),
+    # HOW CLOSE TWO BLOBS IN THE SAME FRAME have to be to be one thing,
+    # in pixels. A ball crossing 26px during one exposure thresholds
+    # into two or three components, each reported at its own centroid:
+    # three candidates a frame for the tracker to link wrongly, and a
+    # y that stops being monotonic between adjacent frames. See
+    # `merge_px` in detect_movers_by_diff. An ascent crosses 25-50px a
+    # frame, so this stays under a step and cannot join one frame's
+    # ball to the next frame's -- and it is per-frame anyway. 0
+    # disables.
+    "ascent_merge_px":          (ASCENT_MERGE_PX,        0.0,   60.0, False),
+    # HOW FAR OFF ITS LINE a chain may reach, in pixels. 0 turns the
+    # corridor off and takes the length-ordering back with it, which is
+    # how the ascent sweep ran until 19 Oct.
+    "ascent_corridor_px":       (ASCENT_CORRIDOR_PX,     0.0,  200.0, False),
+    # ALSO FIT LINES TO THE CLOUD (1/0), alongside the sequential
+    # tracker rather than instead of it. See fit_ascent_chains: a walk
+    # chooses locally and one bad link ends a flight, where a fit looks
+    # at every detection at once and a missed frame costs one inlier.
+    "ascent_fit_lines":         (1,                        0,      1, True),
+    # REFINE EACH FIT AGAINST A CURVE, and dedupe by geometry rather
+    # than by point identity (1/0). Merges the fragments one flight
+    # comes back as — proven on #768's own detections — but on the
+    # whole band it took the sweep from two accepted chains to none,
+    # so it is off until that is understood.
+    "ascent_fit_curve":         (0,                        0,      1, True),
+    # HOW FAR OFF ONE LINE two chains may sit and still be the same
+    # flight, in pixels, for the pass that joins them back together.
+    # See stitch_ascent_chains: without it #768 comes back as four
+    # chains of one ball, each traced to the tee as its own swing a
+    # tenth of a second apart. 0 turns the join off.
+    "ascent_stitch_px":         (ASCENT_STITCH_PX,       0.0,  120.0, False),
     "ascent_min_points":        (ASCENT_MIN_POINTS,        2,     20, True),
     "ascent_min_rise_frac":     (ASCENT_MIN_RISE_FRAC,  0.01,    0.9, False),
     "ascent_rate_lo":           (ASCENT_RATE_LO,        0.05,   20.0, False),
@@ -6142,6 +7765,7 @@ GATE_SPEC = {
 GATE_VERDICT = {
     "ascent_min_points": "points", "ascent_min_rise_frac": "rise",
     "ascent_rate_lo": "rate", "ascent_rate_hi": "rate",
+    "ascent_descent_search": "descent",
     "ascent_bend_base_px": "bend", "ascent_bend_per_point_px": "bend",
     "ascent_max_bend_px": "bend", "ascent_min_straight": "wander",
     "ascent_max_tilt_deg": "tilt", "ascent_min_density": "sparse",

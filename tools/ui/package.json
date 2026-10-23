@@ -1,0 +1,13 @@
+{
+  "name": "golfreelz-ui-tests",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser tests for the GolfReelz SPA. Deliberately NOT a workspace of frontend/ — the Dockerfile runs npm ci with devDependencies in frontend/, so anything added there is downloaded on every deploy.",
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
+import { MotionGraph } from "../components/MotionGraph.jsx";
+import { PiTestZones } from "../components/PiTestZones.jsx";
 import { Brand, Icon } from "../components/Brand.jsx";
 import { fmtDateTime } from "../time.js";
 
@@ -55,7 +57,17 @@ export default function AdminLongUpload() {
   const [reprocessing, setReprocessing] = useState({}); // {id: true}
   const [testCutting, setTestCutting] = useState({}); // {id: true}
   const [testCutResults, setTestCutResults] = useState({}); // {id: {detector, cuts, ...}}
-  const [testCutDetector, setTestCutDetector] = useState({}); // {id: "motion"|"audio"}
+  const [testCutDetector, setTestCutDetector] = useState({}); // {id: "motion"|"audio"|"combined"|"pi"}
+  const [piParams, setPiParams] = useState({}); // {id: {min_ratio, ...}}
+  const [piZones, setPiZones] = useState({});   // {id: [{x,y,w,h}] fractions}
+  const [piZonesOpen, setPiZonesOpen] = useState({}); // {id: true}
+  // PER-ROW, not the page-level banner. A failed test cut put its
+  // message at the top of a long page, so the operator sitting on row
+  // #890 saw the button flick back to "Test cut" and nothing else --
+  // which is indistinguishable from a dead button, and was read as one.
+  const [testCutError, setTestCutError] = useState({}); // {id: message}
+  const [knownSwings, setKnownSwings] = useState({}); // {id: "60, 92, 124"}
+  const [cmpSignals, setCmpSignals] = useState({}); // {id: true}
   const [audioMinRatio, setAudioMinRatio] = useState({}); // {id: number}
   const [motionRatio, setMotionRatio] = useState({}); // {id: number}
   const [pairWindow, setPairWindow] = useState({}); // {id: number} -> combined-mode pair window
@@ -128,6 +140,22 @@ export default function AdminLongUpload() {
     }
   }
 
+  // The tee rig's swing_select knobs, in the order they matter when
+  // dialling one in: how big a burst has to be, how far apart two
+  // bursts are still one swing, then the window kept around it.
+  const PI_FIELDS = [
+    { key: "min_ratio", short: "ratio", def: 4, min: 0.5, step: 0.5, label: "min_ratio",
+      help: "burst must be this many times the clip's median motion. Swings measure 5-7, a milling group 2-4" },
+    { key: "min_separation_sec", short: "gap s", def: 6, min: 1, step: 0.5, label: "min_separation_sec",
+      help: "two peaks closer than this are one swing (backswing + follow-through)" },
+    { key: "max_burst_sec", short: "width s", def: 6, min: 0.5, step: 0.5, label: "max_burst_sec",
+      help: "wider than this is locomotion, not a swing — this is what rejects a group walking off" },
+    { key: "before_sec", short: "pre s", def: 4.5, min: 0, step: 0.5, label: "before_sec",
+      help: "kept before impact (the address)" },
+    { key: "after_sec", short: "post s", def: 9, min: 1, step: 0.5, label: "after_sec",
+      help: "kept after impact (the ball flight)" },
+  ];
+
   async function testCutPrior(uploadId) {
     const detector = testCutDetector[uploadId] || "motion";
     const opts = {};
@@ -141,6 +169,18 @@ export default function AdminLongUpload() {
       if (Number.isFinite(aRatio) && aRatio > 0) opts.audioMinPeakRatio = aRatio;
       if (Number.isFinite(mRatio) && mRatio > 0) opts.motionRatio = mRatio;
       if (Number.isFinite(win) && win > 0) opts.combinedPairWindowSec = win;
+    } else if (detector === "pi" || detector === "ballgone") {
+      const cur = piParams[uploadId] || {};
+      opts.pi = {};
+      PI_FIELDS.forEach((f) => {
+        const v = parseFloat(cur[f.key] ?? f.def);
+        if (Number.isFinite(v)) opts.pi[f.key] = v;
+      });
+      if ((piZones[uploadId] || []).length > 0) opts.piZones = piZones[uploadId];
+      if ((knownSwings[uploadId] || "").trim()) {
+        opts.piKnownSwings = knownSwings[uploadId].trim();
+        if (cmpSignals[uploadId]) opts.piCompareSignals = true;
+      }
     } else {
       const ratio = parseFloat(motionRatio[uploadId]);
       if (Number.isFinite(ratio) && ratio > 0) opts.motionRatio = ratio;
@@ -148,11 +188,13 @@ export default function AdminLongUpload() {
     if (detectOnly[uploadId]) opts.cutClips = false;
     setTestCutting((t) => ({ ...t, [uploadId]: true }));
     setError(null);
+    setTestCutError((r) => ({ ...r, [uploadId]: null }));
     try {
       const data = await api.testCutLongUpload(adminPassword, uploadId, detector, opts);
       setTestCutResults((r) => ({ ...r, [uploadId]: data }));
     } catch (e) {
       setError(e.message);
+      setTestCutError((r) => ({ ...r, [uploadId]: e.message }));
     } finally {
       setTestCutting((t) => ({ ...t, [uploadId]: false }));
     }
@@ -403,6 +445,8 @@ export default function AdminLongUpload() {
                         <option value="motion">motion</option>
                         <option value="audio">audio</option>
                         <option value="combined">combined</option>
+                        <option value="pi">pi (rig)</option>
+                        <option value="ballgone">ball vanishes</option>
                       </select>
                       {(testCutDetector[u.id] || "motion") === "audio" && (
                         <input
@@ -433,6 +477,88 @@ export default function AdminLongUpload() {
                           style={{ width: 60, fontSize: 12, padding: "2px 6px" }}
                           title="Motion threshold = median frame-diff × this ratio. Higher = stricter. Default 4."
                         />
+                      )}
+                      {["pi", "ballgone"].includes(
+                        testCutDetector[u.id] || "motion") && (
+                        <>
+                          {PI_FIELDS.map((f) => (
+                            <label
+                              key={f.key}
+                              style={{ display: "inline-flex", flexDirection: "column",
+                                       alignItems: "center", gap: 1 }}
+                              title={`${f.label} — ${f.help} (rig default ${f.def})`}
+                            >
+                              <span className="tiny muted" style={{ fontSize: 10 }}>
+                                {f.short}
+                              </span>
+                              <input
+                                type="number"
+                                min={f.min}
+                                step={f.step}
+                                value={(piParams[u.id] || {})[f.key] ?? f.def}
+                                onChange={(e) =>
+                                  setPiParams((o) => ({
+                                    ...o,
+                                    [u.id]: { ...(o[u.id] || {}), [f.key]: e.target.value },
+                                  }))
+                                }
+                                disabled={!!testCutting[u.id] || missing || busy}
+                                className="small"
+                                style={{ width: 62, fontSize: 12, padding: "2px 6px" }}
+                              />
+                            </label>
+                          ))}
+                          <button
+                            className="small"
+                            onClick={() =>
+                              setPiZonesOpen((o) => ({ ...o, [u.id]: !o[u.id] }))
+                            }
+                            disabled={!!testCutting[u.id] || missing || busy}
+                            style={{ fontSize: 12, padding: "2px 6px" }}
+                            title="Try different trigger zones against this clip. Nothing is saved — the camera keeps its own."
+                          >
+                            zones{(piZones[u.id] || []).length > 0
+                              ? ` (${piZones[u.id].length})`
+                              : ""}
+                          </button>
+                          <label
+                            style={{ display: "inline-flex", flexDirection: "column",
+                                     alignItems: "center", gap: 1 }}
+                            title="Seconds where you can SEE a swing, comma separated (e.g. 60, 92, 124). Given these, every threshold/width combination is scored against them instead of guessed at."
+                          >
+                            <span className="tiny muted" style={{ fontSize: 10 }}>
+                              swings at
+                            </span>
+                            <input
+                              type="text"
+                              placeholder="60, 92, 124"
+                              value={knownSwings[u.id] || ""}
+                              onChange={(e) =>
+                                setKnownSwings((o) => ({ ...o, [u.id]: e.target.value }))
+                              }
+                              disabled={!!testCutting[u.id] || missing || busy}
+                              className="small"
+                              style={{ width: 96, fontSize: 12, padding: "2px 6px" }}
+                            />
+                          </label>
+                          <label
+                            className="small"
+                            style={{ display: "inline-flex", alignItems: "center", gap: 3 }}
+                            title="Also score top-k, optical flow and a rolling baseline against those swings. Adds an optical-flow pass, so it is slower."
+                          >
+                            <input
+                              type="checkbox"
+                              checked={!!cmpSignals[u.id]}
+                              onChange={(e) =>
+                                setCmpSignals((o) => ({ ...o, [u.id]: e.target.checked }))
+                              }
+                              disabled={!(knownSwings[u.id] || "").trim()
+                                        || !!testCutting[u.id] || missing || busy}
+                              style={{ margin: 0 }}
+                            />
+                            compare signals
+                          </label>
+                        </>
                       )}
                       {(testCutDetector[u.id] || "motion") === "combined" && (
                         <span
@@ -551,6 +677,40 @@ export default function AdminLongUpload() {
                     </div>
                   </div>
 
+                  {testCutError[u.id] && (
+                    <div className="card tight err-text small"
+                         style={{ margin: "10px 0 0" }}>
+                      <b>Test cut failed.</b>{" "}
+                      <span style={{ fontFamily: "monospace" }}>
+                        {testCutError[u.id]}
+                      </span>
+                    </div>
+                  )}
+
+                  {piZonesOpen[u.id]
+                    && ["pi", "ballgone"].includes(
+                      testCutDetector[u.id] || "motion")
+                    && !missing && (
+                    <div className="card tight" style={{ margin: "10px 0 0", background: "var(--surface-alt)" }}>
+                      <PiTestZones
+                        uploadId={u.id}
+                        adminPassword={adminPassword}
+                        zones={piZones[u.id] || []}
+                        onChange={(z) => setPiZones((o) => ({ ...o, [u.id]: z }))}
+                      />
+                      {testCutting[u.id] && (
+                        <div className="small" style={{ marginTop: 6 }}>
+                          <b>Running…</b>{" "}
+                          <span className="muted">
+                            the rig&apos;s detector decodes ~20 frames a second
+                            of this clip, so a two-minute session takes a
+                            half-minute or so. Results appear below.
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {showSource[u.id] && !missing && (u.tee_url || u.green_url) && (
                     <div className="card tight" style={{ margin: "10px 0 0", background: "var(--surface-alt)" }}>
                       <div className="small" style={{ marginBottom: 6 }}>
@@ -617,6 +777,268 @@ export default function AdminLongUpload() {
                         <div className="tiny muted" style={{ marginBottom: 8, fontFamily: "monospace", lineHeight: 1.4 }}>
                           {testCutResults[u.id].debug.reason ? (
                             <div className="err-text">reason: {testCutResults[u.id].debug.reason}</div>
+                          ) : testCutResults[u.id].detector === "ballgone" ? (
+                            (() => {
+                              const d = testCutResults[u.id].debug || {};
+                              const sc = d.scored;
+                              return (
+                                <>
+                                  scanned {d.frames_scanned} frames @ {d.sample_hz}Hz
+                                  {" "}over {d.duration_sec}s ·{" "}
+                                  {d.zones_used > 0
+                                    ? `inside ${d.zones_used} hitting area`
+                                    : "the WHOLE FRAME — draw a hitting area, "
+                                      + "this detector needs a small box"}
+                                  {" "}· {d.n_tracks} bright thing(s) tracked
+                                  {sc && (
+                                    <><br /><b>caught {sc.caught}/{sc.of}</b>
+                                      {" "}of the swings you named,{" "}
+                                      {sc.false_positives} false</>
+                                  )}
+                                  {Array.isArray(d.balls) && d.balls.length > 0 && (
+                                    <>
+                                      <br /><b>sat still, then vanished:</b>
+                                      {d.balls.map((b, i) => (
+                                        <div key={i}>
+                                          {"  "}gone at <b>{b.vanished_at}s</b> —
+                                          {" "}sat {b.seen_for}s, moved {b.spread_px}px,
+                                          {" "}at ({b.x}, {b.y}), {b.area}px²,
+                                          {" "}contrast {b.contrast}
+                                        </div>
+                                      ))}
+                                    </>
+                                  )}
+                                  {Array.isArray(d.rejected) && d.rejected.length > 0 && (
+                                    <>
+                                      <br /><span className="muted">
+                                        rejected — why nothing was found matters as
+                                        much as what was:
+                                      </span>
+                                      {d.rejected.slice(0, 6).map((r, i) => (
+                                        <div key={i} className="muted">
+                                          {"  "}at {r.at}s — {r.why}
+                                        </div>
+                                      ))}
+                                    </>
+                                  )}
+                                  {(!d.balls || d.balls.length === 0)
+                                    && (!d.rejected || d.rejected.length === 0) && (
+                                    <><br /><span className="err-text">
+                                      No small bright thing was tracked at all — the
+                                      box is probably not on the ball, or the ball is
+                                      too dim to separate from the grass.
+                                    </span></>
+                                  )}
+                                </>
+                              );
+                            })()
+                          ) : testCutResults[u.id].detector === "pi" ? (
+                            (() => {
+                              const d = testCutResults[u.id].debug || {};
+                              const zones = d.zones_used ?? 0;
+                              const cov = d.coverage ?? 0;
+                              // 0.70 is the rig's _CUT_WORTH_IT_BELOW: above
+                              // it the swings cover so much of the session
+                              // that cutting saves nothing and the clip goes
+                              // up whole — which is also what keeps it
+                              // attached to its paired green.
+                              const wouldCut = cov > 0 && cov < 0.7;
+                              return (
+                                <>
+                                  {zones > 0 ? (
+                                    <>measured inside <b>{zones}</b> zone
+                                      {zones === 1 ? "" : "s"} —{" "}
+                                      {d.zone_source === "drawn for this test" ? (
+                                        <b>the box you drew for this test</b>
+                                      ) : (
+                                        <>the camera&apos;s own trigger zones,
+                                          which is what the rig uses</>
+                                      )}</>
+                                  ) : (
+                                    <span className="warn-text">
+                                      measured the WHOLE FRAME — this upload has
+                                      no tee camera zones, so sky, cart path and
+                                      the next tee are all in the signal. The rig
+                                      measures inside its trigger boxes, so these
+                                      ratios will not match it.
+                                    </span>
+                                  )}
+                                  <br />
+                                  best peak ×{d.best_ratio?.toFixed?.(2) ?? d.best_ratio}
+                                  {d.best_at != null && <> at {Number(d.best_at).toFixed(1)}s</>}
+                                  {" "}vs threshold ×{d.min_ratio}
+                                  {" "}· {d.above_threshold ?? 0} cleared it
+                                  {d.rejected_too_wide > 0 && (
+                                    <> · <b>{d.rejected_too_wide}</b> rejected as
+                                      too wide (widest {d.widest_rejected_sec}s —
+                                      that is walking, not a swing)</>
+                                  )}
+                                  {d.rejected_no_person > 0 && (
+                                    <> · {d.rejected_no_person} rejected for nobody in the ROI</>
+                                  )}
+                                  <br />
+                                  {d.samples ?? 0} samples @ {d.sample_hz}Hz over
+                                  {" "}{d.duration_sec?.toFixed?.(1)}s
+                                  {" "}· person gate {d.person_gate}
+                                  <br />
+                                  swings cover {(cov * 100).toFixed(0)}% of the clip —
+                                  {" "}<b>{wouldCut
+                                    ? "the rig would CUT this into separate clips"
+                                    : cov === 0
+                                      ? "the rig would find nothing and upload it WHOLE"
+                                      : "above 70%, so the rig would upload it WHOLE"}</b>
+                                  {wouldCut && (
+                                    <> — and each cut uploads as a derived session,
+                                      which currently orphans the tee half of a
+                                      paired event.</>
+                                  )}
+                                  {d.tuning && (
+                                    <div style={{ marginTop: 8 }}>
+                                      <div style={{ marginBottom: 3 }}>
+                                        <b>What the RIG&apos;S signal (meandiff)
+                                          holds at the swings you named:</b>{" "}
+                                        <span className="muted">
+                                          — the other signals are scored
+                                          separately below
+                                        </span>
+                                      </div>
+                                      {d.tuning.at_swing.map((a, i) => (
+                                        <div key={i}>
+                                          {"  "}{a.at}s →{" "}
+                                          {a.peak == null ? (
+                                            <span className="err-text">
+                                              outside the clip
+                                            </span>
+                                          ) : (
+                                            <>peak <b>×{a.peak}</b> at {a.peak_at}s,
+                                              burst {a.burst_sec}s{" "}
+                                              {a.peak < 1.6 && (
+                                                <span className="err-text">
+                                                  — barely above the median, so no
+                                                  threshold on THIS signal finds it
+                                                </span>
+                                              )}</>
+                                          )}
+                                        </div>
+                                      ))}
+                                      <div style={{ margin: "6px 0 3px" }}>
+                                        <b>Settings scored against them</b>{" "}
+                                        <span className="muted">
+                                          (caught / false positives)
+                                        </span>
+                                      </div>
+                                      <div>
+                                        {"  "}your settings ×{d.tuning.current.min_ratio}
+                                        {" / "}{d.tuning.current.max_burst_sec}s →{" "}
+                                        <b>{d.tuning.current.caught}/{d.tuning.current.of}</b>
+                                        {" "}caught, {d.tuning.current.false_positives} false
+                                      </div>
+                                      {d.tuning.rows.slice(0, 6).map((r, i) => (
+                                        <div key={i} style={{
+                                          color: i === 0 ? "var(--ok, #27ae60)" : undefined,
+                                        }}>
+                                          {"  "}ratio <b>{r.min_ratio}</b>
+                                          {" "}· burst <b>{r.max_burst_sec}s</b> →{" "}
+                                          {r.caught}/{r.of} caught,{" "}
+                                          {r.false_positives} false
+                                          {i === 0 && <> ← best</>}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {d.signal_compare && (
+                                    <div style={{ marginTop: 8 }}>
+                                      <div style={{ marginBottom: 3 }}>
+                                        <b>Which signal separates your swings</b>{" "}
+                                        <span className="muted">
+                                          (ranked by swings caught, then by spare
+                                          clips — a missed shot is a refund, a
+                                          spare 6 MB clip is not. Separation =
+                                          loudest at a swing ÷ loudest anywhere
+                                          else; above 1 means it stands clear of
+                                          the noise rather than scraping in under
+                                          a low threshold)
+                                        </span>
+                                      </div>
+                                      {d.signal_compare.signals.map((r, i) => (
+                                        <div key={r.signal}
+                                             style={{ color: i === 0 && r.separation > 1
+                                               ? "var(--ok, #27ae60)" : undefined }}>
+                                          {"  "}<b>{r.signal}</b>
+                                          {r.signal === "meandiff" && (
+                                            <span className="muted"> (what the rig uses)</span>
+                                          )}
+                                          {" "}→ separation{" "}
+                                          <b>{r.separation == null ? "—" : r.separation}</b>
+                                          {" "}· best {r.best.min_ratio}/{r.best.max_burst_sec}s
+                                          {" "}catches <b>{r.best.caught}/{r.best.of}</b>,{" "}
+                                          {r.best.false_positives} false
+                                          {Array.isArray(r.peaks) && (
+                                            <span className="muted">
+                                              {" "}· at your swings: {r.peaks
+                                                .map((v) => `×${v}`).join(", ")}
+                                            </span>
+                                          )}
+                                          {i === 0 && Array.isArray(r.rows)
+                                            && r.rows.length > 0 && (
+                                            <div style={{ marginLeft: 14 }}>
+                                              <span className="muted">
+                                                every setting that caught
+                                                something, so one pair can be
+                                                picked that holds across clips:
+                                              </span>
+                                              {r.rows.map((x, j) => (
+                                                <div key={j}>
+                                                  {"  "}ratio {x.min_ratio}
+                                                  {" "}· burst {x.max_burst_sec}s →{" "}
+                                                  {x.caught}/{x.of} caught,{" "}
+                                                  {x.false_positives} false
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+                                          {i === 0 && r.separation != null
+                                            && r.separation <= 1 && (
+                                            <span className="muted">
+                                              {" "}← catches the most, but below ×1
+                                              separation: it works on this clip by
+                                              a low threshold rather than by
+                                              standing clear of the noise, so
+                                              check it on a second clip before
+                                              moving the rig
+                                            </span>
+                                          )}
+                                        </div>
+                                      ))}
+                                      {d.signal_compare.signals.every(
+                                        (r) => r.best.caught === 0) && (
+                                        <div className="err-text" style={{ marginTop: 3 }}>
+                                          No signal caught a single one of your swings at
+                                          any setting — nothing measured here sees them at
+                                          all. That is a zone, camera or audio problem, and
+                                          no amount of tuning will fix it.
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                  {d.trace && (
+                                    <div style={{ marginTop: 6 }}>
+                                      <MotionGraph
+                                        trace={d.trace}
+                                        windows={testCutResults[u.id].cuts || []}
+                                      />
+                                      <div className="tiny muted">
+                                        smoothed motion ÷ the clip&apos;s own median,
+                                        which is the number compared to the
+                                        threshold. Red dashed = your ratio
+                                        ({d.trace.threshold}). Green bands = windows
+                                        kept, dots = where impact was placed.
+                                      </div>
+                                    </div>
+                                  )}
+                                </>
+                              );
+                            })()
                           ) : testCutResults[u.id].detector === "combined" ? (
                             <>
                               {(() => {

@@ -99,15 +99,36 @@ SHRINK_AFTER_PASSES = 6
 # the pipeline's ceiling, so a mode is only usable if the encoder can
 # keep up with it. 720p is ~2.25x cheaper per frame, which is what
 # makes 50 fps viable without new hardware.
+#
+# ON AN IP CAMERA A MODE IS A BELIEF, NOT A REQUEST. open_camera returns
+# before the v4l2 tuning for an rtsp:// device, because the sensor
+# belongs to the camera and is set in its own web UI. So on the Hanwhas
+# a mode does not make the camera do anything — it tells the agent what
+# to expect, and everything sized from that (the ring buffer, the clip's
+# stamped rate, the "camera stalled" threshold) is right or wrong
+# accordingly. Match it to the camera's own profile, which the Cameras
+# card reads out under "Camera says".
 CAPTURE_MODES = {
     "1080p30": {"width": 1920, "height": 1080, "fps": 30},   # default; fits the budget
+    "720p30": {"width": 1280, "height": 720, "fps": 30},     # the Hanwhas' own profile
     "720p50": {"width": 1280, "height": 720, "fps": 50},     # 50fps that the encoder can actually sustain
     "1080p50": {"width": 1920, "height": 1080, "fps": 50},   # needs a COOL, unthrottled Pi
+    # What the Hanwhas can be set to send, and what the shutter
+    # settings for freezing a ball assume. READ THE TWO CEILINGS
+    # BELOW BEFORE USING IT: the software encoder tops out near 31 fps
+    # at 1080p once the Pi is throttled, so the frames past that are
+    # captured and then lost; and the pre-roll ring buffer wants
+    # ~1.9GB of RAM at the default 5s, which is comfortable on an 8GB
+    # Pi and not on a 4GB one. Clips are no longer WRONG when the
+    # encoder cannot keep up -- the write rate is measured and stamped
+    # per recording -- but you are paying for frames you do not get.
+    "1080p60": {"width": 1920, "height": 1080, "fps": 60},   # camera's rate; see the two ceilings
     "990p120": {"width": 1280, "height": 960, "fps": 120},   # cropped high-speed experiment
 }
 _MODE_ALIASES = {
     "default": "1080p30", "30": "1080p30", "30fps": "1080p30",
     "50": "720p50", "50fps": "720p50",
+    "60": "1080p60", "60fps": "1080p60",
     "120": "990p120", "120fps": "990p120",
 }
 
@@ -123,6 +144,20 @@ def _apply_capture_mode(cfg: dict) -> None:
         mode = _MODE_ALIASES.get(mode_raw, mode_raw)
         preset = CAPTURE_MODES.get(mode)
         if preset:
+            # SAY SO WHEN THE MODE OVERRULES AN EXPLICIT SETTING. "mode
+            # wins" is one line of docstring and a trap in practice:
+            # somebody told to fix a wrong frame rate edits `fps:`,
+            # restarts, sees no change, and concludes the diagnosis was
+            # wrong. The setting that is actually in charge should name
+            # itself in the log.
+            for _k in ("width", "height", "fps"):
+                _had = cam.get(_k)
+                if _had is not None and _had != preset[_k]:
+                    log.warning(
+                        "capture mode %r overrides camera.%s=%s with %s "
+                        "— change the MODE, not %s",
+                        mode, _k, _had, preset[_k], _k,
+                    )
             cam.update(preset)
             log.info(
                 "capture mode %r -> %dx%d@%d",
@@ -159,9 +194,9 @@ def _apply_capture_mode(cfg: dict) -> None:
                 mode_raw, ", ".join(sorted(CAPTURE_MODES)),
             )
     # RAM appetite of the raw-frame pre-roll ring buffer. 5s of
-    # 1080p30 ~= 930MB; 1080p50 ~= 1.6GB; 990p120 ~= 2.4GB. A Pi 5
-    # 8GB survives all three, but log it loudly so nobody 120fps's a
-    # 4GB Pi into the OOM killer.
+    # 1080p30 ~= 930MB; 1080p50 ~= 1.6GB; 1080p60 ~= 1.9GB;
+    # 990p120 ~= 2.4GB. A Pi 5 8GB survives all of them, but log it
+    # loudly so nobody 120fps's a 4GB Pi into the OOM killer.
     try:
         _w = int(cam.get("width", 1920))
         _h = int(cam.get("height", 1080))
@@ -172,6 +207,32 @@ def _apply_capture_mode(cfg: dict) -> None:
             f"pre-roll buffer: ~{_mb:.0f}MB RAM "
             f"({_w}x{_h}@{_f:.0f} x {_sec:.1f}s)"
         )
+        # WHAT THIS LINE IS NOT. It reports `buffer_seconds`, and with
+        # the copy engine running that is not what gets allocated: the
+        # copy ring already holds the pre-roll on disk, so the decode
+        # ring is cut to copy_fallback_preroll_seconds (see
+        # preroll_seconds in copyengine.py).
+        #
+        # THIS USED TO SAY "the GREEN allocates the full buffer_seconds
+        # either way", and it was right -- preroll_seconds lived in
+        # tee.py and green.py never called it, so a green on the copy
+        # engine held 1.9GB of frames at 1080p60 for a ring only its
+        # decode fallback reads. Documenting an asymmetry is how it
+        # survived. Both roles now take the same cut, so this estimate
+        # is right for either. Each logs the ring it really took once
+        # the camera opens; this is the startup figure.
+        try:
+            from .copyengine import copy_configured
+            if copy_configured(cfg):
+                _cut = max(0.5, float(
+                    cfg.get("copy_fallback_preroll_seconds", 2.0)))
+                msg += (
+                    f" — with the copy engine the decode ring is cut to "
+                    f"{_cut:.1f}s (~{_mb * _cut / _sec:.0f}MB) on either "
+                    f"role; the segment ring on disk is the real pre-roll"
+                )
+        except Exception:  # noqa: BLE001 - estimate only, never fatal
+            pass
         if _mb > 2600:
             log.warning(
                 "%s — heavy! reduce buffer_seconds or fps if the Pi "
@@ -208,6 +269,30 @@ def load_config(path: Path) -> dict:
 # ---------------------------------------------------------------------
 # Backend HTTP client
 # ---------------------------------------------------------------------
+
+class BackendUnreachable(RuntimeError):
+    """We never got a usable answer out of the backend.
+
+    Raised by _retry when every attempt is spent without a 2xx and
+    without a hard 4xx — so a dead modem, a DNS failure, a timeout, or
+    a 5xx from a server that is up but cannot answer. All of those mean
+    THE SAME THING TO A CAPTURE LOOP: nobody told us not to record.
+
+    THE DISTINCTION IS THE WHOLE POINT. A 4xx is the backend answering
+    and refusing — wrong token, camera disabled, not a tee camera — and
+    recording against that is pointless. Anything else is silence, and
+    a swing that happened during silence still happened. The tee used
+    to treat the two identically and drop the swing: see the
+    `event_trigger` handler in tee.py, and the two swings lost at 17:41
+    and 17:42 on 14 Oct to a modem that re-enumerates every three
+    minutes.
+
+    Subclasses RuntimeError ON PURPOSE. Every existing `except
+    Exception` and `except RuntimeError` around a backend call keeps
+    behaving exactly as it did; only the sites that care to tell
+    silence from refusal have to say so.
+    """
+
 
 class UnattachableClip(RuntimeError):
     """This clip can never be delivered, however good the link gets.
@@ -367,7 +452,11 @@ class BackendClient:
                             pass
             time.sleep(delay)
             delay = min(delay * 2, 30)
-        raise RuntimeError(f"backend {method} {path} failed: {last_err}")
+        # NOT a plain RuntimeError. Reaching here means the retries are
+        # spent with no 2xx and no hard 4xx — the backend never refused,
+        # it just never answered. See BackendUnreachable.
+        raise BackendUnreachable(
+            f"backend {method} {path} failed: {last_err}")
 
     def heartbeat(
         self, firmware_version: str = "", extra: dict | None = None,
@@ -520,6 +609,7 @@ class BackendClient:
         video_path: Path,
         recording_started_at: float | None = None,
         chunk_bytes: int = 512 * 1024,
+        chunk_max: int = 0,
         chunk_timeout: int = 45,
         deadline_seconds: int = 300,
         max_stalls: int = 40,
@@ -573,6 +663,34 @@ class BackendClient:
         # Adapted DOWN on a timeout and back up on a run of clean chunks.
         # Local to this attempt plus whatever the caller learned before.
         _chunk = max(CHUNK_MIN_BYTES, int(chunk_bytes))
+        # WHERE IT MAY CLIMB BACK TO, which is NOT where it started.
+        #
+        # This used to grow back only as far as `chunk_bytes` -- the
+        # size the caller handed in, which is the size it had already
+        # been beaten down to. That made the chunk size a RATCHET: every
+        # bad patch halved it, the lower value was saved to
+        # learned_kbps.json, the next upload started there and could
+        # never exceed it, and a restart restored the lower value too.
+        # Nothing in the system could ever raise it again.
+        #
+        # It cost a day. The tee's SIM expired mid-upload on 15 Oct, so
+        # every chunk timed out and the size walked down to the 64 KB
+        # floor. Refilling the SIM fixed the link and the uploads stayed
+        # broken -- 23.7 MB in 64 KB slices is 371 separate round trips,
+        # which on a cellular link is most of the wall clock. The owner's
+        # report was that uploads "slow down with each successive upload
+        # to the point where it's unusable", which is this ratchet
+        # described exactly.
+        #
+        # The bitrate ladder beside it has always had a fixed ceiling to
+        # climb back to (compress_kbps, from config). The chunk size now
+        # has one too.
+        # `or int(chunk_bytes)` used to sit on the end of this and was
+        # dead: _chunk is already max(floor, chunk_bytes), so it is
+        # always the lower bound here and the fallback could never
+        # change the result. A mutation run proved it by deleting it
+        # with no test noticing.
+        _chunk_max = max(_chunk, int(chunk_max))
         _clean = 0
         _grow_need = CHUNK_GROW_AFTER
 
@@ -664,10 +782,9 @@ class BackendClient:
                 # the link has room for a bigger one, and bigger chunks
                 # are fewer round trips.
                 _clean += 1
-                if (_clean >= _grow_need
-                        and _chunk < int(chunk_bytes)):
+                if _clean >= _grow_need and _chunk < _chunk_max:
                     _clean = 0
-                    _chunk = min(int(chunk_bytes), _chunk * 2)
+                    _chunk = min(_chunk_max, _chunk * 2)
                     log.info("upload: back up to %d KB chunks",
                              _chunk // 1024)
                     if on_chunk_size is not None:
@@ -749,6 +866,13 @@ class HeartbeatThread(threading.Thread):
         self.fast_interval = 3
         self._fast_until = 0.0
 
+    def report_soon(self) -> None:
+        """Send the next heartbeat immediately instead of at the next
+        interval. For an answer the operator is waiting on — the camera's
+        exposure read-back — where a minute of silence reads as failure.
+        """
+        self._wake.set()
+
     def set_fast_until(self, monotonic_deadline: float) -> None:
         """Report at fast_interval until this monotonic time."""
         was_fast = self._fast_until > time.monotonic()
@@ -765,6 +889,12 @@ class HeartbeatThread(threading.Thread):
         # First heartbeat immediately so admin UI sees the camera
         # come online without waiting a full interval.
         while not self.stopping.is_set():
+            # CLEARED BEFORE THE PAYLOAD IS BUILT, not after the send. A
+            # request that arrives while this heartbeat is in flight has
+            # nothing in this payload, so the flag has to survive to the
+            # next loop — clearing it afterwards would swallow it and
+            # leave the operator waiting a full interval for an answer.
+            self._wake.clear()
             extra = None
             if self.extra_fn is not None:
                 try:
@@ -781,7 +911,6 @@ class HeartbeatThread(threading.Thread):
             # Wait the interval, but wake early if focus mode is armed
             # mid-sleep. Polling in short slices keeps stop() responsive
             # without a second event to reason about.
-            self._wake.clear()
             _deadline = time.monotonic() + self._sleep_interval()
             while time.monotonic() < _deadline:
                 if self.stopping.wait(0.25):
@@ -791,6 +920,133 @@ class HeartbeatThread(threading.Thread):
 
     def stop(self) -> None:
         self.stopping.set()
+
+
+# ---------------------------------------------------------------------
+# Recording a swing the backend never heard about
+# ---------------------------------------------------------------------
+
+class TriggerGate:
+    """May the tee record a swing whose /event-trigger never landed?
+
+    THE LINK IS NOT UP WHEN THE SWING HAPPENS. Measured on the tee rig,
+    14 Oct: the modem re-enumerates roughly every three minutes, which
+    on a good run leaves ten seconds an hour where a trigger POST cannot
+    complete. Two swings died in consecutive minutes that way, each one
+    logged as `event_trigger failed — skipping` and then never recorded
+    at all. The clip was not lost in transit; it was never cut.
+
+    Everything DOWNSTREAM of the trigger already survives an unreachable
+    backend. The spool holds a clip for 24 hours, the bitrate ladder
+    backs off, and _recover_lost_event re-registers a session the server
+    has no row for at the moment the clip finally goes up. The trigger
+    is the one call on the capture path with no fallback, and it is the
+    first one, so its failure takes the whole swing with it.
+
+    So: record anyway, and let the recovery that already exists do its
+    job. The only thing that should stop the tee recording is the
+    operator having PAUSED it — and that answer comes from the backend,
+    which by definition we cannot reach at the moment we need it.
+
+    Hence this gate. The backend states `triggering_enabled` on every
+    watch-status poll (about once a second), and this remembers the last
+    answer it gave:
+
+      last answer was ENABLED  -> record. The swing is real.
+      last answer was PAUSED   -> do not. The operator said no, and
+                                  nothing since has said otherwise.
+      no answer ever seen      -> record.
+
+    THAT LAST LINE IS A CHOICE, and it is the one that keeps footage.
+    A rig that has never had a successful poll is far more likely to be
+    a camera on a tee box with a sick modem than a paused camera on a
+    bench, and the cost of being wrong is bounded: the spool is capped
+    by size and age, so the worst case is some clips that get dropped
+    without ever being sent. The cost of the other default is every
+    swing of the round.
+
+    REMEMBERED ON DISK, because the case that defeats an in-memory
+    answer is a Pi that reboots during an outage — exactly what a
+    browning-out rig does. Without the file it would wake up with no
+    answer, take the keep-footage default, and spool clips for a camera
+    the operator paused hours ago.
+
+    An older backend omits the field. ABSENT IS NOT PAUSED: a missing
+    key teaches this nothing and leaves the memory alone, so a Pi
+    running ahead of its backend keeps recording rather than going
+    quiet.
+    """
+
+    FILENAME = "trigger-gate.json"
+
+    def __init__(self, state_dir: Optional[Path] = None):
+        self._path = (Path(state_dir) / self.FILENAME) if state_dir else None
+        self._enabled: Optional[bool] = self._load()
+
+    # ---- the backend's answer ---------------------------------------
+
+    def note_backend_state(self, triggering_enabled) -> None:
+        """Remember what watch-status just said. Called on every poll.
+
+        `None` means the key was absent -- an older backend -- and is
+        not an answer, so it changes nothing.
+        """
+        if triggering_enabled is None:
+            return
+        val = bool(triggering_enabled)
+        if val == self._enabled:
+            return
+        self._enabled = val
+        log.info(
+            "triggering is %s for this camera (per the backend)",
+            "enabled" if val else "PAUSED",
+        )
+        self._save()
+
+    @property
+    def last_known_enabled(self) -> Optional[bool]:
+        """True, False, or None for "never heard"."""
+        return self._enabled
+
+    # ---- the decision -----------------------------------------------
+
+    def should_record_unregistered(self, session_id: str = "") -> bool:
+        """The trigger did not land. Record this swing anyway?"""
+        if self._enabled is False:
+            log.info(
+                "trigger: session=%s not recorded — the backend is "
+                "unreachable AND the last thing it told us was that "
+                "triggering is paused for this camera", session_id,
+            )
+            return False
+        log.warning(
+            "trigger: session=%s did not reach the backend — recording it "
+            "anyway%s. The clip will spool and re-register itself when the "
+            "link returns.", session_id,
+            "" if self._enabled else " (we have never had an answer from "
+                                     "the backend about this camera)",
+        )
+        return True
+
+    # ---- persistence ------------------------------------------------
+
+    def _load(self) -> Optional[bool]:
+        if self._path is None:
+            return None
+        try:
+            val = json.loads(self._path.read_text()).get("triggering_enabled")
+        except Exception:  # noqa: BLE001 - absent, truncated, not ours
+            return None
+        return None if val is None else bool(val)
+
+    def _save(self) -> None:
+        if self._path is None:
+            return
+        try:
+            self._path.write_text(
+                json.dumps({"triggering_enabled": self._enabled}))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("trigger gate: could not persist state: %s", exc)
 
 
 # ---------------------------------------------------------------------
@@ -851,6 +1107,9 @@ class BackgroundUploader(threading.Thread):
         self.spool_max_bytes = int(spool_max_mb) * 1024 * 1024
         self.spool_max_age = float(spool_max_age_hours) * 3600.0
         self._next_spool_sweep = 0.0
+        # True while a clip is actually on the wire, so pending_count()
+        # does not read zero in the gap between dequeue and send.
+        self._sending = False
         # Fresh clip with others waiting / fresh clip alone / spool retry.
         self.fresh_timeout = int(fresh_timeout)
         self.idle_timeout = int(idle_timeout)
@@ -926,14 +1185,43 @@ class BackgroundUploader(threading.Thread):
                 self.spool_dir = None
         self._load_kbps()
 
+    def pending_count(self) -> int:
+        """Clips still owed to the backend: queued, in flight, or spooled.
+
+        FOR THE CURFEW, which must not power the rig off mid-upload. A
+        clip spooled at 20:55 survives the halt — the spool is on the SD
+        card precisely so it does — but it does not reach anybody until
+        the Pi wakes at 06:00, and a hole-in-one that arrives the next
+        morning has missed the moment it was recorded for.
+        """
+        n = self._q.qsize() + (1 if self._sending else 0)
+        if self.spool_dir is not None:
+            try:
+                n += len(list(self.spool_dir.glob("*.mp4")))
+            except OSError:
+                pass
+        return n
+
     def enqueue(self, session_id: str, clip_path: Path,
                 recording_started_at: Optional[float],
-                real_fps: Optional[float] = None) -> None:
+                real_fps: Optional[float] = None,
+                precompressed: bool = False) -> None:
         """Hand a finished clip to the worker and return at once.
 
         `real_fps` (measured delivered rate) re-clocks the clip during
-        compression so a frame-dropping capture still plays in real time."""
-        self._q.put((session_id, clip_path, recording_started_at, real_fps))
+        compression so a frame-dropping capture still plays in real time.
+
+        `precompressed` says the clip is ALREADY what we want to send —
+        the stream-copy engine hands over the camera's own H.264 at the
+        camera's own bitrate, and putting that through compress_for_upload
+        would spend an ffmpeg pass to produce a second-generation copy of
+        a first-generation file. The spool's existing retry ladder still
+        applies: a clip that keeps failing is re-encoded smaller, because
+        at that point losing quality beats losing the clip."""
+        self._q.put(
+            (session_id, clip_path, recording_started_at, real_fps,
+             bool(precompressed)),
+        )
         depth = self._q.qsize()
         if depth > 1:
             log.info("uploader: %d clip(s) queued", depth)
@@ -941,7 +1229,8 @@ class BackgroundUploader(threading.Thread):
     # ---- spool ------------------------------------------------------
 
     def _spool(self, session_id: str, clip_path: Path,
-               ts: Optional[float], tries: int) -> bool:
+               ts: Optional[float], tries: int,
+               compressed: bool = True) -> bool:
         """Park a failed clip for a later attempt. True if it was kept."""
         if self.spool_dir is None or not clip_path.exists():
             return False
@@ -955,9 +1244,19 @@ class BackgroundUploader(threading.Thread):
                 # What it is currently encoded at, so repeated failures
                 # can step it down instead of retrying the same bytes.
                 "kbps": int(self._kbps_now or 0),
-                # Already compressed — re-encoding it on every retry would
-                # cost the Pi an ffmpeg pass and degrade it each time.
-                "compressed": True,
+                # Already carrying the encode we mean to send — whether
+                # this uploader made it or the camera did. Re-encoding on
+                # every retry would cost an ffmpeg pass and degrade it
+                # each time. RECORDED, not assumed: a stream-copied clip
+                # spooled without an attempt has had nothing done to it,
+                # and writing True here would have been a lie the retry
+                # ladder then acted on.
+                "compressed": bool(compressed),
+                # WHEN THIS CLIP JOINED THE SPOOL, and the key the
+                # queue is ordered and expired by. It used to be the
+                # file's mtime, which the shrink ladder rewrites every
+                # time it re-encodes a clip -- see _spool_entries.
+                "spooled_at": time.time(),
             }))
             log.warning(
                 "uploader: kept %s (%.1f MB) for a later attempt — %d clip(s) "
@@ -970,30 +1269,95 @@ class BackgroundUploader(threading.Thread):
             log.warning("uploader: could not spool %s: %s", clip_path.name, exc)
             return False
 
+    def _spool_entries(self) -> list:
+        """Every spooled clip as (joined_at, path, meta), oldest first.
+
+        ORDERED BY WHEN THE CLIP JOINED THE SPOOL, NOT BY ITS mtime.
+        Those were the same thing right up until the shrink ladder
+        re-encoded a clip: `compress_for_upload` replaces the file, so
+        the clip the sweep had been patiently grinding on acquired a
+        brand-new mtime and sorted to the BACK of the queue. The sweep
+        moved to a different clip, banked a little of that one, shrank
+        it, and lost it the same way.
+
+        The result was the thing _retry_one_spooled's "DO NOT ROTATE"
+        comment was written to prevent, arriving through the one door
+        that comment did not cover: a spool where every clip was 10-25%
+        uploaded and not one of them had finished.
+
+        mtime also decided EVICTION, so a re-encode reset the clip's
+        24-hour clock — a shrunk clip could outlive the cap forever
+        while genuinely older footage was dropped to make room for it.
+
+        `spooled_at` is written once, by _spool, and carried across
+        every meta rewrite after that. Clips spooled by an older agent
+        have no such key, so mtime remains the fallback — and
+        compress_for_upload now restores mtime across a re-encode, which
+        keeps that fallback honest for them too.
+        """
+        if self.spool_dir is None:
+            return []
+        try:
+            paths = list(self.spool_dir.glob("*.mp4"))
+        except OSError:
+            return []
+        out: list = []
+        for p in paths:
+            side = p.with_suffix(".json")
+            try:
+                meta = json.loads(side.read_text()) if side.exists() else {}
+            except Exception:  # noqa: BLE001
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            try:
+                joined = float(meta.get("spooled_at") or 0)
+            except (TypeError, ValueError):
+                joined = 0.0
+            if joined <= 0:
+                try:
+                    joined = p.stat().st_mtime
+                except OSError:
+                    continue      # vanished under us; nothing to send
+            out.append((joined, p, meta))
+        out.sort(key=lambda e: e[0])
+        return out
+
+    def _spooled_count(self) -> int:
+        """How many clips are waiting on the link."""
+        return len(self._spool_entries())
+
+    def _park_fresh(self) -> tuple:
+        """Should a fresh clip be parked rather than attempted?
+
+        Returns (quiet_seconds, backlog_depth); non-zero in either slot
+        means park it. DECIDED ONCE, and in one place, because the
+        answer has two independent reasons and the log line downstream
+        has to say which one applied.
+        """
+        return (max(self._in_backoff(), self._settling()),
+                self._spooled_count() if self.spool_dir else 0)
+
     def _prune_spool(self) -> None:
         """Keep the spool inside its size and age bounds, oldest out first."""
         if self.spool_dir is None:
             return
-        try:
-            clips = sorted(self.spool_dir.glob("*.mp4"),
-                           key=lambda p: p.stat().st_mtime)
-        except OSError:
-            return
+        entries = self._spool_entries()
         now = time.time()
         total = 0
         keep: list = []
-        for p in reversed(clips):          # newest first
+        for joined, p, _meta in reversed(entries):     # newest first
             try:
                 st = p.stat()
             except OSError:
                 continue
-            if (now - st.st_mtime) > self.spool_max_age:
+            if (now - joined) > self.spool_max_age:
                 continue
             if total + st.st_size > self.spool_max_bytes:
                 continue
             total += st.st_size
             keep.append(p)
-        for p in clips:
+        for _joined, p, _meta in entries:
             if p in keep:
                 continue
             log.warning("uploader: dropping spooled %s (spool full or stale)",
@@ -1003,21 +1367,11 @@ class BackgroundUploader(threading.Thread):
 
     def _next_spooled(self):
         """The oldest clip waiting on the link, or None."""
-        if self.spool_dir is None:
+        entries = self._spool_entries()
+        if not entries:
             return None
-        try:
-            clips = sorted(self.spool_dir.glob("*.mp4"),
-                           key=lambda p: p.stat().st_mtime)
-        except OSError:
-            return None
-        for p in clips:
-            side = p.with_suffix(".json")
-            try:
-                meta = json.loads(side.read_text()) if side.exists() else {}
-            except Exception:  # noqa: BLE001
-                meta = {}
-            return p, meta
-        return None
+        _joined, path, meta = entries[0]
+        return path, meta
 
     # ---- worker -----------------------------------------------------
 
@@ -1206,13 +1560,24 @@ class BackgroundUploader(threading.Thread):
         return self.client.upload_event_chunked(
             session_id, clip_path, recording_started_at=ts,
             chunk_bytes=self._chunk_now,
+            # Start where the link left us, but allow the climb back to
+            # the CONFIGURED size rather than to wherever we were beaten
+            # down to. See _chunk_max in upload_event_chunked.
+            chunk_max=self.chunk_bytes,
             chunk_timeout=min(45, max(20, int(timeout))),
             deadline_seconds=int(timeout) * max(1, int(retries)),
             on_progress=_seen,
             on_chunk_size=_sized,
         )
 
-    def _recover_lost_event(self, session_id: str) -> bool:
+    # What _recover_lost_event managed. Three outcomes, not two,
+    # because "no event can ever exist for this clip" and "we could not
+    # ask" must not share an answer -- the first one deletes footage.
+    RECOVERED = "registered"
+    RECOVER_REFUSED = "refused"
+    RECOVER_UNREACHABLE = "unreachable"
+
+    def _recover_lost_event(self, session_id: str) -> str:
         """Re-register a session the server has no event for.
 
         A trigger can be lost — the backend mid-deploy, the modem between
@@ -1227,16 +1592,69 @@ class BackgroundUploader(threading.Thread):
         """
         try:
             out = self.client.recover_event(session_id)
+        except BackendUnreachable as exc:
+            # WE DID NOT GET AN ANSWER, which is not the same as being
+            # told no. The caller must keep the clip: a 404 on the
+            # upload plus a dead modem on the recovery looks exactly
+            # like an orphan and is not one, and treating it as one
+            # DELETES the footage. On the tee rig, where the modem
+            # re-enumerates every three minutes, a recovery landing in
+            # one of those gaps is routine.
+            log.warning(
+                "uploader: could not re-register %s — the backend did not "
+                "answer (%s). Keeping the clip; this says nothing about "
+                "whether an event can exist for it.", session_id, exc,
+            )
+            return self.RECOVER_UNREACHABLE
         except Exception as exc:  # noqa: BLE001
-            log.warning("uploader: could not re-register %s: %s",
+            # The backend answered and refused -- most often because the
+            # operator deleted the session, which /event-trigger
+            # declines to undo. Nothing to keep the clip for.
+            log.warning("uploader: backend refused to re-register %s: %s",
                         session_id, exc)
-            return False
+            return self.RECOVER_REFUSED
         log.warning(
             "uploader: %s had no event on the server — re-registered it as "
             "event %s (tee-only) so the clip is not lost",
             session_id, out.get("event_id"),
         )
-        return True
+        return self.RECOVERED
+
+    def _compress_this(self, precompressed: bool) -> bool:
+        """Should this clip be re-encoded before it goes up?
+
+        ONE ANSWER, ASKED IN FOUR PLACES. The pre-spool path, _send, and
+        both _spool calls each used to spell this out as
+        `not _precompressed`, and that is how a stream-copied clip got
+        re-encoded to 720p once already: the flag guarded _send, and a
+        clip spooled during a capture never reaches _send. Four copies
+        of a rule is four chances for one of them to be wrong.
+
+        A clip the uploader encoded itself is the ladder's to shrink.
+
+        A PRECOMPRESSED CLIP IS EXEMPT UNTIL THE LINK SAYS OTHERWISE.
+        The copy engine hands over the camera's own H.264 and re-encoding
+        it spends a pass to make a second-generation copy of a
+        first-generation file -- worth avoiding on a link that can carry
+        it. On a link that cannot, it is the whole problem: the ladder
+        drops _kbps_now after six passes of a clip inching across, which
+        is exactly the right response, and on a copy-engine rig that
+        lowered ceiling was spent nowhere, because every future clip was
+        exempt too. The tee sat at 36% of 1.7 MB with the one lever that
+        could have helped it wired to nothing.
+
+        So the exemption lasts while the ceiling is untouched, and lifts
+        once the link has forced the encode below it. It restores itself:
+        KBPS_RECOVER_AFTER clean sends walk _kbps_now back up, and when
+        it reaches the ceiling again copy clips go back to
+        first-generation. Losing quality beats losing the clip -- but
+        only for as long as the link actually demands it.
+        """
+        if self._kbps_now <= 0:
+            return False
+        if not precompressed:
+            return True
+        return self._kbps_now < self.compress_kbps
 
     def _send(self, session_id: str, clip_path: Path, ts: Optional[float],
               real_fps: Optional[float], compress: bool, retries: int,
@@ -1267,8 +1685,23 @@ class BackgroundUploader(threading.Thread):
                     session_id, clip_path, ts, retries, timeout,
                 )
             except UnattachableClip as exc:
-                if _pass == 0 and self._recover_lost_event(session_id):
-                    continue
+                if _pass == 0:
+                    _recovery = self._recover_lost_event(session_id)
+                    if _recovery == self.RECOVERED:
+                        continue
+                    if _recovery == self.RECOVER_UNREACHABLE:
+                        # Deliberately NOT orphaned: _last_orphaned
+                        # deletes the clip, and we do not know that it
+                        # is undeliverable -- only that we could not
+                        # find out. An ordinary failure keeps it
+                        # spooled for the next attempt.
+                        log.warning(
+                            "upload of %s has no event to attach to and the "
+                            "backend could not be asked to make one — "
+                            "keeping the clip for the next attempt",
+                            session_id,
+                        )
+                        return False
                 self._last_orphaned = True
                 log.error(
                     "upload rejected for %s: %s — there is no event to "
@@ -1291,10 +1724,29 @@ class BackgroundUploader(threading.Thread):
     def run(self) -> None:
         while not self._stop.is_set():
             try:
-                session_id, clip_path, ts, real_fps = self._q.get(timeout=0.5)
+                (session_id, clip_path, ts, real_fps,
+                 _precompressed) = self._q.get(timeout=0.5)
+                # DECIDED ONCE, for every path this clip can take. The
+                # four sites below have to agree about whether this file
+                # has been re-encoded, and computing it four times is how
+                # they stopped agreeing last time.
+                _want_compress = self._compress_this(_precompressed)
+                if _precompressed and _want_compress:
+                    log.warning(
+                        "uploader: re-encoding %s at %d kbps even though the "
+                        "capture engine handed it over ready to send — the "
+                        "link has pushed the encode below the %d kbps "
+                        "ceiling, so this clip goes up second-generation. "
+                        "It returns to first-generation once %d clean sends "
+                        "walk the ceiling back up.",
+                        clip_path.name, self._kbps_now, self.compress_kbps,
+                        KBPS_RECOVER_AFTER,
+                    )
             except queue.Empty:
+                self._sending = False
                 self._maybe_sweep_spool()
                 continue
+            self._sending = True
             # HEAD-OF-LINE. Five attempts x a 180s timeout is 15 minutes
             # per clip. With eight queued that is over two hours, and the
             # 3 MB clips that WOULD have made it die behind a 40 MB one
@@ -1306,33 +1758,67 @@ class BackgroundUploader(threading.Thread):
             # in a dead window for the full 180s. A longer attempt would
             # simply have been in progress when the link came back.
             #
-            # But patience costs the queue. So: a fresh clip gets a short
-            # attempt and is spooled if it misses — nothing is lost, the
-            # spool will retry it. The patient attempt happens on the
-            # spool sweep below, where the worker is idle and a ten-minute
-            # wait costs nothing.
-            _quiet = max(self._in_backoff(), self._settling())
-            if _quiet > 0:
+            # But patience costs the queue. So: a fresh clip with a clear
+            # run ahead of it gets a short attempt and is spooled if it
+            # misses — nothing is lost, the spool will retry it. The
+            # patient attempt happens on the spool sweep below, where the
+            # worker is idle and a ten-minute wait costs nothing.
+            #
+            # A BACKLOG MAKES EVERY FRESH CLIP LAST IN LINE, so sending
+            # one here is a queue-jump the spool will not honour anyway:
+            # the sweep is strictly oldest-first, so whatever this
+            # attempt banks is banked on a clip that then waits behind
+            # every clip already parked.
+            #
+            # And it banks something. Observed on the tee: nine clips,
+            # each 10-25% uploaded, each stalled over an hour, none
+            # finished. The backoff gate below already covered a link
+            # that had FAILED — but a link that is merely slow keeps
+            # progressing, and _note_result deliberately holds the quiet
+            # window at backoff_base for exactly that case. So the gate
+            # kept opening, every new swing spent the link painting a
+            # sliver onto itself, and the one clip at the head of the
+            # queue never got a clear run.
+            #
+            # Joining the back of the spool costs this clip nothing: it
+            # is a rename into the same directory, the sweep runs right
+            # after this loop, and the order clips arrive in is now the
+            # order they go up in.
+            _quiet, _backlog = self._park_fresh()
+            if _quiet > 0 or _backlog:
                 # THE POINT OF THE BACKOFF. Attempting here is what kept
                 # the link permanently busy; spool it and stay off the
                 # wire. Compress first, so the retry has nothing left to
-                # do but send.
-                if self._kbps_now > 0:
+                # do but send — unless the clip IS already what we mean
+                # to send. This path is how a stream-copied clip got
+                # re-encoded to 720p despite precompressed=True: the
+                # flag guarded _send, and a clip spooled during a
+                # capture never reaches _send.
+                if _want_compress:
                     compress_for_upload(
                         clip_path, target_kbps=self._kbps_now,
                         scale_height=(int(self.scale_height)
                                       if self.scale_height else None),
                         force_input_fps=real_fps,
                     )
-                log.info(
-                    "uploader: %s — spooling %s without an attempt so the "
-                    "link stays idle (%.0fs)",
-                    ("a capture is running" if self._capture_active
-                     else "settling after a capture" if self._settling() > 0
-                     else "backing off"),
-                    clip_path.name, _quiet,
-                )
-                self._spool(session_id, clip_path, ts, tries=0)
+                if _quiet > 0:
+                    log.info(
+                        "uploader: %s — spooling %s without an attempt so the "
+                        "link stays idle (%.0fs)",
+                        ("a capture is running" if self._capture_active
+                         else "settling after a capture"
+                         if self._settling() > 0 else "backing off"),
+                        clip_path.name, _quiet,
+                    )
+                else:
+                    log.info(
+                        "uploader: %d clip(s) already waiting — %s joins the "
+                        "back of the spool without an attempt, so the link "
+                        "finishes the oldest one instead of starting a tenth",
+                        _backlog, clip_path.name,
+                    )
+                self._spool(session_id, clip_path, ts, tries=0,
+                            compressed=_want_compress)
                 try:
                     clip_path.unlink(missing_ok=True)
                 except Exception:
@@ -1347,8 +1833,17 @@ class BackgroundUploader(threading.Thread):
                          "of %ds then spool, so they are not blocked",
                          _depth, _tries, _to)
             _t_send = time.time()
-            ok = self._send(session_id, clip_path, ts, real_fps,
-                            compress=True, retries=_tries, timeout=_to)
+            try:
+                ok = self._send(session_id, clip_path, ts, real_fps,
+                                compress=_want_compress,
+                                retries=_tries, timeout=_to)
+            finally:
+                # Cleared the moment the wire is free, not on the next
+                # idle poll: the curfew asks this to decide whether it
+                # may power the rig off, and half a second of "still
+                # sending" when nothing is would be half a second in
+                # which that answer is wrong.
+                self._sending = False
             # An orphaned clip says nothing about the link, so it must
             # not widen the backoff or feed the bitrate adaptation.
             if not self._last_orphaned:
@@ -1356,7 +1851,8 @@ class BackgroundUploader(threading.Thread):
                                   progressed_bytes=self._last_progress)
             # Spooling an orphan would park a clip nothing can ever accept.
             if not ok and not self._last_orphaned:
-                self._spool(session_id, clip_path, ts, tries=_tries)
+                self._spool(session_id, clip_path, ts, tries=_tries,
+                            compressed=_want_compress)
             try:
                 clip_path.unlink(missing_ok=True)
             except Exception:
@@ -1538,10 +2034,12 @@ class BackgroundUploader(threading.Thread):
         n = 0
         while True:
             try:
-                session_id, clip_path, ts, _fps = self._q.get_nowait()
+                (session_id, clip_path, ts, _fps,
+                 _pre) = self._q.get_nowait()
             except queue.Empty:
                 break
-            if self._spool(session_id, clip_path, ts, tries=0):
+            if self._spool(session_id, clip_path, ts, tries=0,
+                           compressed=not _pre):
                 n += 1
             try:
                 clip_path.unlink(missing_ok=True)
@@ -1658,6 +2156,604 @@ class ClipWriter:
 # Frame ring buffer
 # ---------------------------------------------------------------------
 
+# ── has this Pi browned out? ─────────────────────────────────────────
+# THE FIRST QUESTION IN THE TRIAGE RUNBOOK, and until now it needed an
+# SSH session to answer — on a link that, for the camera you most want
+# to ask it about, will not hold one. The battery telemetry that WOULD
+# have answered it from the app needs an INA226 on the 12V feed, and a
+# rig without that chip reports nothing at all, which is
+# indistinguishable from a rig that is fine.
+#
+# `vcgencmd` is on every Pi and needs no hardware. Bit 0 is
+# under-voltage right now; bit 16 is under-voltage at some point since
+# boot — and bit 16 alone is the interesting one, because it is the
+# brownout that already happened and left no other trace.
+_THROTTLED_BITS = {
+    0: "under-voltage now",
+    1: "arm frequency capped now",
+    2: "throttled now",
+    3: "soft temperature limit now",
+    16: "under-voltage since boot",
+    17: "arm frequency capped since boot",
+    18: "throttled since boot",
+    19: "soft temperature limit since boot",
+}
+
+
+def read_soc_temp(timeout: float = 3.0) -> Optional[float]:
+    """SoC temperature in °C from `vcgencmd measure_temp`. None off a Pi.
+
+    THE NUMBER THAT SEPARATES THE TWO DAYTIME THEORIES. The tee is slow
+    by day and fine by evening, in three different locations, while the
+    green beside it is fine throughout — so it is something about that
+    rig rather than the place or the tower. Two candidates fit: it
+    saturates its own uplink (its view carries ~6.5 MB a clip against
+    the green's ~1 MB, and golfers play in the day), or it throttles,
+    because it runs the detector, the copy ring and the live stream in
+    a sealed box in the sun while the green mostly waits.
+
+    `throttled` already tells us whether a limit was HIT. Temperature
+    tells us how close it is the rest of the time, which is what makes
+    a trend readable before it becomes a fault — and the two together,
+    beside the clips-owed count, say which theory is right without
+    anyone opening an SSH session at noon.
+    """
+    try:
+        out = subprocess.run(
+            ["vcgencmd", "measure_temp"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except Exception:  # noqa: BLE001 - not a Pi, or no vcgencmd
+        return None
+    m = re.search(r"-?\d+(?:\.\d+)?", out.stdout or "")
+    return float(m.group()) if m else None
+
+
+def read_throttled(timeout: float = 3.0) -> dict | None:
+    """What `vcgencmd get_throttled` says, decoded, plus the SoC
+    temperature. None off a Pi.
+
+    Best-effort and cheap — two tiny binaries, once a heartbeat. A board
+    without vcgencmd (a dev box, a container) returns None and the
+    heartbeat goes without it, exactly as the battery reader does.
+
+    The temperature rides along here rather than in its own field
+    because it answers the same question — is this Pi in trouble — and
+    the card draws both in one pill.
+    """
+    try:
+        out = subprocess.run(
+            ["vcgencmd", "get_throttled"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except Exception:  # noqa: BLE001 - not a Pi, or no vcgencmd
+        return None
+    text_out = (out.stdout or "").strip()
+    if "=" not in text_out:
+        return None
+    raw = text_out.split("=", 1)[1].strip()
+    try:
+        value = int(raw, 16)
+    except ValueError:
+        return None
+    return {
+        "raw": raw,
+        "value": value,
+        "flags": [name for bit, name in sorted(_THROTTLED_BITS.items())
+                  if value & (1 << bit)],
+        "under_voltage_now": bool(value & 1),
+        "under_voltage_ever": bool(value & (1 << 16)),
+        "temp_c": read_soc_temp(timeout=timeout),
+    }
+
+
+# ── what the uplink can see, without an SSH session ──────────────────
+# EVERY BRANCH OF THE TRIAGE RUNBOOK SAID "SSH IN", and on the camera
+# you most want to ask about, SSH is the first thing to die: the uplink
+# alternates between ~125 KB/s and nothing, and ssh is a held TCP
+# connection. So the questions that decide whether a bad link is weak
+# signal, a data cap, or hardware were exactly the ones that could not
+# be asked.
+#
+# THE MODEM HANGS OFF THE PI'S USB BUS, so reading it never touches the
+# cellular link. That is the whole trick: this works precisely when the
+# uplink is too starved to carry anything else, and it rides home on a
+# heartbeat that was already being sent.
+#
+# NOTHING HERE IS LOAD-BEARING. Every reader returns None rather than
+# raise, a rig with no modem reports nothing at all, and the heartbeat
+# goes without — exactly as the battery and vcgencmd readers do.
+
+# The gateway the modem answers on. NETGEAR's LM/LB series default to
+# this; _modem_gateway() prefers whatever the routing table actually
+# says and falls back here.
+DEFAULT_MODEM_GATEWAY = "192.168.5.1"
+
+# How long a modem reading stays good. The heartbeat is ~60s and this
+# costs an HTTP round trip to a device that can be wedged, so it is
+# fetched on its own slower cadence and served from cache in between.
+MODEM_TTL_SECONDS = 300.0
+
+# What we pull out of whatever the modem serves. The LM1200's JSON
+# shape is NOT confirmed on our unit -- the runbook says to confirm
+# rather than assume -- so these are matched as substrings against leaf
+# key names anywhere in the document instead of being read from fixed
+# paths. A firmware that nests them differently still reports.
+_MODEM_WANTED = {
+    "rsrp": ("rsrp",),
+    "rsrq": ("rsrq",),
+    "sinr": ("sinr", "snr"),
+    "rssi": ("rssi",),
+    "bars": ("bars", "signalstrength"),
+    "band": ("band",),
+    "carrier": ("carrier", "registernetworkdisplay", "operator"),
+    # NO UNIT IN THE NAME. The firmware may report bytes, MB, or a
+    # cycle total, and claiming one we have not confirmed would put a
+    # wrong number on the card with full confidence. The card prints it
+    # as the modem gave it.
+    "usage": ("datatransferred", "dataused", "billingcycle", "usage"),
+}
+
+_modem_cache: dict = {"at": 0.0, "value": None}
+_modem_lock = threading.Lock()
+
+
+def _modem_gateway(timeout: float = 3.0) -> Optional[str]:
+    """The address the modem answers on, from the routing table.
+
+    The modem IS the default gateway on these rigs, so `ip route` names
+    it. Matching the interface as well keeps a rig that is on Ethernet
+    or Wi-Fi for a bench test from being asked about its cellular
+    signal and reporting someone's office router.
+    """
+    try:
+        out = subprocess.run(
+            ["ip", "route"], capture_output=True, text=True, timeout=timeout,
+        )
+    except Exception:  # noqa: BLE001 - no iproute2, not Linux
+        return None
+    for line in (out.stdout or "").splitlines():
+        parts = line.split()
+        if not parts or parts[0] != "default" or "via" not in parts:
+            continue
+        gw = parts[parts.index("via") + 1]
+        dev = parts[parts.index("dev") + 1] if "dev" in parts else ""
+        if re.match(r"^(usb|wwan|enx|eth1)", dev):
+            return gw
+    return None
+
+
+def _scavenge(node, out: dict, depth: int = 0, budget: list = None) -> None:
+    """Walk a JSON document picking up any leaf whose key we recognise.
+
+    Bounded on purpose: a modem page is small, but this parses output
+    from a device we do not control, and an unbounded walk over a
+    hostile or merely strange document is a way to hang a heartbeat.
+    """
+    if budget is None:
+        budget = [4000]
+    if depth > 8 or budget[0] <= 0:
+        return
+    budget[0] -= 1
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if isinstance(v, (dict, list)):
+                _scavenge(v, out, depth + 1, budget)
+                continue
+            flat = str(k).lower().replace("_", "")
+            for field, needles in _MODEM_WANTED.items():
+                if field in out:
+                    continue
+                if any(n in flat for n in needles):
+                    out[field] = v
+    elif isinstance(node, list):
+        for v in node[:200]:
+            _scavenge(v, out, depth + 1, budget)
+
+
+def read_modem(gateway: Optional[str] = None, timeout: float = 4.0,
+               ttl: float = MODEM_TTL_SECONDS) -> Optional[dict]:
+    """Signal and data usage straight off the USB modem. None if absent.
+
+    Returns a shape whenever a gateway was found, INCLUDING when the
+    modem would not answer or answered with something unreadable --
+    "there is a modem here and it will not talk" is an answer, and a
+    card that cannot tell it from "no modem fitted" sends you to site
+    to find out. `ok` says which you have.
+    """
+    now = time.time()
+    with _modem_lock:
+        fresh = now - _modem_cache["at"] < ttl
+        if _modem_cache["value"] is not None and fresh:
+            return _modem_cache["value"]
+
+    gw = gateway or _modem_gateway() or DEFAULT_MODEM_GATEWAY
+    result: dict = {"gateway": gw, "ok": False, "at": now}
+    try:
+        resp = requests.get(
+            f"http://{gw}/api/model.json", timeout=timeout,
+        )
+        if resp.status_code == 200:
+            try:
+                _scavenge(resp.json(), result)
+                result["ok"] = any(k in result for k in _MODEM_WANTED)
+                if not result["ok"]:
+                    result["error"] = "no known signal fields in model.json"
+            except ValueError:
+                result["error"] = "model.json was not JSON"
+        else:
+            result["error"] = f"model.json returned {resp.status_code}"
+    except Exception as exc:  # noqa: BLE001 - no modem, wedged, no route
+        result["error"] = f"{type(exc).__name__}: {exc}"[:120]
+
+    # A GATEWAY WE ONLY GUESSED AND COULD NOT REACH IS NOT A MODEM.
+    # Reporting one would put a permanent "modem unreachable" on every
+    # rig that has no cellular modem at all, which is noise, not news.
+    if not result["ok"] and gateway is None and _modem_gateway() is None:
+        value = None
+    else:
+        value = result
+    with _modem_lock:
+        _modem_cache["at"], _modem_cache["value"] = now, value
+    return value
+
+
+def read_usb_resets(timeout: float = 4.0) -> Optional[dict]:
+    """How often the USB bus has re-enumerated since boot, plus uptime.
+
+    THE ONE CHECK THAT SPLITS A BANDWIDTH PROBLEM FROM A HARDWARE ONE,
+    per the runbook: a count that stays at zero across an upload means
+    the modem never re-enumerated and the link is merely full -- stop,
+    swap nothing. A count that climbs each upload means the modem is
+    really resetting, and the power chain is next.
+
+    Needs `dmesg` readable by this user. Where the kernel restricts it
+    (dmesg_restrict=1) this returns None and the card simply does not
+    show the row, rather than reporting a misleading zero.
+    """
+    out: dict = {}
+    try:
+        with open("/proc/uptime", "r") as fh:
+            out["uptime_seconds"] = float(fh.read().split()[0])
+    except Exception:  # noqa: BLE001 - not Linux
+        pass
+    try:
+        res = subprocess.run(
+            ["dmesg"], capture_output=True, text=True, timeout=timeout,
+        )
+        if res.returncode != 0:
+            return out or None
+        text = res.stdout or ""
+    except Exception:  # noqa: BLE001 - no dmesg, or not permitted
+        return out or None
+    resets = len(re.findall(r"usb .*(?:reset|disconnect)", text, re.I))
+    out["usb_resets"] = resets
+    return out or None
+
+
+def link_info_fields() -> dict:
+    """The uplink's own account of itself, as heartbeat form fields.
+
+    ONE FIELD, TWO READERS, because they answer one question between
+    them: is this link weak, capped, or broken? Signal and data usage
+    come off the modem; the USB reset count and uptime come off the
+    kernel. Splitting them across two columns would mean two card rows
+    that have to be read together anyway.
+
+    tee.py and green.py both call this rather than assembling it
+    themselves, so the two rigs cannot drift into reporting different
+    shapes -- which is how the heartbeat has gone wrong before.
+    """
+    link: dict = {}
+    if (m := read_modem()):
+        link.update(m)
+    if (u := read_usb_resets()):
+        link.update(u)
+    return {"link_info": json.dumps(link)[:900]} if link else {}
+
+
+def agent_build_id() -> str:
+    """A short digest of the agent's own source, for the heartbeat.
+
+    THE VERSION STRING NEVER CHANGED. It was a literal — "tee-0.1.0" —
+    so the Cameras card reported the same thing before and after every
+    update, and "did the new code land on this Pi?" had no answer short
+    of reading journalctl on the device. Worse, "are the tee and the
+    green running the same code?" had none at all.
+
+    A hash of the installed agent/*.py answers both. It changes whenever
+    the code does, with nothing to remember to bump, and two Pis in sync
+    print the same seven characters because they hash the same files —
+    tee.py and green.py are installed on both.
+
+    Best-effort: a digest nobody can compute is not worth failing a
+    startup over.
+    """
+    try:
+        import hashlib
+        import pathlib
+
+        h = hashlib.sha256()
+        for f in sorted(pathlib.Path(__file__).resolve().parent.glob("*.py")):
+            h.update(f.name.encode())
+            h.update(f.read_bytes())
+        return h.hexdigest()[:7]
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+class DeliveryMeter:
+    """How many frames a second this camera is ACTUALLY handing over.
+
+    Measured on a rolling window off the capture thread, so it is a
+    current answer rather than one that only exists after a recording.
+    It is the number the config's `fps` claims and never verifies: on an
+    RTSP camera the agent cannot ask for a rate, so the config is a
+    belief about what the camera was set to in its own UI, and this is
+    the fact to check it against.
+    """
+
+    def __init__(self, window_sec: float = 5.0):
+        self.window = max(1.0, float(window_sec))
+        self._n = 0
+        self._t0 = None
+        self._fps = None
+        self._at = None
+
+    def tick(self) -> None:
+        now = time.time()
+        if self._t0 is None:
+            self._t0 = now
+            return
+        self._n += 1
+        span = now - self._t0
+        if span >= self.window:
+            self._fps = self._n / span
+            self._at = now
+            self._n = 0
+            self._t0 = now
+
+    def read(self):
+        """(fps, measured_at) or (None, None) before the first window."""
+        return self._fps, self._at
+
+
+def stream_info_fields(runner) -> dict:
+    """Heartbeat fields describing what this camera is really sending.
+
+    Cheap — everything here is already in memory — so it rides along on
+    every heartbeat rather than being asked for. The camera's own
+    profile (a SUNAPI call) is NOT cheap and is merged in only when an
+    operator asks for it; it stays attached afterwards.
+    """
+    fps, at = (runner._delivery.read()
+               if getattr(runner, "_delivery", None) else (None, None))
+    size = getattr(runner, "_open_size", None)
+    out = {
+        # What OpenCV reported when it opened the stream.
+        "open_w": size[0] if size else None,
+        "open_h": size[1] if size else None,
+        "open_fps": getattr(runner, "_open_fps", None),
+        # What the config believes. NOT what clips get stamped at —
+        # that is measured per recording now, and reported beside it.
+        "config_fps": float(getattr(runner, "fps", 0) or 0) or None,
+        # What the LAST clip was really stamped at: the camera's own
+        # cadence, measured off the pre-roll. None until this agent has
+        # recorded something since it started.
+        "stamped_fps": (lambda v: round(float(v), 2) if v else None)(
+            getattr(runner, "_last_write_fps", None)),
+        # What is actually arriving, now.
+        "delivered_fps": round(fps, 2) if fps else None,
+        "delivered_at": at,
+        "profile": getattr(runner, "_stream_profile", None),
+        # WHAT THE CLIP IS REDUCED TO ON THE WAY OUT, which is not the
+        # same question as what the camera is sending and was invisible
+        # until it cost an afternoon. A tee set to 1920x1080 reported
+        # 1920x1080 here, on the card, and in the camera's own web UI --
+        # and delivered 1280x720 clips, because upload_scale_height was
+        # still 720 from when the link was the thing being optimised.
+        # Every number on the page agreed with every other one and all
+        # of them were about the wrong half of the pipeline.
+        "upload_scale_height": (
+            int(v) if (v := getattr(runner, "upload_scale_height", None))
+            else None),
+        "upload_bitrate_kbps": (
+            int(v) if (v := getattr(runner, "upload_bitrate_kbps", None))
+            else None),
+    }
+    # THE LADDER'S CURRENT RUNG, which was invisible from anywhere but
+    # the Pi's own journal -- and it is the first thing to suspect when
+    # "uploads were fine and then went slow". The ceiling above is what
+    # config asked for; this is what the link has actually forced, and
+    # one bad patch holds it down for KBPS_RECOVER_AFTER clean sends
+    # afterwards. So the slowdown outlives its cause, and the card used
+    # to show only the number that had not changed.
+    #
+    # It cost us a diagnosis on 15 Oct: uploads stalled, every field on
+    # this card looked healthy, and the one number that would have said
+    # why existed solely inside the spool's sidecar JSON files.
+    _up = getattr(runner, "uploader", None)
+    if _up is not None:
+        # getattr throughout: the heartbeat's first beat fires when the
+        # thread starts, which on the tee is BEFORE self.uploader is
+        # assigned. A card field is not worth an exception on startup.
+        out["upload_kbps_now"] = int(getattr(_up, "_kbps_now", 0) or 0) or None
+        out["upload_spooled"] = int(
+            getattr(_up, "_spooled_count", lambda: 0)() or 0)
+    # WHICH ENGINE IS ACTUALLY RUNNING, and how its ring is doing. Two
+    # capture paths now exist and the only honest way to know which one
+    # a rig is on is to have the rig say so -- a config file read from
+    # a laptop is a belief about a Pi that may not have restarted since
+    # it was edited.
+    _copy = getattr(runner, "_copy", None)
+    out["engine"] = "copy" if _copy is not None else "decode"
+    if _copy is not None:
+        try:
+            out["ring"] = _copy.status()
+        except Exception:  # noqa: BLE001
+            out["ring"] = {"healthy": False, "why": "status failed"}
+    if not any(v is not None for v in out.values()):
+        return {}
+    return {"stream_info": json.dumps(out)[:4000]}
+
+
+# ── is this clip's header lying about how long it is? ────────────────
+
+# Below this the file is honest enough to leave alone: a frame or two of
+# rounding is not worth a re-encode decision, and the measurement itself
+# has noise in it.
+RECLOCK_TOLERANCE = 0.05
+# Under this many seconds the span is too short to divide by.
+RECLOCK_MIN_SPAN = 2.0
+
+
+# ── what rate to stamp a clip at ──────────────────────────────────────
+# WRITE AT THE RATE THE CAMERA IS ACTUALLY DELIVERING. Everything that
+# makes a clip smooth hangs off this one number:
+#
+#   * ClipWriter's gap test fires at 1.8x the frame period, so a clock
+#     set too fast makes ordinary network jitter look like a gap and
+#     inserts a duplicate frame to "fill" it. At 50 fps the threshold is
+#     36 ms against a camera delivering every 33 ms — 2.6 ms of slack,
+#     which an RTSP stream exceeds constantly. The clip fills up with
+#     duplicates at irregular intervals, which is exactly what stutter
+#     is.
+#   * What the filler does not catch, reclock_fps corrects on upload by
+#     averaging the shortfall across the whole clip — which fixes the
+#     duration and smears any real stall over footage that was fine.
+#
+# Both are repairs for a clock that was wrong to begin with.
+#
+# THE BOUNDS ARE ABSOLUTE, NOT A BAND AROUND THE CONFIG. They used to be
+# "within +/-40% of nominal", which on an IP camera anchors the honest
+# measurement to a number the config itself calls a belief: a tee camera
+# configured for 50 and delivering 29.9 had its correct measurement
+# rejected for being 0.1 fps under the 30.0 floor, and every clip it
+# recorded was stamped 50. A measurement is worth distrusting when it is
+# absurd — the first capture after boot can span a 150 s warmup and read
+# as 1 fps — not when it disagrees with a guess.
+MIN_BELIEVABLE_FPS = 4.0
+MAX_BELIEVABLE_FPS = 120.0
+# Below this many frames the median is not a cadence, it is a coin toss.
+MIN_FPS_SAMPLE = 5
+# How far measured may sit from the configured rate before it is worth
+# a line in the log. Not an error — the measurement still wins — but a
+# config that disagrees with the camera by this much is one to fix,
+# because every OTHER thing sized from it (ring buffer, gap counters)
+# is sized wrong too.
+FPS_CONFIG_DRIFT = 0.15
+
+
+def measured_fps(snapshot) -> float | None:
+    """The camera's true cadence, from the pre-roll's own timestamps.
+
+    THE MEDIAN INTERVAL, not the mean: one stall inside the pre-roll
+    drags the mean down and would stamp the whole clip slow, while the
+    median is what the camera does when it is working.
+
+    None when there is not enough to go on, or when the answer is
+    absurd on its face.
+    """
+    if not snapshot or len(snapshot) < MIN_FPS_SAMPLE:
+        return None
+    gaps = sorted(
+        snapshot[i][0] - snapshot[i - 1][0] for i in range(1, len(snapshot))
+    )
+    median = gaps[len(gaps) // 2]
+    if median <= 1e-4:
+        return None
+    fps = 1.0 / median
+    if not (MIN_BELIEVABLE_FPS <= fps <= MAX_BELIEVABLE_FPS):
+        return None
+    return fps
+
+
+def write_fps_for(snapshot, nominal: float,
+                  delivered: float | None = None) -> tuple[float, float | None, str]:
+    """(rate to stamp the clip at, what was measured, why).
+
+    Shared by both runners so a tee and the green it is spliced with
+    cannot end up on different rules. The green's config has always
+    matched its camera, so this changes nothing there in practice — but
+    it stops that being luck.
+
+    TWO SOURCES, BECAUSE THE FIRST ONE CAN FAIL QUIETLY. The pre-roll
+    median is specific to the frames in this clip, which is what you
+    want — but it is a median of INTERVALS, and an RTSP stream does not
+    arrive on a metronome. OpenCV hands over whatever its buffer holds,
+    so frames can come in pairs microseconds apart and then nothing for
+    60 ms. Average that and you get the truth; take the median interval
+    and you can get an absurd rate that this rejects, falling back to
+    the configured one — which is the very number the measurement exists
+    to escape.
+
+    `delivered` is the DeliveryMeter's rolling count-over-span, the same
+    figure the Cameras card shows. It is immune to burstiness in a way a
+    median is not, and it is the better answer whenever the first one
+    has nothing to say.
+    """
+    measured = measured_fps(snapshot)
+    source = "measured"
+    if measured is None and delivered:
+        d = float(delivered)
+        if MIN_BELIEVABLE_FPS <= d <= MAX_BELIEVABLE_FPS:
+            measured = d
+            source = "delivery meter"
+    if measured is None:
+        return (float(nominal), None,
+                "no usable measurement — using the configured rate")
+    if nominal > 0 and abs(measured - nominal) / nominal > FPS_CONFIG_DRIFT:
+        return (measured, measured,
+                f"camera delivers {measured:.1f} fps ({source}) but the "
+                f"config says {nominal:.1f} — using the camera's rate, and "
+                f"the config is worth correcting")
+    return (measured, measured, source)
+
+
+def reclock_fps(n_written: int, real_span: float, stamped_fps: float):
+    """The rate this clip should have been stamped at, or None.
+
+    A clip is written at a fixed `stamped_fps` and the gap filler holds
+    the previous frame through real gaps, so playback time normally
+    equals wall-clock time and there is nothing to fix. Two things break
+    that and both end the same way — a file with FEWER frames than its
+    own header claims the duration needs, which plays fast and jumpy:
+
+      * the filler's back-pressure skips fills while the encoder is
+        behind (it counts them as n_fills_skipped and says in its own
+        comment that timing drifts for that stretch), and
+      * a camera delivering steadily BELOW the nominal rate never trips
+        the filler at all — its 1.8x-period gap test does not fire at,
+        say, 30 fps delivered against a 50 fps clock, because 33 ms is
+        under the 36 ms threshold.
+
+    THIS IS NOT THE AVERAGE RE-TIMING BOTH RUNNERS REFUSE. That one
+    re-clocked every clip to its mean rate, so one stall inside an
+    otherwise healthy recording played the healthy parts slow. This asks
+    a narrower question: does the number of frames in the file, over the
+    wall-clock span they cover, match what the header says? When gap
+    filling did its job the answer is yes and this returns None, whatever
+    the camera did mid-clip. It only speaks up when the file is
+    genuinely short.
+
+    It is still an average over the clip, so a short file caused by one
+    long stall gets its missing time spread across the whole clip rather
+    than left where it happened. That is the accepted trade: a clip
+    whose duration matches the wall clock — and matches the paired
+    camera it will be spliced with — beats one that runs fast.
+    """
+    if n_written < 2 or real_span < RECLOCK_MIN_SPAN or stamped_fps <= 0:
+        return None
+    # The duration a player will give this file is n / stamped_fps.
+    # We want that to be real_span, so this is the rate that makes it so.
+    want = n_written / real_span
+    if abs(want - stamped_fps) <= RECLOCK_TOLERANCE * stamped_fps:
+        return None
+    if not 1.0 <= want <= 120.0:
+        return None
+    return want
+
+
 class FrameBuffer:
     """Thread-safe circular buffer of (timestamp, frame) tuples. Sized
     by `seconds * fps` so the operator can configure the pre-roll
@@ -1705,6 +2801,12 @@ class FrameBuffer:
 # Everything lives under one submenu, which is not obvious: zoom is not
 # under ptz.cgi (that 404s on this model, RealPTZ=False) but alongside
 # focus in image.cgi.
+# A run longer than this is clipped. The backend plans moves that are a
+# handful of steps; a thousand means something upstream is wrong, and a
+# capture agent should not spend a quarter of an hour in SUNAPI calls
+# finding that out.
+_LENS_MAX_REPEAT = 60
+
 _LENS_PARAM = {
     "zoom":         lambda a: ("Zoom", str(int(a))),
     "focus":        lambda a: ("Focus", str(max(-1, min(1, int(a) or 1)))),
@@ -1713,64 +2815,475 @@ _LENS_PARAM = {
 }
 
 
-def lens_control(cam_cfg: dict, op: str, amount: int = 0,
-                 timeout: float = 8.0) -> bool:
-    """Apply one lens nudge to the RTSP camera this agent is watching.
+def _sunapi(cam_cfg: dict, submenu: str, action: str,
+            params: dict | None = None, timeout: float = 8.0,
+            cgi: str = "image.cgi"):
+    """One SUNAPI call against the RTSP camera this agent is watching.
+
+    Returns (ok, body) — body is the camera's raw text, which is either
+    a bare "OK", an "NG" block with a numbered code, or, for a view, a
+    run of Key=Value lines.
 
     Host and credentials come out of the configured rtsp:// URL rather
     than from separate settings: there is exactly one camera here, its
     address is already written down, and a second copy of the password
     is a second thing to get out of step.
     """
-    from urllib.parse import urlsplit
+    from urllib.parse import urlencode, urlsplit
 
     device = str(cam_cfg.get("device", ""))
     if not device.startswith(("rtsp://", "rtsps://")):
-        log.warning("lens: this camera is not an RTSP camera")
-        return False
+        return False, "this camera is not an RTSP camera"
     device = device.replace(
         "{password}", os.environ.get("GOLFREELZ_CAM_PASSWORD", ""),
     )
     u = urlsplit(device)
     if not u.hostname:
-        log.warning("lens: no host in the configured stream URL")
-        return False
-    build = _LENS_PARAM.get((op or "").lower())
-    if build is None:
-        log.warning("lens: unknown op %r", op)
-        return False
-    param, value = build(amount)
+        return False, "no host in the configured stream URL"
 
     try:
         import requests
         from requests.auth import HTTPDigestAuth
     except Exception as exc:  # noqa: BLE001
-        log.warning("lens: requests unavailable: %s", exc)
-        return False
+        return False, f"requests unavailable: {exc}"
 
-    url = (
-        f"http://{u.hostname}/stw-cgi/image.cgi"
-        f"?msubmenu=focus&action=control&{param}={value}"
-    )
+    query = {"msubmenu": submenu, "action": action}
+    query.update(params or {})
+    url = f"http://{u.hostname}/stw-cgi/{cgi}?{urlencode(query)}"
     try:
         r = requests.get(
             url, timeout=timeout,
             auth=HTTPDigestAuth(u.username or "admin", u.password or ""),
         )
     except Exception as exc:  # noqa: BLE001
-        log.warning("lens: %s %s failed: %s", op, value, exc)
-        return False
+        return False, f"{exc}"
     body = (r.text or "").strip()
-    # The camera answers a bare "OK", or an "NG" block with a numbered
-    # code. 604 means the value was out of range -- worth logging as
-    # itself rather than as a generic failure, because it is the one an
-    # operator can act on by nudging less.
-    if r.status_code == 200 and not body.upper().startswith("NG"):
-        log.info("lens: %s %s=%s -> ok", op, param, value)
-        return True
-    log.warning("lens: %s %s=%s -> %s %s", op, param, value,
-                r.status_code, body.replace("\n", " ")[:120])
-    return False
+    ok = r.status_code == 200 and not body.upper().startswith("NG")
+    return ok, body
+
+
+def lens_control(cam_cfg: dict, op: str, amount: int = 0,
+                 timeout: float = 8.0, repeat: int = 1) -> int:
+    """Apply a lens nudge `repeat` times. Returns how many took.
+
+    REPEATED RATHER THAN SCALED, because the lens accepts three
+    magnitudes and nothing between them: a move of 320 is three coarse
+    steps and two fine ones, not one step of 320 (which comes back "NG
+    Error Code: 604 Invalid Input Value(s)" and moves nothing). The
+    backend plans the run and sends it as one command; the loop is here
+    so the run costs one poll instead of one poll per step.
+
+    It stops at the first refusal. A lens that has just said no to a
+    step is either at its stop or not listening, and neither gets better
+    by asking twenty more times.
+    """
+    build = _LENS_PARAM.get((op or "").lower())
+    if build is None:
+        log.warning("lens: unknown op %r", op)
+        return 0
+    param, value = build(amount)
+    times = max(1, min(_LENS_MAX_REPEAT, int(repeat or 1)))
+    done = 0
+    for _ in range(times):
+        ok, body = _sunapi(
+            cam_cfg, "focus", "control", {param: value}, timeout=timeout,
+        )
+        # The camera answers a bare "OK", or an "NG" block with a
+        # numbered code. 604 means the value was out of range -- worth
+        # logging as itself rather than as a generic failure, because it
+        # is the one an operator can act on by nudging less.
+        if not ok:
+            log.warning("lens: %s %s=%s -> %s (%d of %d applied)",
+                        op, param, value,
+                        body.replace("\n", " ")[:120], done, times)
+            return done
+        done += 1
+    log.info("lens: %s %s=%s x%d -> ok", op, param, value, done)
+    return done
+
+
+# ── asking the lens where it is (it will probably not say) ────────────
+# THE ANSWER IS EXPECTED TO BE "NO". This camera's attributes.cgi
+# declares Absolute and Query False, which is the camera saying it has
+# no notion of an absolute position to report -- which is why the
+# backend counts the nudges it sends instead.
+#
+# Asked anyway, for two reasons. A declaration is not a read: firmware
+# has grown endpoints before, and a model that does report a position
+# should not have its answer ignored because a note in this file says it
+# cannot. And when the answer is no, "the camera was asked on <date> and
+# said nothing" is a better thing for an operator to see on the card
+# than silence, because it closes the question rather than leaving it
+# looking unimplemented.
+_ZOOM_POSITION_KEYS = ("ZoomPosition", "Zoom", "ZoomRatio", "ZoomStep",
+                       "ZoomLevel", "ZoomMagnification")
+_FOCUS_POSITION_KEYS = ("FocusPosition", "Focus", "FocusStep", "FocusLevel")
+
+
+def lens_view(cam_cfg: dict, timeout: float = 8.0) -> dict:
+    """Whatever the camera will say about where its lens is sitting.
+
+    Zoom and focus live under image.cgi's focus submenu on this model --
+    not under ptz.cgi, which 404s here (RealPTZ=False). A value that
+    comes back is the camera's own and beats any count we are keeping;
+    nothing coming back is itself the answer, and is recorded as one.
+    """
+    ok, body = _sunapi(cam_cfg, "focus", "view", timeout=timeout)
+    if not ok:
+        return {"ok": False, "error": body.replace("\n", " ")[:200],
+                "source": "image.cgi?msubmenu=focus"}
+    view = _parse_sunapi_view(body)
+    zoom_key = _first_present(view, _ZOOM_POSITION_KEYS)
+    focus_key = _first_present(view, _FOCUS_POSITION_KEYS)
+    values = {}
+    if zoom_key:
+        values["zoom"] = view[zoom_key]
+    if focus_key:
+        values["focus"] = view[focus_key]
+    return {
+        "ok": True,
+        "source": "image.cgi?msubmenu=focus",
+        "keys": {k: v for k, v in
+                 (("zoom", zoom_key), ("focus", focus_key)) if v},
+        "values": values,
+        # Everything it listed. A position under a name nobody has
+        # guessed yet is still visible to whoever is reading the card.
+        "raw": view,
+    }
+
+
+# ── exposure ──────────────────────────────────────────────────────────
+# WHY THIS IS WORTH A CONTROL. A struck ball crosses this frame at
+# ~1100 px/s and is about 4 px across. At 1/60 it smears over ~18 px, so
+# each pixel along the smear sees it for a fifth of the exposure and its
+# contrast against the sky arrives divided by five. The band detector
+# thresholds a frame-to-frame difference at 8 grey levels: against blue
+# sky a smeared ball still clears it, against pale overcast it does not,
+# and the ascent chain never forms. Auto-exposure picks the long shutter
+# on exactly the dull days where the margin is already thin.
+#
+# On a USB camera the agent sets this itself through V4L2. On the Hanwha
+# it cannot -- open_camera returns early for an RTSP device because the
+# sensor belongs to the camera, not to this process -- so until now the
+# only way to change it was the camera's own web UI, from the course LAN.
+#
+# NAMES ARE DISCOVERED, NOT ASSUMED. Which keys exist under the camera
+# submenu varies by model and firmware, and a set to a key this firmware
+# does not have returns "NG" while a set to the WRONG key of a pair
+# (capping the fast end instead of the slow end) quietly does the
+# opposite of what was asked. So every change reads the camera first,
+# applies only to keys that are actually there, and reads back after --
+# and what the admin card shows is the read-back, never what we hoped we
+# sent.
+_SHUTTER_MODE_KEYS = ("ShutterMode", "ShutterControl", "Shutter")
+# The exact exposure, when the camera exposes a single fixed value.
+_SHUTTER_VALUE_KEYS = ("ShutterSpeed", "ShutterValue", "Exposure")
+# The SLOWEST exposure auto-exposure may choose. This is the one that
+# matters here: it leaves the camera free to expose for the light while
+# forbidding the long smear.
+_SHUTTER_SLOW_LIMIT_KEYS = ("MaxShutterSpeed", "MaximumShutterSpeed",
+                            "SlowShutterLimit", "MaxExposure")
+_WDR_KEYS = ("WDR", "WideDynamicRange", "SSDR")
+
+
+def handle_camera_command(runner, op: str, amount: int = 0,
+                          params: dict | None = None,
+                          repeat: int = 1) -> None:
+    """Apply one operator command to the camera a role runner watches.
+
+    Shared by the tee and the green because the command channel is the
+    same for both and a lens is a lens. The runner only has to own a
+    `cam_cfg`; a `_hb` heartbeat thread is used when it exists.
+
+    Best-effort throughout: a camera that refuses a step is a message
+    for the operator watching the live view, not a reason to disturb a
+    capture agent that is otherwise working.
+
+    Exposure differs from a nudge in the one way that matters: the
+    camera can be ASKED what it currently has. So the answer is stashed
+    on the runner for the next heartbeat and the admin card shows the
+    camera's own words rather than the command we sent.
+    """
+    try:
+        if op == "stream_profile_view":
+            runner._stream_profile = stream_profile_view(runner.cam_cfg)
+            hb = getattr(runner, "_hb", None)
+            if hb is not None:
+                hb.report_soon()
+            return
+        if op in ("exposure_set", "exposure_view"):
+            if op == "exposure_view":
+                result = exposure_view(runner.cam_cfg)
+            else:
+                p = params or {}
+                _wdr = p.get("wdr")
+                result = exposure_set(
+                    runner.cam_cfg,
+                    mode=str(p.get("mode") or "auto"),
+                    speed=(str(p["speed"]) if p.get("speed") else None),
+                    wdr=(None if _wdr in (None, "")
+                         else str(_wdr).lower() in ("1", "true", "on", "yes")),
+                )
+            runner._camera_settings = result
+            # Don't make the operator wait out a whole heartbeat interval
+            # to learn whether it took.
+            hb = getattr(runner, "_hb", None)
+            if hb is not None:
+                hb.report_soon()
+            return
+        lens_control(runner.cam_cfg, op, amount, repeat=repeat)
+        # ASK WHERE IT ENDED UP. The expected answer on this model is
+        # nothing -- it declares no absolute position, which is why the
+        # backend counts the steps it sends -- but a declaration is not
+        # a read, and the one moment the question is worth a round trip
+        # is just after the lens moved. If a camera ever does answer,
+        # the card prefers its word over the count without anybody
+        # having to notice that it started doing so.
+        runner._lens_info = lens_view(runner.cam_cfg)
+        hb = getattr(runner, "_hb", None)
+        if hb is not None:
+            hb.report_soon()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("camera command %s failed: %s", op, exc)
+
+
+def drain_camera_settings(runner) -> dict:
+    """The pending exposure read-back as heartbeat fields, and clear it.
+
+    Sent once rather than on every heartbeat: it is the answer to a
+    question an operator asked, not a running measurement, and
+    re-sending it would keep refreshing a timestamp that ought to go
+    stale while nobody is asking.
+    """
+    out = {}
+    result = getattr(runner, "_camera_settings", None)
+    if result is not None:
+        runner._camera_settings = None
+        out["camera_settings"] = json.dumps(result)[:4000]
+    lens = getattr(runner, "_lens_info", None)
+    if lens is not None:
+        runner._lens_info = None
+        out["lens_info"] = json.dumps(lens)[:4000]
+    return out
+
+
+def _parse_sunapi_view(body: str) -> dict:
+    """The Key=Value lines a view returns, as a dict.
+
+    Values can themselves contain '=' (rare), so split once only. Lines
+    without '=' are headers or blanks and are dropped.
+    """
+    out: dict[str, str] = {}
+    for line in (body or "").splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+
+def _first_present(view: dict, candidates) -> str | None:
+    """The first candidate key this camera actually reports.
+
+    Matched case-insensitively and ignoring any profile prefix the
+    firmware adds (e.g. "Camera.0.ShutterMode"), because the name we
+    have to send back is the one the camera printed.
+    """
+    lowered = {k.lower(): k for k in view}
+    for cand in candidates:
+        c = cand.lower()
+        if c in lowered:
+            return lowered[c]
+        for have_l, have in lowered.items():
+            if have_l.rsplit(".", 1)[-1] == c:
+                return have
+    return None
+
+
+def exposure_view(cam_cfg: dict, timeout: float = 8.0) -> dict:
+    """What the camera says its exposure settings are, right now."""
+    ok, body = _sunapi(cam_cfg, "camera", "view", timeout=timeout)
+    if not ok:
+        return {"ok": False, "error": body.replace("\n", " ")[:200]}
+    view = _parse_sunapi_view(body)
+    picked = {
+        "mode_key": _first_present(view, _SHUTTER_MODE_KEYS),
+        "value_key": _first_present(view, _SHUTTER_VALUE_KEYS),
+        "slow_limit_key": _first_present(view, _SHUTTER_SLOW_LIMIT_KEYS),
+        "wdr_key": _first_present(view, _WDR_KEYS),
+    }
+    reported = {
+        name: view.get(key)
+        for name, key in picked.items() if key
+    }
+    return {
+        "ok": True,
+        "keys": {k: v for k, v in picked.items() if v},
+        "values": reported,
+        # Everything the camera listed, so a setting we have no name for
+        # yet is still visible to whoever is looking at the card.
+        "raw": view,
+    }
+
+
+# WHICH CGI HOLDS THE STREAM PROFILES IS A GUESS, so it is a LIST of
+# guesses and the first one that answers wins. SUNAPI's media submenus
+# are less uniform across firmware than image.cgi's, and a wrong name
+# returns NG rather than anything useful — so ask, do not assume, and
+# report what came back either way.
+_PROFILE_PROBES = (
+    ("media.cgi", "videoprofile"),
+    ("media.cgi", "videoprofilepolicy"),
+    ("media.cgi", "streamprofile"),
+    ("video.cgi", "videoprofile"),
+)
+# The keys worth pulling to the front of the card, by what they mean.
+_PROFILE_FIELDS = {
+    "resolution": ("Resolution", "VideoResolution", "Size"),
+    "fps": ("FrameRate", "MaxFPS", "FrameRateLimit", "Framerate"),
+    "codec": ("EncodingType", "CodecType", "Codec"),
+    "bitrate": ("Bitrate", "TargetBitrate", "BitrateLimit"),
+    "profile": ("Profile", "ProfileName", "Name"),
+}
+
+
+def stream_profile_view(cam_cfg: dict, timeout: float = 8.0) -> dict:
+    """What the camera says its video stream is: size, rate, codec.
+
+    This is the camera's CLAIM, which is exactly why it is worth
+    showing: the agent never asks an RTSP camera for a frame rate (it
+    cannot — open_camera returns before the v4l2 tuning because the
+    sensor belongs to the camera), so the rate in our config is only a
+    belief about this. Seeing the two side by side is the whole point.
+    """
+    tried = []
+    for cgi, submenu in _PROFILE_PROBES:
+        ok, body = _sunapi(cam_cfg, submenu, "view", timeout=timeout, cgi=cgi)
+        tried.append(f"{cgi}?msubmenu={submenu}")
+        if not ok:
+            continue
+        view = _parse_sunapi_view(body)
+        if not view:
+            continue
+        picked = {}
+        for name, candidates in _PROFILE_FIELDS.items():
+            key = _first_present(view, candidates)
+            if key:
+                picked[name] = view[key]
+        return {
+            "ok": True,
+            "source": f"{cgi}?msubmenu={submenu}",
+            "values": picked,
+            # The whole dump: a firmware that names things differently
+            # is still readable by whoever is looking at the card, and
+            # that is how the right key gets added above.
+            "raw": view,
+        }
+    return {
+        "ok": False,
+        "error": "no video-profile submenu answered on this camera",
+        "tried": tried,
+    }
+
+
+def exposure_set(cam_cfg: dict, mode: str, speed: str | None = None,
+                 wdr: bool | None = None, timeout: float = 8.0) -> dict:
+    """Set the shutter, by whichever key this camera actually has.
+
+    `mode` is "auto" or "manual"; `speed` is a shutter string in the
+    camera's own vocabulary ("1/500"). Returns the read-back, so the
+    caller reports what the camera now says rather than what it asked
+    for.
+    """
+    before = exposure_view(cam_cfg, timeout=timeout)
+    if not before.get("ok"):
+        return before
+    keys = before["keys"]
+    params: dict[str, str] = {}
+
+    mode = (mode or "auto").strip().lower()
+    note = None
+    # MANUAL WITHOUT A VALUE KEY IS A TRAP. Pinning the mode on a
+    # firmware that exposes no fixed-shutter key leaves the camera in
+    # manual at whatever exposure it happened to hold, which is the one
+    # outcome worse than not touching it. Fall back to auto with a cap:
+    # that is what the operator meant anyway -- do not smear.
+    if mode == "manual" and not keys.get("value_key"):
+        mode = "auto"
+        note = ("this camera exposes no fixed-shutter key, so the limit "
+                "was applied to auto exposure instead of pinning it")
+
+    if keys.get("mode_key"):
+        params[keys["mode_key"]] = "Manual" if mode == "manual" else "Auto"
+
+    if speed:
+        if mode == "manual":
+            params[keys["value_key"]] = speed
+        elif keys.get("slow_limit_key"):
+            # Auto exposure, but it may not expose for longer than this.
+            params[keys["slow_limit_key"]] = speed
+        elif keys.get("value_key"):
+            params[keys["value_key"]] = speed
+
+    if wdr is not None and keys.get("wdr_key"):
+        params[keys["wdr_key"]] = "On" if wdr else "Off"
+
+    if not params:
+        return {
+            "ok": False,
+            "error": "this camera reports no shutter key we recognise",
+            "raw": before.get("raw"),
+        }
+
+    ok, body = _sunapi(cam_cfg, "camera", "set", params, timeout=timeout)
+    log.info("exposure: set %s -> %s", params,
+             "ok" if ok else body.replace("\n", " ")[:120])
+    after = exposure_view(cam_cfg, timeout=timeout)
+    after["sent"] = params
+    if note:
+        after["note"] = note
+    if not ok:
+        after["ok"] = False
+        after["error"] = body.replace("\n", " ")[:200]
+    return after
+
+
+class CameraUnavailable(RuntimeError):
+    """The camera could not be opened. Transient by assumption.
+
+    A SEPARATE TYPE BECAUSE THE CALLER'S ANSWER IS DIFFERENT. Any other
+    failure in run() is a bug and should take the process down so
+    systemd restarts it clean. This one usually means a cable is out,
+    the camera lost power, or it is still booting -- none of which a
+    restart fixes, and restarting made it worse: the agent died before
+    reaching the heartbeat that carries the real firmware string, the
+    uploader and the uplink telemetry, so a rig with an unplugged
+    camera went dark on the card while systemd span 1062 times in
+    twelve hours. Every diagnostic you would want was in the half of
+    startup that never ran.
+    """
+
+
+def camera_free_telemetry() -> dict:
+    """Heartbeat fields that need no camera, for the waiting loop.
+
+    Deliberately the same readers the running agent uses, so a rig
+    waiting on a cable reports its power, its temperature and its
+    uplink exactly as one that is working. That is the whole point:
+    the moment you most want to see a rig is when it is not running.
+    """
+    out: dict = {}
+    try:
+        if (t := read_throttled()):
+            out["throttled"] = json.dumps(t)[:500]
+    except Exception:  # noqa: BLE001 - telemetry must never be fatal
+        pass
+    try:
+        out.update(link_info_fields())
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 def open_camera(cam_cfg: dict):
@@ -1802,7 +3315,7 @@ def open_camera(cam_cfg: dict):
         )
         cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         if not cap.isOpened():
-            raise RuntimeError(
+            raise CameraUnavailable(
                 "could not open the RTSP stream — check the host, the "
                 "path, and that GOLFREELZ_CAM_PASSWORD is set"
             )
@@ -1837,7 +3350,7 @@ def open_camera(cam_cfg: dict):
         except (TypeError, ValueError):
             cap = cv2.VideoCapture(str(device))
     if cap is None or not cap.isOpened():
-        raise RuntimeError(f"could not open camera device={device!r}")
+        raise CameraUnavailable(f"could not open camera device={device!r}")
 
     width = int(cam_cfg.get("width", 1920))
     height = int(cam_cfg.get("height", 1080))
@@ -2154,6 +3667,42 @@ def mux_audio_into_video(
     return True
 
 
+# How close to the clip's own bitrate a re-encode target may come
+# before the pass stops being worth taking. At 0.9 a re-encode has to
+# promise at least a tenth off; below that the CPU time and the
+# generation loss buy nothing.
+COMPRESS_MIN_SAVING = 0.9
+
+
+def source_kbps(video_path: Path, timeout: float = 10.0) -> Optional[int]:
+    """The clip's own overall bitrate in kbps, or None if unreadable.
+
+    None means "could not tell", NOT "zero" — and every caller has to
+    treat it as permission to carry on. A missing or broken ffprobe
+    must never be the reason a clip stays too big to send.
+    """
+    try:
+        res = subprocess.run(
+            ["ffprobe", "-v", "error",
+             "-show_entries", "format=bit_rate",
+             "-of", "default=noprint_wrappers=1:nokey=1",
+             str(video_path)],
+            capture_output=True, text=True, timeout=timeout, check=False,
+        )
+    except Exception:  # noqa: BLE001 - no ffprobe, timeout, anything
+        return None
+    if res.returncode != 0:
+        return None
+    for line in (res.stdout or "").splitlines():
+        try:
+            bps = int(line.strip())
+        except ValueError:
+            continue              # "N/A" for a container with no figure
+        if bps > 0:
+            return bps // 1000
+    return None
+
+
 def compress_for_upload(
     video_path: Path,
     target_kbps: int = 2500,
@@ -2179,6 +3728,31 @@ def compress_for_upload(
     """
     if not video_path.exists() or target_kbps <= 0:
         return False
+
+    # A RE-ENCODE THAT DOES NOT SHRINK THE FILE IS PURE LOSS, and the
+    # ladder cannot see that on its own: it picks a target by comparing
+    # against its own CEILING, never against the clip. On a stream-copy
+    # rig the clip is already the camera's H.264 at the camera's
+    # bitrate, so a "degrade" to a target ABOVE that bitrate inflates
+    # it. Observed on the tee, 11 Oct: a 2367 kbps clip re-encoded at
+    # 4000k went 10.2 MB -> 16.2 MB and then crossed a cellular link
+    # 59% slower than the untouched original would have, having first
+    # spent a software x264 pass on 1080p60 to get there. The Pi 5 has
+    # no hardware H.264 encoder, so that pass is not cheap either.
+    #
+    # ONLY THE BITRATE-ONLY CASE IS REFUSED. A scale_height or a
+    # reclock is asked for because the GEOMETRY or the TIMING is wrong,
+    # and those still have to be fixed whatever it costs in bytes.
+    if scale_height is None and not force_input_fps:
+        src = source_kbps(video_path)
+        if src is not None and target_kbps >= src * COMPRESS_MIN_SAVING:
+            log.info(
+                "compress: %s is already %d kbps — skipping the %d kbps "
+                "re-encode, which would make it bigger, not smaller",
+                video_path.name, src, int(target_kbps),
+            )
+            return False
+
     tmp_out = video_path.with_suffix(".h264.mp4")
     vf = ["-vf", f"scale=-2:{int(scale_height)}"] if scale_height else []
     # When the capture dropped frames, the clip's header fps overstates the
@@ -2237,8 +3811,21 @@ def compress_for_upload(
         tmp_out.unlink(missing_ok=True)
         return False
     try:
-        orig_mb = video_path.stat().st_size / (1024 * 1024)
+        _st = video_path.stat()
+        orig_mb = _st.st_size / (1024 * 1024)
         tmp_out.replace(video_path)
+        # KEEP THE FILE'S AGE. `replace` stamps the new file with now,
+        # and the spool falls back to mtime when it has nothing better
+        # to order and expire clips by -- so a shrunk clip jumped to the
+        # BACK of the queue and had its 24h eviction clock reset, on the
+        # very pass that had just made it small enough to send. The
+        # shrink ladder exists to finish the oldest clip; rotating away
+        # from it there is the exact opposite, and it is how a spool of
+        # clips each ended up 10-25% uploaded and none of them finished.
+        try:
+            os.utime(video_path, (_st.st_atime, _st.st_mtime))
+        except OSError:
+            pass                      # ordering degrades, the clip is fine
         new_mb = video_path.stat().st_size / (1024 * 1024)
         log.info(
             "compress: %s %.1f MB -> %.1f MB (H.264 %dk)",
@@ -2374,6 +3961,18 @@ class RtspAudioRecorder:
         self._proc = None
         if proc is None:
             return None
+        # STAMPED BEFORE THE TEARDOWN, NOT AFTER IT. `elapsed` used to
+        # be read at the bottom of this method, after terminate() and a
+        # wait() allowed five seconds -- so everything ffmpeg spent
+        # shutting down landed in it, and lead_seconds attributes the
+        # whole of `elapsed - duration` to the FRONT of the recording.
+        #
+        # The front is where the connect delay genuinely is. The
+        # teardown is at the other end. Counting it as lead pushed the
+        # audio LATE by however long the shutdown took -- which on a Pi
+        # already decoding 1080p60 is not small, and showed up as three
+        # claps heard a second or two after they were seen.
+        _t_stop = time.monotonic()
         try:
             # SIGTERM lets ffmpeg patch the WAV header's length fields
             # on the way out; killing it outright leaves them at zero
@@ -2410,7 +4009,7 @@ class RtspAudioRecorder:
         # the audio is than the window it was recorded in. PCM is a flat
         # 2 bytes per sample per channel, so the duration is exact from
         # the size -- no second ffprobe needed.
-        elapsed = time.monotonic() - (self._t0 or time.monotonic())
+        elapsed = _t_stop - (self._t0 or _t_stop)
         bytes_per_sec = self.sample_rate * self.channels * 2
         duration = max(0.0, (wav.stat().st_size - 44) / float(bytes_per_sec))
         self.lead_seconds = max(
@@ -2421,6 +4020,43 @@ class RtspAudioRecorder:
             duration, elapsed, self.lead_seconds,
         )
         return wav
+
+
+def audio_in_segments(cfg: dict) -> bool:
+    """Does the camera's own audio ride in the ring segments?
+
+    ONE SETTING, BOTH SIDES, because the two audio paths must never
+    both be on. The separate recorder's mux maps `0:v:0` and `1:a:0`,
+    so a clip that already carries camera audio would have it THROWN
+    AWAY and replaced by the separately-recorded WAV -- silently, and
+    with the worse of the two winning.
+
+    Segment audio is better where the camera has a mic on it:
+
+      * the pre-roll has sound. The ring holds footage from before
+        anything triggered, and a recorder started at the trigger has
+        nothing for it -- which is the five seconds of silence at the
+        head of every clip, correctly aligned and genuinely empty.
+      * sync is sample-accurate by construction, same container, same
+        timestamps, instead of two recordings aligned by arithmetic
+        and an `extra_lead_seconds` fudge that needs re-tuning.
+      * one RTSP session to the camera instead of two.
+      * no ffmpeg mux pass per clip.
+
+    Off by default: a rig whose camera profile carries no audio would
+    get silent segments and no fallback, and most of them don't. Check
+    before turning it on:
+
+        ffprobe -v error -rtsp_transport tcp -show_streams "$URL" \
+          | grep codec_type
+
+    THE DECODE PATH IS UNAFFECTED. It builds clips from decoded frames
+    and has no container to carry audio in, so it keeps using the
+    separate recorder whatever this says -- see build_audio_recorder.
+    Only the copy engine honours this.
+    """
+    a = cfg.get("audio") or {}
+    return bool(a.get("enabled", True)) and bool(a.get("in_segments", False))
 
 
 def build_audio_recorder(cfg: dict, work_dir: Path):

@@ -1,783 +1,1017 @@
+/* ============================================================
+   GOLFREELZ — LINEN
+   ============================================================
+
+   One look, built from the logo outward. There is no direction
+   switcher and no dark mode: the mark is drawn on nothing, its bands
+   let the ground through, and the ground is linen.
+
+   THE DEVICE. The logo is six colour bands separated by gaps. That is
+   the whole visual language — the gaps are the page showing through,
+   so a band rule, a clip still and a status marker are all the same
+   idea at different sizes. Where the old sheet reached for a box, a
+   shadow or a rounded corner, this one reaches for a rule.
+
+   WHAT IS LOAD-BEARING:
+     - Square. Radius is 0 except on form controls, where 2px keeps a
+       field from looking like a crack in the page.
+     - No shadows anywhere. Depth comes from rules and whitespace.
+     - Rules do the dividing: hairline for related things, ink for a
+       real break.
+     - Fraunces light and large for display; Work Sans for everything
+       that has a job. Labels are small, uppercase and widely tracked.
+
+   THE --emerald-* NAMES SURVIVE ON PURPOSE. They are spent in about
+   sixty inline styles across the pages and renaming them is a separate
+   job from restyling. They are no longer green and no longer a ramp of
+   their own — they alias the blue below. Read them as "brand 100 …
+   brand 800".
+   ============================================================ */
+
 :root {
-  /* Palette */
-  --emerald-50: #ecfdf5;
-  --emerald-100: #d1fae5;
-  --emerald-200: #a7f3d0;
-  --emerald-400: #34d399;
-  --emerald-500: #10b981;
-  --emerald-600: #059669;
-  --emerald-700: #047857;
-  --emerald-800: #065f46;
-  --navy-900: #0b1e3b;
-  --navy-800: #122a4b;
-  --navy-700: #1e3a5f;
-  --navy-600: #2e4f7a;
-  --slate-50: #f8fafc;
-  --slate-100: #f1f5f9;
-  --slate-200: #e2e8f0;
-  --slate-300: #cbd5e1;
-  --slate-400: #94a3b8;
-  --slate-500: #64748b;
-  --slate-600: #475569;
-  --slate-700: #334155;
-  --slate-900: #0f172a;
-  --white: #ffffff;
-  --red-500: #ef4444;
-  --red-600: #dc2626;
-  --amber-500: #f59e0b;
-  --amber-100: #fef3c7;
+  color-scheme: light;
 
-  /* Semantic */
-  --bg: var(--slate-50);
-  --surface: var(--white);
-  --surface-alt: var(--slate-100);
-  --ink: var(--navy-900);
-  --ink-soft: var(--slate-600);
-  --ink-mute: var(--slate-400);
-  --border: var(--slate-200);
-  --border-strong: var(--slate-300);
-  --primary: var(--emerald-600);
-  --primary-hover: var(--emerald-700);
-  --primary-soft: var(--emerald-50);
-  --accent: var(--navy-800);
-  --danger: var(--red-600);
-  --warn: var(--amber-500);
+  /* ---- The mark's own colours, sampled from the file ---- */
+  /* THE RAMP IS NOW A CHOICE. An admin picks a logo in Settings and
+     these six follow it, because they ARE the logo's stripes — the
+     band rule under the masthead, the clip stills, the hero. Each
+     colourway overrides exactly these six and nothing else, which is
+     why the three tokens below had to stop riding on them. */
+  --band-1: #0047e7;   /* top band of the default (sunset) ramp */
+  --band-2: #01acfd;
+  --band-3: #76d0c9;
+  --band-4: #fcdc5e;
+  --band-5: #fea931;
+  --band-6: #fe6610;
+  --mark-red: #f54304; /* the red "REELZ" is set in */
 
-  --radius-xs: 6px;
-  --radius-sm: 10px;
-  --radius: 14px;
-  --radius-lg: 22px;
-  --shadow-sm: 0 1px 2px rgba(11, 30, 59, 0.06);
-  --shadow: 0 4px 14px -4px rgba(11, 30, 59, 0.12), 0 1px 3px rgba(11, 30, 59, 0.06);
-  --shadow-lg: 0 20px 45px -20px rgba(11, 30, 59, 0.25);
+  /* ---- Ground and ink ---- */
+  --linen: #f6f2ea;
+  --paper: #fcfaf6;
+  --paper-sunk: #efe9dd;
+  --ink: #23201c;
+  /* The stand-first sits between the headline and the body: darker than
+     body copy, lighter than a heading. 11.0:1 on linen. */
+  --ink-lead: #3d382f;
+  --ink-soft: #5e564b;
+  --ink-mute: #6d655a;
+  /* DECORATIVE ONLY, and it still has to clear 3:1 — rules, dots and
+     a rank numeral large enough to carry it. Text that anyone has to
+     read takes --ink-mute instead; #9a8e7c measured 2.88:1 here and
+     was being spent on 0.8rem metadata. */
+  --ink-faint: #8c7f6b;
+  --rule: #ddd3c2;
+  --rule-strong: #c8bca8;
+  --rule-ink: #23201c;
 
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  /* ---- Semantic ---- */
+  --bg: var(--linen);
+  --surface: var(--paper);
+  --surface-alt: var(--paper-sunk);
+  --surface-2: var(--paper-sunk);
+  --field-bg: var(--paper);
+  --border: var(--rule);
+  --border-strong: var(--rule-strong);
+  --line: var(--rule);
+  --muted: var(--ink-mute);
+
+  /* PINNED, not var(--band-1). It used to be the top band, which was
+     true while there was one logo and became a bug the moment there
+     were four: picking the green lockup would have turned every button
+     on the site green. Buttons, fields and focus rings are furniture —
+     they do not belong to the logo. Same blue as the sunset ramp's
+     band 1, so nothing moves today. */
+  --primary: #0047e7;
+  --primary-hover: #0b3fc0;
+  --primary-soft: #e7edfe;
+  --on-primary: #ffffff;
+
+  /* 3.31:1 on linen — a heading or a fill, never body copy or a small
+     label. Its ink is darker than the page's: --ink over this red is
+     4.39:1, which is close enough to look right and under the line. */
+  --accent: var(--mark-red);
+  --accent-soft: #fde8e0;
+  --on-accent: #1a1713;
+  /* THE HOVER FILL, and it is the accent one shade deeper on purpose.
+     White on #f54304 measures 3.69:1, which is under the line for a
+     12.5px bold label; #d53a03 is the same orange at 4.73:1 and still
+     reads as orange next to the crimson of --danger. #a82b02 is the
+     step after it, for hovering something that is already orange. */
+  --accent-strong: #d53a03;
+  --accent-deep: #a82b02;
+  /* Accent as TEXT on linen. The accent itself is 3.31:1 there. */
+  --accent-text: #c83502;
+
+  /* DISABLED: THE FILL WASHED OUT, THE LABEL STILL WHITE.
+     Derived rather than picked -- the reference pair was measured
+     (#532097 -> #dad0e3: saturation x0.39, lightness 35.9% -> 85.3%)
+     and the same transform applied to --primary, so this is that look
+     in our blue rather than an approximation of it.
+
+     It is a deliberate trade and worth writing down: white on this
+     measures 1.49:1, the same as the reference's own 1.49:1. WCAG 1.4.3
+     exempts inactive controls from the contrast minimum, so it is not a
+     conformance failure -- but the label is decoration at this ratio,
+     not something anyone reads. That is the point: the shape still says
+     "button", its position still says which one, and nothing about it
+     says "press me". The capsule against the linen is 1.33:1, which is
+     a shade clearer than the reference's 1.21:1 against its own page. */
+  --disabled-bg: #cbd4e8;
+  --disabled-ink: #ffffff;
+
+  --danger: #b3261e;
+  --danger-soft: #f7e3e1;
+  /* PINNED for the same reason: "warn" is a status, and a status that
+     changes colour because somebody picked a different logo is not a
+     status. This is the sunset ramp's band 5, where it has always been. */
+  --warn: #fea931;
+  --warn-soft: #fdf0d9;
+  --ok: #1f6b45;
+  --ok-soft: #e0efe6;
+  --red-500: #d7382c;
+
+  /* THE BANDS AT 12%, so colour can carry a status instead of a rule
+     doing it alone. Mixed from the band itself over linen rather than
+     picked by eye, so a capsule is visibly the same colour as the
+     stripe it comes from. */
+  --band-1-soft: #e2eafd;
+  --band-2-soft: #e0f3fe;
+  --band-3-soft: #e8f6f4;
+  --band-4-soft: #fdf6dc;
+  --band-5-soft: #fdeedb;
+  --band-6-soft: #fde8db;
+
+  /* FOUR NAMES SPENT IN AdminProduction.jsx THAT NOTHING HERE DEFINED.
+     Each is written there as var(--name, <fallback>) and every fallback
+     is a leftover from the dark sheet -- `--card-bg` fell back to
+     #1b1b1f, which painted a near-black panel in the middle of a linen
+     page. Defining them is how those inline styles join this palette
+     without editing 13,000 lines of JSX. */
+  --card: var(--paper);
+  --card-bg: var(--paper);
+  --surface-3: var(--paper-sunk);
+  --err: var(--danger);
+  --focus-ring: color-mix(in srgb, var(--primary) 34%, transparent);
+
+  /* ---- Shape. Curved. ----
+     This was 0 across the board, on the argument that the mark is a
+     hard-edged rectangle. On one logo that reads as discipline; on a
+     page of forty controls it reads as a wireframe, and the whole site
+     came out as beige paper with black boxes on it. Curves are back,
+     and they are graded: a control is softer than a card, a status
+     capsule is fully round. */
+  --radius: 8px;        /* buttons and controls */
+  --radius-xs: 5px;
+  --radius-sm: 6px;
+  --radius-lg: 14px;    /* cards, frames, media */
+  --radius-field: 8px;
+  --radius-pill: 999px; /* status capsules */
+  /* Barely there, and ink-tinted rather than grey, so a card lifts off
+     the linen without the page growing a drop-shadow habit. */
+  --shadow-sm: 0 1px 2px rgba(35, 32, 28, 0.05);
+  --shadow: 0 1px 2px rgba(35, 32, 28, 0.05), 0 6px 18px rgba(35, 32, 28, 0.06);
+  --shadow-lg: 0 2px 4px rgba(35, 32, 28, 0.06), 0 16px 40px rgba(35, 32, 28, 0.10);
+
+  /* ---- Compatibility ramp. See the header. ---- */
+  --emerald-50:  #f2f5fe;
+  --emerald-100: #e7edfe;
+  --emerald-200: #c9d8fc;
+  --emerald-300: #93aef7;
+  --emerald-400: #4b7cef;
+  --emerald-500: #0047e7;
+  --emerald-600: #0047e7;
+  --emerald-700: #0b3fc0;
+  --emerald-800: #12379f;
+
+  --display: "Fraunces", Georgia, serif;
+  --text: "Work Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  font-family: var(--text);
+}
+
+/* ---- The colourways ---------------------------------------------
+   One block each, six declarations each, nothing else. `data-direction`
+   is stamped on <html> at boot from the theme the server holds, so the
+   first paint is already the right ramp rather than a flash of the
+   default one.
+
+   The six are sampled down each lockup's own gradient at even heights
+   rather than counted off its stripes, because the four files do not
+   all have six stripes and what the site spends is six stops down one
+   ramp. Sunset's stay exactly as they were — that ramp was signed off,
+   and re-deriving it would have moved band 3 from teal to a sage green
+   nobody asked for.
+
+   ADDING A FIFTH: a block here, an entry in theme.js, the key in
+   site_theme.py, and the two PNGs. No other file knows about this. */
+
+:root[data-direction="fairway"] {
+  --band-1: #03855c;
+  --band-2: #1baf61;
+  --band-3: #6dcb5e;
+  --band-4: #9edc4e;
+  --band-5: #dce542;
+  --band-6: #fee540;
+}
+
+:root[data-direction="sky"] {
+  --band-1: #0045fd;
+  --band-2: #007dfe;
+  --band-3: #0ab9ff;
+  --band-4: #32cbff;
+  --band-5: #7adefe;
+  --band-6: #baeffd;
+}
+
+:root[data-direction="ember"] {
+  --band-1: #fed121;
+  --band-2: #febb26;
+  --band-3: #fd9a25;
+  --band-4: #de7533;
+  --band-5: #fc441e;
+  --band-6: #fc131d;
 }
 
 * { box-sizing: border-box; }
-
 html, body, #root { height: 100%; }
 
 body {
   margin: 0;
-  background: #ffffff;
+  background: var(--bg);
   color: var(--ink);
   min-height: 100vh;
+  font-size: 16px;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
-  line-height: 1.5;
 }
 
-a { color: var(--primary); text-decoration: none; }
-a:hover { color: var(--primary-hover); }
+/* ---- Type ------------------------------------------------------- */
 
 h1, h2, h3, h4 {
-  font-family: "Fraunces", "Inter", serif;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: 1.1;
+  font-family: var(--display);
   color: var(--ink);
   margin: 0;
+  letter-spacing: -0.025em;
+  line-height: 1.04;
+  /* LIGHT AND LARGE. The old sheet set every heading at 600, which at
+     display sizes reads as a shout; Fraunces has an optical axis and
+     wants to be thin when it is big. */
+  font-weight: 300;
 }
-h1 { font-size: clamp(1.8rem, 2.4vw, 2.4rem); }
-h2 { font-size: 1.5rem; }
-h3 { font-size: 1.15rem; letter-spacing: -0.01em; }
+h1 { font-size: clamp(2.4rem, 5vw, 4.1rem); }
+h2 { font-size: clamp(1.6rem, 2.6vw, 2.1rem); font-weight: 400; }
+h3 { font-size: 1.3rem; font-weight: 400; letter-spacing: -0.02em; }
+h4 { font-size: 1.05rem; font-weight: 600; letter-spacing: 0; }
 
-p { margin: 0 0 0.5em; }
-code { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; background: var(--surface-alt); padding: 1px 6px; border-radius: 4px; }
+p { margin: 0 0 0.6em; }
+a { color: var(--primary); text-decoration: none; }
+a:hover { color: var(--primary-hover); text-decoration: underline; text-underline-offset: 3px; }
 
-.muted { color: var(--ink-soft); }
-.small { font-size: 0.85rem; }
-.tiny { font-size: 0.75rem; letter-spacing: 0.02em; }
-.upper { text-transform: uppercase; letter-spacing: 0.08em; }
+.small { font-size: 0.9rem; }
+.tiny  { font-size: 0.76rem; }
+.upper { text-transform: uppercase; letter-spacing: 0.16em; font-weight: 600; }
+.muted { color: var(--ink-mute); }
+.muted-on-dark { color: rgba(255, 255, 255, 0.78); }
+.note, .hint { color: var(--ink-mute); font-size: 0.88rem; }
+.sub { color: var(--ink-lead); font-size: 1.05rem; }
+.label {
+  display: block;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-weight: 600;
+  color: var(--ink-mute);
+  margin-bottom: 7px;
+}
+.name  { font-weight: 600; }
+.value { font-family: var(--display); font-weight: 400; }
+.num   { font-family: var(--display); font-weight: 300; letter-spacing: -0.03em; }
+.meta  { font-size: 0.8rem; color: var(--ink-mute); }
+.center { text-align: center; }
+.pointer { cursor: pointer; }
+.dark { color: var(--ink); }
 
-/* App shell */
-.wrap {
-  max-width: 560px;
+code {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  background: var(--surface-alt);
+  padding: 1px 6px;
+  border-radius: var(--radius-field);
+}
+
+/* ---- Layout ----------------------------------------------------- */
+
+.wrap, .container {
+  max-width: 1180px;
   margin: 0 auto;
-  padding: 24px 20px 96px;
+  padding: 36px 32px 72px;
 }
-.wrap.wide { max-width: 1180px; padding: 32px 28px 96px; }
+.wrap.tight, .container.tight { max-width: 760px; }
+.home-wrap { max-width: 1180px; margin: 0 auto; padding: 0 32px; }
 
-/* Brand bar */
-.brand {
-  display: flex; align-items: center; gap: 10px;
-  margin-bottom: 24px;
-}
-.brand .logo {
-  width: 36px; height: 36px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, var(--emerald-500), var(--emerald-700));
-  display: grid; place-items: center;
-  color: white;
-  box-shadow: var(--shadow-sm);
-}
-.brand h1 { font-size: 1.15rem; font-family: "Inter", sans-serif; font-weight: 700; letter-spacing: -0.01em; }
-.brand .tag { color: var(--ink-soft); font-size: 0.8rem; }
+.row    { display: flex; gap: 14px; flex-wrap: wrap; }
+.row.tight { gap: 8px; }
+.stack  { display: flex; flex-direction: column; gap: 12px; }
+.inline { display: inline-flex; align-items: center; gap: 7px; }
+.grid   { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
+.wide   { width: 100%; }
+.divider { height: 1px; background: var(--rule); border: 0; margin: 22px 0; }
 
-/* Cards */
+/* ---- THE BAND DEVICE -------------------------------------------- */
+/* The logo is six bands with the ground showing between them. Every
+   rule, still and marker on the site is that same idea resized. */
+
+/* THE RULE BETWEEN SECTIONS IS THE BAND RULE. It was a 1px grey
+   hairline, which is the single biggest reason a page built out of a
+   six-colour mark read as beige: every division on it was drawn in
+   beige. This is the mark's own device at the size of a rule. */
+.home-rule {
+  height: 4px;
+  border: 0;
+  margin: 0 0 22px;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+
+.bands, .home-hero-bands, .strip, .home-rule {
+  display: flex;
+  gap: 3px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+.home-rule { height: 4px; }
+.bands > *, .home-hero-bands > *, .strip > * { flex: 1; }
+.bands::before, .home-hero-bands::before, .strip::before, .home-rule::before {
+  /* Works with no children too: one element, six stops, gaps punched
+     through with hard colour stops so the linen reads between them. */
+  content: "";
+  flex: 1;
+  background:
+    linear-gradient(to right,
+      var(--band-1) 0 calc(100% / 6 - 3px), transparent 0 calc(100% / 6),
+      var(--band-2) 0 calc(100% / 3 - 3px), transparent 0 calc(100% / 3),
+      var(--band-3) 0 calc(50% - 3px),      transparent 0 50%,
+      var(--band-4) 0 calc(200% / 3 - 3px), transparent 0 calc(200% / 3),
+      var(--band-5) 0 calc(500% / 6 - 3px), transparent 0 calc(500% / 6),
+      var(--band-6) 0 100%);
+}
+.bands > * + *, .home-hero-bands > * + *, .strip > * + * { /* children win */ }
+.bands:has(> *)::before,
+.home-hero-bands:has(> *)::before,
+.strip:has(> *)::before { display: none; }
+
+.bandbg {
+  background:
+    linear-gradient(to bottom,
+      var(--band-1) 0 calc(100% / 6 - 4px), transparent 0 calc(100% / 6),
+      var(--band-2) 0 calc(100% / 3 - 4px), transparent 0 calc(100% / 3),
+      var(--band-3) 0 calc(50% - 4px),      transparent 0 50%,
+      var(--band-4) 0 calc(200% / 3 - 4px), transparent 0 calc(200% / 3),
+      var(--band-5) 0 calc(500% / 6 - 4px), transparent 0 calc(500% / 6),
+      var(--band-6) 0 100%);
+}
+
+/* ---- Surfaces --------------------------------------------------- */
+
 .card {
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 20px;
-  margin-bottom: 16px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
+  padding: 22px;
+  margin-bottom: 16px;
 }
 .card.tight { padding: 14px; }
-.card.feature {
-  display: flex; gap: 14px; align-items: flex-start;
-}
-.card.feature .icon {
+.card.feature { display: flex; gap: 16px; align-items: flex-start; }
+.card.compact { padding: 12px; margin-bottom: 10px; }
+.icon-bg, .card .icon {
   flex-shrink: 0;
   width: 40px; height: 40px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   background: var(--primary-soft);
   color: var(--emerald-700);
   display: grid; place-items: center;
 }
 
-/* Hero */
-.hero {
+/* The lead block. Not a slab: a headline with a band rule over it. */
+.hero, .home-hero {
   position: relative;
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  background: radial-gradient(circle at 85% 15%, rgba(16, 185, 129, 0.35), transparent 60%), linear-gradient(135deg, var(--navy-900), var(--navy-700));
-  color: white;
-  padding: 44px 32px;
-  margin-bottom: 24px;
-  box-shadow: var(--shadow-lg);
-}
-.hero::after {
-  content: "";
-  position: absolute;
-  inset: auto -40px -40px auto;
-  width: 260px; height: 260px;
-  background: radial-gradient(circle, rgba(16,185,129,0.4), transparent 70%);
-  pointer-events: none;
-}
-.hero .eyebrow {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 6px 12px; border-radius: 999px;
-  background: rgba(255,255,255,0.12);
-  border: 1px solid rgba(255,255,255,0.2);
-  font-size: 0.8rem; font-weight: 500;
-  color: var(--emerald-200);
-  margin-bottom: 18px;
-}
-.hero h1 {
-  color: white;
-  font-family: "Fraunces", serif;
-  font-size: clamp(2rem, 4vw, 3rem);
-  font-weight: 600;
-  max-width: 18ch;
-  margin-bottom: 12px;
-}
-.hero p { color: rgba(255,255,255,0.82); max-width: 56ch; font-size: 1.02rem; }
-
-/* Form fields */
-.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
-.field label {
-  font-size: 0.82rem;
-  font-weight: 500;
+  background: transparent;
   color: var(--ink);
+  padding: 44px 0 40px;
+  border-top: 2px solid var(--rule-ink);
+  margin-bottom: 28px;
 }
-.field .hint { font-size: 0.78rem; color: var(--ink-soft); margin: -2px 0 4px; }
-.field input[type="text"],
-.field input[type="email"],
-.field input[type="tel"],
-.field input[type="password"],
-.field input[type="number"],
-.field input[type="search"],
-.field select,
-.field textarea,
-input[type="text"],
-input[type="email"],
-input[type="tel"],
-input[type="password"],
-input[type="number"],
-input[type="search"],
-select,
-textarea {
-  background: var(--white);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  padding: 12px 14px;
-  color: var(--ink);
-  font-size: 0.98rem;
-  font-family: inherit;
-  transition: border-color .15s, box-shadow .15s;
-}
-input[type="search"] {
-  -webkit-appearance: none;
-  appearance: none;
-}
-input[type="search"]::-webkit-search-decoration,
-input[type="search"]::-webkit-search-cancel-button {
-  -webkit-appearance: none;
-}
-
-input:focus, select:focus, textarea:focus {
-  outline: none;
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
-}
-
-.row { display: flex; gap: 12px; }
-.row > * { flex: 1; }
-
-/* Buttons */
-button, .btn {
-  background: var(--primary);
-  color: white;
-  border: 1px solid var(--primary);
-  border-radius: var(--radius-sm);
-  padding: 12px 18px;
-  font-size: 0.95rem;
-  font-weight: 600;
-  font-family: inherit;
-  cursor: pointer;
-  width: 100%;
-  transition: transform .04s, background .15s, border-color .15s, box-shadow .15s;
-  box-shadow: var(--shadow-sm);
-}
-button:hover, .btn:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
-button:active { transform: translateY(1px); }
-button.secondary, .btn.secondary {
-  background: var(--white);
-  color: var(--ink);
-  border: 1px solid var(--border-strong);
-  box-shadow: var(--shadow-sm);
-}
-button.secondary:hover, .btn.secondary:hover { background: var(--slate-50); border-color: var(--slate-400); }
-button.ghost { background: transparent; color: var(--ink); border: none; box-shadow: none; }
-button.ghost:hover { background: var(--surface-alt); }
-button.danger { background: var(--danger); border-color: var(--danger); }
-button.danger:hover { background: var(--red-500); border-color: var(--red-500); }
-button.warn { background: var(--warn); border-color: var(--warn); color: white; }
-button.warn:hover { background: #e89509; border-color: #e89509; }
-button.link { background: transparent; color: var(--primary); border: none; width: auto; padding: 0; box-shadow: none; text-decoration: underline; }
-button.small, .btn.small { padding: 8px 12px; font-size: 0.85rem; }
-button:disabled, .btn.disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-
-/* Chips */
-.chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
-.chip {
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  padding: 8px 12px;
-  font-size: 0.85rem;
-  font-weight: 500;
-  color: var(--ink);
-  cursor: pointer;
-  display: inline-flex; align-items: center; gap: 6px;
-  transition: border-color .15s, background .15s;
-}
-.chip:hover { border-color: var(--primary); background: var(--primary-soft); }
-.chip.selected { background: var(--primary); color: white; border-color: var(--primary); }
-.chip.disabled { opacity: 0.4; cursor: not-allowed; }
-
-/* Pills */
-.pill {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 3px 10px; border-radius: 999px;
-  font-size: 0.72rem; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.04em;
-  background: var(--slate-100); color: var(--slate-700);
-}
-.pill.ok   { background: var(--emerald-50);  color: var(--emerald-700); }
-.pill.warn { background: var(--amber-100);   color: #92400e; }
-.pill.err  { background: #fee2e2;            color: var(--red-600); }
-.pill.info { background: #e0f2fe;            color: #075985; }
-.pill.dark { background: var(--navy-900);    color: white; }
-
-/* Stats */
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 14px;
-  margin-bottom: 18px;
-}
-.stat {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 18px 20px;
-  box-shadow: var(--shadow-sm);
-  position: relative;
-  overflow: hidden;
-}
-.stat .label { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-soft); font-weight: 600; }
-.stat .value { font-family: "Fraunces", serif; font-weight: 600; font-size: 2rem; color: var(--ink); margin-top: 4px; }
-.stat .sub { font-size: 0.82rem; color: var(--ink-soft); margin-top: 6px; }
-.stat .icon-bg {
-  position: absolute; top: 12px; right: 14px;
-  width: 36px; height: 36px; border-radius: 10px;
-  background: var(--primary-soft); color: var(--emerald-700);
-  display: grid; place-items: center;
-}
-
-/* Feature grid */
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
-
-/* Tables */
-table { width: 100%; border-collapse: collapse; }
-th, td { padding: 12px 10px; border-bottom: 1px solid var(--border); text-align: left; font-size: 0.92rem; vertical-align: top; }
-th { color: var(--ink-soft); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; }
-tr:last-child td { border-bottom: none; }
-
-/* Nav */
-.nav { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
-.nav a, .nav button {
-  padding: 8px 14px; border-radius: 999px;
-  color: var(--ink-soft); font-size: 0.88rem; font-weight: 500;
-  background: transparent; border: none; width: auto; box-shadow: none;
-  cursor: pointer;
-}
-.nav a:hover, .nav button:hover { background: var(--surface-alt); color: var(--ink); }
-.nav a.active { background: var(--navy-900); color: white; }
-
-/* Clips */
-.clip {
-  display: flex; gap: 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px;
-  margin-bottom: 10px;
-  align-items: center;
-  box-shadow: var(--shadow-sm);
-}
-.clip .thumb {
-  width: 120px; height: 80px;
-  border-radius: var(--radius-sm);
-  background: linear-gradient(135deg, var(--navy-800), var(--navy-600));
-  background-size: cover; background-position: center;
-  flex-shrink: 0;
-  position: relative;
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05);
-}
-.clip .thumb.hio::after {
-  content: "ACE";
-  position: absolute; top: 6px; right: 6px;
-  padding: 2px 7px; border-radius: 999px;
-  background: var(--emerald-500); color: white;
-  font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
-}
-.clip .meta { flex: 1; min-width: 0; }
-.clip .meta b { font-size: 0.95rem; display: block; }
-.clip .meta .stats { color: var(--ink-soft); font-size: 0.8rem; margin-top: 4px; }
-.clip .actions { display: flex; gap: 6px; margin-top: 10px; }
-.clip .actions button, .clip .actions .btn { flex: 1; padding: 8px; font-size: 0.85rem; }
-
-.gallery-hole {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
-  margin-bottom: 14px;
-  box-shadow: var(--shadow-sm);
-}
-.gallery-hole h3 {
-  display: flex; align-items: center; gap: 10px;
-  margin-bottom: 12px;
-}
-.gallery-hole .hole-badge {
-  width: 34px; height: 34px; border-radius: 10px;
-  background: var(--navy-900); color: white;
-  display: grid; place-items: center;
-  font-family: "Fraunces", serif; font-weight: 600;
-}
-
-/* Toast */
-.toast {
-  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-  background: var(--navy-900); color: white;
-  padding: 12px 20px; border-radius: 999px;
-  font-size: 0.9rem; font-weight: 500;
-  box-shadow: var(--shadow-lg);
-  animation: toast-in .2s ease-out;
-}
-@keyframes toast-in { from { transform: translate(-50%, 10px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
-
-/* Feature rows (landing) */
-.feature-row { display: flex; gap: 14px; align-items: flex-start; padding: 16px 0; border-bottom: 1px solid var(--border); }
-.feature-row:last-child { border-bottom: none; }
-.feature-row .icon {
-  flex-shrink: 0;
-  width: 42px; height: 42px; border-radius: 12px;
-  background: var(--primary-soft); color: var(--emerald-700);
-  display: grid; place-items: center;
-}
-.feature-row h4 { font-family: "Inter", sans-serif; font-size: 1rem; font-weight: 600; margin-bottom: 2px; }
-.feature-row p { font-size: 0.9rem; color: var(--ink-soft); margin: 0; }
-
-/* Selfie camera */
-.camera-frame {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 9 / 16;
-  max-height: 72vh;
-  background: #000;
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-lg);
-}
-.camera-frame video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-.camera-frame video.mirror { transform: scaleX(-1); }
-
-.silhouette-guide {
-  position: absolute; inset: 0;
-  width: 100%; height: 100%;
-  pointer-events: none;
-  fill: none;
-  stroke: rgba(255, 255, 255, 0.6);
-  stroke-width: 0.6;
-  filter: drop-shadow(0 0 6px rgba(0,0,0,0.6));
-}
-
-.camera-coach {
-  position: absolute;
-  top: 14px; left: 50%; transform: translateX(-50%);
-  background: rgba(11, 30, 59, 0.85);
-  color: white;
-  padding: 7px 14px;
-  border-radius: 999px;
-  font-size: 0.82rem; font-weight: 500;
-  white-space: nowrap;
-  backdrop-filter: blur(8px);
-  pointer-events: none;
-}
-
-.camera-controls {
-  position: absolute;
-  bottom: 16px; left: 50%; transform: translateX(-50%);
-  display: flex; gap: 8px;
-  width: calc(100% - 32px);
-}
-.camera-controls button { flex: 1; padding: 12px; font-size: 0.9rem; }
-
-.camera-error {
-  position: absolute; inset: 0;
-  background: rgba(11, 30, 59, 0.92);
-  color: white;
-  display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
-  padding: 24px; text-align: center; gap: 12px;
-  backdrop-filter: blur(4px);
-}
-.camera-error button { width: auto; padding: 10px 18px; }
-
-/* Selfie preview chip */
-.selfie-preview {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px; border-radius: var(--radius);
-  background: var(--emerald-50); border: 1px solid var(--emerald-200);
-}
-.selfie-preview img {
-  width: 72px; height: 96px; object-fit: cover;
-  border-radius: var(--radius-sm);
-  border: 2px solid var(--white);
-  box-shadow: var(--shadow-sm);
-}
-.selfie-preview .ok-text {
-  color: var(--emerald-800); font-weight: 600; font-size: 0.9rem;
-}
-
-/* QR block */
-.qr-block {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
-}
-.qr-block img {
-  background: white; padding: 6px; border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-}
-
-/* Utility */
-.divider { height: 1px; background: var(--border); margin: 16px 0; }
-.center { text-align: center; }
-.stack { display: flex; flex-direction: column; gap: 10px; }
-.inline { display: inline-flex; align-items: center; gap: 6px; }
-.pointer { cursor: pointer; }
-
-/* Error text */
-.err-text { color: var(--danger); font-size: 0.88rem; }
-
-/* Shimmer / loading */
-.shimmer {
-  background: linear-gradient(90deg, var(--slate-100), var(--slate-200), var(--slate-100));
-  background-size: 200% 100%;
-  animation: shimmer 1.4s linear infinite;
-  border-radius: var(--radius-sm);
-}
-@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-
-@keyframes pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
-  70%  { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
-}
-
-/* Spinner for the produce-status overlay on a producing card. */
-@keyframes gr-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) {
-  @keyframes gr-spin { to { transform: none; } }
-}
-
-/* Trust band: course logos + live counter */
-.trust-band {
-  text-align: center;
-  padding: 18px 16px 4px;
-  margin-bottom: 12px;
-}
-.trust-band .label {
+.hero .eyebrow, .home-eyebrow, .eyebrow {
+  display: inline-block;
   font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 18px;
+}
+.hero h1 { max-width: 15ch; margin-bottom: 18px; }
+.hero p, .home-sub {
+  color: var(--ink-lead);
+  max-width: 54ch;
+  font-size: 1.08rem;
+  line-height: 1.55;
+}
+.home-hero-in, .home-section-in, .home-close-in, .home-ticker-in { max-width: 1180px; margin: 0 auto; }
+.home-section { padding: 46px 0; border-top: 1px solid var(--rule); }
+/* THE DISPLAY FACE BELONGS TO THE HEADING, NOT TO THE BLOCK. This set
+   Fraunces 400 at 1.9rem on the container, and three of these heads
+   carry an explanatory <p> as well as the <h2> -- so "Every round you
+   play enters you automatically" and the two like it were being set in
+   1.9rem tracked serif, the same size as the heading above them, and
+   read as a second headline rather than as a line of copy. */
+.home-sec-head { margin-bottom: 20px; }
+.home-sec-head h2 { margin-bottom: 9px; }
+.home-sec-head p {
+  font-family: var(--text);
+  font-size: 1rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  max-width: 62ch;
+  margin: 0;
+}
+.home-cta, .home-close { padding: 52px 0; border-top: 2px solid var(--rule-ink); }
+.home-price { font-family: var(--display); font-weight: 300; font-size: 2.6rem; letter-spacing: -0.03em; }
+.home-speclist { list-style: none; padding: 0; margin: 0; }
+.home-speclist li { padding: 11px 0; border-top: 1px solid var(--rule); }
+.home-courses { display: flex; flex-wrap: wrap; gap: 10px 26px; }
+.home-ticker { border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding: 13px 0; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.16em; color: var(--ink-mute); }
+.logo, .brand img { display: block; height: auto; }
+
+/* ---- Masthead / nav --------------------------------------------- */
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 1.3rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.nav {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--rule-ink);
+  padding-bottom: 11px;
+  font-size: 0.86rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+}
+.nav a { color: var(--ink-mute); text-decoration: none; }
+.nav a:hover { color: var(--ink); text-decoration: none; }
+.nav a.active, .nav .active { color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); }
+
+/* ---- Controls --------------------------------------------------- */
+
+.btn, button.btn, a.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 12px 26px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-family: var(--text);
+  font-size: 0.86rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+/* BLUE AT REST, ORANGE UNDER THE POINTER. Both of the mark's loudest
+   colours end up doing a job: band 1 is what a control looks like, and
+   the REELZ orange is what "you are about to press this" looks like.
+   Destructive buttons are the one exception below -- Delete turning
+   orange would read as a different action, not the same one hovered. */
+.btn:hover {
+  background: var(--accent-strong);
+  color: #fff;
+  border-color: var(--accent-strong);
+  text-decoration: none;
+}
+.btn:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+/* THE SECONDARY IS BLUE, NOT BLACK. An ink hairline round an ink label
+   is the most colourless thing a control can be, and most of this app's
+   buttons are secondaries -- which is how a site built out of a
+   six-colour mark ended up reading as beige and black. The band-1 blue
+   does the outlining and the lettering; the fill arrives on hover. */
+.btn.secondary, .secondary {
+  background: var(--paper);
+  color: var(--primary);
+  border-color: var(--primary);
+}
+.btn.secondary:hover, .secondary:hover {
+  background: var(--accent-strong);
+  color: #fff;
+  border-color: var(--accent-strong);
+}
+.btn.ghost, .ghost {
+  background: transparent;
+  color: var(--primary);
+  border-color: transparent;
+  padding-left: 0; padding-right: 0;
+  letter-spacing: 0.04em;
+  box-shadow: inset 0 -1px 0 var(--primary-soft);
+}
+.ghost:hover {
+  background: transparent;
+  color: var(--accent-text);
+  box-shadow: inset 0 -1px 0 var(--accent-text);
+}
+.btn.danger, .danger { background: var(--danger); color: #fff; border-color: transparent; }
+.btn.danger:hover, .danger:hover { background: #8e1d17; color: #fff; border-color: transparent; }
+.btn.accent, .accent {
+  background: var(--accent-strong); color: #fff; border-color: transparent;
+}
+.btn.accent:hover, .accent:hover {
+  background: var(--accent-deep); color: #fff; border-color: transparent;
+}
+.btn.wide, .wide.btn { width: 100%; }
+
+/* EVERY BUTTON, NOT JUST .btn.
+   There are 338 <button> elements in this app and 120 of them carry no
+   class, or carry only `small`. Styling `.btn` alone left those as raw
+   Chrome buttons -- rounded, grey-gradient, 13px system text -- sitting
+   in the same column as the house ones. Nobody added a class as they
+   went and nobody is going to; the element itself has to be dressed.
+
+   The element default is the FILLED one: band-1 blue with a white
+   label, the same thing .btn is, because a button nobody classed is
+   still a button somebody is meant to press and an outline is not what
+   that looks like. .secondary is the outline now, and it is an opt-out
+   rather than the default. Buttons that set their own background or
+   geometry inline (the dot and frame grids in production) keep it:
+   inline styles win over this block. */
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 9px 19px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-family: var(--text);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+button:hover { background: var(--accent-strong); color: #fff; border-color: var(--accent-strong); }
+/* ONE DISABLED LOOK, fill or outline. This used to be opacity 0.45,
+   which leaves a disabled primary still reading as a blue button you
+   could press -- it looked like a rendering glitch rather than a state.
+   Dropping the fill is unambiguous: nothing here is pressable. The
+   .ghost selectors are listed so the rule can out-specify .btn.ghost's
+   underline, which is the one thing that would otherwise survive. */
+/* `small` is a text-size class everywhere else, so it is only a size
+   here when it is on a button. */
+button.small, .btn.small {
+  min-height: 32px;
+  padding: 6px 13px;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+}
+button.tiny, .btn.tiny {
+  min-height: 27px;
+  padding: 4px 9px;
+  font-size: 0.64rem;
+  letter-spacing: 0.04em;
+}
+/* AFTER the size rules, on purpose. A ghost is an underlined word, so
+   it has to sit flush with the column edge; `button.small` sets padding
+   with a shorthand and would otherwise push it in by 13px. */
+.btn.ghost, button.ghost, .ghost { padding-left: 0; padding-right: 0; }
+/* A destructive ghost keeps the red it had before everything went
+   blue, otherwise "Delete" sits in the same colour as "Edit". */
+.btn.ghost.danger, button.ghost.danger, .ghost.danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: transparent;
+  box-shadow: inset 0 -1px 0 var(--danger-soft);
+}
+.ghost.danger:hover { color: #8e1d17; box-shadow: inset 0 -1px 0 var(--danger); }
+
+/* LATE ON PURPOSE. `button:hover` above is (0,1,1) and so are `.ghost:hover`
+   and `.danger:hover`, so without these the element rule would win on
+   source order and paint a bare <button class="ghost"> with the orange
+   fill meant for a solid control -- and a bare Delete would hover
+   orange instead of red. */
+button.ghost:hover, .btn.ghost:hover {
+  background: transparent;
+  color: var(--accent-text);
+  border-color: transparent;
+  box-shadow: inset 0 -1px 0 var(--accent-text);
+}
+button.ghost.danger:hover, .btn.ghost.danger:hover {
+  background: transparent;
+  color: #8e1d17;
+  box-shadow: inset 0 -1px 0 var(--danger);
+}
+button.danger:hover, .btn.danger:hover, .danger:hover {
+  background: #8e1d17; color: #fff; border-color: transparent;
+}
+button.accent:hover, .btn.accent:hover, .accent:hover {
+  background: var(--accent-deep); color: #fff; border-color: transparent;
+}
+button.secondary, .btn.secondary {
+  background: var(--paper); color: var(--primary); border-color: var(--primary);
+}
+button.secondary:hover, .btn.secondary:hover {
+  background: var(--accent-strong); color: #fff; border-color: var(--accent-strong);
+}
+
+/* OFF, AND IT HAS TO BE SAID LAST.
+   This block used to sit above the variant rules, and it lost to them
+   on source order: `button.secondary` and `button:disabled` are both
+   (0,1,1), `.btn.secondary` and `.btn:disabled` are both (0,2,0), and a
+   tie goes to whichever is written later. So a disabled .secondary --
+   which is most of the Setup column on the cameras page -- kept its
+   live blue outline while actually being unpressable. It looked like a
+   button you could press and did nothing when you did.
+
+   Hence both halves of the fix: the block moved below every variant,
+   and each variant is named WITH :disabled so it out-ranks rather than
+   merely out-orders. The hover forms are listed too, because a pointer
+   over a dead control must not light it up.
+
+   A ghost becomes a capsule here. Its label is white like every other
+   disabled control and white on linen is nothing at all, so it needs
+   the fill behind it -- which means taking back the horizontal padding
+   that the flush-left ghost rule strips. */
+button:disabled, button.disabled, .btn:disabled, .btn.disabled,
+a.btn.disabled, .disabled,
+button.secondary:disabled, .btn.secondary:disabled, .secondary:disabled,
+button.accent:disabled,    .btn.accent:disabled,    .accent:disabled,
+button.danger:disabled,    .btn.danger:disabled,    .danger:disabled,
+button.ghost:disabled,     .btn.ghost:disabled,     .ghost:disabled,
+button.chip:disabled,      .chip:disabled,
+button:disabled:hover, .btn:disabled:hover,
+button.secondary:disabled:hover, .btn.secondary:disabled:hover, .secondary:disabled:hover,
+button.accent:disabled:hover,    .btn.accent:disabled:hover,    .accent:disabled:hover,
+button.danger:disabled:hover,    .btn.danger:disabled:hover,    .danger:disabled:hover,
+button.ghost:disabled:hover,     .btn.ghost:disabled:hover,     .ghost:disabled:hover,
+button.chip:disabled:hover,      .chip:disabled:hover {
+  background: var(--disabled-bg);
+  color: var(--disabled-ink);
+  border-color: var(--disabled-bg);
+  box-shadow: none;
+  opacity: 1;
+  cursor: not-allowed;
+}
+button.ghost:disabled, .btn.ghost:disabled, .ghost:disabled,
+button.ghost:disabled:hover, .btn.ghost:disabled:hover, .ghost:disabled:hover {
+  padding-left: 13px;
+  padding-right: 13px;
+}
+
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.field label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.16em; font-weight: 600; color: var(--ink-mute); }
+input, select, textarea {
+  font-family: var(--text);
+  font-size: 1rem;
+  color: var(--ink);
+  background: var(--field-bg);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-field);
+  padding: 11px 13px;
+  min-height: 44px;
+  width: 100%;
+}
+textarea { min-height: 110px; resize: vertical; }
+input::placeholder, textarea::placeholder { color: var(--ink-mute); }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th {
+  text-align: left;
+  font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.14em;
   color: var(--ink-mute);
-  margin-bottom: 14px;
-}
-.trust-band .logos {
-  display: flex; flex-wrap: wrap;
-  justify-content: center; align-items: center;
-  gap: 24px 40px;
-  margin-bottom: 18px;
-}
-.trust-band .logo-plate {
-  text-align: center;
-  opacity: 0.6;
-  transition: opacity .2s;
-}
-.trust-band .logo-plate:hover { opacity: 1; }
-.trust-band .logo-plate .name {
-  font-family: "Fraunces", serif;
   font-weight: 600;
-  font-size: 1.08rem;
-  color: var(--ink);
-  letter-spacing: -0.01em;
-  white-space: nowrap;
+  padding: 9px 12px 9px 0;
+  border-bottom: 1px solid var(--rule-ink);
 }
-.trust-band .logo-plate .loc {
-  font-size: 0.7rem;
+td { padding: 11px 12px 11px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+
+/* ---- Markers ---------------------------------------------------- */
+/* A status is a coloured rule, not a lozenge — the band device at its
+   smallest. Colour never carries the meaning alone: the word is there. */
+
+/* A STATUS IS A COLOURED CAPSULE AGAIN.
+   These were bare words with a 3px rule on the left -- the band device
+   at its smallest, which is a nice idea and completely invisible in a
+   row of six of them. A camera header reading ENABLED · GREEN · POWER
+   CLEAN · IP CAMERA came out as four identical grey words. The tint
+   carries the state at a glance and the label still says it in words,
+   so colour is never the only thing doing the work. */
+.pill, .tag, .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-pill);
+  padding: 3px 11px;
+  font-size: 0.72rem;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   color: var(--ink-soft);
-  margin-top: 2px;
+  background: var(--surface-alt);
 }
-.trust-band .stats {
-  display: inline-flex; flex-wrap: wrap;
-  justify-content: center; gap: 8px 22px;
-  padding: 10px 18px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 0.85rem;
-  color: var(--ink-soft);
-  box-shadow: var(--shadow-sm);
+.pill.ok,   .tag.ok,   .chip.ok {
+  background: var(--ok-soft); border-color: #b6d7c4; color: #155c39;
 }
-.trust-band .stats b {
-  color: var(--emerald-700);
-  font-family: "Fraunces", serif;
-  font-size: 1.05rem;
-  margin-right: 4px;
+.pill.warn, .tag.warn, .chip.warn {
+  background: var(--warn-soft); border-color: #f0ce93; color: #8a5a06;
 }
-.trust-band .stats .pulse {
-  display: inline-block;
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--emerald-500);
-  animation: pulse 1.6s ease-in-out infinite;
-  margin-right: 6px;
-  vertical-align: middle;
+.pill.danger, .pill.err, .tag.danger, .tag.err {
+  background: var(--danger-soft); border-color: #e7b3ae; color: #93201a;
+}
+.pill.live, .pill.open, .tag.live {
+  background: var(--band-1-soft); border-color: #b9ccfa; color: #11379f;
+}
+.pill.accent, .tag.accent {
+  background: var(--band-6-soft); border-color: #f5c2a8; color: #a33403;
+}
+.pill.small, .tag.small { font-size: 0.66rem; padding: 2px 9px; }
+.pill.tiny, .tag.tiny { font-size: 0.6rem; padding: 1px 8px; letter-spacing: 0.06em; }
+/* A chip is a <button> too, so it loses the beige hairline with the
+   rest of them: pale blue unselected, the blue tint filled in when it
+   is chosen. The distinction is still the fill, not the colour. */
+.chip {
+  cursor: pointer;
+  border-radius: var(--radius);
+  background: var(--paper);
+  border-color: var(--emerald-200);
+  color: var(--ink);
+  padding: 7px 13px;
+}
+/* A chip is a choice, not an action: it keeps its ground on hover and
+   just firms up its rule. Without this it inherits button:hover and
+   flips to solid ink, which reads as "pressed" on something that is
+   only being pointed at. */
+.chip:hover { background: var(--primary-soft); color: #11379f; border-color: var(--primary); }
+.chip.selected, .chip.active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: #11379f;
+}
+.chip-row, .chip-row.row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-faint); display: inline-block; flex-shrink: 0; }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--danger); }
+.hole-badge {
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: 0.95rem;
+  color: var(--ink);
+  border: 1px solid var(--rule-ink);
+  min-width: 34px; height: 34px;
+  display: inline-grid; place-items: center;
+}
+.rank { font-family: var(--display); font-weight: 300; font-size: 1.5rem; color: var(--ink-faint); letter-spacing: -0.03em; }
+
+.ok-text   { color: var(--ok); }
+.err, .err-text, .warn-text { color: var(--danger); font-size: 0.88rem; }
+.warn-text { color: #8a5a06; }
+
+/* ---- Figures ---------------------------------------------------- */
+
+.stat-grid, .stats { display: flex; flex-wrap: wrap; gap: 40px; border-top: 1px solid var(--rule-ink); padding-top: 18px; }
+.stat { flex: 1 1 150px; min-width: 0; }
+.stat .value, .stat .num {
+  font-family: var(--display);
+  font-weight: 300;
+  font-size: 2.6rem;
+  line-height: 1;
+  letter-spacing: -0.035em;
+  color: var(--ink);
+  display: block;
+}
+.stat .label, .stat .sub { margin-top: 9px; font-size: 0.7rem; }
+.metric { font-family: var(--display); font-weight: 300; font-size: 1.8rem; letter-spacing: -0.03em; }
+
+.feature-row {
+  display: flex; gap: 22px; align-items: flex-start;
+  padding: 20px 0; border-top: 1px solid var(--rule);
 }
 
-.cadence-header {
-  display: flex; align-items: flex-end;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 24px 0 14px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--border);
+/* "HOW IT WORKS". `.step` was written here as the NUMERAL -- display
+   face, accent red, 0.1em tracking, flex-shrink: 0 -- but Home.jsx puts
+   the class on the whole step BLOCK and the number inside it as `.num`.
+   So every heading and body paragraph in the section was being set in
+   tracked red serif, and five unshrinkable blocks pushed the row to
+   2192px: the entire page scrolled sideways, on a phone as much as on a
+   desktop. The numeral styling is now on `.step .num`, where the markup
+   actually puts the number, and the blocks are columns that wrap. */
+.step-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px 30px;
+  align-items: flex-start;
+  padding: 24px 0;
+  border-top: 1px solid var(--rule-ink);
 }
-.cadence-countdown {
+.step { flex: 1 1 200px; min-width: 0; color: var(--ink); }
+.step .num {
+  font-family: var(--display);
   font-size: 0.95rem;
-  color: var(--ink-soft);
-  white-space: nowrap;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  margin-bottom: 13px;
 }
-.cadence-countdown b {
-  font-family: "Fraunces", serif;
-  color: var(--emerald-700);
-  font-size: 1.1rem;
-  margin: 0 2px;
+.step h3 { font-size: 1.2rem; margin-bottom: 8px; }
+.step p { color: var(--ink-soft); font-size: 0.94rem; margin: 0; }
+
+/* ---- Clips and media -------------------------------------------- */
+
+.clip, .home-clip-frame, .watch-frame, .camera-frame, .clip-player, .watch-video, .thumb, .gallery-hole, .selfie-preview {
+  position: relative;
+  background: var(--ink);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  display: block;
+  width: 100%;
 }
+.clip, .home-clip-frame, .watch-frame, .clip-player, .watch-video { aspect-ratio: 16 / 9; }
+.camera-frame { aspect-ratio: 16 / 9; background: #0b0c10; }
+.clip video, .clip img, .clip-player video, .watch-video video, .thumb img, .gallery-hole img, .selfie-preview video, .selfie-preview img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.home-clip-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; }
+.game-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.game-tile { border: 1px solid var(--rule); padding: 18px; background: var(--surface); }
+
+.clip-overlay, .watch-overlay {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  padding: 16px;
+  background: linear-gradient(to top, rgba(11, 12, 16, 0.78), transparent 58%);
+  color: #fff;
+  pointer-events: none;
+}
+.clip-overlay-top-right, .clip-overlay-bottom-right, .clip-overlay-ace {
+  position: absolute;
+  font-size: 0.72rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 5px 9px;
+  background: rgba(11, 12, 16, 0.82); color: #fff;
+}
+.clip-overlay-top-right    { top: 12px; right: 12px; }
+.clip-overlay-bottom-right { bottom: 12px; right: 12px; }
+.clip-overlay-ace          { top: 12px; left: 12px; background: var(--accent); color: var(--on-accent); }
+.watch-overlay-title { font-family: var(--display); font-weight: 400; font-size: 1.4rem; }
+.watch-slate { background: var(--ink); color: var(--paper); padding: 26px; }
+.watch-slate-title { font-family: var(--display); font-weight: 400; font-size: 1.5rem; margin-bottom: 12px; }
+.watch-slate-list { list-style: none; padding: 0; margin: 0; }
+.watch-slate-list li { padding: 8px 0; border-top: 1px solid rgba(255, 255, 255, 0.16); }
+.watch-loading, .watch-error, .camera-error {
+  display: grid; place-items: center;
+  min-height: 180px;
+  color: var(--ink-mute);
+  font-size: 0.9rem;
+  text-align: center;
+  padding: 22px;
+}
+.watch-error, .camera-error { color: var(--danger); }
+
+.course-plate { border: 1px solid var(--rule); padding: 16px; background: var(--surface); }
+.course-name { font-family: var(--display); font-weight: 400; font-size: 1.2rem; }
+.hole-info { font-size: 0.8rem; color: var(--ink-mute); text-transform: uppercase; letter-spacing: 0.12em; }
+.loc, .who { font-size: 0.86rem; color: var(--ink-mute); }
+.prize, .amount { font-family: var(--display); font-weight: 300; font-size: 2rem; letter-spacing: -0.03em; color: var(--ink); }
+
+/* ---- Camera capture (on-course pages) --------------------------- */
+
+.silhouette-guide { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 0.4; }
+.camera-coach {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 13px 16px;
+  background: rgba(11, 12, 16, 0.82);
+  color: #fff; font-size: 0.86rem; text-align: center;
+}
+.camera-controls { display: flex; gap: 12px; justify-content: center; padding: 16px 0; flex-wrap: wrap; }
+.qr-block { display: inline-block; padding: 16px; background: #fff; border: 1px solid var(--rule); }
+
+/* ---- Banners, toasts, states ------------------------------------ */
 
 .live-banner {
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 16px;
-  border-radius: var(--radius);
-  background: linear-gradient(135deg, #fff1f2, #ffe4e6);
-  border: 1px solid #fecdd3;
-  color: #881337;
-  margin-bottom: 14px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 11px 0;
+  border-top: 2px solid var(--band-1);
+  border-bottom: 1px solid var(--rule);
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.14em; font-weight: 600;
 }
-.live-banner .dot {
-  width: 10px; height: 10px; border-radius: 50%;
-  background: var(--red-500);
-  animation: pulse 1.6s ease-in-out infinite;
-  flex-shrink: 0;
-}
-.live-banner .label { font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.75rem; }
-.live-banner a { color: #881337; font-weight: 600; margin-left: auto; white-space: nowrap; }
+.cadence-header { display: flex; flex-wrap: wrap; gap: 14px; align-items: baseline; }
+.cadence, .cadence-countdown { font-family: var(--display); font-weight: 300; font-size: 1.6rem; letter-spacing: -0.03em; }
 
-/* Clip player with branded corner overlays */
-.clip-player {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  background: #000;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  box-shadow: var(--shadow);
-}
-.clip-player video {
-  width: 100%; height: 100%;
-  display: block;
-  object-fit: cover;
-}
-.clip-overlay {
-  position: absolute;
-  color: white;
-  pointer-events: none;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75), 0 2px 10px rgba(0, 0, 0, 0.4);
-  font-family: "Inter", sans-serif;
-}
-.clip-overlay-top-right {
-  top: 10px; right: 12px;
-  text-align: right;
-  max-width: 60%;
-  padding: 6px 10px;
-  background: linear-gradient(135deg, rgba(11, 30, 59, 0.55), rgba(5, 150, 105, 0.25));
-  border-radius: var(--radius-xs);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-}
-.clip-overlay-top-right .course-name {
-  font-family: "Fraunces", serif;
-  font-weight: 600;
-  font-size: 0.92rem;
-  line-height: 1.1;
-  letter-spacing: -0.01em;
-}
-.clip-overlay-top-right .hole-info {
-  font-size: 0.78rem;
-  font-weight: 500;
-  opacity: 0.92;
-  margin-top: 2px;
-  letter-spacing: 0.02em;
-}
-.clip-overlay-bottom-right {
-  bottom: 48px; right: 12px;
-  font-weight: 600;
-  font-size: 0.92rem;
-  padding: 4px 10px;
-  background: linear-gradient(135deg, rgba(11, 30, 59, 0.55), rgba(30, 58, 95, 0.4));
-  border-radius: var(--radius-xs);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-.clip-overlay-ace {
-  top: 10px; left: 12px;
-  padding: 4px 12px;
-  background: linear-gradient(135deg, var(--emerald-500), var(--emerald-700));
-  border-radius: 999px;
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.5);
-}
-
-/* Slightly smaller overlay text in dense grids (e.g. admin drawer) */
-.clip-player.compact .clip-overlay-top-right .course-name { font-size: 0.82rem; }
-.clip-player.compact .clip-overlay-top-right .hole-info { font-size: 0.7rem; }
-.clip-player.compact .clip-overlay-bottom-right { font-size: 0.82rem; bottom: 44px; }
-
-/* --- Watch / Broadcast channel --- */
-.watch-stage {
-  background: #0b1220;
-  color: #fff;
-  min-height: 100vh;
-}
-.watch-stage.kiosk .watch-frame { aspect-ratio: auto; height: 100vh; border-radius: 0; }
-.watch-frame {
-  position: relative;
-  margin: 0 auto;
-  max-width: 1200px;
-  aspect-ratio: 16/9;
-  background: #000;
-  border-radius: 14px;
-  overflow: hidden;
-  margin-top: 8px;
-}
-.watch-video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
-.watch-loading {
-  position: absolute; inset: 0;
-  display: grid; place-items: center;
-  color: rgba(255,255,255,0.55);
+.toast {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+  background: var(--ink); color: var(--paper);
+  padding: 13px 22px;
   font-size: 0.9rem;
+  z-index: 60;
+  animation: toast-in 0.2s ease-out;
+  max-width: calc(100vw - 32px);
 }
-.watch-error {
-  position: absolute; inset: 0;
+.modal-back {
+  position: fixed; inset: 0; z-index: 70;
+  background: rgba(35, 32, 28, 0.55);
   display: grid; place-items: center;
-  color: #fecaca; padding: 24px; text-align: center;
+  padding: 22px;
 }
-.muted-on-dark { color: rgba(255,255,255,0.65); }
 
-.watch-overlay {
-  position: absolute;
-  padding: 10px 14px;
-  background: rgba(0,0,0,0.45);
-  border-radius: 10px;
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  border: 1px solid rgba(255,255,255,0.08);
+.shimmer {
+  background: linear-gradient(90deg, var(--paper-sunk) 25%, var(--linen) 37%, var(--paper-sunk) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.3s ease-in-out infinite;
 }
-.watch-overlay.tr { top: 14px; right: 14px; text-align: right; }
-.watch-overlay.br { bottom: 14px; right: 14px; text-align: right; }
-.watch-overlay-title { font-weight: 700; font-size: 1rem; line-height: 1.1; margin-top: 2px; }
+.pulse { animation: pulse 1.6s ease-in-out infinite; }
 
-.watch-slate {
-  position: absolute; inset: 0;
-  padding: clamp(20px, 5vw, 60px);
-  display: flex; flex-direction: column; justify-content: center;
-  background: radial-gradient(circle at 30% 30%, #14532d 0%, #0b1220 70%);
+/* ---- Appearance picker (admin) ---------------------------------- */
+
+.theme-choice-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.theme-choice {
+  flex: 1 1 200px;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 13px;
+  cursor: pointer;
+  color: var(--ink);
+  min-height: 44px;
 }
-.watch-slate-title {
-  font-size: clamp(2rem, 5vw, 3.6rem);
-  line-height: 1.05;
-  margin: 8px 0 20px;
-  letter-spacing: -0.02em;
+.theme-choice[aria-pressed="true"] { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.theme-choice .bands {
+  height: 9px;
+  margin-bottom: 10px;
+  background: linear-gradient(to right, var(--swatch-a, var(--band-1)), var(--swatch-b, var(--band-6)));
+  gap: 0;
 }
-.watch-slate-list {
-  list-style: none; padding: 0; margin: 0;
-  display: flex; flex-direction: column; gap: 10px;
-  font-size: clamp(1rem, 2vw, 1.4rem);
+.theme-choice .bands::before { display: none; }
+.theme-choice .name { display: block; font-weight: 600; font-size: 0.92rem; }
+
+/* ---- The last three, which the old sheet never styled either ---- */
+/* .body is a copy block, .br a line break inside an overlay, .home the
+   page wrapper. They were in the markup with nothing behind them. */
+.body { font-size: 1rem; color: var(--ink-soft); max-width: 68ch; }
+.br { display: block; height: 0; }
+.home { background: var(--bg); }
+
+/* ---- Motion ----------------------------------------------------- */
+
+@keyframes shimmer  { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+@keyframes pulse    { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes gr-spin  { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
-.watch-slate-list li {
-  display: grid;
-  grid-template-columns: 48px 1fr auto;
-  align-items: baseline;
-  gap: 14px;
-  padding: 8px 0;
-  border-bottom: 1px solid rgba(255,255,255,0.08);
+
+/* ---- Narrow ----------------------------------------------------- */
+
+@media (max-width: 760px) {
+  .wrap, .container { padding: 24px 18px 56px; }
+  .home-wrap, .home-hero-in, .home-section-in, .home-close-in, .home-ticker-in { padding-left: 18px; padding-right: 18px; }
+  h1 { font-size: clamp(2rem, 9vw, 2.8rem); }
+  .stat-grid, .stats { gap: 22px; }
+  .stat { flex: 1 1 130px; }
+  .nav { gap: 14px; font-size: 0.78rem; }
+  .card { padding: 16px; }
+  .hero, .home-hero { padding: 30px 0 26px; }
+  table { display: block; overflow-x: auto; white-space: nowrap; }
 }
-.watch-slate-list .rank { color: var(--emerald-300, #6ee7b7); font-weight: 700; }
-.watch-slate-list .who { color: #fff; }
-.watch-slate-list .metric { color: rgba(255,255,255,0.75); font-variant-numeric: tabular-nums; }

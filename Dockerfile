@@ -40,6 +40,15 @@ COPY backend/requirements.txt backend/requirements.txt
 RUN pip install --no-cache-dir -r backend/requirements.txt
 
 COPY backend/ backend/
+# THE RIG'S SWING DETECTOR, which the backend imports by path so the
+# tester and the Pi can never run different code (see
+# backend/app/services/pi_swingfind.py). services/pi_swingfind.py
+# resolves it as parents[3]/pi-agent/agent/swingfind.py, which from
+# /app/backend/app/services/ is /app/pi-agent/agent/ — exactly here.
+#
+# Only `agent/` goes in: pi-agent/models is 13 MB of detector weights
+# that nothing on the server loads.
+COPY pi-agent/agent/ pi-agent/agent/
 # main.py resolves FRONTEND_DIST as parents[2]/frontend/dist, which from
 # /app/backend/app/main.py is /app/frontend/dist — exactly here.
 COPY --from=web /web/dist frontend/dist

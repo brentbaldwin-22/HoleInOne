@@ -11993,3 +11993,638 @@ def run_full_ai_tracer_pipeline(
         result["cutover_time_sec"] or 0.0,
     )
     return result
+
+
+# ── which of these is the ball? ────────────────────────────────────────
+#
+# THE ONE THING THE PLATES CANNOT DO. The resting-ball search compares
+# the green before a shot with the green once it has settled and reports
+# what is newly on the putting surface. When that is one blob it is the
+# answer and nothing here is needed. When it is several -- a partner who
+# also hit in, a shadow that crawled, a towel somebody dropped -- the
+# search has no way to tell which was the shot, and it refuses rather
+# than guessing, because a prize measured off a guess is worse than no
+# measurement.
+#
+# Refusing is right and it is also a dead end. This resolves it the only
+# way it can be resolved: by looking.
+#
+# WHY A MODEL IS THE RIGHT TOOL *HERE* AND NOT FOR THE SEARCH ITSELF.
+# Vision models are poor at pixel coordinates -- this file already
+# records it, at `_snap_to_ball`: "the claimed rest position can be off
+# by 50-100px". On a green that is tens of feet, and it is why the
+# search is a differencing measurement rather than a judgement. But this
+# is not a measurement. The candidates arrive WITH exact coordinates
+# already; the question is which index, among three or four, is a golf
+# ball. That is judgement, which is what the model is good at, and its
+# weak axis does not enter into it.
+BALL_PICKER_PROMPT = (
+    "You are looking at two frames from a fixed camera pointed at a golf "
+    "green: the same view before a shot was played and after the ball "
+    "came to rest.\n\n"
+    "Numbered rings mark things that are present in the AFTER frame and "
+    "were not present in the BEFORE frame. Exactly one of them may be a "
+    "golf ball that has just come to rest. The others are things like a "
+    "shadow that moved, a sprinkler head now catching the light, a "
+    "person, a towel, a ball mark, or a patch of turf that changed "
+    "brightness.\n\n"
+    "A golf ball at rest is small, round, uniformly bright, sits ON the "
+    "grass with a short shadow, and does not have the soft or ragged "
+    "edges of a shadow or the elongation of a person or a mowing line.\n\n"
+    "Reply with JSON only:\n"
+    '  {\"ball\": <ring number>, \"confidence\": <0..1>, '
+    '\"why\": \"<one short sentence>\"}\n'
+    "If none of them is a golf ball, or you cannot tell them apart, "
+    'reply {\"ball\": null, \"confidence\": 0, \"why\": \"...\"}. '
+    "Saying you cannot tell is a useful answer and is strongly "
+    "preferred over a guess: this feeds a closest-to-the-pin "
+    "measurement, and a confident wrong ring is far more damaging than "
+    "an admitted uncertainty."
+)
+
+# BELOW THIS WE DO NOT TAKE THE ANSWER. The caller's fallback is to
+# refuse, which is a correct outcome; a model that is unsure is not an
+# improvement on it.
+BALL_PICKER_MIN_CONFIDENCE = 0.6
+
+
+def pick_ball_among(jpeg: bytes, n_candidates: int,
+                    model_override: str | None = None) -> dict:
+    """Which numbered ring is the golf ball? 1-based, or None.
+
+    `jpeg` is the before/after pair with the candidates ringed and
+    numbered on the after panel -- the same picture an operator would
+    be shown, which is the point: if a person could not tell from it,
+    the model is not being asked anything fairer.
+
+    Returns {"index": int|None, "confidence": float, "why": str,
+             "error": str|None}. Never raises: the caller's fallback is
+    to refuse to measure, and an AI outage must not become an outage of
+    the thing that works without it.
+    """
+    info: dict = {"index": None, "confidence": 0.0, "why": "", "error": None,
+                  "model": None}
+    if n_candidates < 2:
+        info["error"] = "nothing to choose between"
+        return info
+    if not have_ai_tracer():
+        info["error"] = "no AI configured"
+        return info
+    client = _anthropic_client()
+    if client is None:
+        info["error"] = "anthropic SDK not installed"
+        return info
+    model = _resolve_model(model_override)
+    info["model"] = model
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=200,
+            system=[{
+                "type": "text",
+                "text": BALL_PICKER_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": (
+                    f"BEFORE is the left panel, AFTER is the right. "
+                    f"Rings 1 to {n_candidates} are on the AFTER panel. "
+                    "Which ring is the golf ball? JSON only.")},
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/jpeg",
+                    "data": base64.standard_b64encode(jpeg).decode("ascii"),
+                }},
+            ]}],
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ai_tracer: ball picker call failed: %s", exc)
+        info["error"] = f"api_failed: {exc}"
+        return info
+
+    parsed = _extract_json("\n".join(
+        b.text for b in resp.content
+        if getattr(b, "type", None) == "text" and getattr(b, "text", None)
+    ))
+    if not parsed:
+        info["error"] = "no_json_in_response"
+        return info
+    info["why"] = str(parsed.get("why") or "")[:200]
+    try:
+        info["confidence"] = max(0.0, min(1.0, float(
+            parsed.get("confidence") or 0.0)))
+    except (TypeError, ValueError):
+        info["confidence"] = 0.0
+    _idx = parsed.get("ball")
+    if _idx is None:
+        info["error"] = "model declined to choose"
+        return info
+    try:
+        _idx = int(_idx)
+    except (TypeError, ValueError):
+        info["error"] = f"unusable index {parsed.get('ball')!r}"
+        return info
+    # A RING THAT DOES NOT EXIST is not an answer. Models do occasionally
+    # name a fifth candidate out of four, and taking it modulo anything
+    # would turn a clear failure into a plausible wrong ball.
+    if not (1 <= _idx <= n_candidates):
+        info["error"] = f"index {_idx} is outside 1..{n_candidates}"
+        return info
+    if info["confidence"] < BALL_PICKER_MIN_CONFIDENCE:
+        info["error"] = (f"confidence {info['confidence']:.2f} below "
+                         f"{BALL_PICKER_MIN_CONFIDENCE}")
+        return info
+    info["index"] = _idx
+    return info
+
+
+# ── the ball at rest, straight from two colour frames ──────────────────
+#
+# WHY THIS REPLACED A WORKING PIPELINE. The plate comparison that came
+# before it is a careful piece of machinery -- median plates, exposure
+# matching, persistence, an operator-traced outline -- and on this green
+# it kept producing an answer that needed explaining. The operator's
+# verdict was blunt and correct: "if i ask claude ai or chatgpt, it can
+# identify the ball on the green every time."
+#
+# It can, because a ball at rest on mown grass is one of the things a
+# vision model is genuinely good at, and because the question "what is
+# in the second picture that was not in the first" is a question about
+# meaning rather than about pixel arithmetic. A median plate has to be
+# told what counts as the green; a model can see it.
+#
+# THE ONE THING IT IS NOT GOOD AT is exactly where it lands. This file
+# already records it: a claimed rest position can be off by 50-100px
+# after the downscale, which on a green is tens of feet. So the model is
+# asked for the ball and the answer is then SNAPPED to the real bright
+# blob nearest it. The model says which object; the pixels say where.
+BALL_AT_REST_PROMPT = (
+    "You are looking at two colour frames from a fixed camera pointed "
+    "at a golf green. BEFORE was taken just before a shot was played. "
+    "AFTER was taken once the ball had landed and come to rest.\n\n"
+    "WHERE IS THE GOLF BALL ON THE GREEN in the AFTER frame?\n\n"
+    "Two conditions, and BOTH must hold:\n"
+    "  1. It is ON THE PUTTING SURFACE — the smooth mown green itself, "
+    "not the fringe, the apron, a bunker, the rough or the fairway.\n"
+    "  2. It is NOT THERE IN THE BEFORE FRAME. Compare the two frames "
+    "at that exact spot before you answer.\n\n"
+    "A ball that is already on the green in BEFORE belongs to somebody "
+    "else and is NOT the answer, however clearly you can see it. "
+    "Neither is anything off the putting surface, however ball-like. "
+    "If the only ball you can find fails either condition, say you "
+    "could not find one.\n\n"
+    "Give its position in the AFTER frame in pixels, with (0,0) at the "
+    "top-left.\n\n"
+    "Reply with JSON only:\n"
+    '  {\"x\": <int>, \"y\": <int>, \"on_green\": <true|false>, '
+    '\"confidence\": <0..1>, \"why\": \"<one short sentence>\"}\n'
+    "If no ball arrived on the green between the two frames, reply "
+    '{\"x\": null, \"y\": null, \"on_green\": false, '
+    '\"confidence\": 0, \"why\": \"...\"}. Saying you cannot see '
+    "one is a useful answer: this feeds a closest-to-the-pin "
+    "measurement, and a confident wrong position is worse than an "
+    "admitted miss."
+)
+
+# Below this the answer is not taken; the caller falls back.
+BALL_AT_REST_MIN_CONFIDENCE = 0.5
+
+# HOW FAR THE SNAP MAY REACH, in pixels at 1080p. Sized from this
+# file's own measurement of vision localisation error (50-100px) with
+# room over it. Wider and the snap starts finding the flagstick.
+SNAP_RADIUS_PX = 60
+
+# The ball, in pixels of area at 1080p. Generous at the top end because
+# the front of a green is a great deal closer than the back of it.
+SNAP_MIN_AREA = 2
+SNAP_MAX_AREA = 400
+
+# HOW MUCH BRIGHTER THAN ITS SURROUNDINGS a blob has to be to be a
+# ball. THE BUNKER IS WHY. Sand is as bright as a golf ball and a green
+# has acres of it, so brightness alone snapped an answer 80px sideways
+# into a bunker and reported it with confidence. A ball on grass is an
+# ISOLATED bright dot -- its immediate surroundings are dark. A bright
+# patch of sand sits in more sand, and fails this where no threshold on
+# brightness alone ever could.
+SNAP_MIN_LOCAL_CONTRAST = 18.0
+
+# A BALL IS ROUND, AND A FLAGSTICK IS NOT. Area alone does not separate
+# them: a stick two pixels wide and sixty long is 120px, comfortably
+# inside the ball range, and it is the brightest thing on most greens.
+# Without this the snap walks the answer onto the pin -- caught by the
+# test that puts a flagstick in the frame and aims the model near it.
+SNAP_MAX_ASPECT = 3.0
+
+
+# HOW FAR APART THE GRIDLINES GO, in pixels. Close enough that a cell
+# is a small part of a green, far enough that the labels stay legible
+# after the API's own downscale.
+GRID_STEP_PX = 200
+
+
+def _with_grid(img, step: int = GRID_STEP_PX):
+    """A labelled pixel grid over a copy of the frame.
+
+    THE WHOLE ACCURACY PROBLEM IN ONE PICTURE. Asked where the ball is,
+    the model said "on the green to the right of the flag" -- correct,
+    and plainly so -- and then gave coordinates 400px away from it. It
+    knows WHAT it is looking at and estimates WHERE badly, which this
+    file's own note at `_snap_to_ball` already records as 50-100px of
+    error.
+
+    A grid turns the estimate into a reading. Instead of judging a
+    distance in pixels from the frame edge, it names the cell the ball
+    sits in and interpolates inside it -- and the lines are right there
+    to check against. The snap afterwards still does the last few
+    pixels, but it is being handed a point that is close.
+    """
+    out = img.copy()
+    h, w = out.shape[:2]
+    u = max(1, int(round(max(w, h) / 900.0)))
+    for x in range(step, w, step):
+        cv2.line(out, (x, 0), (x, h), (0, 255, 255), u)
+        cv2.putText(out, str(x), (x + 3 * u, 18 * u),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45 * u, (0, 255, 255), u)
+    for y in range(step, h, step):
+        cv2.line(out, (0, y), (w, y), (0, 255, 255), u)
+        cv2.putText(out, str(y), (3 * u, y - 4 * u),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45 * u, (0, 255, 255), u)
+    return out
+
+
+def _grab_colour_frame(path, sec: float):
+    """One BGR frame at `sec`, or None."""
+    cap = cv2.VideoCapture(str(path))
+    try:
+        if not cap.isOpened():
+            return None
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 60.0)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        idx = max(0, int(round(float(sec) * fps)))
+        if total:
+            idx = min(idx, total - 1)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ok, frame = cap.read()
+        return frame if ok else None
+    finally:
+        cap.release()
+
+
+def _snap_to_nearest_blob(frame_bgr, x: int, y: int,
+                          radius: int = SNAP_RADIUS_PX):
+    """The ball-sized bright blob nearest (x, y), or None.
+
+    THE MODEL SAYS WHICH OBJECT, THE PIXELS SAY WHERE. A vision answer
+    is reliably the right thing and unreliably the right place, and the
+    two are separable: having been told roughly where to look, finding
+    a small bright cluster is arithmetic.
+    """
+    h, w = frame_bgr.shape[:2]
+    x0, x1 = max(0, x - radius), min(w, x + radius + 1)
+    y0, y1 = max(0, y - radius), min(h, y + radius + 1)
+    if x1 - x0 < 3 or y1 - y0 < 3:
+        return None
+    crop = cv2.cvtColor(frame_bgr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+    thr = max(float(crop.mean()) + 22.0, float(np.percentile(crop, 96)))
+    _, mask = cv2.threshold(crop, thr, 255, cv2.THRESH_BINARY)
+    n, _lbl, stats, cent = cv2.connectedComponentsWithStats(
+        mask.astype("uint8"))
+    best, best_d = None, None
+    for i in range(1, n):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if not (SNAP_MIN_AREA <= area <= SNAP_MAX_AREA):
+            continue
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        if max(bw, bh) / max(1, min(bw, bh)) > SNAP_MAX_ASPECT:
+            continue
+        cx, cy = float(cent[i][0]) + x0, float(cent[i][1]) + y0
+        # ISOLATED, not merely bright. A ring of background twice the
+        # blob's size around it has to be meaningfully darker than the
+        # blob -- true of a ball on grass, false of a bright patch of
+        # sand in a bunker.
+        _r = max(3, int(round(max(
+            stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]))))
+        _ix, _iy = int(round(cx)), int(round(cy))
+        _ry0, _ry1 = max(0, _iy - 3 * _r), min(h, _iy + 3 * _r + 1)
+        _rx0, _rx1 = max(0, _ix - 3 * _r), min(w, _ix + 3 * _r + 1)
+        ring = cv2.cvtColor(frame_bgr[_ry0:_ry1, _rx0:_rx1],
+                            cv2.COLOR_BGR2GRAY).astype(float)
+        if ring.size < 9:
+            continue
+        core = ring[max(0, _iy - _r - _ry0):_iy - _ry0 + _r + 1,
+                    max(0, _ix - _r - _rx0):_ix - _rx0 + _r + 1]
+        if core.size < 1:
+            continue
+        if float(core.mean()) - float(np.median(ring)) < SNAP_MIN_LOCAL_CONTRAST:
+            continue
+        d = (cx - x) ** 2 + (cy - y) ** 2
+        if best_d is None or d < best_d:
+            best, best_d = (int(round(cx)), int(round(cy))), d
+    return best
+
+
+def _render_colour_pair(before, after, xy, out_path, caption=""):
+    """BEFORE | AFTER side by side, in colour, with the ball ringed.
+
+    THE TWO FRAMES THE MODEL WAS GIVEN, and the only way to check its
+    answer without taking its word for it: the question is "what is in
+    the second that was not in the first", so both have to be on screen
+    to judge it. In colour, because a white ball on green grass is a
+    colour fact and the greyscale version throws away the easiest half
+    of the comparison.
+    """
+    h = min(before.shape[0], after.shape[0])
+    w = min(before.shape[1], after.shape[1])
+    pair = np.zeros((h, w * 2, 3), np.uint8)
+    pair[:, :w] = before[:h, :w]
+    pair[:, w:] = after[:h, :w]
+    u = max(1, int(round(max(w, h) / 500.0)))
+    cv2.line(pair, (w, 0), (w, h), (40, 40, 40), max(1, u))
+    for label, x in (("BEFORE", 10 * u), ("AFTER", w + 10 * u)):
+        cv2.putText(pair, label, (x, 26 * u), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7 * u, (255, 255, 255), u + 1)
+    if xy:
+        # Ringed on BOTH panels, at the same place. The point is to make
+        # the comparison easy: the ring on the left shows what that spot
+        # looked like before, which is the evidence for the answer on
+        # the right.
+        for dx, col in ((0, (170, 170, 170)), (w, (60, 170, 250))):
+            cv2.circle(pair, (int(xy[0]) + dx, int(xy[1])), 14 * u, col,
+                       u + 1)
+        cv2.putText(pair, "at rest",
+                    (int(xy[0]) + w + 18 * u, int(xy[1]) - 12 * u),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55 * u, (60, 170, 250), u)
+    if caption:
+        cv2.putText(pair, caption, (10 * u, h - 12 * u),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5 * u, (255, 255, 255), u)
+    if not cv2.imwrite(str(out_path), pair):
+        raise OSError(f"could not write {out_path}")
+    return out_path
+
+
+def find_ball_at_rest(green_path, before_sec: float, after_sec: float,
+                      model_override: str | None = None,
+                      debug_path=None, pair_path=None) -> dict:
+    """Where the ball finished on the green, from two colour frames.
+
+    No outline, no plates, no tracking: two pictures and a question.
+    Returns {"xy", "on_green", "confidence", "why", "snapped",
+    "snap_px", "error", "image"}. Never raises.
+    """
+    info: dict = {"xy": None, "on_green": None, "confidence": 0.0,
+                  "why": "", "snapped": False, "snap_px": None,
+                  "error": None, "model": None, "image": None,
+                  "pair_image": None,
+                  "before_sec": round(float(before_sec), 1),
+                  "after_sec": round(float(after_sec), 1)}
+    if not have_ai_tracer():
+        info["error"] = "no AI configured"
+        return info
+    client = _anthropic_client()
+    if client is None:
+        info["error"] = "anthropic SDK not installed"
+        return info
+
+    before = _grab_colour_frame(green_path, before_sec)
+    after = _grab_colour_frame(green_path, after_sec)
+    if before is None or after is None:
+        info["error"] = "could not read both frames from the green clip"
+        return info
+    h, w = after.shape[:2]
+    info["frame_size"] = [int(w), int(h)]
+
+    def _jpeg(img):
+        ok, buf = cv2.imencode(".jpg", img,
+                               [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        return buf.tobytes() if ok else None
+
+    # GRIDDED, BOTH OF THEM. The same lines on both frames so a spot
+    # can be compared between them by cell rather than by eye.
+    jb, ja = _jpeg(_with_grid(before)), _jpeg(_with_grid(after))
+    if not jb or not ja:
+        info["error"] = "could not encode the frames"
+        return info
+
+    model = _resolve_model(model_override)
+    info["model"] = model
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=300,
+            system=[{
+                "type": "text",
+                "text": BALL_AT_REST_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": f"BEFORE ({before_sec:.1f}s):"},
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/jpeg",
+                    "data": base64.standard_b64encode(jb).decode("ascii")}},
+                {"type": "text", "text": f"AFTER ({after_sec:.1f}s):"},
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/jpeg",
+                    "data": base64.standard_b64encode(ja).decode("ascii")}},
+                {"type": "text", "text": (
+                    f"Both frames are {w}x{h} pixels. A yellow grid is "
+                    f"drawn over them every {GRID_STEP_PX} pixels, with "
+                    "the x value labelled along the top of each vertical "
+                    "line and the y value beside each horizontal one. "
+                    "READ THE BALL'S POSITION OFF THAT GRID: find the "
+                    "cell it is in, then estimate how far across and "
+                    "down that cell it sits. Do not guess the distance "
+                    "from the edge of the frame. Where is the golf ball "
+                    "in the AFTER frame? JSON only.")},
+            ]}],
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ai_tracer: ball-at-rest call failed: %s", exc)
+        info["error"] = f"api_failed: {exc}"
+        return info
+
+    parsed = _extract_json("\n".join(
+        b.text for b in resp.content
+        if getattr(b, "type", None) == "text" and getattr(b, "text", None)))
+    if not parsed:
+        info["error"] = "no_json_in_response"
+        return info
+    info["why"] = str(parsed.get("why") or "")[:200]
+    info["on_green"] = bool(parsed.get("on_green"))
+    try:
+        info["confidence"] = max(0.0, min(1.0, float(
+            parsed.get("confidence") or 0.0)))
+    except (TypeError, ValueError):
+        info["confidence"] = 0.0
+    if parsed.get("x") is None or parsed.get("y") is None:
+        info["error"] = "model did not find a ball"
+        return info
+    try:
+        x, y = int(round(float(parsed["x"]))), int(round(float(parsed["y"])))
+    except (TypeError, ValueError):
+        info["error"] = f"unusable position {parsed.get('x')!r},{parsed.get('y')!r}"
+        return info
+    # OFF THE PICTURE IS NOT A POSITION. Clamping it would turn a clear
+    # failure into a plausible answer on the frame edge.
+    if not (0 <= x < w and 0 <= y < h):
+        info["error"] = f"position {x},{y} is outside the {w}x{h} frame"
+        return info
+    if info["confidence"] < BALL_AT_REST_MIN_CONFIDENCE:
+        info["error"] = (f"confidence {info['confidence']:.2f} below "
+                         f"{BALL_AT_REST_MIN_CONFIDENCE}")
+        return info
+
+    snapped = _snap_to_nearest_blob(after, x, y)
+    if snapped:
+        info["snap_px"] = int(round(
+            ((snapped[0] - x) ** 2 + (snapped[1] - y) ** 2) ** 0.5))
+        info["snapped"] = True
+        x, y = snapped
+    info["xy"] = [x, y]
+
+    if pair_path is not None:
+        try:
+            _render_colour_pair(
+                before, after, [x, y], Path(str(pair_path)),
+                f"{before_sec:.1f}s vs {after_sec:.1f}s"
+                + (f" · snapped {info['snap_px']}px" if info["snapped"]
+                   else ""))
+            info["pair_image"] = str(pair_path)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ai_tracer: ball-at-rest pair render failed: %s", exc)
+    if debug_path is not None:
+        # IN COLOUR. It used to render the greyscale plate the old
+        # pipeline worked in, which made every report look like a
+        # black-and-white picture of a golf course -- and on a green,
+        # white-on-green IS the signal. Nothing downstream wanted it
+        # grey; it was only ever an artefact of the method that has
+        # been replaced.
+        try:
+            marked = after.copy()
+            u = max(1, int(round(max(marked.shape[:2]) / 500.0)))
+            cv2.circle(marked, (x, y), 14 * u, (60, 170, 250), u + 1)
+            cv2.putText(marked, "at rest", (x + 18 * u, y - 12 * u),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55 * u,
+                        (60, 170, 250), u)
+            cap = (f"AI, {before_sec:.1f}s vs {after_sec:.1f}s"
+                   + (f", snapped {info['snap_px']}px" if info["snapped"]
+                      else ""))
+            cv2.putText(marked, cap,
+                        (10 * u, marked.shape[0] - 12 * u),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5 * u,
+                        (255, 255, 255), u)
+            if not cv2.imwrite(str(debug_path), marked):
+                raise OSError(f"could not write {debug_path}")
+            info["image"] = str(debug_path)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ai_tracer: ball-at-rest render failed: %s", exc)
+    return info
+
+
+# ── when did it get there? ─────────────────────────────────────────────
+#
+# THE RESTING PLACE MAKES THIS EASY, which is why it is only ever run
+# after one is found. Knowing WHERE the ball finished turns "track a
+# ball falling through a windy green" into "watch one small patch of
+# grass and see when it changed" -- a few hundred reads of a 40-pixel
+# box, no tracking, no linking, nothing to lose.
+#
+# Walk backwards from the resting frame. The ball is in that patch, and
+# in it, and in it, and then at some frame it is not: that is the frame
+# it arrived. Before that the patch is bare grass.
+#
+# IT DOES NOT HAVE TO BE EXACT, and the operator said so: "bigger deal
+# is landing frame so the timing of the tracer will be correct". A few
+# frames either way moves the tracer's last moments imperceptibly; a
+# landing frame that is seconds out makes the whole clip wrong.
+LANDING_PATCH_PX = 9
+LANDING_MIN_CONTRAST = 14.0
+LANDING_GONE_FRAMES = 3
+LANDING_MAX_WALK_SEC = 12.0
+
+
+def find_landing_frame(green_path, rest_xy, rest_sec: float,
+                       max_walk_sec: float = LANDING_MAX_WALK_SEC) -> dict:
+    """The frame the ball arrived at `rest_xy`, walking back from rest.
+
+    Returns {"frame", "sec", "walked_frames", "error"}. `frame` is None
+    when the patch never empties inside the window -- which means the
+    ball was already there when the walk began, and the honest answer
+    is that this clip cannot say when it landed.
+    """
+    info: dict = {"frame": None, "sec": None, "walked_frames": 0,
+                  "error": None}
+    if not rest_xy:
+        info["error"] = "no resting place to walk back from"
+        return info
+    cap = cv2.VideoCapture(str(green_path))
+    try:
+        if not cap.isOpened():
+            info["error"] = "could not open the green clip"
+            return info
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 60.0)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        start = max(0, min(int(round(rest_sec * fps)),
+                           (total - 1) if total else 0))
+        stop = max(0, start - int(round(max_walk_sec * fps)))
+        x, y = int(rest_xy[0]), int(rest_xy[1])
+        r = LANDING_PATCH_PX
+
+        # READ FORWARDS, JUDGE BACKWARDS. Seeking per frame is what made
+        # the first version of the plate search take minutes; one seek
+        # and a sequential walk costs a fraction of it.
+        cap.set(cv2.CAP_PROP_POS_FRAMES, stop)
+        present: list = []
+        for idx in range(stop, start + 1):
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+            h, w = frame.shape[:2]
+            y0, y1 = max(0, y - r), min(h, y + r + 1)
+            x0, x1 = max(0, x - r), min(w, x + r + 1)
+            if y1 - y0 < 3 or x1 - x0 < 3:
+                info["error"] = "the resting place is off the frame"
+                return info
+            g = cv2.cvtColor(frame[y0:y1, x0:x1],
+                             cv2.COLOR_BGR2GRAY).astype(float)
+            ry0, ry1 = max(0, y - 3 * r), min(h, y + 3 * r + 1)
+            rx0, rx1 = max(0, x - 3 * r), min(w, x + 3 * r + 1)
+            ring = cv2.cvtColor(frame[ry0:ry1, rx0:rx1],
+                                cv2.COLOR_BGR2GRAY).astype(float)
+            # The ball against the grass immediately around it, which
+            # is the one measurement that survives the light changing
+            # over the seconds this walk covers.
+            present.append((idx, float(g.max()) - float(np.median(ring))
+                            >= LANDING_MIN_CONTRAST))
+        info["walked_frames"] = len(present)
+        if not present:
+            info["error"] = "could not read the walk-back window"
+            return info
+
+        # IS IT EVEN THERE AT THE END? Without this the walk reports a
+        # landing for a patch that never held a ball: scanning back
+        # from the finish, the first three absent frames it meets are
+        # the last three, and it calls that the arrival. Which is a
+        # confident landing time for a resting place that is wrong --
+        # the one thing worse than no landing time at all.
+        _tail = [here for _i, here in present[-LANDING_GONE_FRAMES:]]
+        if not any(_tail):
+            info["error"] = ("there is no ball at that spot at the end of "
+                             "the window — the resting place is wrong")
+            return info
+
+        # The last run of absence before it is there for good.
+        gone = 0
+        for idx, here in reversed(present):
+            if here:
+                gone = 0
+                continue
+            gone += 1
+            if gone >= LANDING_GONE_FRAMES:
+                info["frame"] = int(idx + LANDING_GONE_FRAMES)
+                info["sec"] = round(info["frame"] / fps, 2)
+                return info
+        info["error"] = ("the ball is in that spot for the whole window — "
+                         "it was already there when the walk began")
+        return info
+    finally:
+        cap.release()

@@ -292,27 +292,29 @@ def render_right_panel(
         logo = None
 
     if logo is not None:
-        # Source PNG has ~20% blank space top and bottom. Crop to the
-        # middle 60% vertically so the logo content fills the panel
-        # without visible buffer above and below.
-        crop_top = int(round(logo.height * 0.20))
-        crop_bottom = int(round(logo.height * 0.80))
-        logo = logo.crop((0, crop_top, logo.width, crop_bottom))
-
+        # NO CROP. This used to take the middle 60% vertically, because
+        # the old banner-shaped PNG carried ~20% blank space above and
+        # below the art. The current lockup is trimmed to its own
+        # bounding box with an even 28px margin, so that crop would now
+        # slice the top off the banded block and the feet off the
+        # wordmark. If the source file is ever replaced again, trim it
+        # rather than putting a crop fraction back here.
         pad_x = 16
         pad_y = 6
-        # Scale the cropped logo to fit the panel height (minus padding).
+        # Scale the logo to fit the panel height (minus padding).
         target_h = height - 2 * pad_y
         scale = target_h / float(logo.height)
         logo_w = int(round(logo.width * scale))
         logo_h = target_h
         logo_scaled = logo.resize((logo_w, logo_h), Image.LANCZOS)
         width = logo_w + 2 * pad_x
-        # White-ish rounded background — the logo is dark-on-light by
-        # design, so we need a light fill underneath so it's legible
-        # against sky / grass video.
+        # Rounded light plate — the logo is dark-on-light by design,
+        # so it needs a light fill underneath to stay legible against
+        # sky / grass video.
         img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        bg = Image.new("RGBA", (width, height), (255, 255, 255, 240))
+        # Linen, not white: the logo's own ground is #F8F4EC and it is
+        # opaque, so a white plate showed as a bright rim around it.
+        bg = Image.new("RGBA", (width, height), (248, 244, 236, 240))
         mask = Image.new("L", (width, height), 0)
         ImageDraw.Draw(mask).rounded_rectangle(
             (0, 0, width - 1, height - 1), radius=12, fill=255,

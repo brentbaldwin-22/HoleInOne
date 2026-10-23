@@ -22,6 +22,7 @@ from ..schemas import (
     TeeTimeOut,
 )
 from ..services import appearance, notifications
+from ..services import site_theme
 from ..services.qr import generate_qr_png
 from ..services.stripe_service import create_registration_payment_intent
 from ..services.tee_sheet import list_available_tee_times
@@ -38,6 +39,13 @@ def _get_course_by_token(db: Session, token: str) -> Course:
     if not course:
         raise HTTPException(404, "course not found")
     return course
+
+
+@router.get("/theme")
+def get_site_theme(db: Session = Depends(get_db)):
+    """Which colours the site wears. Read on every page load, so it is
+    deliberately two short strings and no auth."""
+    return site_theme.get_theme(db)
 
 
 @router.get("/courses", response_model=list[PublicCourseOut])

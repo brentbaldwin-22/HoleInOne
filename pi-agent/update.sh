@@ -19,7 +19,16 @@ BRANCH="${1:-main}"
 INSTALL_DIR="/opt/golfreelz-agent"
 SERVICE_USER="golfreelz"
 SERVICE_NAME="golfreelz-agent"
-REPO_URL="https://github.com/baldbrent-lang/HoleInOne.git"
+# The repo the Pis pull from. It pointed at a different account than
+# the one the work is pushed to until 2 Oct, and that failure mode is
+# worth remembering: update.sh succeeds, reports the branch it pulled,
+# and installs code without the change it was run to deploy — which on
+# the device is indistinguishable from the change not working. Hence
+# the repo being printed below, and the override for testing a fork:
+#
+#   sudo REPO_URL=https://github.com/<owner>/HoleInOne.git \
+#        /opt/golfreelz-agent/update.sh
+REPO_URL="${REPO_URL:-https://github.com/brentbaldwin-22/HoleInOne.git}"
 
 if [[ "$EUID" -ne 0 ]]; then
   echo "must be run as root (use sudo)" >&2
@@ -31,6 +40,7 @@ fi
 TMP_DIR="$(mktemp -d -t golfreelz-update-XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+echo "==> repo:   $REPO_URL"
 echo "==> branch: $BRANCH"
 
 # ONLY pi-agent/, AND ONLY THE FILES WE INSTALL. A plain --depth 1
@@ -84,7 +94,7 @@ if compgen -G "$TMP_DIR/repo/pi-agent/models/*" >/dev/null; then
     "$INSTALL_DIR/models/"
 fi
 
-echo "==> refreshing top-level files (agent, update.sh, point-at.sh, README)"
+echo "==> refreshing top-level files (agent, update.sh, point-at.sh, copycap_probe.py, README)"
 install -m 755 -o "$SERVICE_USER" -g "$SERVICE_USER" \
   "$TMP_DIR/repo/pi-agent/golfreelz_agent.py" \
   "$INSTALL_DIR/golfreelz_agent.py"
@@ -103,6 +113,9 @@ install -m 644 -o "$SERVICE_USER" -g "$SERVICE_USER" \
 install -m 755 -o "$SERVICE_USER" -g "$SERVICE_USER" \
   "$TMP_DIR/repo/pi-agent/point-at.sh" \
   "$INSTALL_DIR/point-at.sh"
+install -m 755 -o "$SERVICE_USER" -g "$SERVICE_USER" \
+  "$TMP_DIR/repo/pi-agent/copycap_probe.py" \
+  "$INSTALL_DIR/copycap_probe.py"
 
 echo "==> pip: applying requirements.txt (failures non-fatal — see warnings)"
 if ! "$INSTALL_DIR/venv/bin/pip" install --quiet \

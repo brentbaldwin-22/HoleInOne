@@ -46,7 +46,7 @@ class CurfewThread(threading.Thread):
     """Checks the local clock every 30s; inside the sleep window it
     arms the RTC for the wake time and powers the Pi off."""
 
-    def __init__(self, cfg: dict | None):
+    def __init__(self, cfg: dict | None, work_pending=None):
         super().__init__(daemon=True, name="curfew")
         cfg = cfg or {}
         self.enabled = bool(cfg.get("enabled", False))
@@ -54,7 +54,20 @@ class CurfewThread(threading.Thread):
         self.wake_hm = _parse_hhmm(cfg.get("wake", "06:00"))
         self.boot_grace = int(cfg.get("boot_grace_seconds", 600))
         self.dry_run = bool(cfg.get("dry_run", False))
-        self._started_at = time.monotonic()
+        # DO NOT POWER OFF OWING SOMEBODY A CLIP. Called with no
+        # arguments; returns how many clips are still to reach the
+        # backend. None means nobody asked us to care, and the curfew
+        # behaves as it always did.
+        self.work_pending = work_pending
+        # ...BUT NOT FOREVER. This rig runs on a battery, and the curfew
+        # is what makes it last a fortnight instead of five days. An
+        # upload that cannot complete — the tee's link has gone whole
+        # afternoons without finishing one — would otherwise hold the Pi
+        # awake all night and flatten it, and a dead camera tomorrow is
+        # worse than a clip that arrives at dawn. The spool is on the SD
+        # card, so a deferred clip is LATE, never lost.
+        self.max_defer = float(cfg.get("upload_defer_minutes", 45)) * 60.0
+        self._defer_since = None
         self.stopping = threading.Event()
 
     # ── window math ──────────────────────────────────────────────────
@@ -142,6 +155,42 @@ class CurfewThread(threading.Thread):
             "(agent user may need a sudoers entry for shutdown)",
         )
 
+    # ── do we still owe anybody a clip? ──────────────────────────────
+    def _uploads_settled(self) -> bool:
+        """True when it is fair to power off. Logs why when it is not."""
+        if self.work_pending is None:
+            return True
+        try:
+            n = int(self.work_pending() or 0)
+        except Exception as exc:  # noqa: BLE001 - never block a halt on a bug
+            log.warning("curfew: could not read the upload queue (%s) — "
+                        "treating it as empty", exc)
+            return True
+        if n <= 0:
+            if self._defer_since is not None:
+                log.info("curfew: uploads finished after %.0f min — halting",
+                         (time.monotonic() - self._defer_since) / 60.0)
+                self._defer_since = None
+            return True
+        if self._defer_since is None:
+            self._defer_since = time.monotonic()
+            log.info(
+                "curfew: sleep window reached but %d clip(s) are still to "
+                "upload — staying awake for up to %.0f min so today's "
+                "shots go out today", n, self.max_defer / 60.0,
+            )
+            return False
+        waited = time.monotonic() - self._defer_since
+        if waited < self.max_defer:
+            return False
+        log.warning(
+            "curfew: %d clip(s) STILL pending after %.0f min — halting "
+            "anyway to protect the battery. They are spooled on the SD "
+            "card and go out at wake-up.", n, waited / 60.0,
+        )
+        self._defer_since = None
+        return True
+
     # ── main loop ────────────────────────────────────────────────────
     def run(self) -> None:
         if not self.enabled:
@@ -169,6 +218,9 @@ class CurfewThread(threading.Thread):
                         grace_left,
                     )
                     self.stopping.wait(min(grace_left + 1, 60))
+                    continue
+                if not self._uploads_settled():
+                    self.stopping.wait(30)
                     continue
                 wake_at = self._next_wake(now)
                 log.info(

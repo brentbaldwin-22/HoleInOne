@@ -111,6 +111,10 @@ export const api = {
       adminPassword: key,
     }),
   cameraLiveFrameUrl: (id) => `${API_BASE}/api/admin/cameras/${id}/live-frame`,
+  // The snapshot, as opposed to the live frame above. Fetching it does
+  // NOT put the camera into streaming mode, which is the whole point:
+  // the card can show every camera's view for free.
+  cameraStillUrl: (id) => `${API_BASE}/api/admin/cameras/${id}/still`,
   listPublicCourses: () => request(`/api/public/courses`),
   stripeConfig: () => request(`/api/public/stripe-config`, { auth: false }),
   inviteInfo: (token) =>
@@ -141,6 +145,19 @@ export const api = {
   },
   listShowcase: () => request(`/api/public/showcase`),
   publicStats: () => request(`/api/public/stats`, { auth: false }),
+  // The site's colours, chosen in /admin. Read on every page load, so
+  // it is deliberately unauthenticated and tiny.
+  siteTheme: () => request(`/api/public/theme`, { auth: false }),
+  adminTheme: (key) => request(`/api/admin/theme`, { adminPassword: key }),
+  // Live for every visitor the moment it returns — there is one theme,
+  // not one per admin.
+  adminSetTheme: (key, patch) => request(`/api/admin/theme`, {
+    method: "POST", adminPassword: key, body: patch,
+  }),
+  setAdminTheme: (key, theme) =>
+    request(`/api/admin/theme`, {
+      method: "POST", body: theme, adminPassword: key,
+    }),
   contests: () => request(`/api/public/contests`, { auth: false }),
   shotOfWeek: (viewerId) =>
     request(
@@ -361,6 +378,20 @@ export const api = {
       `/api/admin/camera-events?limit=${limit}&offset=${offset}`,
       { adminPassword: key },
     ),
+  sweepMissingPreviews: (key, opts = {}) =>
+    request(`/api/admin/previews/sweep`, {
+      method: "POST",
+      adminPassword: key,
+      body: opts,
+    }),
+  produceQueue: (key) =>
+    request(`/api/admin/produce-queue`, { adminPassword: key }),
+  setProduceQueuePaused: (key, paused) =>
+    request(`/api/admin/produce-queue/pause`, {
+      method: "POST",
+      adminPassword: key,
+      body: { paused },
+    }),
   reprocessCameraEvent: (key, eventId) =>
     request(`/api/admin/camera-events/${eventId}/reprocess`, {
       method: "POST",
@@ -405,6 +436,95 @@ export const api = {
       body: fd,
     });
   },
+  // Drive the zoom to a position along its travel, 0 wide, 1 tele. The
+  // lens has no absolute mode: the backend works out the move from the
+  // position it has been COUNTING and plans it into legal steps. Needs
+  // both ends marked first, or it 409s.
+  cameraZoom: (key, cameraId, fraction) => {
+    const fd = new FormData();   // Form(...) endpoint — see cameraLens
+    fd.append("fraction", String(fraction));
+    return request(`/api/admin/cameras/${cameraId}/zoom`, {
+      method: "POST",
+      adminPassword: key,
+      body: fd,
+    });
+  },
+  // "The lens is against its wide (or tele) stop right now." The only
+  // unambiguous position on a lens that cannot report one, so it is
+  // both the calibration and the repair when the count has drifted.
+  cameraZoomEnd: (key, cameraId, end) => {
+    const fd = new FormData();   // Form(...) endpoint — see cameraLens
+    fd.append("end", end);
+    return request(`/api/admin/cameras/${cameraId}/zoom-end`, {
+      method: "POST",
+      adminPassword: key,
+      body: fd,
+    });
+  },
+  // Shutter on an IP camera. Same queue as the lens, same reason: the
+  // backend cannot reach the camera. `preset: "read"` changes nothing
+  // and just asks the camera what it has.
+  cameraExposure: (key, cameraId, preset, wdr = null) => {
+    const fd = new FormData();   // Form(...) endpoint — see cameraLens
+    fd.append("preset", preset);
+    if (wdr !== null) fd.append("wdr", wdr ? "1" : "0");
+    return request(`/api/admin/cameras/${cameraId}/exposure`, {
+      method: "POST",
+      adminPassword: key,
+      body: fd,
+    });
+  },
+  // Ask the camera what its video stream is set to. The answer lands on
+  // the agent's next heartbeat, so reload the list a few seconds later.
+  readStreamProfile: (key, cameraId) =>
+    request(`/api/admin/cameras/${cameraId}/stream-profile`, {
+      method: "POST",
+      adminPassword: key,
+    }),
+  // The boxes a person must stand in for a tee camera to trigger. One
+  // per tee; the agent picks them up on its next status poll.
+  setTeeZones: (key, cameraId, boxes, frameW, frameH) => {
+    const fd = new FormData();   // Form(...) endpoint — see cameraLens
+    fd.append("boxes", JSON.stringify(boxes));
+    fd.append("frame_w", String(frameW));
+    fd.append("frame_h", String(frameH));
+    return request(`/api/admin/cameras/${cameraId}/tee-zones`, {
+      method: "POST",
+      adminPassword: key,
+      body: fd,
+    });
+  },
+  // The putting surface, as a polygon on the green camera's own picture.
+  setGreenOutline: (key, cameraId, points, frameW, frameH) => {
+    const fd = new FormData();   // Form(...) endpoint — see setTeeZones
+    fd.append("points", JSON.stringify(points));
+    fd.append("frame_w", String(frameW));
+    fd.append("frame_h", String(frameH));
+    return request(`/api/admin/cameras/${cameraId}/green-outline`, {
+      method: "POST",
+      adminPassword: key,
+      body: fd,
+    });
+  },
+  // The same finder, aimed at ONE capture's green clip rather than at
+  // whatever the camera recorded last — which is a lottery.
+  greenRestForUpload: (key, uploadId, opts = {}) =>
+    request(`/api/admin/long-uploads/${uploadId}/green-rest`, {
+      method: "POST",
+      adminPassword: key,
+      body: opts,
+      // Long enough for a cold clip on a busy box: the first run after
+      // a redeploy downloads the raw before it can look at it. Without
+      // a timeout of our own the browser's gives up first and reports
+      // "Failed to fetch", which says nothing about what was slow.
+      timeoutMs: 240_000,
+    }),
+  greenRestTest: (key, cameraId, opts = {}) =>
+    request(`/api/admin/cameras/${cameraId}/green-rest-test`, {
+      method: "POST",
+      adminPassword: key,
+      body: opts,          // {before_sec, after_sec} — blank = each end
+    }),
   stopFocusMode: (key, cameraId) =>
     request(`/api/admin/cameras/${cameraId}/focus-mode/stop`, {
       method: "POST",
@@ -413,6 +533,21 @@ export const api = {
   // ---- Green-camera calibration (image px -> feet on the green) ----
   getGreenCalibration: (key, cameraId) =>
     request(`/api/admin/cameras/${cameraId}/calibration`, { adminPassword: key }),
+  // WHERE THE NOISE STOPS on this camera, and a frame to draw it on.
+  // The ascent sweep searches only above this line; below it is the
+  // treeline, the houses and the flag, all of them competing for its
+  // ten-blobs-a-frame budget against a ball at 180 yards.
+  getCameraSkyLine: (key, cameraId) =>
+    request(`/api/admin/cameras/${cameraId}/sky-line`, { adminPassword: key }),
+  setCameraSkyLine: (key, cameraId, body) =>
+    // {sky_line_frac, search_left_frac, search_right_frac} — only the
+    // keys present are written, so saving one edge cannot silently
+    // clear the others. null for a key clears that one.
+    request(`/api/admin/cameras/${cameraId}/sky-line`, {
+      method: "POST",
+      body,
+      adminPassword: key,
+    }),
   cameraCalibrationSource: (key, cameraId) =>
     // A dual-camera capture from this camera's pair, to fit the
     // green->tee homography on. The frames are only backdrops to click
@@ -485,9 +620,12 @@ export const api = {
     if (patch.triggeringEnabled !== undefined)
       fd.append("triggering_enabled", patch.triggeringEnabled ? "true" : "false");
     if (patch.note !== undefined) fd.append("note", patch.note || "");
-    if (patch.teeBoxRoi !== undefined) {
-      fd.append("tee_box_roi", JSON.stringify(patch.teeBoxRoi));
-    }
+    // NO teeBoxRoi HERE. The camera patch endpoint still accepts one
+    // for manual use, but it takes a bare {x,y,w,h} — which would
+    // overwrite the trigger zones and the frame size they were drawn
+    // against with a single box. Zones have their own endpoint, which
+    // validates them; this door had no callers and only led somewhere
+    // bad.
     if (patch.courseId !== undefined)
       fd.append("course_id", String(patch.courseId));
     if (patch.assignedHole !== undefined)
@@ -998,6 +1136,21 @@ export const api = {
       if (opts.audioMinPeakRatio != null) {
         fd.append("audio_min_peak_ratio", String(opts.audioMinPeakRatio));
       }
+      // The rig's knobs go up under the rig's own names, so what is
+      // dialled in here can be copied into the Pi's config.yaml
+      // verbatim instead of translated.
+      Object.entries(opts.pi || {}).forEach(([k, v]) => {
+        if (v != null && v !== "") fd.append(`pi_${k}`, String(v));
+      });
+      // Test-only zones, as fractions. Sent with the request and stored
+      // nowhere: the camera's own boxes are untouched.
+      if (Array.isArray(opts.piZones) && opts.piZones.length > 0) {
+        fd.append("pi_zones_json", JSON.stringify(opts.piZones));
+      }
+      if (opts.piKnownSwings) {
+        fd.append("pi_known_swings", String(opts.piKnownSwings));
+      }
+      if (opts.piCompareSignals) fd.append("pi_compare_signals", "true");
       if (opts.motionRatio != null) {
         fd.append("motion_ratio", String(opts.motionRatio));
       }
