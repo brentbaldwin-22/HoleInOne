@@ -1458,10 +1458,15 @@ def make_clip_vertical(
                             _cut = float(_d) if _d else None
                         except (TypeError, ValueError):
                             _cut = None
-                    _grx = (
-                        _green_focus_x(render_src, _cut)
-                        if _cut is not None else None
-                    )
+                    # A MARKED PIN BEATS A DETECTED ONE. Detection
+                    # has to find a flagstick in the picture and comes
+                    # back empty when it cannot; the marks are already
+                    # what the distance plate is measured from.
+                    _grx = None
+                    if _cut is not None:
+                        _grx = _green_pin_x(db, _up, _sw.get("idx"), _fw)
+                        if _grx is None:
+                            _grx = _green_focus_x(render_src, _cut)
                     # Ball-at-rest on the green, and how long the
                     # clip runs — the two ends of the closing pan.
                     _bgx = _green_ball_x(_sw, _fw)
@@ -4218,10 +4223,19 @@ def _process_long_upload_segments(
                                 _imp_t = float(_if) / float(_seg_fps)
                         except (TypeError, ValueError):
                             _imp_t = None
-                        _grx = (
-                            _green_focus_x(_vert_src, _cut)
-                            if _cut is not None else None
-                        )
+                        # Marked pin first, detection only as a
+                        # fallback — see _green_pin_x.
+                        _grx = None
+                        if _cut is not None:
+                            _prow = (
+                                db.get(LongVideoUpload, progress_upload_id)
+                                if progress_upload_id else None
+                            )
+                            _grx = _green_pin_x(
+                                db, _prow, seg.get("idx"), _sw,
+                            )
+                            if _grx is None:
+                                _grx = _green_focus_x(_vert_src, _cut)
                         _bgx = _green_ball_x(seg, _sw)
                         _tdur = None
                         try:
@@ -4839,6 +4853,59 @@ def _launch_focus_x(track, frame_w):
 _GREEN_BALL_HOLD_SEC = 1.2
 _GREEN_PIN_PAN_SEC = 2.0
 _GREEN_END_HOLD_SEC = 0.2
+
+
+def _green_pin_x(db, row, slot, frame_w):
+    """The flagstick's x IN THE GREEN CAMERA, as a frame fraction.
+
+    Mirrors the precedence `_apply_distance_plate` uses, so the closing
+    pan and the yardage printed on the plate cannot disagree about
+    where the hole is:
+
+      1. the operator's own clicks for THIS swing
+      2. the hole's marked flag — hand-set, or carried forward from the
+         last clip somebody marked, so it is where the flag stood on
+         the day of the shot
+      3. the camera calibration's pin — where it stood on the day the
+         camera was fitted, and pins move daily, so this is last
+
+    All three are green-camera pixels, which is the same space
+    `_green_ball_x` returns and the same space the composite preserves.
+    Live `pin_detect` stays the caller's last resort: it is the only
+    one of the four that has to find the flag in the picture, and on a
+    252 ft shot it did not. Returns None when nothing has been marked.
+    """
+    try:
+        w = float(frame_w or 0)
+        if w <= 0 or row is None:
+            return None
+
+        def _frac(xy):
+            try:
+                _x = xy.get("x") if isinstance(xy, dict) else xy[0]
+                return min(1.0, max(0.0, float(_x) / w))
+            except (KeyError, IndexError, TypeError, ValueError):
+                return None
+
+        if slot is not None:
+            _pick = (_distance_picks(row) or {}).get(str(int(slot))) or {}
+            if _pick.get("pin_green"):
+                _f = _frac(_pick["pin_green"])
+                if _f is not None:
+                    return _f
+        _pin_e, _ = _pin_for_row(db, row)
+        if (_pin_e or {}).get("green"):
+            _f = _frac(_pin_e["green"])
+            if _f is not None:
+                return _f
+        _cam = _green_camera_for(db, row)
+        _img = (((_cam.green_homography or {}) if _cam else {})
+                .get("pin") or {}).get("image")
+        if _img:
+            return _frac(_img)
+        return None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _green_ball_x(swing, frame_w):
