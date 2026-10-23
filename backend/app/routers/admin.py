@@ -1468,7 +1468,17 @@ def make_clip_vertical(
                         # narrower. Probing the render alone returned
                         # the same 1280 that was already too small, so
                         # the correction refused itself.
-                        for _cand in (_probe_src, render_src):
+                        # THE UPLOAD'S OWN TEE FILE FIRST. The track
+                        # was measured on a cut of it, and cutting
+                        # does not rescale — so its width is the space
+                        # the coordinates live in. The composite is
+                        # not: concat scales both halves to a common
+                        # height, which is how a 1920 track came to be
+                        # divided by a 1280 render and every point
+                        # past 1280 clamped to the frame edge.
+                        for _cand in (
+                            _local_tee(_up), _probe_src, render_src,
+                        ):
                             if _cand is None:
                                 continue
                             _pw = float(
