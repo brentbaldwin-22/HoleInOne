@@ -85,10 +85,16 @@ export default function AdminProducedClips() {
     setBusyId(clip.id);
     try {
       const out = await api.makeClipVertical(adminPassword, clip.id, force);
-      setClips((cs) => (cs || []).map(
-        (c) => (c.id === clip.id ? { ...c, vertical_url: out.vertical_url } : c)
-      ));
       setVertInfo(out);
+      // Only overwrite the url when one came back. Writing undefined
+      // from a response that did not carry one blanked vertical_url
+      // in local state, which hid the ⟳ button until a reload.
+      if (out.vertical_url) {
+        setClips((cs) => (cs || []).map(
+          (c) => (c.id === clip.id
+            ? { ...c, vertical_url: out.vertical_url } : c)
+        ));
+      }
       if (out.vertical_url) window.open(out.vertical_url, "_blank");
     } catch (e) {
       setError(e.message);

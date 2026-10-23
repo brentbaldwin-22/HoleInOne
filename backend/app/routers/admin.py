@@ -1459,8 +1459,11 @@ def make_clip_vertical(
                 # about to crop.
                 _tsx = _tracer_start_x(render_src)
                 if _tsx and _tsx.get("x") is not None:
-                    _lx = _tsx["x"]
-                    _focus = max(0.15, min(0.85, _lx))
+                    # NOT into _lx: that is the TRACKED launch, and
+                    # the readout prints it. Overwriting it made the
+                    # two agree to three decimals and look like
+                    # corroboration when it was one number twice.
+                    _focus = max(0.15, min(0.85, _tsx["x"]))
                 _diag.update(
                     tracer_x=(round(_tsx["x"], 3)
                               if _tsx and _tsx.get("x") is not None
@@ -5044,11 +5047,25 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2):
                     break
                 sm = _small(frame)
                 new = _blue(sm) & ~base
+                # THE BALL IS NEVER IN THE SKY AT IMPACT. The top of
+                # the frame holds the two things most likely to fool
+                # this: the logo in the right corner (blue, and it
+                # reported 0.971 — the frame's right edge, where no
+                # player stood) and the name plate on the left. Both
+                # are overlays, so they are not always in the baseline
+                # if they fade in. Blank the band rather than hope.
+                new[: int(new.shape[0] * 0.30), :] = False
                 ys, xs = np.nonzero(new)
                 # Enough to be a stroke, little enough not to be sky
                 # the camera drifted into.
                 best = max(best, int(xs.size))
-                if 25 <= xs.size <= int(area * 0.02):
+                # And its foot must be in the lower half: a stroke
+                # rises FROM the ground. Anything whose lowest pixel
+                # is still up in the picture is not a tracer base.
+                if (
+                    25 <= xs.size <= int(area * 0.02)
+                    and ys.size and ys.max() >= new.shape[0] * 0.45
+                ):
                     foot = ys >= (ys.max() - 6)
                     if foot.sum() >= 3:
                         fx = float(np.median(xs[foot])) / sm.shape[1]
