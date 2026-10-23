@@ -279,7 +279,7 @@ export default function AdminProducedClips() {
                   {vertInfo.track_points != null
                     ? ` · track ${vertInfo.track_points}` : ""}
                   {vertInfo.frame_w != null
-                    ? ` · fw ${vertInfo.frame_w}` : ""}
+                    ? ` · fw ${vertInfo.fw_fixed || vertInfo.frame_w}` : ""}
                   {vertInfo.launch_x != null
                     ? ` · launch ${vertInfo.launch_x}` : ""}
                   {vertInfo.tracer_x != null

@@ -1444,6 +1444,30 @@ def make_clip_vertical(
                 # tracer climbed out of shot on the right. It is the
                 # only anchor nobody checked, so it ranks below the two
                 # that someone or something did.
+                # IF THE TRACK DOES NOT FIT THE WIDTH, THE WIDTH IS
+                # WRONG. edit_metrics said frame_width 1280 for a clip
+                # whose track coordinates run past it, so every point
+                # on the right of frame divided out above 1.0 and
+                # clamped to the frame edge — "launch 1", "ball 1", and
+                # a pan that slid hard right the moment the ball was
+                # struck. The track is measured off the picture; the
+                # stored width is a number somebody wrote down.
+                try:
+                    _mx = max(
+                        (float(r["x"]) for r in _trk
+                         if r.get("x") is not None),
+                        default=0.0,
+                    )
+                    if _fw > 0 and _mx > _fw * 1.02:
+                        _pw = float(
+                            (probe_video_info(render_src) or {}).get("width")
+                            or 0
+                        )
+                        if _pw >= _mx:
+                            _diag.update(fw_fixed=f"{int(_fw)}->{int(_pw)}")
+                            _fw = _pw
+                except (TypeError, ValueError, KeyError):
+                    pass
                 _gx = _probe_golfer_x_frac(render_src)
                 if _gx is not None and not (_rxy and _fw > 0):
                     _focus = max(0.15, min(0.85, float(_gx)))
