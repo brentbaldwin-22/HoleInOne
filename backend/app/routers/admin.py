@@ -1526,6 +1526,7 @@ def make_clip_vertical(
                         _trk, _rxy, _fps, _fw, _cut, golfer_x=_gx,
                         impact_t=_imp_t, green_x=_grx,
                         ball_green_x=_bgx, total_dur=_tdur,
+                        opening_x=_tsx[0] if _tsx else None,
                     )
                     _made = make_vertical_pan(render_src, out_path, _ppath)
                     log.info(
@@ -4255,6 +4256,10 @@ def _process_long_upload_segments(
                         if r.get("found") and r.get("x") is not None
                     ]
                     _gx = _probe_golfer_x_frac(_vert_src)
+                    # SAME FIRST STEP AS THE ON-DEMAND RENDER. Without
+                    # this, Re-Produce and the ⟳ button framed the same
+                    # clip differently, which is its own bug.
+                    _tsx = _tracer_start_x(_vert_src)
                     if len(_trk) >= 3 and _sw > 0 and _seg_fps:
                         _cut = None
                         if composite_url:
@@ -4293,6 +4298,7 @@ def _process_long_upload_segments(
                             _trk, _rxy, float(_seg_fps), _sw, _cut,
                             golfer_x=_gx, impact_t=_imp_t, green_x=_grx,
                             ball_green_x=_bgx, total_dur=_tdur,
+                            opening_x=_tsx[0] if _tsx else None,
                         )
                         _made = make_vertical_pan(
                             _vert_src, _vert_path, _ppath,
@@ -4312,8 +4318,14 @@ def _process_long_upload_segments(
                     _focus = 0.5
                     try:
                         _lx = _launch_focus_x(_trk, _sw)
-                        if _lx is not None:
+                        if _tsx is not None:
+                            _focus = max(0.15, min(0.85, _tsx[0]))
+                        elif _lx is not None:
                             _focus = max(0.15, min(0.85, _lx))
+                        elif _rxy and len(_rxy) == 2 and _sw > 0:
+                            _focus = max(
+                                0.15, min(0.85, float(_rxy[0]) / _sw),
+                            )
                         elif _gx is not None:
                             _focus = max(0.15, min(0.85, float(_gx)))
                         elif _rxy and len(_rxy) == 2 and _sw > 0:
@@ -5082,6 +5094,7 @@ def _green_ball_x(swing, frame_w):
 def _vertical_pan_path(
     track, rest_xy, fps, frame_w, cut_dur=None, golfer_x=None,
     impact_t=None, green_x=None, ball_green_x=None, total_dur=None,
+    opening_x=None,
 ):
     """Waypoints (time_sec, x_fraction) for the vertical follow-pan:
     hold on the golfer through address/swing, glide along the tracked
@@ -5110,10 +5123,15 @@ def _vertical_pan_path(
     if pts:
         _head = sorted(x for _, x in pts[:3])
         _launch_x = _head[len(_head) // 2]
-    if _launch_x is not None:
-        # THE TRACER'S START IS THE ANCHOR: the ball at impact, which
-        # is the player's feet. Whenever there is a track at all, this
-        # is where he is standing.
+    if opening_x is not None:
+        # THE TRACER READ OFF THE PICTURE. Outranks everything: it is
+        # the only anchor that cannot be absent from the frames being
+        # cropped.
+        x0 = min(1.0, max(0.0, float(opening_x)))
+    elif _launch_x is not None:
+        # The tracked launch point: the ball at impact, which is the
+        # player's feet. Whenever a track reached this path, this is
+        # where he is standing.
         x0 = _launch_x
     elif rest_xy and len(rest_xy) == 2:
         # A marked ball next: someone looked at the frame and clicked
