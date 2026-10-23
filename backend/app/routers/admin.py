@@ -1505,6 +1505,13 @@ def make_clip_vertical(
                     # has to find a flagstick in the picture and comes
                     # back empty when it cannot; the marks are already
                     # what the distance plate is measured from.
+                    # NO tee_clip_url, NO cut — unless we look.
+                    _cut_src = "tee-duration" if _cut is not None else None
+                    if _cut is None:
+                        _cut = _detect_cut_sec(render_src)
+                        if _cut is not None:
+                            _cut_src = "detected"
+                    _diag.update(cut_src=_cut_src)
                     _grx = None
                     if _cut is not None:
                         _grx = _green_pin_x(db, _up, _sw.get("idx"), _fw)
@@ -5089,6 +5096,77 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2):
     except Exception as exc:  # noqa: BLE001
         return {"x": None, "why": f"raised {type(exc).__name__}",
                 "best": 0}
+
+
+def _detect_cut_sec(video_path, step=3, min_sec=1.5):
+    """When the composite changes camera, found by looking at it.
+
+    The tee->green join is a hard cut, and a hard cut is the one
+    moment in a clip where consecutive frames share almost nothing.
+    Everything else — a pan, a swing, a cart going past — moves a
+    fraction of the picture.
+
+    Metadata knows this as the tee clip's duration, but it reaches it
+    through `clip.tee_clip_url`, and the d3prod clips carry none. _cut
+    then comes out None and the ENTIRE green half of the pan is
+    skipped in silence: no ball, no flag, no closing move, and the
+    crop simply holds whatever it was on. Ben watched that happen on
+    a clip that plainly cuts at 6.7s.
+
+    Returns the cut time in seconds, or None when no frame stands out
+    far enough above the clip's own normal motion to be a cut rather
+    than a camera move.
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            return None
+        try:
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0) or 30.0
+            prev = None
+            diffs = []            # (time, mean abs difference)
+            idx = 0
+            stride = max(1, int(step))
+            while True:
+                if idx % stride:
+                    if not cap.grab():
+                        break
+                    idx += 1
+                    continue
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    break
+                g = cv2.cvtColor(
+                    cv2.resize(frame, (160, 90),
+                               interpolation=cv2.INTER_AREA),
+                    cv2.COLOR_BGR2GRAY,
+                ).astype(np.int16)
+                if prev is not None:
+                    diffs.append(
+                        (idx / fps, float(np.abs(g - prev).mean())),
+                    )
+                prev = g
+                idx += 1
+            if len(diffs) < 8:
+                return None
+            vals = np.array([d for _, d in diffs])
+            med = float(np.median(vals))
+            k = int(np.argmax(vals))
+            t, peak = diffs[k]
+            # A CUT, NOT A CAMERA MOVE. The join has to tower over the
+            # clip's own typical motion; a pan that happens to be the
+            # busiest moment would otherwise be read as a scene change
+            # and put the closing pan in the middle of the flight.
+            if t < min_sec or peak < max(6.0, med * 4.0):
+                return None
+            return t
+        finally:
+            cap.release()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _green_pin_x(db, row, slot, frame_w):

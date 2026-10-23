@@ -290,7 +290,9 @@ export default function AdminProducedClips() {
                            ? `(${vertInfo.tracer_best}px)` : "")
                       : ""}
                   {vertInfo.cut != null
-                    ? ` · cut ${vertInfo.cut}s` : " · cut none"}
+                    ? ` · cut ${vertInfo.cut}s`
+                      + (vertInfo.cut_src ? `(${vertInfo.cut_src})` : "")
+                    : " · cut none"}
                   {vertInfo.ball_x != null
                     ? ` · ball ${vertInfo.ball_x}` : ""}
                   {vertInfo.pin_x != null
