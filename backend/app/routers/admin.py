@@ -1458,12 +1458,15 @@ def make_clip_vertical(
                 # one that cannot be absent from the frames we are
                 # about to crop.
                 _tsx = _tracer_start_x(render_src)
-                if _tsx is not None:
-                    _lx = _tsx[0]
+                if _tsx and _tsx.get("x") is not None:
+                    _lx = _tsx["x"]
                     _focus = max(0.15, min(0.85, _lx))
                 _diag.update(
-                    tracer_x=round(_tsx[0], 3) if _tsx else None,
-                    tracer_t=round(_tsx[1], 2) if _tsx else None,
+                    tracer_x=(round(_tsx["x"], 3)
+                              if _tsx and _tsx.get("x") is not None
+                              else None),
+                    tracer_why=(_tsx or {}).get("why"),
+                    tracer_best=(_tsx or {}).get("best"),
                 )
                 _diag.update(
                     track_points=len(_trk),
@@ -1527,7 +1530,9 @@ def make_clip_vertical(
                         _trk, _rxy, _fps, _fw, _cut, golfer_x=_gx,
                         impact_t=_imp_t, green_x=_grx,
                         ball_green_x=_bgx, total_dur=_tdur,
-                        opening_x=_tsx[0] if _tsx else None,
+                        opening_x=(
+                            _tsx.get("x") if _tsx else None
+                        ),
                     )
                     _made = make_vertical_pan(render_src, out_path, _ppath)
                     log.info(
@@ -1558,12 +1563,13 @@ def make_clip_vertical(
     # This needs none of that. It needs the video, which is in hand.
     if _tsx is None:
         _tsx = _tracer_start_x(render_src)
-        if _tsx is not None:
-            _focus = max(0.15, min(0.85, _tsx[0]))
-            _diag.update(
-                tracer_x=round(_tsx[0], 3),
-                tracer_t=round(_tsx[1], 2),
-            )
+        _diag.update(
+            tracer_why=(_tsx or {}).get("why"),
+            tracer_best=(_tsx or {}).get("best"),
+        )
+        if _tsx and _tsx.get("x") is not None:
+            _focus = max(0.15, min(0.85, _tsx["x"]))
+            _diag.update(tracer_x=round(_tsx["x"], 3))
     if not _made and not make_vertical(
         render_src, out_path, focus_x_frac=_focus,
     ):
@@ -4316,7 +4322,9 @@ def _process_long_upload_segments(
                             _trk, _rxy, float(_seg_fps), _sw, _cut,
                             golfer_x=_gx, impact_t=_imp_t, green_x=_grx,
                             ball_green_x=_bgx, total_dur=_tdur,
-                            opening_x=_tsx[0] if _tsx else None,
+                            opening_x=(
+                                _tsx.get("x") if _tsx else None
+                            ),
                         )
                         _made = make_vertical_pan(
                             _vert_src, _vert_path, _ppath,
@@ -4336,8 +4344,8 @@ def _process_long_upload_segments(
                     _focus = 0.5
                     try:
                         _lx = _launch_focus_x(_trk, _sw)
-                        if _tsx is not None:
-                            _focus = max(0.15, min(0.85, _tsx[0]))
+                        if _tsx and _tsx.get("x") is not None:
+                            _focus = max(0.15, min(0.85, _tsx["x"]))
                         elif _lx is not None:
                             _focus = max(0.15, min(0.85, _lx))
                         elif _rxy and len(_rxy) == 2 and _sw > 0:
@@ -4969,11 +4977,16 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2):
             b = frame[:, :, 0].astype(np.int16)
             g = frame[:, :, 1].astype(np.int16)
             r = frame[:, :, 2].astype(np.int16)
-            return (b >= 200) & ((b - r) >= 90) & ((b - g) >= 40)
+            # Loosened: the stroke is drawn with a glow and alpha, so
+            # real pixels are blends of the three constants with
+            # whatever is behind them, never the constants themselves.
+            # The area cap below is what rejects sky, not tightness
+            # here.
+            return (b >= 175) & ((b - r) >= 70) & ((b - g) >= 30)
 
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
-            return None
+            return {"x": None, "why": "unopenable", "best": 0}
         try:
             fps = float(cap.get(cv2.CAP_PROP_FPS) or 0) or 30.0
             # BASELINE: every blue thing standing there before the ball
@@ -4988,11 +5001,17 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2):
             # across a 1920 frame and still many at 480; the mask does
             # not need detail, only colour.
             def _small(frame):
+                # 960, NOT 480. At a 4x reduction INTER_AREA averages a
+                # 3px bright stroke into its darker surroundings and
+                # the blue drops under the threshold — the speed fix
+                # blinded the detector it was meant to serve. 2x keeps
+                # the stroke ~2px and its colour intact, and grab() on
+                # the skipped frames is where the saving really was.
                 h, w = frame.shape[:2]
-                if w <= 480:
+                if w <= 960:
                     return frame
                 return cv2.resize(
-                    frame, (480, max(1, int(h * 480 / w))),
+                    frame, (960, max(1, int(h * 960 / w))),
                     interpolation=cv2.INTER_AREA,
                 )
 
@@ -5000,7 +5019,7 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2):
             for _ in range(5):
                 ok, frame = cap.read()
                 if not ok or frame is None:
-                    return None
+                    return {"x": None, "why": "too short", "best": 0}
                 m = _blue(_small(frame))
                 base = m if base is None else (base | m)
             base = cv2.dilate(
@@ -5009,6 +5028,7 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2):
             ).astype(bool)
 
             area = base.size
+            best = 0
             idx = 5
             limit = int(max(1.0, float(max_scan_sec)) * fps)
             stride = max(1, int(step))
@@ -5027,17 +5047,31 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2):
                 ys, xs = np.nonzero(new)
                 # Enough to be a stroke, little enough not to be sky
                 # the camera drifted into.
+                best = max(best, int(xs.size))
                 if 25 <= xs.size <= int(area * 0.02):
                     foot = ys >= (ys.max() - 6)
                     if foot.sum() >= 3:
                         fx = float(np.median(xs[foot])) / sm.shape[1]
-                        return (min(1.0, max(0.0, fx)), idx / fps)
+                        return {
+                            "x": min(1.0, max(0.0, fx)),
+                            "t": idx / fps, "why": "ok", "best": best,
+                        }
                 idx += 1
-            return None
+            # SAY WHICH WAY IT FAILED. "none" has meant five different
+            # things in this file already; too-few wants a looser
+            # mask, too-many wants a tighter one, and guessing between
+            # them costs a deploy each time.
+            cap = int(area * 0.02)
+            return {
+                "x": None, "t": None, "best": best,
+                "why": ("too few" if best < 25
+                        else "too many" if best > cap else "no foot"),
+            }
         finally:
             cap.release()
-    except Exception:  # noqa: BLE001
-        return None
+    except Exception as exc:  # noqa: BLE001
+        return {"x": None, "why": f"raised {type(exc).__name__}",
+                "best": 0}
 
 
 def _green_pin_x(db, row, slot, frame_w):

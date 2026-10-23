@@ -274,6 +274,13 @@ export default function AdminProducedClips() {
                     ? ` · track ${vertInfo.track_points}` : ""}
                   {vertInfo.launch_x != null
                     ? ` · launch ${vertInfo.launch_x}` : ""}
+                  {vertInfo.tracer_x != null
+                    ? ` · tracer ${vertInfo.tracer_x}`
+                    : vertInfo.tracer_why
+                      ? ` · tracer ${vertInfo.tracer_why}`
+                        + (vertInfo.tracer_best != null
+                           ? `(${vertInfo.tracer_best}px)` : "")
+                      : ""}
                   {vertInfo.cut != null
                     ? ` · cut ${vertInfo.cut}s` : " · cut none"}
                   {vertInfo.ball_x != null
