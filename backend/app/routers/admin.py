@@ -4962,40 +4962,58 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2):
             # is struck. A union of a few frames, so a shirt that moves
             # a little is still covered, then dilated for the same
             # reason.
+            # SMALL AND CHEAP. This runs inside a render the browser
+            # waits 180s for, so it decodes as little as it can: every
+            # skipped frame is grab()'d (demuxed, not decoded) rather
+            # than read(), and the frames it does look at are shrunk to
+            # ~480px wide first. A tracer stroke is tens of pixels
+            # across a 1920 frame and still many at 480; the mask does
+            # not need detail, only colour.
+            def _small(frame):
+                h, w = frame.shape[:2]
+                if w <= 480:
+                    return frame
+                return cv2.resize(
+                    frame, (480, max(1, int(h * 480 / w))),
+                    interpolation=cv2.INTER_AREA,
+                )
+
             base = None
             for _ in range(5):
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     return None
-                m = _blue(frame)
+                m = _blue(_small(frame))
                 base = m if base is None else (base | m)
             base = cv2.dilate(
                 base.astype(np.uint8),
-                np.ones((9, 9), np.uint8), iterations=2,
+                np.ones((5, 5), np.uint8), iterations=2,
             ).astype(bool)
 
             area = base.size
             idx = 5
             limit = int(max(1.0, float(max_scan_sec)) * fps)
+            stride = max(1, int(step))
             while idx < limit:
+                if idx % stride:
+                    # Not a sample frame: skip the decode entirely.
+                    if not cap.grab():
+                        break
+                    idx += 1
+                    continue
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     break
-                if idx % max(1, int(step)) == 0:
-                    new = _blue(frame) & ~base
-                    ys, xs = np.nonzero(new)
-                    # Enough to be a stroke, little enough not to be
-                    # sky the camera drifted into.
-                    if 40 <= xs.size <= int(area * 0.02):
-                        foot = ys >= (ys.max() - 15)
-                        if foot.sum() >= 5:
-                            fx = (
-                                float(np.median(xs[foot]))
-                                / frame.shape[1]
-                            )
-                            return (
-                                min(1.0, max(0.0, fx)), idx / fps,
-                            )
+                sm = _small(frame)
+                new = _blue(sm) & ~base
+                ys, xs = np.nonzero(new)
+                # Enough to be a stroke, little enough not to be sky
+                # the camera drifted into.
+                if 25 <= xs.size <= int(area * 0.02):
+                    foot = ys >= (ys.max() - 6)
+                    if foot.sum() >= 3:
+                        fx = float(np.median(xs[foot])) / sm.shape[1]
+                        return (min(1.0, max(0.0, fx)), idx / fps)
                 idx += 1
             return None
         finally:

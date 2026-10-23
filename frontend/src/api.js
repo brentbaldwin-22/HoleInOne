@@ -348,7 +348,12 @@ export const api = {
     request(`/api/admin/clips/${clipId}/vertical${force ? "?force=1" : ""}`, {
       method: "POST",
       adminPassword: key,
-      timeoutMs: 180000,
+      // One render is pose detection, a tracer scan and an ffmpeg
+      // pass, on a shared CPU. At 180s a slow one aborted and the
+      // page said "Load failed" — which reads as a broken render
+      // rather than an impatient client, and hides the readout that
+      // would have explained it.
+      timeoutMs: 300000,
     }),
   setClipBroadcast: (key, clipId, broadcast) =>
     request(`/api/admin/clips/${clipId}/broadcast`, {
