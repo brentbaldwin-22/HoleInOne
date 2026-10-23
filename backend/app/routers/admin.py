@@ -5058,7 +5058,7 @@ def _launch_focus_x(track, frame_w):
 # How the green half plays: land on the ball, let it register, then
 # walk to the hole. Tuned by eye on a 12s clip; constants so the feel
 # can be changed without touching the path maths.
-_GREEN_BALL_HOLD_SEC = 1.2
+_GREEN_BALL_HOLD_SEC = 1.7
 _GREEN_PIN_PAN_SEC = 2.0
 _GREEN_END_HOLD_SEC = 0.2
 
