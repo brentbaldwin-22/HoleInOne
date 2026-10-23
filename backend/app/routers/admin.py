@@ -1393,6 +1393,14 @@ def make_clip_vertical(
                 _gx = _probe_golfer_x_frac(render_src)
                 if _gx is not None:
                     _focus = max(0.15, min(0.85, float(_gx)))
+                # THE TRACER'S START BEATS BOTH OF THE ABOVE. Pose
+                # misses a golfer this far down the hole, and rest-x is
+                # near the green — either one frames empty grass. The
+                # launch point is the ball at impact, so it is the
+                # golfer, every time there is a tracer at all.
+                _lx = _launch_focus_x(_trk, _fw)
+                if _lx is not None:
+                    _focus = max(0.15, min(0.85, _lx))
                 if len(_trk) >= 3 and _fw > 0:
                     _imp_t = None
                     try:
@@ -4117,6 +4125,11 @@ def _process_long_upload_segments(
                 _sw = 0.0
                 _rxy = None
                 _gx = None
+                # Bound BEFORE the try that fills it: the static
+                # fallback below reads _trk, and an early raise in
+                # there used to leave it undefined — a NameError on the
+                # path whose whole job is to recover from failure.
+                _trk = []
                 try:
                     _sinfo = probe_video_info(seg_path) or {}
                     _sw = float(_sinfo.get("width") or 0)
@@ -4183,10 +4196,17 @@ def _process_long_upload_segments(
                     idx, "PAN" if _made else "static (no usable track)",
                 )
                 if not _made:
-                    # Static crop aimed at the golfer (no usable track).
+                    # Static crop aimed at the golfer. The tracer's
+                    # START is the anchor: it is the ball at impact,
+                    # i.e. the golfer's feet. Pose is the fallback (it
+                    # misses small, distant golfers) and rest-x the last
+                    # resort, since the ball comes to rest by the green.
                     _focus = 0.5
                     try:
-                        if _gx is not None:
+                        _lx = _launch_focus_x(_trk, _sw)
+                        if _lx is not None:
+                            _focus = max(0.15, min(0.85, _lx))
+                        elif _gx is not None:
                             _focus = max(0.15, min(0.85, float(_gx)))
                         elif _rxy and len(_rxy) == 2 and _sw > 0:
                             _focus = max(
@@ -4734,6 +4754,37 @@ def _green_focus_x(video_path, at_sec):
         return None
 
 
+def _launch_focus_x(track, frame_w):
+    """Horizontal fraction (0..1) where the TRACER STARTS — the ball at
+    impact, which is where the golfer is standing.
+
+    The most dependable anchor for framing the 9:16 crop. A golfer far
+    down the hole is too small for pose to find (`_probe_golfer_x_frac`
+    returns None and the crop defaults to frame centre, which is empty
+    grass), but the ball he just hit still produces a track, and its
+    first points sit at his feet. Rest-x is no good for this either —
+    that is 145 yards away near the green. Median of the first three
+    points shrugs off a stray opening detection. Returns None when
+    there is no usable track."""
+    try:
+        w = float(frame_w or 0)
+        if w <= 0:
+            return None
+        head = sorted(
+            (
+                r for r in (track or [])
+                if r.get("x") is not None and r.get("frame") is not None
+            ),
+            key=lambda r: float(r["frame"]),
+        )[:3]
+        xs = sorted(float(r["x"]) / w for r in head)
+        if not xs:
+            return None
+        return min(1.0, max(0.0, xs[len(xs) // 2]))
+    except (TypeError, ValueError, KeyError, ZeroDivisionError):
+        return None
+
+
 def _vertical_pan_path(
     track, rest_xy, fps, frame_w, cut_dur=None, golfer_x=None,
     impact_t=None, green_x=None,
@@ -4765,19 +4816,18 @@ def _vertical_pan_path(
     if pts:
         _head = sorted(x for _, x in pts[:3])
         _launch_x = _head[len(_head) // 2]
-    if golfer_x is not None:
-        # Pose found the golfer in the actual opening frames — the
-        # authoritative answer, no cross-checks needed.
+    if _launch_x is not None:
+        # THE TRACER'S START IS THE ANCHOR: the ball at impact, which
+        # is the golfer's feet. Preferred over pose, which silently
+        # misses a small, distant golfer and leaves the crop at frame
+        # centre on empty grass, and over rest-x, which is up by the
+        # green 145 yards away. Whenever there is a tracer at all,
+        # this is where the player is.
+        x0 = _launch_x
+    elif golfer_x is not None:
         x0 = min(1.0, max(0.0, float(golfer_x)))
     elif rest_xy and len(rest_xy) == 2:
         x0 = min(1.0, max(0.0, float(rest_xy[0]) / frame_w))
-        # A rest anchor that wildly disagrees with where the flight
-        # starts is bad data (wrong scale / phantom) — the opener
-        # would frame empty grass. Trust the launch instead.
-        if _launch_x is not None and abs(x0 - _launch_x) > 0.35:
-            x0 = _launch_x
-    elif _launch_x is not None:
-        x0 = _launch_x
     else:
         x0 = 0.5
     path = [(0.0, x0)]
