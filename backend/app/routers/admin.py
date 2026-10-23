@@ -1374,22 +1374,32 @@ def make_clip_vertical(
                     [_ball.get("x"), _ball.get("y")]
                     if _ball.get("x") is not None else None
                 )
-                if _fw <= 0:
+                # THE TEE CLIP IS THE CUT, AND FINDING IT IS NOT
+                # OPTIONAL. This resolution used to sit inside
+                # `if _fw <= 0`, so on every upload that HAD a stored
+                # frame_width -- which is every wizard-saved one --
+                # `_probe_src` was never bound, `_cut` fell through to
+                # None, and the whole green half of the pan (ball,
+                # flag, closing move) never ran at all. The crop held
+                # the tee's last tracer x to the end instead: the
+                # ball's rest spot in the TEE's picture, which means
+                # nothing in the green's. The tee file is there either
+                # way; only the WIDTH probe was ever conditional.
+                _probe_src = None
+                if clip.tee_clip_url:
+                    _tn = clip.tee_clip_url.split("?")[0].rsplit("/", 1)[-1]
+                    if storage.ensure_local(CLIPS_DIR, _tn):
+                        _probe_src = CLIPS_DIR / _tn
+                elif "_composite" not in src_name:
+                    _probe_src = src_path
+                if _fw <= 0 and _probe_src is not None and _probe_src.exists():
                     # Produce-only uploads never stored frame_width (the
-                    # wizard save writes it) — probe the raw tee cut,
-                    # whose native width the track coords live in.
-                    _probe_src = None
-                    if clip.tee_clip_url:
-                        _tn = clip.tee_clip_url.split("?")[0].rsplit("/", 1)[-1]
-                        if storage.ensure_local(CLIPS_DIR, _tn):
-                            _probe_src = CLIPS_DIR / _tn
-                    elif "_composite" not in src_name:
-                        _probe_src = src_path
-                    if _probe_src is not None and _probe_src.exists():
-                        _fw = float(
-                            (probe_video_info(_probe_src) or {}).get("width")
-                            or 0
-                        )
+                    # wizard save writes it) — the raw tee cut's native
+                    # width is the space the track coords live in.
+                    _fw = float(
+                        (probe_video_info(_probe_src) or {}).get("width")
+                        or 0
+                    )
                 if _rxy and _fw > 0:
                     _focus = max(0.15, min(0.85, float(_rxy[0]) / _fw))
                 # Prefer the DRAWN dots over the detections: the tracer
@@ -1446,12 +1456,7 @@ def make_clip_vertical(
                     # own duration IS the cut in a tee-then-green
                     # composite.
                     _cut = None
-                    try:
-                        _psrc = _probe_src
-                    except NameError:
-                        # Only bound inside the branch above; a clip that
-                        # skipped it has no tee file to measure.
-                        _psrc = None
+                    _psrc = _probe_src
                     if _psrc is not None and _psrc != render_src:
                         try:
                             _d = (probe_video_info(_psrc) or {}).get("duration")
