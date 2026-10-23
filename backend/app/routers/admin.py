@@ -12956,6 +12956,14 @@ def process_long_upload_segment(
         seg_list=seg_list,
         dual_camera=green_src_path is not None,
         ai_tracer_model=ai_tracer_model,
+        # THE UPLOAD IS IN THIS ROUTE'S OWN URL. Without it the clip
+        # is created with long_upload_id=None and the swing record is
+        # never persisted (the writer returns early when the row is
+        # not found), so a clip promoted one segment at a time came
+        # out with none of the metadata the full job's clips have.
+        # Same hole, same footage, two different clips — #955 had a
+        # track and #957 did not, and nothing said why.
+        progress_upload_id=upload_id,
     )
     if not results:
         raise HTTPException(500, "segment processing returned no result")
