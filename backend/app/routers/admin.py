@@ -1359,6 +1359,7 @@ def make_clip_vertical(
     # golfer (or frame center) otherwise.
     _made = False
     _focus = 0.5
+    _tsx = None
     # WHAT THIS RENDER ACTUALLY DID. Every question about a wrong
     # framing so far ("is it panning?", "did it find the cut?", "did
     # it find the flag?") has been answered by squinting at the output
@@ -1546,6 +1547,23 @@ def make_clip_vertical(
                 break
     except Exception as exc:  # noqa: BLE001
         log.warning("clip %s: vertical pan failed: %s", clip_id, exc)
+    # THE TRACER SCAN BELONGS TO THE FILE, NOT TO THE METADATA.
+    # Everything above runs inside `if clip.long_upload_id:` and then
+    # inside a loop over swings matching this clip — and on a clip
+    # where neither holds, none of it executes and _focus is still the
+    # 0.5 it was initialised to. That is a crop at dead centre, which
+    # is what Ben kept being shown while five different anchors were
+    # "fixed" inside a block that never ran for his clips.
+    #
+    # This needs none of that. It needs the video, which is in hand.
+    if _tsx is None:
+        _tsx = _tracer_start_x(render_src)
+        if _tsx is not None:
+            _focus = max(0.15, min(0.85, _tsx[0]))
+            _diag.update(
+                tracer_x=round(_tsx[0], 3),
+                tracer_t=round(_tsx[1], 2),
+            )
     if not _made and not make_vertical(
         render_src, out_path, focus_x_frac=_focus,
     ):
