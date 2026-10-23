@@ -1637,10 +1637,22 @@ def make_clip_vertical(
             _rd = float(_inf.get("duration") or 0) or None
             _c2 = _detect_cut_sec(render_src)
             _p2 = _green_focus_x(render_src, _c2) if _c2 else None
+            # THE BALL, FROM THE GREEN HALF'S OWN TRACER. The stroke
+            # comes DOWN to the ball on the green camera, so its foot
+            # is where the shot finished — the same read that finds
+            # the player on the tee side, pointed after the cut. This
+            # is what "ball 1" was failing to be.
+            _gb = (
+                _tracer_start_x(render_src, from_sec=_c2 + 0.3)
+                if _c2 is not None else None
+            )
+            _gbx = _gb.get("x") if _gb else None
             _diag.update(
                 cut=round(_c2, 2) if _c2 is not None else None,
                 cut_src="detected" if _c2 is not None else None,
                 pin_x=round(_p2, 3) if _p2 is not None else None,
+                green_ball_x=round(_gbx, 3) if _gbx is not None else None,
+                green_ball_why=(_gb or {}).get("why"),
             )
             if _c2 is not None and _rw > 0:
                 _made = make_vertical_pan(
@@ -1648,6 +1660,7 @@ def make_clip_vertical(
                     _vertical_pan_path(
                         [], None, _rf, _rw, _c2, green_x=_p2,
                         opening_x=_tsx["x"], total_dur=_rd,
+                        ball_green_x=_gbx,
                     ),
                 )
         except Exception as exc:  # noqa: BLE001
@@ -5023,7 +5036,7 @@ _GREEN_PIN_PAN_SEC = 2.0
 _GREEN_END_HOLD_SEC = 0.2
 
 
-def _tracer_start_x(video_path, max_scan_sec=8.0, step=2):
+def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0):
     """Where the TRACER STARTS, read off the picture itself.
 
     STEP 1 OF FRAMING THE 9:16. Every other anchor is metadata that can
@@ -5073,6 +5086,15 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2):
             return {"x": None, "why": "unopenable", "best": 0}
         try:
             fps = float(cap.get(cv2.CAP_PROP_FPS) or 0) or 30.0
+            # START WHERE ASKED. At 0 this finds the TEE tracer's
+            # foot, which is the player. Started just after the cut it
+            # finds the GREEN camera's tracer, whose foot is the ball
+            # where it came to rest — read off the picture instead of
+            # taken from a landing_spot nobody recorded.
+            idx0 = 0
+            if from_sec and from_sec > 0:
+                idx0 = int(float(from_sec) * fps)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx0)
             # BASELINE: every blue thing standing there before the ball
             # is struck. A union of a few frames, so a shirt that moves
             # a little is still covered, then dilated for the same
@@ -5113,8 +5135,8 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2):
 
             area = base.size
             best = 0
-            idx = 5
-            limit = int(max(1.0, float(max_scan_sec)) * fps)
+            idx = idx0 + 5
+            limit = idx0 + int(max(1.0, float(max_scan_sec)) * fps)
             stride = max(1, int(step))
             while idx < limit:
                 if idx % stride:

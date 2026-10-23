@@ -296,6 +296,10 @@ export default function AdminProducedClips() {
                     ? ` · cut ${vertInfo.cut}s`
                       + (vertInfo.cut_src ? `(${vertInfo.cut_src})` : "")
                     : " · cut none"}
+                  {vertInfo.green_ball_x != null
+                    ? ` · gball ${vertInfo.green_ball_x}`
+                    : vertInfo.green_ball_why
+                      ? ` · gball ${vertInfo.green_ball_why}` : ""}
                   {vertInfo.ball_x != null
                     ? ` · ball ${vertInfo.ball_x}` : ""}
                   {vertInfo.pin_x != null
