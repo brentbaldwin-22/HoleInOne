@@ -1434,14 +1434,21 @@ def make_clip_vertical(
                         and (CLIPS_DIR / _tn).exists()
                     ):
                         render_src = CLIPS_DIR / _tn
+                # POSE GOES LAST, AND ONLY WHEN NOTHING IS MARKED.
+                # It outranked the marked ball here, and on a tee with
+                # a group waiting it locks onto the nearest, largest
+                # body — a bystander standing 40 ft from the camera —
+                # instead of the small, distant player who actually
+                # hit. That framed the wrong man on the left while the
+                # tracer climbed out of shot on the right. It is the
+                # only anchor nobody checked, so it ranks below the two
+                # that someone or something did.
                 _gx = _probe_golfer_x_frac(render_src)
-                if _gx is not None:
+                if _gx is not None and not (_rxy and _fw > 0):
                     _focus = max(0.15, min(0.85, float(_gx)))
-                # THE TRACER'S START BEATS BOTH OF THE ABOVE. Pose
-                # misses a golfer this far down the hole, and rest-x is
-                # near the green — either one frames empty grass. The
-                # launch point is the ball at impact, so it is the
-                # golfer, every time there is a tracer at all.
+                # The tracer's start beats everything: it is the ball
+                # at impact, so it is the player, whenever a track
+                # reached this path at all.
                 _lx = _launch_focus_x(_trk, _fw)
                 if _lx is not None:
                     _focus = max(0.15, min(0.85, _lx))
@@ -5002,16 +5009,18 @@ def _vertical_pan_path(
         _launch_x = _head[len(_head) // 2]
     if _launch_x is not None:
         # THE TRACER'S START IS THE ANCHOR: the ball at impact, which
-        # is the golfer's feet. Preferred over pose, which silently
-        # misses a small, distant golfer and leaves the crop at frame
-        # centre on empty grass, and over rest-x, which is up by the
-        # green 145 yards away. Whenever there is a tracer at all,
-        # this is where the player is.
+        # is the player's feet. Whenever there is a track at all, this
+        # is where he is standing.
         x0 = _launch_x
-    elif golfer_x is not None:
-        x0 = min(1.0, max(0.0, float(golfer_x)))
     elif rest_xy and len(rest_xy) == 2:
+        # A marked ball next: someone looked at the frame and clicked
+        # it.
         x0 = min(1.0, max(0.0, float(rest_xy[0]) / frame_w))
+    elif golfer_x is not None:
+        # Pose LAST. It finds the largest, nearest body, which on a
+        # busy tee is a bystander rather than the player who hit — the
+        # one anchor that can be confidently wrong instead of absent.
+        x0 = min(1.0, max(0.0, float(golfer_x)))
     else:
         x0 = 0.5
     path = [(0.0, x0)]
