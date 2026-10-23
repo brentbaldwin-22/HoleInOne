@@ -1462,9 +1462,21 @@ def make_clip_vertical(
                         _green_focus_x(render_src, _cut)
                         if _cut is not None else None
                     )
+                    # Ball-at-rest on the green, and how long the
+                    # clip runs — the two ends of the closing pan.
+                    _bgx = _green_ball_x(_sw, _fw)
+                    _tdur = None
+                    try:
+                        _td = (probe_video_info(render_src) or {}).get(
+                            "duration",
+                        )
+                        _tdur = float(_td) if _td else None
+                    except (TypeError, ValueError):
+                        _tdur = None
                     _ppath = _vertical_pan_path(
                         _trk, _rxy, _fps, _fw, _cut, golfer_x=_gx,
                         impact_t=_imp_t, green_x=_grx,
+                        ball_green_x=_bgx, total_dur=_tdur,
                     )
                     _made = make_vertical_pan(render_src, out_path, _ppath)
                     log.info(
@@ -4210,9 +4222,17 @@ def _process_long_upload_segments(
                             _green_focus_x(_vert_src, _cut)
                             if _cut is not None else None
                         )
+                        _bgx = _green_ball_x(seg, _sw)
+                        _tdur = None
+                        try:
+                            _td = _sinfo.get("duration")
+                            _tdur = float(_td) if _td else None
+                        except (TypeError, ValueError):
+                            _tdur = None
                         _ppath = _vertical_pan_path(
                             _trk, _rxy, float(_seg_fps), _sw, _cut,
                             golfer_x=_gx, impact_t=_imp_t, green_x=_grx,
+                            ball_green_x=_bgx, total_dur=_tdur,
                         )
                         _made = make_vertical_pan(
                             _vert_src, _vert_path, _ppath,
@@ -4813,9 +4833,51 @@ def _launch_focus_x(track, frame_w):
         return None
 
 
+# How the green half plays: land on the ball, let it register, then
+# walk to the hole. Tuned by eye on a 12s clip; constants so the feel
+# can be changed without touching the path maths.
+_GREEN_BALL_HOLD_SEC = 1.2
+_GREEN_PIN_PAN_SEC = 2.0
+_GREEN_END_HOLD_SEC = 0.2
+
+
+def _green_ball_x(swing, frame_w):
+    """Where the ball finished IN THE GREEN CAMERA, as a frame fraction.
+
+    Prefers the green track's last point — the final dot of the comet
+    `green_flight` draws, which is the ball where it stopped — and
+    falls back to the operator's marked `landing_spot`. That is the
+    same precedence the closest-to-the-pin measurement uses, so the
+    pan and the number on screen agree about where the ball is.
+
+    `frame_w` is the composite's width. `concat_two_clips` joins the
+    halves with `scale=-2:H`, which preserves aspect and crops nothing,
+    and both cameras are 1920x1080 — so a fraction measured in the
+    green source survives into the composite unchanged. Returns None
+    when neither source knows, and the caller then keeps the old
+    snap-to-the-flag behaviour."""
+    try:
+        w = float(frame_w or 0)
+        if w <= 0 or not isinstance(swing, dict):
+            return None
+        _gt = [
+            q for q in (swing.get("green_track") or [])
+            if isinstance(q, dict) and q.get("x") is not None
+        ]
+        if _gt:
+            _last = max(_gt, key=lambda q: int(q.get("frame") or 0))
+            return min(1.0, max(0.0, float(_last["x"]) / w))
+        _ls = _spot_xy(swing.get("landing_spot"))
+        if _ls is not None:
+            return min(1.0, max(0.0, float(_ls[0]) / w))
+        return None
+    except (TypeError, ValueError, KeyError, ZeroDivisionError):
+        return None
+
+
 def _vertical_pan_path(
     track, rest_xy, fps, frame_w, cut_dur=None, golfer_x=None,
-    impact_t=None, green_x=None,
+    impact_t=None, green_x=None, ball_green_x=None, total_dur=None,
 ):
     """Waypoints (time_sec, x_fraction) for the vertical follow-pan:
     hold on the golfer through address/swing, glide along the tracked
@@ -4883,13 +4945,47 @@ def _vertical_pan_path(
             # clip 659 that framed bunker and rough with the putting
             # surface off to the left and the flag out of shot entirely,
             # so the payoff half of the clip showed nothing worth
-            # seeing. `green_x` is the ball's rest point on the green
-            # when we know it, else the flagstick; 0.5 only survives as
-            # the fallback for when neither is known.
-            _gx_end = 0.5 if green_x is None else min(
+            # seeing. `green_x` is the flagstick; 0.5 only survives as
+            # the fallback for when it is not known.
+            _pin_x = None if green_x is None else min(
                 1.0, max(0.0, float(green_x)),
             )
-            path.append((float(cut_dur), _gx_end))
+            _ball_x = None if ball_green_x is None else min(
+                1.0, max(0.0, float(ball_green_x)),
+            )
+            _room = (
+                float(total_dur) - float(cut_dur)
+                if total_dur is not None else 0.0
+            )
+            if (
+                _ball_x is not None and _pin_x is not None
+                and _room > _GREEN_BALL_HOLD_SEC + _GREEN_PIN_PAN_SEC
+            ):
+                # LAND ON THE BALL, THEN WALK TO THE HOLE. Snapping
+                # straight to the flag says where the hole is but never
+                # how close the shot finished, and those are the two
+                # things the payoff half exists to show. They can sit a
+                # third of a frame apart -- more than the 9:16 window is
+                # wide -- so no single framing holds both and only a
+                # move between them reads as a distance.
+                _pan_end = min(
+                    float(total_dur) - _GREEN_END_HOLD_SEC,
+                    float(cut_dur) + _GREEN_BALL_HOLD_SEC
+                    + _GREEN_PIN_PAN_SEC,
+                )
+                path.append((float(cut_dur), _ball_x))
+                path.append(
+                    (float(cut_dur) + _GREEN_BALL_HOLD_SEC, _ball_x),
+                )
+                path.append((_pan_end, _pin_x))
+            else:
+                # Not enough green half to move in, or one end unknown:
+                # the old single framing, flag first, ball if that is
+                # all we have.
+                _gx_end = _pin_x if _pin_x is not None else (
+                    _ball_x if _ball_x is not None else 0.5
+                )
+                path.append((float(cut_dur), _gx_end))
         # No cut known: hold x_last to the end of the clip (implicit —
         # interpolation extends the final waypoint).
     return path
