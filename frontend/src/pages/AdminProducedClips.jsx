@@ -278,6 +278,8 @@ export default function AdminProducedClips() {
                   9:16 {vertInfo.mode}
                   {vertInfo.track_points != null
                     ? ` · track ${vertInfo.track_points}` : ""}
+                  {vertInfo.frame_w != null
+                    ? ` · fw ${vertInfo.frame_w}` : ""}
                   {vertInfo.launch_x != null
                     ? ` · launch ${vertInfo.launch_x}` : ""}
                   {vertInfo.tracer_x != null
