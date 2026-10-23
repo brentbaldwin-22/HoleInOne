@@ -1359,6 +1359,12 @@ def make_clip_vertical(
     # golfer (or frame center) otherwise.
     _made = False
     _focus = 0.5
+    # WHAT THIS RENDER ACTUALLY DID. Every question about a wrong
+    # framing so far ("is it panning?", "did it find the cut?", "did
+    # it find the flag?") has been answered by squinting at the output
+    # video. These are the numbers that decided it; returning them
+    # turns the next report from a description into a reading.
+    _diag = {}
     try:
         if clip.long_upload_id:
             _up = db.get(LongVideoUpload, clip.long_upload_id)
@@ -1439,6 +1445,12 @@ def make_clip_vertical(
                 _lx = _launch_focus_x(_trk, _fw)
                 if _lx is not None:
                     _focus = max(0.15, min(0.85, _lx))
+                _diag.update(
+                    track_points=len(_trk),
+                    frame_w=int(_fw) if _fw else None,
+                    launch_x=round(_lx, 3) if _lx is not None else None,
+                    golfer_x=round(_gx, 3) if _gx is not None else None,
+                )
                 if len(_trk) >= 3 and _fw > 0:
                     _imp_t = None
                     try:
@@ -1483,6 +1495,14 @@ def make_clip_vertical(
                         _tdur = float(_td) if _td else None
                     except (TypeError, ValueError):
                         _tdur = None
+                    _diag.update(
+                        cut=round(_cut, 2) if _cut is not None else None,
+                        total_dur=(
+                            round(_tdur, 2) if _tdur is not None else None
+                        ),
+                        ball_x=round(_bgx, 3) if _bgx is not None else None,
+                        pin_x=round(_grx, 3) if _grx is not None else None,
+                    )
                     _ppath = _vertical_pan_path(
                         _trk, _rxy, _fps, _fw, _cut, golfer_x=_gx,
                         impact_t=_imp_t, green_x=_grx,
@@ -1545,6 +1565,8 @@ def make_clip_vertical(
         "clip_id": clip.id,
         "vertical_url": clip.vertical_url,
         "mode": "pan" if _made else "static",
+        "focus_x": round(_focus, 3),
+        **_diag,
     }
 
 

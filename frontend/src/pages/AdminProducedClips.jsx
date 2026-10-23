@@ -53,6 +53,10 @@ export default function AdminProducedClips() {
   const error = actionError || listError;
   const setError = setActionError;
   const [busyId, setBusyId] = useState(null);
+  // What the last 9:16 re-render actually did, per clip. A wrong
+  // framing looks the same whether the pan never ran, the cut was
+  // never found, or the flag was never located — this says which.
+  const [vertInfo, setVertInfo] = useState(null);
 
   async function toggleBroadcast(clip) {
     setBusyId(clip.id);
@@ -84,6 +88,7 @@ export default function AdminProducedClips() {
       setClips((cs) => (cs || []).map(
         (c) => (c.id === clip.id ? { ...c, vertical_url: out.vertical_url } : c)
       ));
+      setVertInfo(out);
       if (out.vertical_url) window.open(out.vertical_url, "_blank");
     } catch (e) {
       setError(e.message);
@@ -242,6 +247,29 @@ export default function AdminProducedClips() {
                   🗑
                 </button>
               </div>
+              {vertInfo && vertInfo.clip_id === c.id ? (
+                <div
+                  style={{
+                    fontSize: "0.72rem",
+                    opacity: 0.75,
+                    marginTop: "0.35rem",
+                    fontFamily: "ui-monospace, SFMono-Regular, monospace",
+                  }}
+                  title="What the last 9:16 render did. mode=pan means the crop follows the tracer; static means one fixed framing. cut is the tee->green scene change; without it the closing pan to the pin cannot run."
+                >
+                  9:16 {vertInfo.mode}
+                  {vertInfo.track_points != null
+                    ? ` · track ${vertInfo.track_points}` : ""}
+                  {vertInfo.launch_x != null
+                    ? ` · launch ${vertInfo.launch_x}` : ""}
+                  {vertInfo.cut != null
+                    ? ` · cut ${vertInfo.cut}s` : " · cut none"}
+                  {vertInfo.ball_x != null
+                    ? ` · ball ${vertInfo.ball_x}` : ""}
+                  {vertInfo.pin_x != null
+                    ? ` · pin ${vertInfo.pin_x}` : " · pin none"}
+                </div>
+              ) : null}
             </div>
           );
         })}
