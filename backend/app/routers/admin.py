@@ -5111,7 +5111,21 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0):
             idx0 = 0
             if from_sec and from_sec > 0:
                 idx0 = int(float(from_sec) * fps)
+                # SEEK, THEN CHECK IT TOOK. cap.set on POS_FRAMES is
+                # advisory: on some containers it silently does
+                # nothing and the next read returns frame 0. That is
+                # not a visible failure — the scan simply finds the
+                # TEE tracer again and reports it as the green ball,
+                # which is how gball came back equal to tracer to
+                # three decimals. Grabbing forward is a few hundred
+                # demuxed frames and is never wrong.
                 cap.set(cv2.CAP_PROP_POS_FRAMES, idx0)
+                _at = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or 0)
+                if abs(_at - idx0) > 2:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    for _ in range(idx0):
+                        if not cap.grab():
+                            break
             # BASELINE: every blue thing standing there before the ball
             # is struck. A union of a few frames, so a shirt that moves
             # a little is still covered, then dilated for the same
