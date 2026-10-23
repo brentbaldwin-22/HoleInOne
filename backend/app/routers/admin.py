@@ -1567,12 +1567,29 @@ def make_clip_vertical(
                         _tdur = float(_td) if _td else None
                     except (TypeError, ValueError):
                         _tdur = None
+                    # THE GREEN HALF'S OWN TRACER, HERE TOO. This
+                    # was added to the metadata-less branch only, so a
+                    # clip WITH a track kept using _green_ball_x —
+                    # which is the metadata that arrives as "ball 1",
+                    # an overflow rather than a position. The picture
+                    # does not care which branch we are in.
+                    _gb = (
+                        _tracer_start_x(render_src, from_sec=_cut + 0.3)
+                        if _cut is not None else None
+                    )
+                    if _gb and _gb.get("x") is not None:
+                        _bgx = _gb["x"]
                     _diag.update(
                         cut=round(_cut, 2) if _cut is not None else None,
                         total_dur=(
                             round(_tdur, 2) if _tdur is not None else None
                         ),
                         ball_x=round(_bgx, 3) if _bgx is not None else None,
+                        green_ball_x=(
+                            round(_gb["x"], 3)
+                            if _gb and _gb.get("x") is not None else None
+                        ),
+                        green_ball_why=(_gb or {}).get("why"),
                         pin_x=round(_grx, 3) if _grx is not None else None,
                     )
                     _ppath = _vertical_pan_path(
