@@ -236,6 +236,18 @@ export default function AdminProducedClips() {
                 >
                   {busyId === c.id ? "…" : c.vertical_url ? "📱" : "📱＋"}
                 </button>
+                {c.vertical_url ? (
+                  <button
+                    type="button"
+                    className="ghost"
+                    style={{ width: "auto" }}
+                    onClick={() => openVertical(c, { altKey: true })}
+                    disabled={busyId === c.id}
+                    title="Re-render the 9:16 vertical with the current code and open it. Same as Alt/Option-clicking 📱, but without the modifier — Safari gives Option-click its own meaning, so a plain button removes the doubt about whether the force registered."
+                  >
+                    {busyId === c.id ? "…" : "⟳"}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="ghost"
