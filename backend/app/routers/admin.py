@@ -1619,6 +1619,41 @@ def make_clip_vertical(
         if _tsx and _tsx.get("x") is not None:
             _focus = max(0.15, min(0.85, _tsx["x"]))
             _diag.update(tracer_x=round(_tsx["x"], 3))
+    # A CLIP WITH NO METADATA STILL CHANGES CAMERA. Everything above
+    # sits inside `if clip.long_upload_id:` and a loop over swings
+    # matching this clip; #957 has neither, so it got none of it and
+    # fell through to one fixed crop — while #955, which has a track,
+    # got the cut and the flag. Same clip, same hole, two behaviours.
+    #
+    # The two things the payoff needs are both readable from the
+    # picture: where the tracer starts, and where the camera cuts.
+    # There is no flight to follow without a track, but the opening
+    # and the hand-off to the green are the parts that were wrong.
+    if not _made and _tsx and _tsx.get("x") is not None:
+        try:
+            _inf = probe_video_info(render_src) or {}
+            _rw = float(_inf.get("width") or 0)
+            _rf = float(_inf.get("fps") or 0) or 30.0
+            _rd = float(_inf.get("duration") or 0) or None
+            _c2 = _detect_cut_sec(render_src)
+            _p2 = _green_focus_x(render_src, _c2) if _c2 else None
+            _diag.update(
+                cut=round(_c2, 2) if _c2 is not None else None,
+                cut_src="detected" if _c2 is not None else None,
+                pin_x=round(_p2, 3) if _p2 is not None else None,
+            )
+            if _c2 is not None and _rw > 0:
+                _made = make_vertical_pan(
+                    render_src, out_path,
+                    _vertical_pan_path(
+                        [], None, _rf, _rw, _c2, green_x=_p2,
+                        opening_x=_tsx["x"], total_dur=_rd,
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "clip %s: metadata-less pan failed: %s", clip_id, exc,
+            )
     if not _made and not make_vertical(
         render_src, out_path, focus_x_frac=_focus,
     ):
@@ -5349,6 +5384,12 @@ def _vertical_pan_path(
     else:
         x0 = 0.5
     path = [(0.0, x0)]
+    # WITH NO TRACK THERE IS STILL A CLIP. A metadata-less clip has no
+    # flight to follow, but it still opens on the player and still
+    # changes camera, so the hold and the cut below must not be
+    # conditional on having waypoints. They were, which is why such a
+    # clip rendered as one fixed crop no matter what else was found.
+    t_last, x_last = 0.0, x0
     if pts:
         # HOLD on the golfer until contact: the pan's first movement
         # is the ball leaving. From there the interpolated targets ARE
@@ -5361,61 +5402,61 @@ def _vertical_pan_path(
         path.append((max(0.0, _hold_until), x0))
         path.extend(pts)
         t_last, x_last = pts[-1]
-        if cut_dur is not None and cut_dur > t_last:
-            # HOLD on the flight's end (the tracer lives there) until
-            # the tee->green scene cut, then snap to center for the
-            # landing view. Drifting home early dragged the tracer out
-            # of frame while it was still on screen.
-            path.append((max(t_last + 0.01, cut_dur - 0.01), x_last))
-            # WHERE THE GREEN IS, NOT THE MIDDLE OF THE PICTURE.
-            # This used to pan to 0.5 at the cut -- the geometric centre
-            # of the green frame, which is not where the green is. On
-            # clip 659 that framed bunker and rough with the putting
-            # surface off to the left and the flag out of shot entirely,
-            # so the payoff half of the clip showed nothing worth
-            # seeing. `green_x` is the flagstick; 0.5 only survives as
-            # the fallback for when it is not known.
-            _pin_x = None if green_x is None else min(
-                1.0, max(0.0, float(green_x)),
+    if cut_dur is not None and cut_dur > t_last:
+        # HOLD on the flight's end (the tracer lives there) until
+        # the tee->green scene cut, then snap to center for the
+        # landing view. Drifting home early dragged the tracer out
+        # of frame while it was still on screen.
+        path.append((max(t_last + 0.01, cut_dur - 0.01), x_last))
+        # WHERE THE GREEN IS, NOT THE MIDDLE OF THE PICTURE.
+        # This used to pan to 0.5 at the cut -- the geometric centre
+        # of the green frame, which is not where the green is. On
+        # clip 659 that framed bunker and rough with the putting
+        # surface off to the left and the flag out of shot entirely,
+        # so the payoff half of the clip showed nothing worth
+        # seeing. `green_x` is the flagstick; 0.5 only survives as
+        # the fallback for when it is not known.
+        _pin_x = None if green_x is None else min(
+            1.0, max(0.0, float(green_x)),
+        )
+        _ball_x = None if ball_green_x is None else min(
+            1.0, max(0.0, float(ball_green_x)),
+        )
+        _room = (
+            float(total_dur) - float(cut_dur)
+            if total_dur is not None else 0.0
+        )
+        if (
+            _ball_x is not None and _pin_x is not None
+            and _room > _GREEN_BALL_HOLD_SEC + _GREEN_PIN_PAN_SEC
+        ):
+            # LAND ON THE BALL, THEN WALK TO THE HOLE. Snapping
+            # straight to the flag says where the hole is but never
+            # how close the shot finished, and those are the two
+            # things the payoff half exists to show. They can sit a
+            # third of a frame apart -- more than the 9:16 window is
+            # wide -- so no single framing holds both and only a
+            # move between them reads as a distance.
+            _pan_end = min(
+                float(total_dur) - _GREEN_END_HOLD_SEC,
+                float(cut_dur) + _GREEN_BALL_HOLD_SEC
+                + _GREEN_PIN_PAN_SEC,
             )
-            _ball_x = None if ball_green_x is None else min(
-                1.0, max(0.0, float(ball_green_x)),
+            path.append((float(cut_dur), _ball_x))
+            path.append(
+                (float(cut_dur) + _GREEN_BALL_HOLD_SEC, _ball_x),
             )
-            _room = (
-                float(total_dur) - float(cut_dur)
-                if total_dur is not None else 0.0
+            path.append((_pan_end, _pin_x))
+        else:
+            # Not enough green half to move in, or one end unknown:
+            # the old single framing, flag first, ball if that is
+            # all we have.
+            _gx_end = _pin_x if _pin_x is not None else (
+                _ball_x if _ball_x is not None else 0.5
             )
-            if (
-                _ball_x is not None and _pin_x is not None
-                and _room > _GREEN_BALL_HOLD_SEC + _GREEN_PIN_PAN_SEC
-            ):
-                # LAND ON THE BALL, THEN WALK TO THE HOLE. Snapping
-                # straight to the flag says where the hole is but never
-                # how close the shot finished, and those are the two
-                # things the payoff half exists to show. They can sit a
-                # third of a frame apart -- more than the 9:16 window is
-                # wide -- so no single framing holds both and only a
-                # move between them reads as a distance.
-                _pan_end = min(
-                    float(total_dur) - _GREEN_END_HOLD_SEC,
-                    float(cut_dur) + _GREEN_BALL_HOLD_SEC
-                    + _GREEN_PIN_PAN_SEC,
-                )
-                path.append((float(cut_dur), _ball_x))
-                path.append(
-                    (float(cut_dur) + _GREEN_BALL_HOLD_SEC, _ball_x),
-                )
-                path.append((_pan_end, _pin_x))
-            else:
-                # Not enough green half to move in, or one end unknown:
-                # the old single framing, flag first, ball if that is
-                # all we have.
-                _gx_end = _pin_x if _pin_x is not None else (
-                    _ball_x if _ball_x is not None else 0.5
-                )
-                path.append((float(cut_dur), _gx_end))
-        # No cut known: hold x_last to the end of the clip (implicit —
-        # interpolation extends the final waypoint).
+            path.append((float(cut_dur), _gx_end))
+    # No cut known: hold x_last to the end of the clip (implicit —
+    # interpolation extends the final waypoint).
     return path
 
 
