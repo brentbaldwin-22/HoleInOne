@@ -1458,14 +1458,29 @@ def make_clip_vertical(
                          if r.get("x") is not None),
                         default=0.0,
                     )
+                    _diag.update(track_max=int(_mx) if _mx else None)
                     if _fw > 0 and _mx > _fw * 1.02:
-                        _pw = float(
-                            (probe_video_info(render_src) or {}).get("width")
-                            or 0
-                        )
-                        if _pw >= _mx:
-                            _diag.update(fw_fixed=f"{int(_fw)}->{int(_pw)}")
-                            _fw = _pw
+                        # THE TEE CUT FIRST, THEN THE RENDER. The
+                        # coordinates were measured in the source the
+                        # tracer was drawn on, which is not necessarily
+                        # the file being cropped: a composite can be
+                        # scaled to a common height and come out
+                        # narrower. Probing the render alone returned
+                        # the same 1280 that was already too small, so
+                        # the correction refused itself.
+                        for _cand in (_probe_src, render_src):
+                            if _cand is None:
+                                continue
+                            _pw = float(
+                                (probe_video_info(_cand) or {}).get("width")
+                                or 0
+                            )
+                            if _pw >= _mx:
+                                _diag.update(
+                                    fw_fixed=f"{int(_fw)}->{int(_pw)}",
+                                )
+                                _fw = _pw
+                                break
                 except (TypeError, ValueError, KeyError):
                     pass
                 _gx = _probe_golfer_x_frac(render_src)
