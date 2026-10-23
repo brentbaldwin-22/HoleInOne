@@ -1452,6 +1452,18 @@ def make_clip_vertical(
                 _lx = _launch_focus_x(_trk, _fw)
                 if _lx is not None:
                     _focus = max(0.15, min(0.85, _lx))
+                # STEP 1: READ THE TRACER OFF THE PICTURE. Outranks
+                # every metadata anchor above, because it is the only
+                # one that cannot be absent from the frames we are
+                # about to crop.
+                _tsx = _tracer_start_x(render_src)
+                if _tsx is not None:
+                    _lx = _tsx[0]
+                    _focus = max(0.15, min(0.85, _lx))
+                _diag.update(
+                    tracer_x=round(_tsx[0], 3) if _tsx else None,
+                    tracer_t=round(_tsx[1], 2) if _tsx else None,
+                )
                 _diag.update(
                     track_points=len(_trk),
                     frame_w=int(_fw) if _fw else None,
@@ -4887,6 +4899,97 @@ def _launch_focus_x(track, frame_w):
 _GREEN_BALL_HOLD_SEC = 1.2
 _GREEN_PIN_PAN_SEC = 2.0
 _GREEN_END_HOLD_SEC = 0.2
+
+
+def _tracer_start_x(video_path, max_scan_sec=8.0, step=2):
+    """Where the TRACER STARTS, read off the picture itself.
+
+    STEP 1 OF FRAMING THE 9:16. Every other anchor is metadata that can
+    fail to reach this render — the ball track lives in edit_metrics
+    and the d3prod clips do not carry it, the marked ball needs
+    somebody to have clicked it, and pose finds whichever bystander
+    stands nearest the camera. The tracer cannot be missing, because it
+    is burned into the very frames being cropped.
+
+    The stroke is three fixed broadcast blues (ai_tracer's
+    TRACER_CORE/GLOW/INNER_BGR), so the mask is a channel-difference
+    test rather than a hue guess. Two things also pass that test and
+    are not tracers, and both are handled here:
+
+      a clear sky    — same blue dominance at the zenith, but it is a
+                       THIRD OF THE FRAME, so an area cap rejects it;
+                       a stroke covers well under a percent.
+      a blue shirt   — passes it outright, and sits at the bottom of
+                       frame where the foot search looks. But a shirt
+                       is in the opening frames and a tracer is not, so
+                       everything blue BEFORE the swing is subtracted
+                       as baseline and only new blue counts.
+
+    Scans for the first frame carrying new blue: the tracer is
+    shortest there and still at the ball, so its foot is the launch
+    point. Returns (x_fraction, seconds) or None, and never raises — a
+    vertical framed by a weaker anchor is a worse clip, not a failed
+    render.
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        def _blue(frame):
+            b = frame[:, :, 0].astype(np.int16)
+            g = frame[:, :, 1].astype(np.int16)
+            r = frame[:, :, 2].astype(np.int16)
+            return (b >= 200) & ((b - r) >= 90) & ((b - g) >= 40)
+
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            return None
+        try:
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0) or 30.0
+            # BASELINE: every blue thing standing there before the ball
+            # is struck. A union of a few frames, so a shirt that moves
+            # a little is still covered, then dilated for the same
+            # reason.
+            base = None
+            for _ in range(5):
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    return None
+                m = _blue(frame)
+                base = m if base is None else (base | m)
+            base = cv2.dilate(
+                base.astype(np.uint8),
+                np.ones((9, 9), np.uint8), iterations=2,
+            ).astype(bool)
+
+            area = base.size
+            idx = 5
+            limit = int(max(1.0, float(max_scan_sec)) * fps)
+            while idx < limit:
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    break
+                if idx % max(1, int(step)) == 0:
+                    new = _blue(frame) & ~base
+                    ys, xs = np.nonzero(new)
+                    # Enough to be a stroke, little enough not to be
+                    # sky the camera drifted into.
+                    if 40 <= xs.size <= int(area * 0.02):
+                        foot = ys >= (ys.max() - 15)
+                        if foot.sum() >= 5:
+                            fx = (
+                                float(np.median(xs[foot]))
+                                / frame.shape[1]
+                            )
+                            return (
+                                min(1.0, max(0.0, fx)), idx / fps,
+                            )
+                idx += 1
+            return None
+        finally:
+            cap.release()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _green_pin_x(db, row, slot, frame_w):
