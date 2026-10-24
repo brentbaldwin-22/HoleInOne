@@ -5109,6 +5109,104 @@ def _green_focus_x(video_path, at_sec):
         return None
 
 
+def _measure_logo_rect(src_path: Path, frame_w: int, frame_h: int):
+    """Find the brand plate IN THE PICTURE, as (x, y, w, h) or None.
+
+    brand_logo_rect() computes where the compositor draws the panel,
+    which is right only if the file is still the size it was when it
+    was stamped. It often is not: produce runs compress_for_email,
+    whose `scale=min(1280,iw)` shrinks a 1920 render and takes the
+    baked overlay down with it. The computed box then lands offset and
+    the wrong size, which removes the logo artwork but leaves the pale
+    plate it sits on -- a white rectangle in the corner, which is
+    exactly what Ben saw.
+
+    The plate is easy to find and does not care what the file has been
+    through since: it is a near-white, near-neutral block that is in
+    the SAME PLACE in every frame. Sky can be pale too, so the search
+    is confined to the corner the panel occupies and anything big
+    enough to be sky is rejected.
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        cap = cv2.VideoCapture(str(src_path))
+        if not cap.isOpened():
+            return None
+        try:
+            _n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            _idxs = (
+                [int(_n * f) for f in (0.15, 0.35, 0.55, 0.75)]
+                if _n > 8 else [0]
+            )
+            acc = None
+            for _i in _idxs:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, _i)
+                ok, fr = cap.read()
+                if not ok or fr is None:
+                    continue
+                _b = fr[:, :, 0].astype(np.int16)
+                _g = fr[:, :, 1].astype(np.int16)
+                _r = fr[:, :, 2].astype(np.int16)
+                _mx = np.maximum(np.maximum(_b, _g), _r)
+                _mn = np.minimum(np.minimum(_b, _g), _r)
+                # Light, near-neutral, and WARM. The plate is linen
+                # (#F8F4EC) at alpha 240, so it stays pale whatever is
+                # behind it -- and being linen rather than white, its
+                # red channel sits above its blue one.
+                #
+                # That last test is what separates it from the sky. On
+                # a clear day the sky is far too blue to pass; on an
+                # OVERCAST day it is pale and neutral and passed every
+                # other test, merging with the plate into one component
+                # that was then thrown out for being sky-sized -- which
+                # left the plate in place on exactly the clips where it
+                # shows most. Overcast light is cool; linen is not.
+                _m = (
+                    (_mn >= 200) & ((_mx - _mn) <= 32) & ((_r - _b) >= 6)
+                )
+                # IN EVERY SAMPLE, not any. A white cart or a bunker
+                # passes the colour test in one frame; only something
+                # painted onto the frame passes in all of them.
+                acc = _m if acc is None else (acc & _m)
+            if acc is None:
+                return None
+        finally:
+            cap.release()
+
+        # The panel lives in the top-right corner. Looking only there
+        # keeps a bright sky elsewhere out of the running.
+        acc[int(frame_h * 0.40):, :] = False
+        acc[:, :int(frame_w * 0.45)] = False
+
+        _ncc, _lab, _st, _ = cv2.connectedComponentsWithStats(
+            acc.astype(np.uint8), connectivity=8,
+        )
+        _best, _best_a = None, 0
+        for _i in range(1, _ncc):
+            _a = int(_st[_i, cv2.CC_STAT_AREA])
+            if _a > _best_a:
+                _best, _best_a = _i, _a
+        if _best is None or _best_a < 400:
+            return None
+        _x = int(_st[_best, cv2.CC_STAT_LEFT])
+        _y = int(_st[_best, cv2.CC_STAT_TOP])
+        _w = int(_st[_best, cv2.CC_STAT_WIDTH])
+        _h = int(_st[_best, cv2.CC_STAT_HEIGHT])
+        # TOO BIG TO BE A PANEL. Overcast sky is pale, neutral and in
+        # every frame; it is also enormous. A logo plate is well under
+        # a twentieth of the frame in each direction.
+        if _w > frame_w * 0.20 or _h > frame_h * 0.25:
+            return None
+        if _best_a > frame_w * frame_h * 0.03:
+            return None
+        return (_x, _y, _w, _h)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("measure logo rect failed for %s: %s", src_path.name, exc)
+        return None
+
+
 def _delogo_src(src_path: Path):
     """A copy of `src_path` with the baked-in brand logo painted out.
 
@@ -5132,7 +5230,7 @@ def _delogo_src(src_path: Path):
     from stamped footage is a worse clip, not a failed render.
     """
     try:
-        out = src_path.with_name(f"{src_path.stem}_delogo.mp4")
+        out = src_path.with_name(f"{src_path.stem}_nologo.mp4")
         if out.exists() and out.stat().st_size > 0:
             return out
         from ..services.intro_overlay import brand_logo_rect
@@ -5142,10 +5240,22 @@ def _delogo_src(src_path: Path):
         _h = int(_info.get("height") or 0)
         if _w <= 0 or _h <= 0:
             return None
-        _rect = brand_logo_rect(_w)
+        # MEASURED FIRST, COMPUTED SECOND. See _measure_logo_rect:
+        # the computed box is only right when the file has not been
+        # resized since it was stamped, and produce resizes it.
+        _rect = _measure_logo_rect(src_path, _w, _h)
+        _rect_src = "measured" if _rect is not None else None
+        if _rect is None:
+            _rect = brand_logo_rect(_w)
+            _rect_src = "computed" if _rect is not None else None
         if _rect is None:
             return None
         _x, _y, _pw, _ph = _rect
+        # A couple of pixels of margin for the rounded corners and the
+        # antialiased edge, which are the parts that survive as a faint
+        # outline when the box is exact.
+        _x, _y = _x - 3, _y - 3
+        _pw, _ph = _pw + 6, _ph + 6
         # delogo wants the box strictly inside the frame; clamp rather
         # than let ffmpeg refuse the whole filter.
         _x = max(1, min(_x, _w - 2))
@@ -5172,8 +5282,8 @@ def _delogo_src(src_path: Path):
             return None
         _tmp.replace(out)
         log.info(
-            "clip source %s: brand logo painted out at %d,%d %dx%d",
-            src_path.name, _x, _y, _pw, _ph,
+            "clip source %s: brand logo painted out at %d,%d %dx%d (%s)",
+            src_path.name, _x, _y, _pw, _ph, _rect_src,
         )
         return out
     except Exception as exc:  # noqa: BLE001
