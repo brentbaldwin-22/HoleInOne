@@ -188,6 +188,7 @@ def make_vertical_pan(
     pan_path: list,
     width: int = 1080,
     height: int = 1920,
+    cut_sec: float | None = None,
 ) -> bool:
     """Full-screen 9:16 vertical with a FOLLOW-THE-ACTION pan: the crop
     window glides horizontally along `pan_path` — a list of
@@ -229,18 +230,47 @@ def make_vertical_pan(
         # — fast enough to keep the tracer tip centered on a driven
         # ball, never a teleport.
         max_step = 0.75 * w / fps
+        # THE CUT IS NOT A CAMERA MOVE. Both the speed limit and the
+        # smoothing exist so a pan reads as an operator swinging the
+        # camera — and both are wrong across a scene change, where the
+        # whole picture is replaced anyway. Easing across it left the
+        # crop travelling from the tee's last position toward the ball
+        # for a fifth of a second AFTER the green appeared, which is
+        # why the first moments of the green half showed empty fairway.
+        # A teleport at the cut is invisible and correct.
+        ci = (
+            int(round(float(cut_sec) * fps))
+            if cut_sec is not None and 0 < float(cut_sec) * fps < n
+            else None
+        )
         centers = np.empty(n)
         cur = float(targets[0])
         for i in range(n):
-            cur += float(np.clip(targets[i] - cur, -max_step, max_step))
+            if ci is not None and i == ci:
+                cur = float(targets[i])
+            else:
+                cur += float(
+                    np.clip(targets[i] - cur, -max_step, max_step),
+                )
             centers[i] = cur
-        # Smooth kinks (~0.18s box) then clamp inside the frame.
-        k = max(1, int(round(0.18 * fps)))
-        if k > 1:
+
+        # Smooth kinks (~0.18s box), each side of the cut on its own so
+        # the box never averages tee frames with green ones.
+        def _smooth(a):
+            k = max(1, int(round(0.18 * fps)))
+            if k <= 1 or a.size < 2:
+                return a
             pad = np.concatenate(
-                [np.full(k, centers[0]), centers, np.full(k, centers[-1])],
+                [np.full(k, a[0]), a, np.full(k, a[-1])],
             )
-            centers = np.convolve(pad, np.ones(k) / k, mode="same")[k:-k]
+            return np.convolve(pad, np.ones(k) / k, mode="same")[k:-k]
+
+        if ci is not None and 0 < ci < n:
+            centers = np.concatenate(
+                [_smooth(centers[:ci]), _smooth(centers[ci:])],
+            )
+        else:
+            centers = _smooth(centers)
         centers = np.clip(centers, cw / 2.0, w - cw / 2.0)
 
         tmp_v = out.with_suffix(".pan.mp4")

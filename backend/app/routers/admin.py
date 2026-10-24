@@ -1610,7 +1610,9 @@ def make_clip_vertical(
                             _tsx.get("x") if _tsx else None
                         ),
                     )
-                    _made = make_vertical_pan(render_src, out_path, _ppath)
+                    _made = make_vertical_pan(
+                        render_src, out_path, _ppath, cut_sec=_cut,
+                    )
                     log.info(
                         "clip %s: vertical cut=%s green_x=%s drawn=%d",
                         clip.id, _cut,
@@ -1689,6 +1691,7 @@ def make_clip_vertical(
                         opening_x=_tsx["x"], total_dur=_rd,
                         ball_green_x=_gbx,
                     ),
+                    cut_sec=_c2,
                 )
         except Exception as exc:  # noqa: BLE001
             log.warning(
@@ -4451,7 +4454,7 @@ def _process_long_upload_segments(
                             ),
                         )
                         _made = make_vertical_pan(
-                            _vert_src, _vert_path, _ppath,
+                            _vert_src, _vert_path, _ppath, cut_sec=_cut,
                         )
                 except Exception as exc:  # noqa: BLE001
                     log.warning("vertical pan build failed: %s", exc)
