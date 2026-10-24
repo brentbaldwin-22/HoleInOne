@@ -42,10 +42,16 @@ log = logging.getLogger("golfreelz.retention")
 CLIPS_DIR = Path(__file__).resolve().parents[2] / settings.upload_dir / "clips"
 
 # Produced artefacts, recognised by name so that an orphan survives even
-# if its VideoClip row was deleted. All of them together are a tenth of
-# a gigabyte, so keeping a stray one costs nothing and losing a real one
-# costs a clip we can never rebuild.
-_KEEP_MARKERS = ("_composite", "_vertical", "_clean")
+# if its VideoClip row was deleted. Keeping a stray one costs nothing;
+# losing a real one costs a clip we cannot rebuild.
+#
+# THIS IS A BACKSTOP, NOT THE PROTECTION. A single-camera produce names
+# its deliverable after the segment with no marker at all -- see the
+# source_url assignment in routers/admin.py, which serves that exact
+# file -- so plenty of produced clips look identical to raw footage from
+# the filename alone. Only the database knows. That is why an empty
+# protected set aborts the sweep below rather than falling back to age.
+_KEEP_MARKERS = ("_composite", "_vertical", "_clean", "_ai_tracer", "_traced")
 
 # Only video is swept. Thumbnails average 0.13 MB and the gallery still
 # shows them for clips whose raw footage is long gone.
@@ -141,6 +147,7 @@ def sweep_clips(
         "bytes": 0,
         "errors": 0,
         "protected_by_db": 0,
+        "protected_hits": 0,
         "sample": [],
     }
 
@@ -153,6 +160,20 @@ def sweep_clips(
 
     keep = protected_names(db)
     report["protected_by_db"] = len(keep)
+
+    # REFUSE TO SWEEP ON AN EMPTY PROTECTED SET. Produced clips are
+    # indistinguishable from raw footage by filename, so if the query
+    # came back empty -- a dead connection, a migration mid-flight, an
+    # empty database on a fresh environment -- then deleting by age
+    # alone would delete the product. An empty set means "I could not
+    # find out", not "nothing is worth keeping".
+    if not keep:
+        report["skipped"] = (
+            "protected set is empty; refusing to sweep by age alone"
+        )
+        log.warning("retention: %s", report["skipped"])
+        return report
+
     cutoff = (datetime.utcnow() - timedelta(days=horizon_days)).timestamp()
 
     for path in directory.iterdir():
@@ -163,6 +184,7 @@ def sweep_clips(
             if stat.st_mtime >= cutoff:
                 continue
             if path.name in keep:
+                report["protected_hits"] += 1
                 continue
         except OSError:
             # Raced with another writer, or vanished between iterdir and
