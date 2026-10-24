@@ -301,6 +301,7 @@ export default function AdminProducedClips() {
                 const pinSrc = pick(live && live.pin_src, d && d.pin_src);
                 const swing = pick(live && live.swing_match, d && d.swing_match);
                 const clean = pick(live && live.clean_src, d && d.clean_src);
+                const srcKind = pick(live && live.src_kind, d && d.src_kind);
                 const num = (v, why) =>
                   v != null ? String(v) : why ? String(why) : "none";
                 const cutStr =
@@ -315,7 +316,13 @@ export default function AdminProducedClips() {
                     title="What the 9:16 render read off this clip's own frames. tracer = where the stroke starts (fraction of frame width). cut = the tee->green scene change. gball = where the ball finished, read from the green camera's tracer. pin = the flagstick. Any of them reading 'none' means that anchor was not found, and the pan falls back."
                   >
                     {`9:16 ${mode || "—"}`}
-                    {clean === false ? " · STAMPED SRC" : ""}
+                    {srcKind === "stamped"
+                      ? " · STAMPED SRC"
+                      : srcKind === "delogo"
+                        ? " · logo removed"
+                        : clean === false
+                          ? " · STAMPED SRC"
+                          : ""}
                     {swing ? ` · swing ${swing}` : ""}
                     {` · tracer ${num(tracer, tracerWhy)}`}
                     {` · cut ${cutStr}`}

@@ -1359,6 +1359,14 @@ def make_clip_vertical(
         ):
             render_src = CLIPS_DIR / _cand
             break
+    _src_kind = "clean" if render_src is not src_path else "stamped"
+    if render_src is src_path:
+        # Nothing unstamped survives for this clip. Rather than ship a
+        # crop with two GolfReelz logos in it, paint the baked one out.
+        _dl = _delogo_src(src_path)
+        if _dl is not None:
+            render_src = _dl
+            _src_kind = "delogo"
     # SAY WHEN WE ARE CROPPING ALREADY-STAMPED FOOTAGE. With no clean
     # copy there is nothing unstamped to render from, so the landscape
     # name plate and logo ride into the crop — and on a pan to the far
@@ -1378,7 +1386,7 @@ def make_clip_vertical(
     # it find the flag?") has been answered by squinting at the output
     # video. These are the numbers that decided it; returning them
     # turns the next report from a description into a reading.
-    _diag = {"clean_src": bool(_clean_src)}
+    _diag = {"clean_src": bool(_clean_src), "src_kind": _src_kind}
     try:
         if clip.long_upload_id:
             _up = db.get(LongVideoUpload, clip.long_upload_id)
@@ -1794,6 +1802,7 @@ def make_clip_vertical(
             "pin_src": _diag.get("pin_src"),
             "swing_match": _diag.get("swing_match"),
             "clean_src": _diag.get("clean_src"),
+            "src_kind": _diag.get("src_kind"),
             "at": int(time.time()),
         },
     }
@@ -5097,6 +5106,78 @@ def _green_focus_x(video_path, at_sec):
         return float(det.x)
     except Exception as exc:  # noqa: BLE001
         log.warning("vertical: could not find a green focus point: %s", exc)
+        return None
+
+
+def _delogo_src(src_path: Path):
+    """A copy of `src_path` with the baked-in brand logo painted out.
+
+    THE LAST RESORT, NOT THE FIRST. A vertical should be cropped from
+    the pre-overlay `_clean` copy; this exists only for clips produced
+    before that copy was kept, where the alternative was a Re-Produce
+    -- which mints a new VideoClip id and, as upload 901 showed, strands
+    the swing metadata pointing at the old one. Repairing the picture is
+    cheaper than rebuilding the row.
+
+    ffmpeg's `delogo` interpolates the rectangle from its own border, so
+    it is close to invisible over the sky the logo usually sits on and
+    gets blurrier the busier the background behind it. Only the
+    PERSISTENT right-hand logo is removed: the name plate's width
+    depends on the player's name, which can have changed since the clip
+    was stamped, and a rectangle guessed too small leaves an edge while
+    one guessed too large smears picture that was never covered.
+
+    Cached as `{stem}_delogo.mp4` so the cost is paid once. Returns the
+    path, or None when anything at all goes wrong -- a vertical framed
+    from stamped footage is a worse clip, not a failed render.
+    """
+    try:
+        out = src_path.with_name(f"{src_path.stem}_delogo.mp4")
+        if out.exists() and out.stat().st_size > 0:
+            return out
+        from ..services.intro_overlay import brand_logo_rect
+
+        _info = probe_video_info(src_path) or {}
+        _w = int(_info.get("width") or 0)
+        _h = int(_info.get("height") or 0)
+        if _w <= 0 or _h <= 0:
+            return None
+        _rect = brand_logo_rect(_w)
+        if _rect is None:
+            return None
+        _x, _y, _pw, _ph = _rect
+        # delogo wants the box strictly inside the frame; clamp rather
+        # than let ffmpeg refuse the whole filter.
+        _x = max(1, min(_x, _w - 2))
+        _y = max(1, min(_y, _h - 2))
+        _pw = max(1, min(_pw, _w - _x - 1))
+        _ph = max(1, min(_ph, _h - _y - 1))
+        _tmp = out.with_suffix(".delogo.tmp.mp4")
+        _cmd = [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", str(src_path),
+            "-vf", f"delogo=x={_x}:y={_y}:w={_pw}:h={_ph}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "copy", "-movflags", "+faststart",
+            str(_tmp),
+        ]
+        import subprocess as _sp
+
+        _sp.run(
+            _cmd, check=True, timeout=600,
+            stdout=_sp.DEVNULL, stderr=_sp.PIPE,
+        )
+        if not _tmp.exists() or _tmp.stat().st_size == 0:
+            _tmp.unlink(missing_ok=True)
+            return None
+        _tmp.replace(out)
+        log.info(
+            "clip source %s: brand logo painted out at %d,%d %dx%d",
+            src_path.name, _x, _y, _pw, _ph,
+        )
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.warning("delogo failed for %s: %s", src_path.name, exc)
         return None
 
 

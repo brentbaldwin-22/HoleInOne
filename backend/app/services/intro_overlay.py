@@ -47,6 +47,10 @@ TEXT_PRIMARY = (255, 255, 255, 255)
 TEXT_MUTED = (210, 218, 230, 255)
 
 # Animation timing (seconds)
+# Padding off the top and sides for the intro panels. Named because
+# brand_logo_rect() has to reproduce this placement exactly in order to
+# paint the logo back OUT of a clip that was already stamped.
+INTRO_PAD = 24
 SLIDE_IN_SEC = 0.4
 HOLD_SEC = 3.6
 SLIDE_OUT_SEC = 0.4
@@ -544,7 +548,7 @@ def apply_intro_overlay(
 
         # 24 px padding off the top + sides; panels keep their rendered
         # size, x slides across the video width via the expressions.
-        pad = 24
+        pad = INTRO_PAD
         left_x_expr = _x_expr_left(left_img.width, 0, pad)
         right_x_expr = _x_expr_right(right_img.width, 0, pad)
 
@@ -589,6 +593,38 @@ def apply_intro_overlay(
         target_xy,
     )
     return True
+
+
+def brand_logo_rect(video_w: int) -> tuple[int, int, int, int] | None:
+    """Where the persistent brand logo sits in a LANDSCAPE render, as
+    (x, y, w, h). None when it cannot be known.
+
+    Exists so a 9:16 crop can paint the logo back out of footage that
+    was already stamped. A vertical is cropped from the landscape clip,
+    and when no pre-overlay copy survives, the landscape logo rides
+    into the crop -- magnified, because the crop is ~32% of the frame
+    width scaled back up -- and lands next to the vertical's own logo.
+    Two GolfReelz marks, one of them three times the size it should be.
+
+    Derived from render_right_panel() rather than from measurements,
+    so it cannot drift away from what the compositor actually drew. The
+    logo panel carries no text, so its size is deterministic; the name
+    plate's is not, which is why only this one is offered.
+    """
+    if not HAS_PIL:
+        return None
+    try:
+        panel = render_right_panel()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("intro_overlay: brand_logo_rect panel failed: %s", exc)
+        return None
+    if panel is None:
+        return None
+    w, h = panel.size
+    x = int(video_w) - w - INTRO_PAD
+    if x < 1 or w < 8 or h < 8:
+        return None
+    return (x, INTRO_PAD, int(w), int(h))
 
 
 def apply_intro_overlay_inplace(
