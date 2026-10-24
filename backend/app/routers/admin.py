@@ -5230,6 +5230,16 @@ def _measure_logo_rect(src_path: Path, frame_w: int, frame_h: int):
         return None
 
 
+# WHAT THE CACHED CLEAN COPY WAS MADE WITH. _delogo_src caches its
+# result, so a copy written by an older version of this code is reused
+# forever and the new removal silently never runs -- which is exactly
+# what happened when the distance-plate pass shipped: every clip handed
+# back a cached file that still had the plate in it, and the render
+# looked broken when it had simply never been asked to do the work.
+# BUMP THIS whenever what gets painted out changes.
+_DELOGO_VERSION = 2
+
+
 def _measure_distance_rect(src_path: Path, frame_w: int, frame_h: int):
     """Find the baked DISTANCE TO PIN plate, as (x, y, w, h, first_sec).
 
@@ -5338,7 +5348,9 @@ def _delogo_src(src_path: Path):
     from stamped footage is a worse clip, not a failed render.
     """
     try:
-        out = src_path.with_name(f"{src_path.stem}_nologo.mp4")
+        out = src_path.with_name(
+            f"{src_path.stem}_nologo{_DELOGO_VERSION}.mp4",
+        )
         if out.exists() and out.stat().st_size > 0:
             return out
         from ..services.intro_overlay import brand_logo_rect
