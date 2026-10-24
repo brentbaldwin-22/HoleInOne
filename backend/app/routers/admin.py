@@ -1778,6 +1778,28 @@ def make_clip_vertical(
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("clip %s: vertical overlay failed: %s", clip_id, exc)
+    # THE DISTANCE, IN THE VERTICAL'S OWN GEOMETRY. The landscape plate
+    # is centred on the landscape frame, so a 9:16 crop -- about a third
+    # as wide, and ending centred on the PIN rather than on the frame --
+    # chopped it against the left edge. It is painted out of the source
+    # in _delogo_src; this draws it again at x=(W-w)/2 of the vertical,
+    # which is where the closing pan has parked the flag.
+    #
+    # tail_sec=0 because the source already carries the held tail the
+    # plate is meant to be read against; a second one would end the clip
+    # on five seconds of frozen picture.
+    _dist_ft = clip.distance_from_pin_feet
+    _diag.update(dist_plate=None)
+    if _dist_ft:
+        try:
+            _ok_dist = apply_distance_plate_inplace(
+                out_path, f"{int(_dist_ft)} FT", tail_sec=0.0,
+            )
+            _diag.update(dist_plate=f"{int(_dist_ft)} FT" if _ok_dist else "failed")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("clip %s: vertical distance plate failed: %s",
+                        clip_id, exc)
+            _diag.update(dist_plate="failed")
     clip.vertical_url = (
         f"{settings.app_base_url}/uploads/clips/{out_path.name}"
         f"?v={int(out_path.stat().st_mtime)}"
@@ -5207,6 +5229,91 @@ def _measure_logo_rect(src_path: Path, frame_w: int, frame_h: int):
         return None
 
 
+def _measure_distance_rect(src_path: Path, frame_w: int, frame_h: int):
+    """Find the baked DISTANCE TO PIN plate, as (x, y, w, h, first_sec).
+
+    The landscape plate is drawn at x=(W-w)/2 -- centred in the
+    LANDSCAPE frame. A 9:16 crop is about a third of that width and
+    ends centred on the pin rather than on the frame, so the plate
+    arrives chopped: Ben's clip reads "ISTANCE TO PIN" against the left
+    edge. It has to come out and be redrawn in the vertical's own
+    geometry.
+
+    It is an easy thing to find: PANEL_BOTTOM_BLUE is a solid, opaque,
+    very dark navy, it is a wide block, and it sits in the top of the
+    frame. Nothing else on a golf course is that colour. It also only
+    appears at the END, so the time it first shows is returned with it
+    -- painting the region out for the whole clip would smear whatever
+    was there for the minutes before it existed.
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        cap = cv2.VideoCapture(str(src_path))
+        if not cap.isOpened():
+            return None
+        try:
+            _fps = float(cap.get(cv2.CAP_PROP_FPS) or 0) or 30.0
+            _n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if _n <= 0:
+                return None
+            # The plate lands in the closing seconds; walk the back half
+            # and stop at the first frame carrying it.
+            _first, _rect = None, None
+            for _f in [x / 20.0 for x in range(10, 20)]:
+                _i = int(_n * _f)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, _i)
+                ok, fr = cap.read()
+                if not ok or fr is None:
+                    continue
+                _b = fr[:, :, 0].astype(np.int16)
+                _g = fr[:, :, 1].astype(np.int16)
+                _r = fr[:, :, 2].astype(np.int16)
+                # RGB(10,26,70) laid down opaque. Dark, blue over red,
+                # and nowhere near a sky blue, which is light.
+                _m = (
+                    (_b >= 40) & (_b <= 120) & (_r <= 70)
+                    & ((_b - _r) >= 20) & (_g <= 90)
+                )
+                _m[int(frame_h * 0.45):, :] = False
+                _ncc, _lab, _st, _ = cv2.connectedComponentsWithStats(
+                    _m.astype(np.uint8), connectivity=8,
+                )
+                _best, _best_a = None, 0
+                for _ci in range(1, _ncc):
+                    _a = int(_st[_ci, cv2.CC_STAT_AREA])
+                    if _a > _best_a:
+                        _best, _best_a = _ci, _a
+                if _best is None:
+                    continue
+                _x = int(_st[_best, cv2.CC_STAT_LEFT])
+                _y = int(_st[_best, cv2.CC_STAT_TOP])
+                _w = int(_st[_best, cv2.CC_STAT_WIDTH])
+                _h = int(_st[_best, cv2.CC_STAT_HEIGHT])
+                # A plate is WIDE and SHORT and sits near the middle.
+                # Shadow under a tree line is none of those.
+                if _w < frame_w * 0.08 or _w > frame_w * 0.55:
+                    continue
+                if _h < 20 or _h > frame_h * 0.30:
+                    continue
+                if _w < _h:
+                    continue
+                if _best_a < _w * _h * 0.55:
+                    continue
+                _first, _rect = _i / _fps, (_x, _y, _w, _h)
+                break
+            if _rect is None:
+                return None
+            return (*_rect, float(_first))
+        finally:
+            cap.release()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("measure distance rect failed for %s: %s",
+                    src_path.name, exc)
+        return None
+
+
 def _delogo_src(src_path: Path):
     """A copy of `src_path` with the baked-in brand logo painted out.
 
@@ -5262,11 +5369,30 @@ def _delogo_src(src_path: Path):
         _y = max(1, min(_y, _h - 2))
         _pw = max(1, min(_pw, _w - _x - 1))
         _ph = max(1, min(_ph, _h - _y - 1))
+        _filters = [f"delogo=x={_x}:y={_y}:w={_pw}:h={_ph}"]
+        # AND THE DISTANCE PLATE. Centred in the landscape frame, so a
+        # 9:16 crop clips it; removed here and redrawn on the vertical
+        # where it can be centred on the pin instead. Enabled only from
+        # the moment it appears -- before that the region is ordinary
+        # picture and must be left alone.
+        _dr = _measure_distance_rect(src_path, _w, _h)
+        _dist_removed = False
+        if _dr is not None:
+            _dx, _dy, _dw, _dh, _dt = _dr
+            _dx = max(1, _dx - 3)
+            _dy = max(1, _dy - 3)
+            _dw = max(1, min(_dw + 6, _w - _dx - 1))
+            _dh = max(1, min(_dh + 6, _h - _dy - 1))
+            _filters.append(
+                f"delogo=x={_dx}:y={_dy}:w={_dw}:h={_dh}"
+                f":enable='gte(t,{max(0.0, _dt - 0.6):.2f})'"
+            )
+            _dist_removed = True
         _tmp = out.with_suffix(".delogo.tmp.mp4")
         _cmd = [
             "ffmpeg", "-y", "-loglevel", "error",
             "-i", str(src_path),
-            "-vf", f"delogo=x={_x}:y={_y}:w={_pw}:h={_ph}",
+            "-vf", ",".join(_filters),
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
             "-c:a", "copy", "-movflags", "+faststart",
             str(_tmp),
@@ -5282,8 +5408,10 @@ def _delogo_src(src_path: Path):
             return None
         _tmp.replace(out)
         log.info(
-            "clip source %s: brand logo painted out at %d,%d %dx%d (%s)",
+            "clip source %s: logo painted out at %d,%d %dx%d (%s)"
+            "%s",
             src_path.name, _x, _y, _pw, _ph, _rect_src,
+            "; distance plate removed" if _dist_removed else "",
         )
         return out
     except Exception as exc:  # noqa: BLE001

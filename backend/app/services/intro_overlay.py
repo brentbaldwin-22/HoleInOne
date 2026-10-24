@@ -735,8 +735,14 @@ def apply_distance_plate(
     distance_display: str,
     label: str = "DISTANCE TO PIN",
     rest_at_sec: float | None = None,
+    tail_sec: float | None = None,
 ) -> bool:
     """Drop the distance plate into the top of the frame at the end.
+
+    `tail_sec` overrides how much held frame is appended so the plate
+    can be read. The default is right for a freshly produced clip; it
+    must be 0 for a 9:16 crop, whose source already carries that tail
+    and would otherwise end on five seconds of frozen picture.
 
     Separate from the intro overlay on purpose: the intro is about the
     hole and can be drawn before anything is known, while this is the
@@ -767,7 +773,8 @@ def apply_distance_plate(
     # spoiler and invites the obvious "how does it know yet?".
     # The tail is part of the timeline the plate is scheduled against,
     # so a late drop still has somewhere to land.
-    out_dur = dur + DIST_TAIL_SEC
+    _tail = DIST_TAIL_SEC if tail_sec is None else max(0.0, float(tail_sec))
+    out_dur = dur + _tail
     if rest_at_sec is not None and 0 <= rest_at_sec < dur:
         start_t = min(rest_at_sec + DIST_REST_LEAD_SEC,
                       max(0.0, out_dur - DIST_DROP_SEC - 0.4))
@@ -784,9 +791,10 @@ def apply_distance_plate(
             "ffmpeg", "-y", "-loglevel", "error",
             "-i", str(input_video), "-i", str(png),
             "-filter_complex",
-            (f"[0:v]tpad=stop_mode=clone:"
-             f"stop_duration={DIST_TAIL_SEC}[vv];"
-             f"[vv][1:v]overlay=x=(W-w)/2:y='{y_expr}':eval=frame"),
+            ((f"[0:v]tpad=stop_mode=clone:stop_duration={_tail}[vv];"
+              f"[vv][1:v]overlay=x=(W-w)/2:y='{y_expr}':eval=frame")
+             if _tail > 0 else
+             (f"[0:v][1:v]overlay=x=(W-w)/2:y='{y_expr}':eval=frame")),
             "-c:v", "libx264", "-preset", "veryfast",
             "-c:a", "copy", "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
@@ -844,11 +852,12 @@ def apply_distance_plate_inplace(
     video_path: Path, distance_display: str,
     label: str = "DISTANCE TO PIN",
     rest_at_sec: float | None = None,
+    tail_sec: float | None = None,
 ) -> bool:
     """As above, writing to a temp file and renaming over the original."""
     tmp = video_path.with_suffix(video_path.suffix + ".dist.tmp.mp4")
     ok = apply_distance_plate(video_path, tmp, distance_display, label=label,
-                              rest_at_sec=rest_at_sec)
+                              rest_at_sec=rest_at_sec, tail_sec=tail_sec)
     if not ok:
         tmp.unlink(missing_ok=True)
         return False
