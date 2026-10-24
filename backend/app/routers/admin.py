@@ -1308,6 +1308,11 @@ def list_all_clips(
                 "participant_name": participant.name if participant else None,
                 "fps": round(fps_val, 1) if fps_val is not None else None,
                 "source_device": source_device,
+                # What the last 9:16 render read off this clip's own
+                # frames. Null until one has been rendered.
+                "vertical_diag": (
+                    (c.tracer_diagnostics or {}).get("vertical") or None
+                ),
             }
         )
     return out
@@ -1745,6 +1750,28 @@ def make_clip_vertical(
         f"{settings.app_base_url}/uploads/clips/{out_path.name}"
         f"?v={int(out_path.stat().st_mtime)}"
     )
+    # THE FOUR ANCHORS, KEPT. They used to live only in this response,
+    # so the readout showed for whichever clip was rendered last and
+    # vanished on reload -- which makes "is this getting better or
+    # worse?" unanswerable across a grid of clips. Stored on the row,
+    # every card shows its own, and a run can be compared against the
+    # one before it rather than remembered.
+    clip.tracer_diagnostics = {
+        **(clip.tracer_diagnostics or {}),
+        "vertical": {
+            "mode": "pan" if _made else "static",
+            "tracer": _diag.get("tracer_x"),
+            "tracer_why": _diag.get("tracer_why"),
+            "cut": _diag.get("cut"),
+            "cut_src": _diag.get("cut_src"),
+            "gball": _diag.get("green_ball_x"),
+            "gball_why": _diag.get("green_ball_why"),
+            "pin": _diag.get("pin_x"),
+            "swing_match": _diag.get("swing_match"),
+            "clean_src": _diag.get("clean_src"),
+            "at": int(time.time()),
+        },
+    }
     db.commit()
     log.info("clip %s: vertical variant rendered (%s)", clip.id, out_path.name)
     return {

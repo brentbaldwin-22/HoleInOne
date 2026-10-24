@@ -23,6 +23,13 @@ function isProduced(c) {
   return false;
 }
 
+const diagStyle = {
+  fontSize: "0.72rem",
+  opacity: 0.75,
+  marginTop: "0.35rem",
+  fontFamily: "ui-monospace, SFMono-Regular, monospace",
+};
+
 export default function AdminProducedClips() {
   const adminPassword =
     localStorage.getItem(ADMIN_PW_STORAGE) ||
@@ -265,53 +272,57 @@ export default function AdminProducedClips() {
                   🗑
                 </button>
               </div>
-              {vertInfo && vertInfo.clip_id === c.id ? (
-                <div
-                  style={{
-                    fontSize: "0.72rem",
-                    opacity: 0.75,
-                    marginTop: "0.35rem",
-                    fontFamily: "ui-monospace, SFMono-Regular, monospace",
-                  }}
-                  title="What the last 9:16 render did. mode=pan means the crop follows the tracer; static means one fixed framing. cut is the tee->green scene change; without it the closing pan to the pin cannot run."
-                >
-                  9:16 {vertInfo.mode}
-                  {vertInfo.clean_src === false ? " · STAMPED SRC" : ""}
-                  {vertInfo.swing_match
-                    ? ` · swing ${vertInfo.swing_match}` : ""}
-                  {vertInfo.track_points != null
-                    ? ` · track ${vertInfo.track_points}` : ""}
-                  {vertInfo.frame_w != null
-                    ? ` · fw ${vertInfo.fw_fixed || vertInfo.frame_w}`
-                      + (vertInfo.track_max != null
-                         ? ` · trackmax ${vertInfo.track_max}` : "")
-                    : ""}
-                  {vertInfo.launch_x != null
-                    ? ` · launch ${vertInfo.launch_x}` : ""}
-                  {vertInfo.tracer_x != null
-                    ? ` · tracer ${vertInfo.tracer_x}`
-                      + (vertInfo.tracer_n != null
-                         ? `(${vertInfo.tracer_n}f±${vertInfo.tracer_spread ?? 0})`
-                         : "")
-                    : vertInfo.tracer_why
-                      ? ` · tracer ${vertInfo.tracer_why}`
-                        + (vertInfo.tracer_best != null
-                           ? `(${vertInfo.tracer_best}px)` : "")
-                      : ""}
-                  {vertInfo.cut != null
-                    ? ` · cut ${vertInfo.cut}s`
-                      + (vertInfo.cut_src ? `(${vertInfo.cut_src})` : "")
-                    : " · cut none"}
-                  {vertInfo.green_ball_x != null
-                    ? ` · gball ${vertInfo.green_ball_x}`
-                    : vertInfo.green_ball_why
-                      ? ` · gball ${vertInfo.green_ball_why}` : ""}
-                  {vertInfo.ball_x != null
-                    ? ` · ball ${vertInfo.ball_x}` : ""}
-                  {vertInfo.pin_x != null
-                    ? ` · pin ${vertInfo.pin_x}` : " · pin none"}
-                </div>
-              ) : null}
+              {(() => {
+                // THE FOUR ANCHORS, ON EVERY CARD. This used to render
+                // only for whichever clip was rendered last, so the
+                // numbers vanished on reload and two clips could never
+                // be compared. The live response wins for the clip just
+                // rendered (it is fresher than the row); every other
+                // card reads what its last render stored.
+                const live =
+                  vertInfo && vertInfo.clip_id === c.id ? vertInfo : null;
+                const d = c.vertical_diag || null;
+                if (!live && !d) {
+                  return (
+                    <div style={diagStyle} title="No 9:16 render yet — press ⟳ to build one.">
+                      9:16 not rendered
+                    </div>
+                  );
+                }
+                const pick = (a, b) => (live ? a : b);
+                const mode = pick(live && live.mode, d && d.mode);
+                const tracer = pick(live && live.tracer_x, d && d.tracer);
+                const tracerWhy = pick(live && live.tracer_why, d && d.tracer_why);
+                const cut = pick(live && live.cut, d && d.cut);
+                const cutSrc = pick(live && live.cut_src, d && d.cut_src);
+                const gball = pick(live && live.green_ball_x, d && d.gball);
+                const gballWhy = pick(live && live.green_ball_why, d && d.gball_why);
+                const pin = pick(live && live.pin_x, d && d.pin);
+                const swing = pick(live && live.swing_match, d && d.swing_match);
+                const clean = pick(live && live.clean_src, d && d.clean_src);
+                const num = (v, why) =>
+                  v != null ? String(v) : why ? String(why) : "none";
+                const cutStr =
+                  cut == null
+                    ? "none"
+                    : cutSrc
+                      ? cut + "s(" + cutSrc + ")"
+                      : cut + "s";
+                return (
+                  <div
+                    style={diagStyle}
+                    title="What the 9:16 render read off this clip's own frames. tracer = where the stroke starts (fraction of frame width). cut = the tee->green scene change. gball = where the ball finished, read from the green camera's tracer. pin = the flagstick. Any of them reading 'none' means that anchor was not found, and the pan falls back."
+                  >
+                    {`9:16 ${mode || "—"}`}
+                    {clean === false ? " · STAMPED SRC" : ""}
+                    {swing ? ` · swing ${swing}` : ""}
+                    {` · tracer ${num(tracer, tracerWhy)}`}
+                    {` · cut ${cutStr}`}
+                    {` · gball ${num(gball, gballWhy)}`}
+                    {` · pin ${num(pin)}`}
+                  </div>
+                );
+              })()}
             </div>
           );
         })}
