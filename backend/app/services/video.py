@@ -243,19 +243,22 @@ def make_vertical_pan(
             if cut_sec is not None and 0 < float(cut_sec) * fps < n
             else None
         )
-        # ONE FRAME EARLY, DELIBERATELY. If the detected cut is off by
-        # a frame, erring late leaves the first frame of the green half
-        # framed on the tee — visible, because it is the moment the eye
-        # arrives at a new picture. Erring early costs the LAST frame
-        # of the tee half instead, 33ms of a shot already flying away
-        # from the camera, which nobody can see.
+        # JUMP ONE FRAME EARLY, BUT TO THE POST-CUT TARGET. Leading
+        # the jump guards against the detection being a frame late,
+        # where the cost lands on the first frame of the green half —
+        # the moment the eye arrives at a new picture. But the target
+        # has to be the one from AFTER the cut: taking targets[ci-1]
+        # lands on the tee position and then crawls to the ball at the
+        # speed limit, which is the slow pan this was meant to remove.
+        jump_at, jump_to = None, None
         if ci is not None:
-            ci = max(0, ci - 1)
+            jump_to = int(min(n - 1, ci))
+            jump_at = max(0, ci - 1)
         centers = np.empty(n)
         cur = float(targets[0])
         for i in range(n):
-            if ci is not None and i == ci:
-                cur = float(targets[i])
+            if jump_at is not None and i == jump_at:
+                cur = float(targets[jump_to])
             else:
                 cur += float(
                     np.clip(targets[i] - cur, -max_step, max_step),
@@ -273,9 +276,9 @@ def make_vertical_pan(
             )
             return np.convolve(pad, np.ones(k) / k, mode="same")[k:-k]
 
-        if ci is not None and 0 < ci < n:
+        if jump_at is not None and 0 < jump_at < n:
             centers = np.concatenate(
-                [_smooth(centers[:ci]), _smooth(centers[ci:])],
+                [_smooth(centers[:jump_at]), _smooth(centers[jump_at:])],
             )
         else:
             centers = _smooth(centers)
