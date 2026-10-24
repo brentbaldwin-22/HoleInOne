@@ -295,5 +295,21 @@ class Settings(BaseSettings):
     embedding_min_margin: float = 0.05  # min cosine margin between top-1 and top-2
     upload_dir: str = "uploads"
 
+    # CLIP RETENTION. Raw tee/green footage is ~99% of the clips
+    # directory and about 3% of it ever becomes a produced clip, so
+    # without a horizon the disk fills and every ffmpeg write starts
+    # failing with "No space left on device" -- which is what happened
+    # on 2026-10-24. Deliverables (composite / vertical / clean) and
+    # thumbnails are never swept; only raw video ages out.
+    #
+    # 0 turns the sweep off entirely. Deletion is permanent: there is
+    # no object-storage mirror behind the Render deployment.
+    clip_retention_days: int = 30
+    # Keep the raw halves of an upload that actually produced a clip,
+    # regardless of age. A safety margin on top of the horizon -- the
+    # difference between re-producing an old shot with new framing and
+    # losing that footage -- at a cost of roughly a gigabyte.
+    clip_retention_keep_produced: bool = True
+
 
 settings = Settings()

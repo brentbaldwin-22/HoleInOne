@@ -492,6 +492,14 @@ def _startup() -> None:
     cameras.start_camera_event_recovery_sweeper()
     # Send the thank-you / review email once its delay has elapsed.
     thanks.start_thanks_sweeper()
+    # Age out raw camera footage. Without this the clips directory grows
+    # ~0.5 GB/day and the disk fills, which presents as produce 500s
+    # rather than as a storage problem.
+    try:
+        from .services import retention
+        retention.start_retention_sweeper()
+    except Exception as exc:  # noqa: BLE001
+        _glog.warning("startup: retention sweeper did not start: %s", exc)
 
 
 # Demo courses previously seeded into the DB that we no longer want shown

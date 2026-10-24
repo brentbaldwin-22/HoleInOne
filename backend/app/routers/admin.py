@@ -16595,6 +16595,73 @@ def list_cameras(db: Session = Depends(get_db)):
     return out
 
 
+@router.post("/storage/retention")
+def run_clip_retention(
+    dry_run: bool = True,
+    days: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Age out raw camera footage, or show what doing so would remove.
+
+    DRY RUN BY DEFAULT, and deliberately so: there is no object-storage
+    mirror behind this deployment, so a file deleted here is gone. Call
+    with ?dry_run=false once the sample reads the way you expect.
+    """
+    from ..services import retention
+
+    return retention.sweep_clips(db, days=days, dry_run=dry_run)
+
+
+@router.get("/storage")
+def storage_usage():
+    """Disk headroom and what is sitting on it, by category.
+
+    Exists because the alternative is reading ffmpeg's "No space left on
+    device" out of a 500 and working backwards.
+    """
+    import shutil as _sh
+
+    from ..services import retention as _ret
+
+    usage = _sh.disk_usage(CLIPS_DIR)
+    out: dict = {
+        "clips_dir": str(CLIPS_DIR),
+        "disk_total_gb": round(usage.total / 1e9, 2),
+        "disk_used_gb": round(usage.used / 1e9, 2),
+        "disk_free_gb": round(usage.free / 1e9, 2),
+        "disk_used_pct": round(usage.used / usage.total * 100, 1),
+        "retention_days": settings.clip_retention_days,
+        "keep_produced": settings.clip_retention_keep_produced,
+    }
+
+    buckets: dict[str, dict] = {}
+    for path in CLIPS_DIR.iterdir():
+        try:
+            if not path.is_file():
+                continue
+            size = path.stat().st_size
+        except OSError:
+            continue
+        name = path.name
+        if any(m in name for m in _ret._KEEP_MARKERS):
+            key = next(m.lstrip("_") for m in _ret._KEEP_MARKERS if m in name)
+        elif path.suffix.lower() in _ret._VIDEO_SUFFIXES:
+            key = "raw_video"
+        else:
+            key = "other"
+        b = buckets.setdefault(key, {"files": 0, "bytes": 0})
+        b["files"] += 1
+        b["bytes"] += size
+
+    out["by_category"] = {
+        k: {"files": v["files"], "gb": round(v["bytes"] / 1e9, 2)}
+        for k, v in sorted(
+            buckets.items(), key=lambda kv: -kv[1]["bytes"]
+        )
+    }
+    return out
+
+
 @router.get("/diagnostics")
 def environment_diagnostics(db: Session = Depends(get_db)):
     """One-shot health readout of everything the produce pipeline needs,
