@@ -243,6 +243,14 @@ def make_vertical_pan(
             if cut_sec is not None and 0 < float(cut_sec) * fps < n
             else None
         )
+        # ONE FRAME EARLY, DELIBERATELY. If the detected cut is off by
+        # a frame, erring late leaves the first frame of the green half
+        # framed on the tee — visible, because it is the moment the eye
+        # arrives at a new picture. Erring early costs the LAST frame
+        # of the tee half instead, 33ms of a shot already flying away
+        # from the camera, which nobody can see.
+        if ci is not None:
+            ci = max(0, ci - 1)
         centers = np.empty(n)
         cur = float(targets[0])
         for i in range(n):

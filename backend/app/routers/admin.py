@@ -5302,7 +5302,34 @@ def _detect_cut_sec(video_path, step=3, min_sec=1.5):
             # and put the closing pan in the middle of the flight.
             if t < min_sec or peak < max(6.0, med * 4.0):
                 return None
-            return t
+
+            # NOW FIND THE EXACT FRAME. The coarse pass only looks
+            # every `step` frames, so it can name a cut up to that many
+            # frames late — and the renderer teleports on the frame it
+            # is given, which left a few frames of the green half still
+            # framed on the tee. Re-walk the neighbourhood one frame at
+            # a time; the spike lands on the FIRST frame of the new
+            # scene, which is exactly where the jump belongs.
+            kf = int(round(t * fps))
+            lo = max(1, kf - stride - 1)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, lo - 1)
+            prev = None
+            best_i, best_d = kf, -1.0
+            for i in range(lo - 1, min(kf + 2, int(1e9))):
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    break
+                g = cv2.cvtColor(
+                    cv2.resize(frame, (160, 90),
+                               interpolation=cv2.INTER_AREA),
+                    cv2.COLOR_BGR2GRAY,
+                ).astype(np.int16)
+                if prev is not None:
+                    d = float(np.abs(g - prev).mean())
+                    if d > best_d:
+                        best_d, best_i = d, i
+                prev = g
+            return best_i / fps
         finally:
             cap.release()
     except Exception:  # noqa: BLE001
