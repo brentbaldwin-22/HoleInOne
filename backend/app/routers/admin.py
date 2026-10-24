@@ -1379,9 +1379,14 @@ def make_clip_vertical(
             _up = db.get(LongVideoUpload, clip.long_upload_id)
             _em = (_up.edit_metrics or {}) if _up else {}
             _fw = float(_em.get("frame_width") or 0)
-            for _sw in _em.get("swings") or []:
-                if _sw.get("clip_id") != clip.id:
-                    continue
+            # ONE SWING, CHOSEN DELIBERATELY. This used to scan for an
+            # exact clip_id and `continue` past everything else, so a
+            # stale id -- which a re-produce leaves behind as a matter
+            # of course -- dropped the clip to the metadata-less path
+            # with its ball track still sitting in edit_metrics.
+            _sel, _how = _swing_for_clip(db, clip, _up, _em)
+            _diag.update(swing_match=_how)
+            for _sw in ([_sel] if _sel is not None else []):
                 _fps = float(_sw.get("fps") or 0) or 30.0
                 _off = int(_sw.get("start_frame") or 0)
                 _ball = _sw.get("ball") or {}
@@ -5041,6 +5046,92 @@ def _green_focus_x(video_path, at_sec):
     except Exception as exc:  # noqa: BLE001
         log.warning("vertical: could not find a green focus point: %s", exc)
         return None
+
+
+def _swing_for_clip(db, clip, up, em):
+    """WHICH SWING IN THIS UPLOAD PRODUCED THIS CLIP.
+
+    Returns (swing_dict_or_None, how_it_matched) so the readout can say
+    which route answered rather than leaving a silent fallback.
+
+    `clip_id` was stamped onto the swing at produce time precisely so
+    the mapping would survive a clip being deleted, where matching by
+    position could not. In practice it does not survive a RE-produce:
+    measured on upload 901, the swings still pointed at clips 964 and
+    965 while the upload's live clips were 966-969, and only the one
+    swing produced most recently carried a valid id. Four clips out of
+    five then fell through to the metadata-less path and rendered as a
+    static hold -- with a perfectly good 11-to-27-point ball track
+    sitting in edit_metrics the whole time.
+
+    So when the id misses, match on WHEN. The clip's captured_at is
+    base_captured_at + the cut's start offset, and the swing records
+    start_frame/fps, which is the same offset measured the other way.
+    Unlike both an id and an ordinal, a timestamp survives deletions
+    AND re-produces, because it describes the shot rather than the row.
+
+    A swing already stamped with a DIFFERENT live clip's id is skipped:
+    that one has an owner, and two clips must never claim one track.
+    """
+    swings = [s for s in (em.get("swings") or []) if isinstance(s, dict)]
+    if not swings:
+        return None, "no swings"
+
+    # 1. The id stamped at produce time, when it still points here.
+    for sw in swings:
+        try:
+            if sw.get("clip_id") is not None and int(sw["clip_id"]) == clip.id:
+                return sw, "id"
+        except (TypeError, ValueError):
+            continue
+
+    # 2. Fall back to the shot's position in the source recording.
+    base = getattr(up, "base_captured_at", None)
+    if base is None or clip.captured_at is None:
+        return None, "no time base"
+    try:
+        want = (clip.captured_at - base).total_seconds()
+    except TypeError:
+        return None, "no time base"
+
+    # Ids belonging to OTHER clips that still exist under this upload.
+    try:
+        _live = {
+            int(r[0]) for r in db.query(VideoClip.id)
+            .filter(VideoClip.long_upload_id == up.id)
+            .filter(VideoClip.id != clip.id)
+        }
+    except Exception:  # noqa: BLE001
+        _live = set()
+
+    best, best_d = None, None
+    for sw in swings:
+        _sid = sw.get("clip_id")
+        try:
+            if _sid is not None and int(_sid) in _live:
+                continue
+        except (TypeError, ValueError):
+            pass
+        _sf = sw.get("start_frame")
+        if _sf is None:
+            continue
+        _fps = float(sw.get("fps") or 0) or 30.0
+        try:
+            d = abs(float(_sf) / _fps - want)
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+        if best_d is None or d < best_d:
+            best, best_d = sw, d
+
+    # TOLERANCE, NOT NEAREST-WINS. A clip whose swing was deleted would
+    # otherwise adopt whichever track happened to be least far away and
+    # pan along a flight that is not its own -- worse than no track at
+    # all, because it looks deliberate.
+    if best is not None and best_d is not None and best_d <= 2.5:
+        return best, "time %.1fs" % best_d
+    return None, (
+        "time miss %.1fs" % best_d if best_d is not None else "no candidate"
+    )
 
 
 def _launch_focus_x(track, frame_w):

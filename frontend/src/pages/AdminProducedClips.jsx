@@ -277,6 +277,8 @@ export default function AdminProducedClips() {
                 >
                   9:16 {vertInfo.mode}
                   {vertInfo.clean_src === false ? " · STAMPED SRC" : ""}
+                  {vertInfo.swing_match
+                    ? ` · swing ${vertInfo.swing_match}` : ""}
                   {vertInfo.track_points != null
                     ? ` · track ${vertInfo.track_points}` : ""}
                   {vertInfo.frame_w != null
