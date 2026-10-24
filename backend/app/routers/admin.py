@@ -1825,6 +1825,7 @@ def make_clip_vertical(
             "swing_match": _diag.get("swing_match"),
             "clean_src": _diag.get("clean_src"),
             "src_kind": _diag.get("src_kind"),
+            "dist_plate": _diag.get("dist_plate"),
             "at": int(time.time()),
         },
     }

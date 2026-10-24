@@ -302,6 +302,7 @@ export default function AdminProducedClips() {
                 const swing = pick(live && live.swing_match, d && d.swing_match);
                 const clean = pick(live && live.clean_src, d && d.clean_src);
                 const srcKind = pick(live && live.src_kind, d && d.src_kind);
+                const dist = pick(live && live.dist_plate, d && d.dist_plate);
                 const num = (v, why) =>
                   v != null ? String(v) : why ? String(why) : "none";
                 const cutStr =
@@ -328,6 +329,7 @@ export default function AdminProducedClips() {
                     {` · cut ${cutStr}`}
                     {` · gball ${num(gball, gballWhy)}`}
                     {` · pin ${num(pin)}${pin != null && pinSrc ? `(${pinSrc})` : ""}`}
+                    {dist ? ` · dist ${dist}` : ""}
                   </div>
                 );
               })()}
