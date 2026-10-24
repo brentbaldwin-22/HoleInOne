@@ -1562,30 +1562,54 @@ def make_clip_vertical(
                     # why the payoff half came out blank. The tee clip's
                     # own duration IS the cut in a tee-then-green
                     # composite.
-                    _cut = None
-                    _psrc = _probe_src
-                    if _psrc is not None and _psrc != render_src:
-                        try:
-                            _d = (probe_video_info(_psrc) or {}).get("duration")
-                            _cut = float(_d) if _d else None
-                        except (TypeError, ValueError):
-                            _cut = None
-                    # A MARKED PIN BEATS A DETECTED ONE. Detection
-                    # has to find a flagstick in the picture and comes
-                    # back empty when it cannot; the marks are already
-                    # what the distance plate is measured from.
-                    # NO tee_clip_url, NO cut — unless we look.
-                    _cut_src = "tee-duration" if _cut is not None else None
+                    # WATCH THE VIDEO FIRST. The tee FILE's duration
+                    # is the whole recording; the composite uses a
+                    # TRIMMED window of it, so the file overshoots the
+                    # real cut. On #967 it reported 11.83s for a clip
+                    # ending around 12s -- no green half left at all --
+                    # and the green tracer scan then seeked past the
+                    # end and came back "too short", while the same
+                    # clip's sibling read 6.27s by looking. The scene
+                    # change is in the frames. Read it there, and keep
+                    # the duration only for when the scan finds none.
+                    _cut = _detect_cut_sec(render_src)
+                    _cut_src = "detected" if _cut is not None else None
                     if _cut is None:
-                        _cut = _detect_cut_sec(render_src)
-                        if _cut is not None:
-                            _cut_src = "detected"
+                        _psrc = _probe_src
+                        if _psrc is not None and _psrc != render_src:
+                            try:
+                                _d = (probe_video_info(_psrc) or {}).get(
+                                    "duration",
+                                )
+                                _cut = float(_d) if _d else None
+                            except (TypeError, ValueError):
+                                _cut = None
+                        _cut_src = (
+                            "tee-duration" if _cut is not None else None
+                        )
                     _diag.update(cut_src=_cut_src)
                     _grx = None
+                    _pin_src = None
                     if _cut is not None:
-                        _grx = _green_pin_x(db, _up, _sw.get("idx"), _fw)
+                        # THE FLAG IN THESE FRAMES FIRST. A marked pin
+                        # is where somebody clicked once -- possibly on
+                        # a different day, and pins move daily. The
+                        # flagstick in this clip's own green half is
+                        # where it stood for THIS shot.
+                        #
+                        # TRADE-OFF, STATED: the marks are also what
+                        # the distance plate measures from, so a
+                        # detection that disagrees with them puts the
+                        # pan and the printed yardage in different
+                        # places. The marks remain the fallback, so a
+                        # failed detection costs nothing; a confidently
+                        # wrong one is the risk being taken here.
+                        _grx = _green_focus_x(render_src, _cut)
+                        _pin_src = "detected" if _grx is not None else None
                         if _grx is None:
-                            _grx = _green_focus_x(render_src, _cut)
+                            _grx = _green_pin_x(db, _up, _sw.get("idx"), _fw)
+                            _pin_src = "marked" if _grx is not None else None
+                    _diag.update(pin_src=_pin_src)
                     # Ball-at-rest on the green, and how long the
                     # clip runs — the two ends of the closing pan.
                     _bgx = _green_ball_x(_sw, _fw)
@@ -1767,6 +1791,7 @@ def make_clip_vertical(
             "gball": _diag.get("green_ball_x"),
             "gball_why": _diag.get("green_ball_why"),
             "pin": _diag.get("pin_x"),
+            "pin_src": _diag.get("pin_src"),
             "swing_match": _diag.get("swing_match"),
             "clean_src": _diag.get("clean_src"),
             "at": int(time.time()),
@@ -5337,35 +5362,80 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0):
                 # are overlays, so they are not always in the baseline
                 # if they fade in. Blank the band rather than hope.
                 new[: int(new.shape[0] * 0.30), :] = False
-                ys, xs = np.nonzero(new)
-                # Enough to be a stroke, little enough not to be sky
-                # the camera drifted into.
-                best = max(best, int(xs.size))
-                # And its foot must be in the lower half: a stroke
-                # rises FROM the ground. Anything whose lowest pixel
-                # is still up in the picture is not a tracer base.
-                if (
-                    25 <= xs.size <= int(area * 0.02)
-                    and ys.size and ys.max() >= new.shape[0] * 0.45
-                ):
-                    # SHAPE, NOT JUST COLOUR. A tracer is a long thin
-                    # stroke: it fills very little of its own bounding
-                    # box. A shirt, a sign, a windscreen reflection is
-                    # a solid blob and fills most of it. This tells
-                    # them apart without caring which way the stroke
-                    # leans, which a height-over-width test would.
-                    bw = int(xs.max() - xs.min()) + 1
-                    bh = int(ys.max() - ys.min()) + 1
-                    fill = float(xs.size) / float(max(1, bw * bh))
-                    if fill < 0.35:
-                        foot = ys >= (ys.max() - 6)
-                        if foot.sum() >= 3:
-                            fx = (
-                                float(np.median(xs[foot])) / sm.shape[1]
-                            )
-                            cands.append(
-                                (min(1.0, max(0.0, fx)), idx / fps),
-                            )
+                # EACH BLUE THING ON ITS OWN. This used to take
+                # np.nonzero over the WHOLE frame, so every new-blue
+                # pixel became one blob: a tracer and a bystander's
+                # blue shirt were merged into a single bounding box
+                # and judged together. On #968 that read 9189px and
+                # threw the lot out as "no shape"; elsewhere it
+                # returned the shirt's foot as the launch point, which
+                # is how tracer and gball came back equal to three
+                # decimals. Every filter added here -- area cap, top
+                # band, foot test, fill ratio -- was trying to tell a
+                # stroke from a shirt while the two were averaged
+                # together, which cannot work. A stroke is only
+                # recognisable as a stroke when measured by itself.
+                _n_cc, _lab, _st, _ = cv2.connectedComponentsWithStats(
+                    new.astype(np.uint8), connectivity=8,
+                )
+                _h_sm = new.shape[0]
+                _cap = int(area * 0.02)
+                _pick, _pick_h = None, -1
+                for _ci in range(1, _n_cc):
+                    _a = int(_st[_ci, cv2.CC_STAT_AREA])
+                    # Report the biggest SINGLE object, so "too many"
+                    # now means one thing was too big rather than that
+                    # the frame held a lot of blue in total.
+                    best = max(best, _a)
+                    # Enough to be a stroke, little enough not to be
+                    # sky the camera drifted into.
+                    if not (25 <= _a <= _cap):
+                        continue
+                    _bw = int(_st[_ci, cv2.CC_STAT_WIDTH])
+                    _bh = int(_st[_ci, cv2.CC_STAT_HEIGHT])
+                    # THIN AND LONG, NOT "FILLS LITTLE OF ITS BOX".
+                    # The fill test was wrong for the commonest shot
+                    # there is: a stroke going straight up fills its
+                    # own bounding box almost completely (a 3x360 line
+                    # is ~100% of a 3x360 box), so a near-vertical
+                    # tracer scored like a solid blob and was thrown
+                    # out as "no shape" -- which is exactly what #968
+                    # reported on a clip whose tracer is plainly
+                    # vertical. Fill only separates a stroke from a
+                    # blob when the stroke is CURVED.
+                    #
+                    # What actually distinguishes them is thickness. A
+                    # tracer is a few pixels across however it leans; a
+                    # shirt, a sign or a bag is tens of pixels across.
+                    # So: short things are not strokes, fat things are
+                    # not strokes, and a stroke is far longer than it
+                    # is wide.
+                    _thin = min(_bw, _bh)
+                    _long = max(_bw, _bh)
+                    if _long < 20:
+                        continue
+                    if _thin > max(5, int(_h_sm * 0.035)):
+                        continue
+                    if _long / float(max(1, _thin)) < 4.0:
+                        continue
+                    # Its foot must be in the lower half: a stroke
+                    # rises FROM the ground.
+                    _bot = int(_st[_ci, cv2.CC_STAT_TOP]) + _bh - 1
+                    if _bot < _h_sm * 0.45:
+                        continue
+                    # TALLEST WINS. More than one thin thing can pass
+                    # these tests -- a flagstick, a cart aerial -- and
+                    # the tracer is the one that rises furthest.
+                    if _bh > _pick_h:
+                        _pick, _pick_h = _ci, _bh
+                if _pick is not None:
+                    _ys, _xs = np.nonzero(_lab == _pick)
+                    _foot = _ys >= (_ys.max() - 6)
+                    if _foot.sum() >= 3:
+                        fx = float(np.median(_xs[_foot])) / sm.shape[1]
+                        cands.append(
+                            (min(1.0, max(0.0, fx)), idx / fps),
+                        )
                 idx += 1
                 # DON'T TRUST ONE FRAME. The stroke's foot stays at the
                 # ball while the line grows upward, so several frames

@@ -298,6 +298,7 @@ export default function AdminProducedClips() {
                 const gball = pick(live && live.green_ball_x, d && d.gball);
                 const gballWhy = pick(live && live.green_ball_why, d && d.gball_why);
                 const pin = pick(live && live.pin_x, d && d.pin);
+                const pinSrc = pick(live && live.pin_src, d && d.pin_src);
                 const swing = pick(live && live.swing_match, d && d.swing_match);
                 const clean = pick(live && live.clean_src, d && d.clean_src);
                 const num = (v, why) =>
@@ -319,7 +320,7 @@ export default function AdminProducedClips() {
                     {` · tracer ${num(tracer, tracerWhy)}`}
                     {` · cut ${cutStr}`}
                     {` · gball ${num(gball, gballWhy)}`}
-                    {` · pin ${num(pin)}`}
+                    {` · pin ${num(pin)}${pin != null && pinSrc ? `(${pinSrc})` : ""}`}
                   </div>
                 );
               })()}
