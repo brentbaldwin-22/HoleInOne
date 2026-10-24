@@ -276,6 +276,7 @@ export default function AdminProducedClips() {
                   title="What the last 9:16 render did. mode=pan means the crop follows the tracer; static means one fixed framing. cut is the tee->green scene change; without it the closing pan to the pin cannot run."
                 >
                   9:16 {vertInfo.mode}
+                  {vertInfo.clean_src === false ? " · STAMPED SRC" : ""}
                   {vertInfo.track_points != null
                     ? ` · track ${vertInfo.track_points}` : ""}
                   {vertInfo.frame_w != null

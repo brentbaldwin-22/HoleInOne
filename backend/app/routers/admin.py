@@ -1354,6 +1354,14 @@ def make_clip_vertical(
         ):
             render_src = CLIPS_DIR / _cand
             break
+    # SAY WHEN WE ARE CROPPING ALREADY-STAMPED FOOTAGE. With no clean
+    # copy there is nothing unstamped to render from, so the landscape
+    # name plate and logo ride into the crop — and on a pan to the far
+    # right the logo arrives three times its intended size. Nothing in
+    # the picture explains why; this does. The cure is a Re-Produce,
+    # which renders the vertical before stamping and leaves a _clean
+    # copy behind for every later re-render.
+    _clean_src = render_src is not src_path
     # Prefer the follow-the-shot pan when this clip's produce run
     # persisted a ball track; fall back to a static crop aimed at the
     # golfer (or frame center) otherwise.
@@ -1365,7 +1373,7 @@ def make_clip_vertical(
     # it find the flag?") has been answered by squinting at the output
     # video. These are the numbers that decided it; returning them
     # turns the next report from a description into a reading.
-    _diag = {}
+    _diag = {"clean_src": bool(_clean_src)}
     try:
         if clip.long_upload_id:
             _up = db.get(LongVideoUpload, clip.long_upload_id)
