@@ -288,6 +288,9 @@ export default function AdminProducedClips() {
                     ? ` · launch ${vertInfo.launch_x}` : ""}
                   {vertInfo.tracer_x != null
                     ? ` · tracer ${vertInfo.tracer_x}`
+                      + (vertInfo.tracer_n != null
+                         ? `(${vertInfo.tracer_n}f±${vertInfo.tracer_spread ?? 0})`
+                         : "")
                     : vertInfo.tracer_why
                       ? ` · tracer ${vertInfo.tracer_why}`
                         + (vertInfo.tracer_best != null
