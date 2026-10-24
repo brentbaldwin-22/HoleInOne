@@ -1527,8 +1527,6 @@ def make_clip_vertical(
                               else None),
                     tracer_why=(_tsx or {}).get("why"),
                     tracer_best=(_tsx or {}).get("best"),
-                    tracer_n=(_tsx or {}).get("n"),
-                    tracer_spread=(_tsx or {}).get("spread"),
                 )
                 _diag.update(
                     track_points=len(_trk),
@@ -5017,13 +5015,7 @@ def _green_focus_x(video_path, at_sec):
             frames = []
             # A few frames spread across the green half, so a golfer
             # walking through one of them cannot decide the framing.
-            # MORE LOOKS, OVER A LONGER WINDOW. Four frames across
-            # under two seconds gives detect_pin_stable almost no
-            # chance to reach its min_hits if a player walks through
-            # one of them or a cloud moves the exposure. The flagstick
-            # is not going anywhere, so there is no reason to decide
-            # this quickly.
-            for dt in (0.3, 0.7, 1.1, 1.6, 2.1, 2.6, 3.2, 3.8):
+            for dt in (0.4, 1.0, 1.6, 2.2):
                 cap.set(cv2.CAP_PROP_POS_FRAMES, int((at_sec + dt) * fps))
                 ok, f = cap.read()
                 if ok:
@@ -5195,7 +5187,6 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0):
 
             area = base.size
             best = 0
-            cands: list = []
             idx = idx0 + 5
             limit = idx0 + int(max(1.0, float(max_scan_sec)) * fps)
             stride = max(1, int(step))
@@ -5230,49 +5221,23 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0):
                     25 <= xs.size <= int(area * 0.02)
                     and ys.size and ys.max() >= new.shape[0] * 0.45
                 ):
-                    # SHAPE, NOT JUST COLOUR. A tracer is a long thin
-                    # stroke: it fills very little of its own bounding
-                    # box. A shirt, a sign, a windscreen reflection is
-                    # a solid blob and fills most of it. This tells
-                    # them apart without caring which way the stroke
-                    # leans, which a height-over-width test would.
-                    bw = int(xs.max() - xs.min()) + 1
-                    bh = int(ys.max() - ys.min()) + 1
-                    fill = float(xs.size) / float(max(1, bw * bh))
-                    if fill < 0.35:
-                        foot = ys >= (ys.max() - 6)
-                        if foot.sum() >= 3:
-                            fx = (
-                                float(np.median(xs[foot])) / sm.shape[1]
-                            )
-                            cands.append(
-                                (min(1.0, max(0.0, fx)), idx / fps),
-                            )
+                    foot = ys >= (ys.max() - 6)
+                    if foot.sum() >= 3:
+                        fx = float(np.median(xs[foot])) / sm.shape[1]
+                        return {
+                            "x": min(1.0, max(0.0, fx)),
+                            "t": idx / fps, "why": "ok", "best": best,
+                        }
                 idx += 1
-                # DON'T TRUST ONE FRAME. The stroke's foot stays at the
-                # ball while the line grows upward, so several frames
-                # should agree — and the median of them survives a
-                # single bad read, which deciding on the first frame
-                # that passed never could.
-                if len(cands) >= 5:
-                    break
-            if cands:
-                _xs = sorted(c[0] for c in cands)
-                _med = _xs[len(_xs) // 2]
-                return {
-                    "x": _med, "t": cands[0][1], "why": "ok",
-                    "best": best, "n": len(cands),
-                    "spread": round(_xs[-1] - _xs[0], 3),
-                }
             # SAY WHICH WAY IT FAILED. "none" has meant five different
             # things in this file already; too-few wants a looser
             # mask, too-many wants a tighter one, and guessing between
             # them costs a deploy each time.
-            _cap = int(area * 0.02)
+            cap = int(area * 0.02)
             return {
-                "x": None, "t": None, "best": best, "n": 0,
+                "x": None, "t": None, "best": best,
                 "why": ("too few" if best < 25
-                        else "too many" if best > _cap else "no shape"),
+                        else "too many" if best > cap else "no foot"),
             }
         finally:
             cap.release()
