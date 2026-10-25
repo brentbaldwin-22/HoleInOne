@@ -10363,19 +10363,40 @@ def _saved_green_track(row, slot: int, fps: float | None = None):
         ]
         if not _t:
             return None
-        # BACKWARDS FROM THE LANDING, which is the end of the fall and the
-        # one point in the chain that is not in doubt. Points before the
-        # window are dropped rather than the whole track rejected: the
-        # tail is the descent whatever got prepended to it.
-        _last = max(int(p["frame"]) for p in _t)
+        # BACKWARDS FROM THE LANDING, which is the end of the fall and
+        # the one point in the chain that is not in doubt. Points before
+        # the window are dropped rather than the whole track rejected:
+        # the tail is the descent whatever got prepended to it.
+        #
+        # FROM THE LANDING, NOT FROM THE LAST POINT. This measured back
+        # from max(frame), and the ball does not stop at the landing --
+        # an operator plotting the roll-out adds points AFTER it, which
+        # moved the anchor later and evicted the descent they had
+        # plotted first. Reported as "it wiped out all the earlier
+        # points", and it did: at 60fps the window is 180 frames, so a
+        # roll-out of three seconds is enough to push the whole fall
+        # out of it.
+        #
+        # Everything at or after the landing is kept whatever its
+        # length, because that is the roll and the roll is as long as
+        # it is. The budget bounds only the approach, which is the part
+        # that can run away when a search prepends to it.
+        _rec = _hits[-1]
+        _land = _rec.get("landing_frame")
+        try:
+            _anchor = (int(_land) if _land is not None
+                       else max(int(p["frame"]) for p in _t))
+        except (TypeError, ValueError):
+            _anchor = max(int(p["frame"]) for p in _t)
         _budget = int(round(D3_MAX_COMET_SEC * (fps or 30.0)))
-        _keep = [p for p in _t if int(p["frame"]) >= _last - _budget]
+        _keep = [p for p in _t if int(p["frame"]) >= _anchor - _budget]
         if len(_keep) < len(_t):
             log.info(
                 "green track for swing %s: dropped %d point(s) more than "
                 "%.1fs before the landing at f%d — a descent does not last "
-                "that long",
-                slot, len(_t) - len(_keep), D3_MAX_COMET_SEC, _last,
+                "that long. Points AFTER the landing are the roll-out and "
+                "are always kept.",
+                slot, len(_t) - len(_keep), D3_MAX_COMET_SEC, _anchor,
             )
         return _keep or None
     except Exception as exc:  # noqa: BLE001
