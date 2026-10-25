@@ -2667,6 +2667,17 @@ function ClickToPlotModal({
                 // whenever they look at it rather than only after
                 // pressing a button first.
                 handles={[
+                  // EVERY PLOTTED POINT, not only the last one. They
+                  // were going into greenMarks and never coming back
+                  // out as anything draggable, so a point put down in
+                  // the wrong place could only be fixed by clearing
+                  // the whole descent and starting again.
+                  ...Object.entries(greenMarks)
+                    .filter(([f]) => Number(f) !== landing?.frame)
+                    .map(([f, m]) => ({
+                      id: `mark-${f}`, x: m.x, y: m.y, icon: "ball",
+                      title: `Descent point at f${f}. Drag to correct it.`,
+                    })),
                   ...(landing ? [{
                     id: "landing", x: landing.x, y: landing.y, icon: "ball",
                     title: "Where the ball finished. Drag it onto the ball.",
@@ -2679,6 +2690,15 @@ function ClickToPlotModal({
                 onHandleDrag={(id, pt) => {
                   if (!pt) return;
                   if (id === "pin") { setPinGreen(pt); return; }
+                  // A descent handle carries its own frame in its id.
+                  // Without this every drag rewrote the LANDING's
+                  // frame, so correcting an early point silently moved
+                  // the landing instead.
+                  if (typeof id === "string" && id.startsWith("mark-")) {
+                    const mf = id.slice(5);
+                    setGreenMarks((m) => ({ ...m, [mf]: { x: pt.x, y: pt.y } }));
+                    return;
+                  }
                   const f = landing?.frame ?? greenViewFrame
                     ?? green.frame ?? 0;
                   setGreenMarks((m) => ({ ...m, [f]: { x: pt.x, y: pt.y } }));
@@ -2697,7 +2717,14 @@ function ClickToPlotModal({
                     setGreenMarks((m) => ({ ...m, [f]: { x: pt.x, y: pt.y } }));
                     setCometReason(null);
                   }
-                  setPlaceOnGreen(null);
+                  // PLOT MODE STAYS ARMED. Placing the landing is one
+                  // act and is done; plotting a descent is a dozen, and
+                  // re-arming the mode between every one of them made
+                  // hand-plotting a path effectively impossible -- the
+                  // operator could mark where the ball finished and
+                  // nothing before it, which is exactly the case the
+                  // "mark it anywhere" escape hatch was built for.
+                  if (placeOnGreen !== "plot") setPlaceOnGreen(null);
                 }}
                 track={[]}
                 comet={comet}
@@ -2951,6 +2978,18 @@ function ClickToPlotModal({
                         : "Use the frame the green view is showing.")}>
               set to current{greenCurrent != null ? ` (f${greenCurrent})` : ""}
               {cam === "raw" && greenCurrent == null ? " — pause first" : ""}
+            </button>
+            <button type="button"
+                    className={placeOnGreen === "plot" ? "small" : "ghost small"}
+                    style={{ width: "100%", marginTop: 3 }}
+                    onClick={() => {
+                      setCam("green");
+                      setPlaceOnGreen((v) => (v === "plot" ? null : "plot"));
+                    }}
+                    title="Click the green view to drop a descent point on the frame it is showing. Stays on: step a frame, click, step, click. Click it again to stop.">
+              {placeOnGreen === "plot"
+                ? "✎ plotting — click the green view (press to stop)"
+                : "✎ plot descent by hand"}
             </button>
             <button type="button" className="ghost small"
                     style={{ width: "100%", marginTop: 3,
@@ -12002,13 +12041,20 @@ function PlotHeatCanvas({
               </div>
             ) : h.icon === "ball" ? (
               /* A golf ball: white, ringed so it reads against turf. */
+              /* HOLLOW, AND SMALLER THAN IT WAS. A filled 15px disc
+                 covered the very thing it marks: a ball at green
+                 distance is three or four pixels, so the marker hid it
+                 and the operator was aiming at their own cursor. A
+                 ring shows the turf through the middle, and shrinks
+                 when zoomed in rather than staying put. */
               <div style={{
-                width: Math.max(15, 15 / zoom),
-                height: Math.max(15, 15 / zoom),
+                width: Math.max(7, 11 / zoom),
+                height: Math.max(7, 11 / zoom),
                 borderRadius: "50%",
-                background: "radial-gradient(circle at 35% 30%, #fff, #cbd5e1)",
-                border: "1px solid #0f172a",
-                boxShadow: "0 0 0 2px rgba(0,0,0,0.5), 0 0 5px rgba(0,0,0,0.7)",
+                background: "transparent",
+                border: "1.5px solid #fff",
+                boxShadow: "0 0 0 1px rgba(0,0,0,0.85), "
+                  + "inset 0 0 0 1px rgba(0,0,0,0.6)",
               }} />
             ) : null}
           </div>
