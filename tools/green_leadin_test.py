@@ -102,6 +102,44 @@ def main():
                    debug=d5) == []
     print(f"  chain already past the cut -> refused: {d5['lead_in']['why']}")
 
+    # --- A FALL FOLLOWED BY A ROLL ----------------------------------
+    # What upload 826 actually had: the operator plotted the descent
+    # AND the ball rolling out after it. One quadratic through both
+    # fitted at 89px RMS and the lead-in was refused, so a clip with
+    # MORE operator work in it got less help than one with less.
+    roll = []
+    lastf, (lx, ly) = 90, flight(90)
+    for k in range(1, 16):              # 1.5s of roll, nearly straight
+        roll.append({"frame": lastf + k * 6, "x": lx + k * 26.0,
+                     "y": ly + k * 1.5})
+    both = plotted + roll
+    d6 = {}
+    out6 = lead_in(both, cut_frame=20, fps=FPS, frame_w=W, frame_h=H,
+                   landing_frame=90, debug=d6)
+    print(f"  fall + roll, landing at f90 -> {len(out6)} lead-in frames "
+          f"(fitted {d6['fit_points']['before_landing']} of "
+          f"{d6['fit_points']['of']} points, rms "
+          f"{d6['lead_in'].get('rms_px')}px)")
+    assert out6, (
+        "a descent plus a roll-out produced no lead-in — the roll is "
+        "being fitted as though it were part of the fall")
+    worst6 = max(
+        ((p["x"] - flight(p["frame"])[0]) ** 2
+         + (p["y"] - flight(p["frame"])[1]) ** 2) ** 0.5
+        for p in out6)
+    assert worst6 < 2.0, f"fall+roll lead-in drifted {worst6:.1f}px"
+
+    # CONTROL: without being told where the landing is, the same points
+    # must still be refused — otherwise the filter above is not what
+    # made the difference.
+    d7 = {}
+    out7 = lead_in(both, cut_frame=20, fps=FPS, frame_w=W, frame_h=H,
+                   debug=d7)
+    print(f"  the same points with no landing given -> {len(out7)} "
+          f"({d7['lead_in'].get('why', 'accepted')})")
+    assert out7 == [], (
+        "fall+roll was extrapolated even without a landing to split on")
+
     print("\nALL PASS")
 
 

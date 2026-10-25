@@ -10477,7 +10477,12 @@ def _render_green_comet(green_path, green_seg, g0, land_sec, land_xy, idx,
             _h = int(_cap.get(_cv2.CAP_PROP_FRAME_HEIGHT) or 0)
             _cap.release()
             _ldbg: dict = {}
-            _lead = gf.lead_in(pts, _first, _gfps, _w, _h, debug=_ldbg)
+            # The landing splits the fall from the roll, and only the
+            # fall can be extrapolated from.
+            _lf_for_fit = (int(round(float(land_sec) * _gfps))
+                           if land_sec is not None else None)
+            _lead = gf.lead_in(pts, _first, _gfps, _w, _h,
+                               landing_frame=_lf_for_fit, debug=_ldbg)
             if _lead:
                 pts = _lead + pts
                 log.info(
@@ -26787,7 +26792,17 @@ D3_PRE_ROLL_SEC = 2.0        # lead-in before the strike
 D3_POST_TRACER_SEC = 1.5     # tee tail after the tracer line stops
 D3_LANDING_HOLD_SEC = 0.4    # tee tail after the ball touches down
 D3_MAX_EXTRA_TEE_SEC = 8.0   # ...but never hold on the tee this much longer
-D3_LANDING_LEAD_SEC = 1.5    # green starts this far before the touchdown
+# HOW MUCH GREEN RUNS BEFORE THE BALL LANDS. The tee half is cut at the
+# instant the green picks up, so every tenth of a second here is a tenth
+# taken off the END of the tee tracer -- the part where the ball comes
+# down. At 1.5s, measured on upload 826, the tee was cut 1.93s before
+# its own landing and the arc only ever went up; the descent the tracer
+# exists to draw was never on screen.
+#
+# The ball is already drawn falling on the tee side, so the green does
+# not need to show the whole arrival as well. It needs long enough to
+# read the picture before the ball gets there.
+D3_LANDING_LEAD_SEC = 0.75   # green starts this far before the touchdown
 # Green-side coverage after the cutover. 6s rather than 4: at 4 the ball
 # had barely settled before the clip ended, and the landing is the payoff
 # — the tee half is the swing, the green half is the result. One constant
@@ -27453,10 +27468,14 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
             # lands at 15.4s.
             _g_start = t1 - float(delta)
             if _land_tee is not None:
-                _g_start = min(
-                    _g_start,
-                    max(0.0, float(landing["sec"]) - D3_LANDING_LEAD_SEC),
-                )
+                # ANCHORED, NOT BOUNDED. min() could only pull the green
+                # half earlier, and the cutover is routinely earlier
+                # still, so the green sat on empty grass while the tee
+                # tracer was cut off mid-flight. The landing is the
+                # moment the green half exists to show; it starts a
+                # lead-in before THAT and not before anything else.
+                _g_start = max(
+                    0.0, float(landing["sec"]) - D3_LANDING_LEAD_SEC)
             # BRACKET THE COMET. Where the descent is drawn is known
             # exactly when the operator plotted it, so the green half
             # has no excuse for cutting across it. Measured on a real
@@ -27494,7 +27513,14 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     # grass, and starting later would cut across the
                     # descent the operator plotted.
                     _g_was = _g_start
-                    _g_start = max(0.0, _c0 - D3_LANDING_LEAD_SEC)
+                    # THE LANDING WINS WHEN THERE IS ONE. It is where the
+                    # ball arrives; the comet's first frame is merely
+                    # where it became visible, which can be a second or
+                    # more earlier and costs the tee tracer its descent.
+                    # With no landing marked, the comet is the best
+                    # statement of when anything happens on this green.
+                    if _land_tee is None:
+                        _g_start = max(0.0, _c0 - D3_LANDING_LEAD_SEC)
                     if abs(_g_start - _g_was) > 0.05:
                         log.info(
                             "d3 produce: swing %s green half starts %.2fs "

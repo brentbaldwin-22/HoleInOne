@@ -449,7 +449,8 @@ def _evaluate(coeffs, t):
 
 
 def lead_in(points, cut_frame: int, fps: float, frame_w: int, frame_h: int,
-            max_sec: float = LEADIN_MAX_SEC, debug: Optional[dict] = None):
+            max_sec: float = LEADIN_MAX_SEC, landing_frame: int = None,
+            debug: Optional[dict] = None):
     """Frames of descent BEFORE `points` begins, back to `cut_frame`.
 
     Returns a list in the same shape as `points`, oldest first, which
@@ -464,6 +465,19 @@ def lead_in(points, cut_frame: int, fps: float, frame_w: int, frame_h: int,
          and p.get("x") is not None and p.get("y") is not None),
         key=lambda q: q["frame"],
     )
+    # ONLY THE FALL IS A PARABOLA. An operator who plots the roll-out
+    # too hands over a fall followed by a ground roll, and one quadratic
+    # through both describes neither: measured on upload 826, fourteen
+    # points spanning five seconds fitted at 89px RMS and the lead-in
+    # was refused outright. The roll is real data and belongs in the
+    # comet; it just cannot be used to say where the ball was BEFORE
+    # the fall.
+    if landing_frame is not None:
+        _fall = [p for p in pts if p["frame"] <= int(landing_frame)]
+        if debug is not None:
+            debug["fit_points"] = {"of": len(pts), "before_landing": len(_fall)}
+        pts = _fall or pts
+
     why = None
     if len(pts) < LEADIN_MIN_POINTS:
         why = (f"only {len(pts)} plotted point(s); "
