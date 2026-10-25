@@ -2714,8 +2714,31 @@ function ClickToPlotModal({
                   if (placeOnGreen === "pin") { setPinFromGreen(pt); }
                   else {
                     const f = greenViewFrame ?? green.frame ?? 0;
+                    // ONE POINT PER FRAME, SO SAY SO WHEN ONE REPLACES
+                    // ANOTHER. Marks are keyed by frame, so clicking
+                    // twice without stepping overwrites rather than
+                    // adds -- silently, which looks exactly like
+                    // plotting a path and getting one point. And one
+                    // point is a landing, not a descent: the save
+                    // writes green_track only when there are two or
+                    // more, so a collapsed path is stored as no path
+                    // at all and the produce falls back to its own
+                    // search.
+                    const replaced = greenMarks[f] != null;
                     setGreenMarks((m) => ({ ...m, [f]: { x: pt.x, y: pt.y } }));
-                    setCometReason(null);
+                    const n = Object.keys(
+                      { ...greenMarks, [f]: 1 }).length;
+                    setCometReason(
+                      replaced
+                        ? `replaced the point on f${f} — step the frame `
+                          + `before clicking again (still ${n} point`
+                          + `${n === 1 ? "" : "s"})`
+                        : `point ${n} at f${f}`
+                            + (n === 1
+                              ? " — a descent needs two or more, or this"
+                                + " saves as a landing only"
+                              : ""),
+                    );
                   }
                   // PLOT MODE STAYS ARMED. Placing the landing is one
                   // act and is done; plotting a descent is a dozen, and
