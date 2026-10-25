@@ -3790,6 +3790,33 @@ _TAIL_DOWNRANGE_MIN_PX = 12.0
 _TAIL_BACK_SLACK_PX = 60.0
 
 
+# HOW FAR ABOVE THE PICTURE AN APEX MAY SIT, as a fraction of frame
+# height. A high shot really does leave the top of the frame, so some
+# overshoot is honest; this bounds how much.
+#
+# WHY IT IS NEEDED AT ALL. The ballistic model extrapolates the image
+# velocity of the tracked points, and image velocity is not world
+# velocity: perspective compresses the ball's apparent rise as it goes
+# away, so a steep early climb keeps climbing in the model long after
+# the real ball has turned over. Measured on upload 826, a 145-yard par
+# 3 whose tracked flight moved 18px sideways: the fit put the apex at
+# y=-1676 on a 1080-tall frame, more than one and a half frames above
+# the picture. It drew 363 frames, nearly all of them off-screen, so the
+# tracer appeared to go straight up and never come back -- which is
+# exactly what it did.
+#
+# The arc model does not have this failure: it is a cubic between two
+# known points, so its apex is bounded by the chord it spans.
+_APEX_MAX_ABOVE_FRAC = 0.6
+
+
+def _apex_above_frame_px(tail) -> float:
+    """How far above the top of the frame the tail's highest point sits."""
+    if not tail:
+        return 0.0
+    return max(0.0, -min(float(p[2]) for p in tail))
+
+
 def _extend_to_target(pts, target_xy, fps, width, height,
                       land_frame=None, apex_lift=0.0,
                       apex_at=0.5):
@@ -3915,7 +3942,22 @@ def _extend_to_target(pts, target_xy, fps, width, height,
     tail = _ballistic_tail(pts, target_xy, fps, width, height,
                            land_frame=land_frame)
     kind = "ballistic"
-    if _turns_back_on_itself(tail):
+    # AN ARC THE CAMERA CANNOT SEE IS NOT A DRAWING. A fit that throws
+    # its apex a frame and a half above the picture spends the whole
+    # flight off-screen and reads as a line going straight up and never
+    # coming back.
+    if tail:
+        _above = _apex_above_frame_px(tail)
+        if _above > _APEX_MAX_ABOVE_FRAC * float(height or 1):
+            log.info(
+                "tracer tail: the ballistic apex sits %.0fpx above a "
+                "%.0fpx frame (limit %.0fpx) — the fit has run away from "
+                "what the camera sees, so trying the arc instead",
+                _above, float(height or 0),
+                _APEX_MAX_ABOVE_FRAC * float(height or 1),
+            )
+            tail = None
+    if tail and _turns_back_on_itself(tail):
         log.info("tracer tail: the ballistic arc curls back on itself — "
                  "trying the arc through the chord instead")
         tail = None
@@ -3923,7 +3965,16 @@ def _extend_to_target(pts, target_xy, fps, width, height,
         tail = _arc_tail(pts, target_xy, fps, width, height,
                          land_frame=land_frame)
         kind = "arc"
-        if _turns_back_on_itself(tail):
+        if tail:
+            _above_a = _apex_above_frame_px(tail)
+            if _above_a > _APEX_MAX_ABOVE_FRAC * float(height or 1):
+                log.info(
+                    "tracer tail: the arc apex sits %.0fpx above a %.0fpx "
+                    "frame too — drawing no continuation rather than a "
+                    "line that is never in shot", _above_a,
+                    float(height or 0))
+                tail = None
+        if tail and _turns_back_on_itself(tail):
             log.warning("tracer tail: both models curl back on themselves "
                         "— drawing no continuation rather than a loop")
             tail = None
