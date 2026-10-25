@@ -27477,8 +27477,34 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     _c0 = min(int(q["frame"]) for q in _gt_b) / _gfps_b
                     _c1 = max(int(q["frame"]) for q in _gt_b) / _gfps_b
                     _comet_span = (_c0, _c1)
-                    _g_start = min(
-                        _g_start, max(0.0, _c0 - D3_LANDING_LEAD_SEC))
+                    # AN ANCHOR, NOT A BOUND, and that distinction is the
+                    # whole fix. This took min(), so it could only ever
+                    # pull the green half EARLIER -- and the cutover is
+                    # routinely earlier still. Measured on upload 826:
+                    # the green cut in at 9.0s and the ball did not
+                    # appear until 14.7s, so the clip held five and a
+                    # half seconds of empty grass and then the comet
+                    # arrived out of nowhere. No amount of extrapolating
+                    # backwards fixes that; the ball was genuinely not
+                    # in the picture.
+                    #
+                    # A plotted comet says exactly when the ball becomes
+                    # visible, so the green half starts a lead-in before
+                    # THAT. Starting earlier buys nothing but empty
+                    # grass, and starting later would cut across the
+                    # descent the operator plotted.
+                    _g_was = _g_start
+                    _g_start = max(0.0, _c0 - D3_LANDING_LEAD_SEC)
+                    if abs(_g_start - _g_was) > 0.05:
+                        log.info(
+                            "d3 produce: swing %s green half starts %.2fs "
+                            "-> %.2fs (green clock), a %.1fs lead-in before "
+                            "the plotted comet at %.2fs — %.2fs of empty "
+                            "green %s",
+                            i, _g_was, _g_start, D3_LANDING_LEAD_SEC, _c0,
+                            abs(_g_start - _g_was),
+                            "trimmed" if _g_start > _g_was else "added",
+                        )
 
             # How much green follows the cutover. Normally D3_GREEN_SEC;
             # when the operator set an end frame in the wizard, the
