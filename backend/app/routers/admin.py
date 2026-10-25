@@ -10463,6 +10463,38 @@ def _render_green_comet(green_path, green_seg, g0, land_sec, land_xy, idx,
         # what the chain's frames are in. Lining them up here means the
         # renderer never has to know about the cut.
         _first = int(round(float(g0) * _gfps))
+        # ALREADY MOVING WHEN THE CLIP OPENS. The chain begins where the
+        # ball could first be SEEN, which is after the cut, so the green
+        # view opened on an empty picture and the ball appeared out of
+        # nothing a moment later -- while the tee tracer had been drawing
+        # a line the whole way. gf.lead_in runs the plotted points back
+        # along the flight they describe, and refuses when they do not
+        # describe one.
+        try:
+            import cv2 as _cv2
+            _cap = _cv2.VideoCapture(str(green_path))
+            _w = int(_cap.get(_cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            _h = int(_cap.get(_cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            _cap.release()
+            _ldbg: dict = {}
+            _lead = gf.lead_in(pts, _first, _gfps, _w, _h, debug=_ldbg)
+            if _lead:
+                pts = _lead + pts
+                log.info(
+                    "d3 produce: swing %s green comet leads in %d frame(s) "
+                    "from f%d so it is already moving at the cut (%s)",
+                    idx, len(_lead), _lead[0]["frame"],
+                    _ldbg.get("lead_in", {}).get("capped_by"),
+                )
+            else:
+                log.info(
+                    "d3 produce: swing %s green comet starts where it was "
+                    "plotted, no lead-in — %s", idx,
+                    _ldbg.get("lead_in", {}).get("why", "unknown"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            # A flourish on a flourish. Never let it cost the comet.
+            log.debug("d3 produce: swing %s lead-in skipped: %s", idx, exc)
         if not gf.render_comet(green_seg, green_seg, pts, _first):
             log.warning("d3 produce: swing %s green comet render failed", idx)
             return None

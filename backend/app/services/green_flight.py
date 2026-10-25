@@ -29,6 +29,8 @@ motion itself.
 
 from __future__ import annotations
 
+from typing import Optional
+
 import logging
 import math
 from pathlib import Path
@@ -379,3 +381,147 @@ def render_comet(src: Path, out: Path, points, first_frame: int,
         return False
     tmp.replace(out)
     return True
+
+
+# ---------------------------------------------------------------------
+# Lead-in: where the ball was before the first point anybody plotted
+# ---------------------------------------------------------------------
+# WHY THE COMET USED TO POP INTO AN ALREADY-RUNNING CLIP. The chain
+# starts at the first frame the operator could SEE the ball, which is
+# not the frame the green view cuts in on -- the cut is earlier, so the
+# clip opens on an empty green and the ball appears out of nothing a
+# moment later. The tee tracer, meanwhile, has been drawing a line the
+# whole way. The two should meet.
+#
+# A descent is a projectile seen by a fixed camera, so over a short
+# window its image path is very nearly a parabola: y quadratic in time
+# under gravity, x close to linear. That is enough to run the plotted
+# points backwards to the cut and have the ball already moving when the
+# clip opens.
+#
+# EXTRAPOLATION IS NOT MEASUREMENT, and this one is bounded hard. A
+# quadratic fitted to a half-second of points says nothing honest about
+# two seconds earlier; it curves away and puts the ball somewhere it
+# never was. So the lead-in is capped in time, it stops the moment it
+# leaves the frame (which is the common case -- the ball really was
+# off-screen), and it is refused outright when there are too few points
+# to fit.
+LEADIN_MAX_SEC = 1.5
+# Three points determine a parabola exactly, which means a three-point
+# fit has zero residual and no way to tell a good fit from a bad one.
+# Four is the first count that can disagree with itself.
+LEADIN_MIN_POINTS = 4
+# A fit this bad in pixels is not describing a flight.
+LEADIN_MAX_RMS_PX = 12.0
+
+
+def _polyfit(ts, vs, deg):
+    """Least-squares polynomial, highest power first. No numpy needed."""
+    n = len(ts)
+    m = deg + 1
+    # Normal equations: (A^T A) c = A^T v, built directly from sums.
+    a = [[sum(t ** (i + j) for t in ts) for j in range(m)] for i in range(m)]
+    b = [sum((t ** i) * v for t, v in zip(ts, vs)) for i in range(m)]
+    # Gaussian elimination with partial pivoting.
+    for col in range(m):
+        piv = max(range(col, m), key=lambda r: abs(a[r][col]))
+        if abs(a[piv][col]) < 1e-12:
+            return None
+        a[col], a[piv] = a[piv], a[col]
+        b[col], b[piv] = b[piv], b[col]
+        for r in range(col + 1, m):
+            f = a[r][col] / a[col][col]
+            for c in range(col, m):
+                a[r][c] -= f * a[col][c]
+            b[r] -= f * b[col]
+    c = [0.0] * m
+    for r in range(m - 1, -1, -1):
+        s = b[r] - sum(a[r][c2] * c[c2] for c2 in range(r + 1, m))
+        c[r] = s / a[r][r]
+    return c[::-1]                      # highest power first
+
+
+def _evaluate(coeffs, t):
+    out = 0.0
+    for c in coeffs:
+        out = out * t + c
+    return out
+
+
+def lead_in(points, cut_frame: int, fps: float, frame_w: int, frame_h: int,
+            max_sec: float = LEADIN_MAX_SEC, debug: Optional[dict] = None):
+    """Frames of descent BEFORE `points` begins, back to `cut_frame`.
+
+    Returns a list in the same shape as `points`, oldest first, which
+    the caller prepends. Empty when it cannot be done honestly -- too
+    few points, a fit that does not describe a flight, or nothing to
+    fill because the chain already reaches the cut.
+    """
+    pts = sorted(
+        ({"frame": int(p["frame"]), "x": float(p["x"]), "y": float(p["y"])}
+         for p in (points or [])
+         if p.get("frame") is not None
+         and p.get("x") is not None and p.get("y") is not None),
+        key=lambda q: q["frame"],
+    )
+    why = None
+    if len(pts) < LEADIN_MIN_POINTS:
+        why = (f"only {len(pts)} plotted point(s); "
+               f"{LEADIN_MIN_POINTS} are needed to fit a flight")
+    elif fps <= 0:
+        why = "no frame rate"
+    elif pts[0]["frame"] <= cut_frame:
+        why = "the plotted chain already reaches the cut"
+    if why:
+        if debug is not None:
+            debug["lead_in"] = {"n": 0, "why": why}
+        return []
+
+    f0 = pts[0]["frame"]
+    # Time relative to the first plotted frame, so the fit is centred on
+    # the data rather than on an arbitrary zero far away -- the same
+    # parabola expressed about a distant origin loses precision in the
+    # squared term.
+    ts = [(p["frame"] - f0) / fps for p in pts]
+    xs = [p["x"] for p in pts]
+    ys = [p["y"] for p in pts]
+    cx = _polyfit(ts, xs, 2)
+    cy = _polyfit(ts, ys, 2)
+    if cx is None or cy is None:
+        if debug is not None:
+            debug["lead_in"] = {"n": 0, "why": "the fit was singular"}
+        return []
+    rms = (sum((_evaluate(cx, t) - x) ** 2 + (_evaluate(cy, t) - y) ** 2
+               for t, x, y in zip(ts, xs, ys)) / len(ts)) ** 0.5
+    if rms > LEADIN_MAX_RMS_PX:
+        if debug is not None:
+            debug["lead_in"] = {
+                "n": 0, "rms_px": round(rms, 1),
+                "why": (f"the plotted points do not sit on one flight "
+                        f"({rms:.1f}px RMS) — not extrapolating from them")}
+        return []
+
+    budget = int(round(max_sec * fps))
+    start = max(int(cut_frame), f0 - budget)
+    out = []
+    # Backwards from just before the first plotted point, so the moment
+    # it leaves the frame we can stop: everything earlier is further
+    # out still.
+    for f in range(f0 - 1, start - 1, -1):
+        t = (f - f0) / fps
+        x, y = _evaluate(cx, t), _evaluate(cy, t)
+        if not (0 <= x < frame_w and 0 <= y < frame_h):
+            break
+        out.append({"frame": f, "x": x, "y": y, "lead_in": True})
+    out.reverse()
+    if debug is not None:
+        debug["lead_in"] = {
+            "n": len(out), "rms_px": round(rms, 1),
+            "from_frame": out[0]["frame"] if out else None,
+            "to_frame": f0,
+            "capped_by": ("the frame edge"
+                          if out and out[0]["frame"] > start
+                          else ("the cut" if start == int(cut_frame)
+                                else f"{max_sec}s")),
+        }
+    return out
