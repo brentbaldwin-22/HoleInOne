@@ -1611,8 +1611,23 @@ function ClickToPlotModal({
   const cometPoints = Object.entries(greenMarks)
     .map(([f, pt]) => ({ frame: parseInt(f, 10), x: pt.x, y: pt.y }))
     .sort((a, b) => a.frame - b.frame);
-  const landing = cometPoints.length
-    ? cometPoints[cometPoints.length - 1] : null;
+  // WHICH POINT IS THE ARRIVAL, REMEMBERED RATHER THAN INFERRED.
+  //
+  // This was "the last point in time", and the ball does not stop at
+  // the landing: plotting the roll-out moved the landing onto the
+  // roll, every time, which is what an operator means by "it keeps
+  // adjusting the landing frame". It is not cosmetic -- the flight
+  // time the tracer is paced by is impact->landing, and the distance
+  // to the pin is measured from it, so a landing that slides down the
+  // roll reports a longer flight and a longer carry than happened.
+  //
+  // Falls back to the last point when nothing has been pinned, which
+  // is what every record written before this stored.
+  const [landingFrame, setLandingFrameState] = useState(
+    () => (swing?.landing_frame != null ? Number(swing.landing_frame) : null));
+  const landing = (landingFrame != null && greenMarks[landingFrame])
+    ? { frame: landingFrame, ...greenMarks[landingFrame] }
+    : (cometPoints.length ? cometPoints[cometPoints.length - 1] : null);
   const comet = cometPoints.length > 1 ? { points: cometPoints } : null;
 
   // AFTER `landing` IS DECLARED, and that is the whole point of it
@@ -2205,22 +2220,21 @@ function ClickToPlotModal({
     : teeViewFrame;
   const greenCurrent = cam === "raw" ? (rawFrames?.greenFrame ?? null)
     : greenViewFrame;
-  // MOVE THE LANDING TO ANOTHER FRAME, keeping where it is on the green.
-  // The landing frame is not stored: it IS the frame the last green
-  // point is filed under, so setting it means re-keying that point.
-  // Nothing to re-key without a landing spot, which is why this asks for
-  // one rather than inventing a position.
+  // PIN THE LANDING TO A FRAME. It used to re-key the last point,
+  // because the landing had no existence apart from being that point;
+  // now it is chosen and kept, and a point already plotted on the
+  // chosen frame is used as-is. The old point is left where it is
+  // rather than deleted -- it was a position the operator plotted and
+  // it is still part of the path, just no longer the arrival.
   function setLandingFrame(f) {
-    if (f == null || !landing || f === landing.frame) return;
-    const from = landing.frame;
-    const xy = { x: landing.x, y: landing.y };
-    setGreenMarks((m) => {
-      const next = { ...m };
-      delete next[from];
-      next[f] = xy;
-      return next;
-    });
-    setCometReason(null);
+    if (f == null) return;
+    if (!greenMarks[f]) {
+      if (!landing) return;      // nothing to put there
+      const xy = { x: landing.x, y: landing.y };
+      setGreenMarks((m) => ({ ...m, [f]: xy }));
+    }
+    setLandingFrameState(f);
+    setCometReason(`landing pinned to f${f}`);
   }
   const nChanged =
     pendAdd.length + pendClear.length + (impactMoved ? 1 : 0)
@@ -2467,7 +2481,7 @@ function ClickToPlotModal({
                   className="ghost small"
                   style={{ width: "auto" }}
                   disabled={!cometPoints.length}
-                  onClick={() => { setGreenMarks({}); setCometReason(null); }}
+                  onClick={() => { setGreenMarks({}); setLandingFrameState(null); setCometReason(null); }}
                   title="Remove every plotted comet point"
                 >
                   Clear ({cometPoints.length})
@@ -2726,6 +2740,11 @@ function ClickToPlotModal({
                     // search.
                     const replaced = greenMarks[f] != null;
                     setGreenMarks((m) => ({ ...m, [f]: { x: pt.x, y: pt.y } }));
+                    // The first point placed is the arrival until the
+                    // operator says otherwise. Without this the
+                    // fallback takes over and the roll-out claims it
+                    // again the moment a later frame is clicked.
+                    if (landingFrame == null) setLandingFrameState(f);
                     const n = Object.keys(
                       { ...greenMarks, [f]: 1 }).length;
                     setCometReason(
@@ -3018,7 +3037,7 @@ function ClickToPlotModal({
                     style={{ width: "100%", marginTop: 3,
                              color: "var(--danger)" }}
                     disabled={!cometPoints.length}
-                    onClick={() => { setGreenMarks({}); setCometReason(null); }}
+                    onClick={() => { setGreenMarks({}); setLandingFrameState(null); setCometReason(null); }}
                     title="Remove every plotted descent point for this swing.">
               ✕ clear descent ({cometPoints.length})
             </button>
