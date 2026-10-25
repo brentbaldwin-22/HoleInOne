@@ -1625,6 +1625,16 @@ function ClickToPlotModal({
   // is what every record written before this stored.
   const [landingFrame, setLandingFrameState] = useState(
     () => (swing?.landing_frame != null ? Number(swing.landing_frame) : null));
+  // THE SAME INSTANT, SEEN TWICE. The tee/green offset is normally the
+  // difference between two Pi clocks, and it is only as good as their
+  // agreement -- on upload 826 they were 2.07s apart, which put the
+  // ball in the air for 8.4s instead of the 6.6s the green camera's own
+  // frames show. The strike is visible from both cameras, so marking it
+  // in each measures the offset directly and owes nothing to either
+  // clock.
+  const [greenImpactFrame, setGreenImpactFrame] = useState(
+    () => (row.edit_metrics?.green_impact_frame != null
+      ? Number(row.edit_metrics.green_impact_frame) : null));
   const landing = (landingFrame != null && greenMarks[landingFrame])
     ? { frame: landingFrame, ...greenMarks[landingFrame] }
     : (cometPoints.length ? cometPoints[cometPoints.length - 1] : null);
@@ -2116,6 +2126,19 @@ function ClickToPlotModal({
             ? patch(s) : s));
       await api.saveEditMetrics(adminPassword, row.id, {
         swings: nextSwings,
+        // MEASURED BEATS THE CLOCKS. Written at the top level because
+        // the offset belongs to the PAIR OF FILES, not to one swing --
+        // every swing on this upload is cut with the same number.
+        // Written as an explicit null when cleared, so going back to
+        // the cameras' own stamps is a thing the operator can do
+        // rather than a state they can only reach by never having set
+        // it (see the landing keys below for the same rule).
+        ...(greenImpactFrame != null && measuredDelta != null
+          ? {
+              green_impact_frame: Number(greenImpactFrame),
+              tee_green_delta_sec: Number(measuredDelta.toFixed(4)),
+            }
+          : { green_impact_frame: null }),
         // Mirrored to the top level ONLY on a single-swing row, which is
         // where the wizard puts it and where such a row reads it back
         // from. On a multi-swing row the top level is a slot every swing
@@ -2236,8 +2259,35 @@ function ClickToPlotModal({
     setLandingFrameState(f);
     setCometReason(`landing pinned to f${f}`);
   }
+  // delta = green_start - tee_start, so that a real instant at tee time
+  // T sits at T - delta on the green clock. Both marks are the SAME
+  // instant, so the difference of their positions in the two files is
+  // exactly that offset.
+  const measuredDelta = (() => {
+    if (impactFrame == null || greenImpactFrame == null) return null;
+    const tf = Number(row.tee_fps) || 0;
+    const gf = Number(row.green_fps) || 0;
+    if (tf <= 0 || gf <= 0) return null;
+    return (Number(impactFrame) / tf) - (Number(greenImpactFrame) / gf);
+  })();
+  // What a flight time works out to with it, because that is the number
+  // an operator can sanity-check against the shot they watched. A
+  // towering iron is six seconds and change; eight is a tell.
+  const measuredFlight = (() => {
+    if (measuredDelta == null || !landing) return null;
+    const tf = Number(row.tee_fps) || 0;
+    const gf = Number(row.green_fps) || 0;
+    if (tf <= 0 || gf <= 0 || impactFrame == null) return null;
+    return ((Number(landing.frame) / gf) + measuredDelta)
+      - (Number(impactFrame) / tf);
+  })();
+
+  const syncMoved = (
+    (row.edit_metrics?.green_impact_frame ?? null)
+    !== (greenImpactFrame ?? null));
   const nChanged =
     pendAdd.length + pendClear.length + (impactMoved ? 1 : 0)
+    + (syncMoved ? 1 : 0)
     + (ballMoved ? 1 : 0) + (greenChanged ? 1 : 0)
     + (shapeChanged ? 1 : 0);
   // A NEW SWING NEEDS AN IMPACT FRAME AND NOTHING ELSE. Every other
@@ -2970,6 +3020,47 @@ function ClickToPlotModal({
                     title="Remove every plotted tee point for this swing.">
               ✕ clear tee tracer ({Object.keys(marks).length})
             </button>
+          </PlotField>
+
+          <PlotField
+            label="Tee↔green sync" icon="⇄"
+            accent={measuredDelta != null ? "#3ee37a" : undefined}
+            value={measuredDelta != null
+              ? `${measuredDelta >= 0 ? "+" : ""}${measuredDelta.toFixed(2)}s`
+              : (rawDelta?.sec != null
+                ? `${rawDelta.sec >= 0 ? "+" : ""}${Number(rawDelta.sec).toFixed(2)}s`
+                : null)}
+            hint={measuredDelta != null
+              ? (measuredFlight != null
+                ? `measured here — flight works out to ${
+                  measuredFlight.toFixed(2)}s`
+                : "measured here from the two impact marks")
+              : (greenImpactFrame != null
+                ? `green impact f${greenImpactFrame} — set the tee impact too`
+                : `from the cameras' clocks (${rawDelta?.source || "?"}). `
+                  + "Mark the strike on the green view to measure it instead.")}
+          >
+            <button type="button" className="ghost small"
+                    style={{ width: "100%" }}
+                    disabled={greenCurrent == null}
+                    onClick={() => {
+                      setGreenImpactFrame(greenCurrent);
+                      if (cam === "raw") setGreenViewFrame(greenCurrent);
+                    }}
+                    title="Use the green frame showing the strike. Step the GREEN view to the moment the club meets the ball — it is visible from there too — then press this. With the tee impact already set, the two marks measure the offset between the clips directly, and the clocks stop mattering.">
+              green impact = current{greenCurrent != null
+                ? ` (f${greenCurrent})` : ""}
+              {cam === "raw" && greenCurrent == null ? " — pause first" : ""}
+            </button>
+            {greenImpactFrame != null && (
+              <button type="button" className="ghost small"
+                      style={{ width: "100%", marginTop: 3,
+                               color: "var(--danger)" }}
+                      onClick={() => setGreenImpactFrame(null)}
+                      title="Go back to the offset from the cameras' own clocks.">
+                ✕ clear ({`f${greenImpactFrame}`})
+              </button>
+            )}
           </PlotField>
 
           <PlotField

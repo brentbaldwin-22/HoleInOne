@@ -26920,6 +26920,24 @@ def _d3_green_delta_sec(db, row) -> tuple[float, str]:
     caller log it and the panel show whether sync was MEASURED or
     ASSUMED, so a visibly wrong cut points at the offset rather than at
     the code."""
+    # A MEASUREMENT BEATS TWO CLOCKS, and that is the whole reason this
+    # branch is first. The camera stamps are only as good as the two
+    # Pis agreeing: on upload 826 they were 2.07s apart, which put the
+    # ball in the air for 8.4s against the 6.6s the green camera's own
+    # frames show, and shifted the cut by the same two seconds.
+    #
+    # `green_impact_frame` is what makes this safe to prefer. It is
+    # written only when an operator marked the strike in BOTH views, so
+    # its presence says the number came from the same instant seen
+    # twice rather than from a clock -- which is the distinction the
+    # stored-zero warning below exists to protect, and the reason a
+    # bare `tee_green_delta_sec` still does not outrank the stamps.
+    _em = row.edit_metrics or {}
+    if _em.get("green_impact_frame") is not None:
+        try:
+            return float(_em["tee_green_delta_sec"]), "operator"
+        except (KeyError, TypeError, ValueError):
+            pass
     t_tee, t_green, _src = _d3_first_frame_instants(db, row)
     if t_tee is not None and t_green is not None:
         return (t_green - t_tee).total_seconds(), _src
