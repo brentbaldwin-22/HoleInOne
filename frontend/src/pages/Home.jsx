@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Brand, Icon } from "../components/Brand.jsx";
 import { api } from "../api.js";
@@ -82,6 +82,21 @@ const STEPS = [
 export default function Home() {
   const { user } = useAuth();
   const [showcase, setShowcase] = useState(null);
+  const featuredVideoRef = useRef(null);
+
+  // Safari on iOS will only go fullscreen from the VIDEO element's own
+  // webkitEnterFullscreen; the standard Element.requestFullscreen is
+  // not implemented there, so a button that only called the standard
+  // one would do nothing on exactly the phones this clip is aimed at.
+  const openFullscreen = () => {
+    const v = featuredVideoRef.current;
+    if (!v) return;
+    const go = v.requestFullscreen || v.webkitRequestFullscreen
+      || v.webkitEnterFullscreen || v.msRequestFullscreen;
+    if (go) {
+      try { go.call(v); } catch { /* user gesture refused; ignore */ }
+    }
+  };
   const [courses, setCourses] = useState(null);
   const [stats, setStats] = useState(null);
 
@@ -239,13 +254,24 @@ export default function Home() {
               {!showcaseLoaded ? (
                 <div className="shimmer" />
               ) : featured ? (
-                <video
-                  src={featured.source_url}
-                  poster={featured.thumbnail_url || undefined}
-                  controls
-                  playsInline
-                  preload="metadata"
-                />
+                <>
+                  <video
+                    ref={featuredVideoRef}
+                    src={featured.source_url}
+                    poster={featured.thumbnail_url || undefined}
+                    controls
+                    playsInline
+                    preload="metadata"
+                  />
+                  <button
+                    type="button"
+                    className="home-clip-fs"
+                    onClick={openFullscreen}
+                    aria-label="Play this clip fullscreen"
+                  >
+                    ⤢ Fullscreen
+                  </button>
+                </>
               ) : (
                 <div className="bandbg" aria-hidden="true" />
               )}

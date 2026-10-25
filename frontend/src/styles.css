@@ -871,6 +871,31 @@ tr:last-child td { border-bottom: 0; }
 .clip video, .clip img, .clip-player video, .watch-video video, .thumb img, .gallery-hole img, .selfie-preview video, .selfie-preview img {
   width: 100%; height: 100%; object-fit: cover; display: block;
 }
+/* The home page's featured clip was missing from the rule above, so the
+   video kept its intrinsic size inside a 16/9 box with overflow:hidden
+   and showed its top-left corner -- taking the player controls, and the
+   fullscreen button on them, out of view with it.
+   `contain` rather than `cover`: this is the one clip on the site whose
+   job is to show what a finished shot looks like, so nothing about it
+   should be cropped, even when the composite is not exactly 16/9. */
+.home-clip-frame video {
+  width: 100%; height: 100%; object-fit: contain; display: block;
+  background: #000;
+}
+.home-clip-fs {
+  position: absolute; right: 10px; bottom: 10px;
+  z-index: 2;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 11px;
+  font-size: 0.74rem; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #fff; background: rgba(11, 12, 16, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+}
+.home-clip-fs:hover { background: rgba(11, 12, 16, 0.82); }
 .home-clip-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; }
 .game-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
 .game-tile { border: 1px solid var(--rule); padding: 18px; background: var(--surface); }
