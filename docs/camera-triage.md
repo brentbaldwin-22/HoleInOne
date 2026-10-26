@@ -1754,6 +1754,95 @@ That set is enough to name the cause without another site visit.
   inside the trees: a flight a scan found on nearly every frame came
   through the sweep as four points.
 
+## Audio: a silent camera that is working perfectly (25 Oct)
+
+The tee recorded silent clips for weeks. Nothing in the agent was
+wrong; the camera was never given a microphone, and two of the three
+settings that would have made one work were set against it.
+
+### What it looks like when it is broken
+
+A constant level that does not respond to sound. Measured on the tee:
+a flat **-23 to -25 dB across 15 seconds**, unchanged by clapping at
+the camera and unchanged by reseating anything. That near-constant
+reading is the signature of an input with bias applied and nothing on
+the end of it -- electrical hiss, not a microphone hearing the world.
+Real outdoor ambience varies far more than 2 dB.
+
+A silent track is NOT silence. It encodes, it uploads, and it passes
+every test that only asks whether audio exists.
+
+### The settings that have to be right
+
+Three, in three different places, and all three were wrong:
+
+1. **Video & Audio -> Video profile -> the profile the Pi pulls ->
+   `Audio in: Enable`.** Without this the RTSP stream has no audio
+   track at all. Check which profile with
+   `grep -oE 'profile[0-9]+' /opt/golfreelz-agent/config.yaml` --
+   `profile2` is the second row in the camera's list, which is H.264.
+2. **Video & Audio -> Audio setup -> Source.** `External microphone`
+   applies bias power for an electret capsule. The SUNBA outdoor mic
+   used here is SELF-POWERED from a 12V barrel jack and outputs LINE
+   level, so it needs **`Line`** -- on `External microphone` it pinned
+   at 0.0 dB (clipping) no matter what the gain was set to. Choosing
+   `Line` also greys out "Apply power to Ext. Mic", which is the
+   correct state for a powered mic.
+3. **Gain.** With `Line` selected, **1** -- the minimum. At 4 it still
+   clipped continuously.
+
+### What right looks like
+
+    quiet ambience   -33 to -45 dB
+    talking          -12 to -18 dB
+    a clap           -6 to -15 dB
+    never            0.0 dB (clipped, and unrecoverable)
+
+The test is that the number MOVES. A flat line at any value is a
+failure, whether it reads -24 dB or 0.0 dB.
+
+### Measuring it
+
+    URL=$(sudo grep -oE 'rtsp://[^ "]+' /opt/golfreelz-agent/config.yaml | head -1)
+    ffprobe -v error -rtsp_transport tcp -show_streams "$URL" | grep codec_type
+
+`codec_type=audio` means setting 1 is right. Then a live level meter,
+which is what makes a two-person job possible -- one at the camera,
+one reading numbers:
+
+    while true; do
+      ffmpeg -loglevel error -rtsp_transport tcp -i "$URL" -t 2 -vn -c:a aac -y /tmp/m.m4a 2>/dev/null
+      v=$(ffmpeg -hide_banner -i /tmp/m.m4a -af volumedetect -f null - 2>&1 \
+          | grep max_volume | grep -oE '\-?[0-9.]+ dB')
+      echo "$(date +%H:%M:%S)  peak $v"
+    done
+
+Each reading opens a fresh RTSP session, so there is a few seconds of
+lag -- hold each action at the camera for ~10s or it falls in the gap.
+
+### Wiring
+
+The SUNBA mic has three tails. Only one goes to the camera:
+
+  * **audio out** (RCA / 3.5mm) -> the camera's lead labelled **MIC**
+  * **DC barrel** -> a 12V supply. NEVER the MIC lead.
+  * the lead labelled **SPEAKER** on the camera is audio OUT. Unused.
+
+### The pre-roll is silent, and that is correct
+
+`in_segments: false` means a separate recorder opens its own RTSP
+session at the TRIGGER, while the clip starts `buffer_seconds` earlier
+from the ring. About five seconds of every clip is silent by design
+and cannot be fixed on this path. Judge a produced clip from the
+strike onward. `in_segments: true` is the fix and is KNOWN BROKEN on
+the XNV-6080R -- see the config's own note; it yields silent clips,
+which is worse.
+
+### Still to do
+
+The green camera has had none of this. `Audio in` was unchecked on its
+H.264 profile when last seen.
+
 ## Related
 
 - [`green-parity.md`](./green-parity.md) — every fix on this page was
