@@ -25,6 +25,7 @@ from typing import Optional
 import cv2
 
 from .common import (
+    clock_offset,
     agent_build_id,
     ClipWriter,
     DeliveryMeter,
@@ -85,6 +86,16 @@ class GreenAgent:
         # end-of-session. 1 s keeps the green's clip within ~1 s of
         # the tee's clip without spamming the endpoint.
         self.stop_poll_interval = float(cfg.get("stop_poll_interval_seconds", 1.0))
+        # HOW MUCH RING TO CUT around a tee-side impact. Generous after,
+        # because the flight time is not known at the moment the club
+        # meets the ball -- it is the thing the producer measures
+        # afterwards -- and a window that ends before the ball lands
+        # cannot be recovered. Short before, because nothing worth
+        # showing on the green happens while the ball is still on
+        # the tee.
+        _ai = (cfg.get("audio_trigger") or {})
+        self.impact_before_sec = float(_ai.get("green_before_sec", 2.0))
+        self.impact_after_sec = float(_ai.get("green_after_sec", 10.0))
         self.poll_timeout = int(cfg.get("poll_timeout_seconds", 25))
         self.heartbeat_seconds = int(cfg.get("heartbeat_seconds", 60))
         # Compress each clip to H.264 before upload. Green runs on a
@@ -269,6 +280,20 @@ class GreenAgent:
                     "trigger received: session=%s event=%s hole=%s",
                     session_id, trigger.get("event_id"), trigger.get("hole_number"),
                 )
+                # AN IMPACT THAT HAS ALREADY HAPPENED. A dwell trigger
+                # says "start recording"; this says "the club met the
+                # ball at T", and there is no recording that can be
+                # started in time for that. Cut backwards out of the
+                # ring instead, which holds minutes of footage and has
+                # had the flight in it since before the message
+                # arrived.
+                if trigger.get("impact_at") is not None:
+                    try:
+                        if self._cut_at_impact(session_id, trigger):
+                            continue
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("could not cut at the impact (%s) — "
+                                    "falling back to recording", exc)
                 _not_before = None
                 if self.record_delay > 0:
                     log.info(
@@ -296,6 +321,70 @@ class GreenAgent:
             if getattr(self, '_copy', None) is not None:
                 self._copy.stop()
     # -----------------------------------------------------------------
+
+    def _cut_at_impact(self, session_id: str, trigger: dict) -> bool:
+        """Cut this green's ring around a tee-side impact. True if sent.
+
+        THE CLOCKS HAVE TO BE RECONCILED FIRST. `impact_at` is on the
+        TEE's clock and this ring's segments are named on THIS Pi's,
+        and the two were measured 0.69s apart on 26 Oct -- most of a
+        ball flight's worth of error, and all of it in the part of the
+        clip that matters. Each Pi measures its own offset from real
+        time, so the instant is carried back to real time with the
+        tee's and forward again with this one:
+
+            true  = impact_at - tee_offset
+            local = true + my_offset
+
+        Either offset missing means that side could not reach an NTP
+        server, and the honest thing is to use the stamp as given
+        rather than correct by half the difference -- which would be
+        wrong by that side's whole error.
+
+        False on anything that does not work, and the caller falls
+        back to recording. A green that cannot cut must not also stop
+        producing clips.
+        """
+        if self._copy is None:
+            return False
+        try:
+            impact = float(trigger["impact_at"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        tee_off = trigger.get("tee_clock_offset_sec")
+        my_off, _ = clock_offset()
+        adj = ""
+        if tee_off is not None and my_off is not None:
+            impact = impact - float(tee_off) + float(my_off)
+            adj = (" (clocks: tee %+.3fs, mine %+.3fs)"
+                   % (float(tee_off), float(my_off)))
+        elif tee_off is not None or my_off is not None:
+            adj = " (only one clock measured — using the stamp as given)"
+
+        before = float(self.impact_before_sec)
+        after = float(self.impact_after_sec)
+        t0, t1 = impact - before, impact + after
+        first, last = self._copy.ring.span()
+        if first is None or t0 < first or t1 > last:
+            log.warning(
+                "impact at %.3f needs %.1f..%.1f and the ring holds %s..%s "
+                "— cannot cut this one%s", impact, t0, t1, first, last, adj)
+            return False
+
+        clip_path = self._copy.clips_dir / f"{session_id}.mp4"
+        res = self._copy.ring.extract(t0, t1, clip_path)
+        if not res.get("ok"):
+            log.warning("could not cut the green ring (%s)", res.get("why"))
+            return False
+        self.uploader.enqueue(session_id, clip_path, res["start"],
+                              real_fps=None, precompressed=True)
+        log.info(
+            "AUDIO CUT: session=%s — %.1fs (%.1f MB) spanning %.1f..%.1f "
+            "around the tee's impact%s",
+            session_id, res["seconds"], res["bytes"] / 1e6,
+            -before, after, adj,
+        )
+        return True
 
     def _on_lens_command(self, op: str, amount: int,
                          params: dict | None = None,

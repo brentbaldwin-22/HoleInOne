@@ -54,6 +54,10 @@ DEFAULT_AFTER_SEC = 9.0
 # barely moving, so this is generous on purpose: it is answering "was
 # this tee occupied", not "was somebody moving at that instant".
 DEFAULT_CONFIRM_TOLERANCE_SEC = 6.0
+# Below this the envelope's median is digital silence, not a quiet
+# course. Measured ambient on this course sits around 0.0008-0.004 of
+# full scale after the high-pass; a dead microphone reads 0.
+_SILENCE_FLOOR = 1e-5
 
 
 class AudioTrigger:
@@ -88,8 +92,10 @@ class AudioTrigger:
         self.shadow = bool(shadow)
         self.on_cut = on_cut
         self._fed: Optional[str] = None
+        self._fed_at = 0.0
         self.heard = 0
         self.confirmed = 0
+        self.cut_count = 0
 
     # ---- the loop ------------------------------------------------------
 
@@ -108,9 +114,30 @@ class AudioTrigger:
                 # handling covers the hole; skipping is right.
                 continue
             self._fed = seg.name
+            self._fed_at = __import__("time").monotonic()
             for hit in self.listener.feed(pcm, ts):
                 out.append(self._judge(hit))
         return out
+
+    def healthy(self) -> bool:
+        """Is this actually listening to something right now?
+
+        THE QUESTION THE DWELL NEEDS ANSWERED before it stands aside.
+        "Is the ring running" is not enough: a camera whose Audio in
+        got unchecked streams a perfectly healthy session of digital
+        silence, which produces segments at the usual rate and would
+        pass any liveness check that only counted files. That is not
+        hypothetical -- it is exactly the state the tee was in until
+        25 Oct and the state the green is in now.
+
+        So both: segments still arriving, AND a noise floor that
+        implies a microphone. A median at zero is a dead mic; the real
+        floor on this course sits far above it.
+        """
+        import time as _t
+        if self._fed_at <= 0.0 or _t.monotonic() - self._fed_at > 20.0:
+            return False
+        return float(getattr(self.listener, "median", 0.0)) > _SILENCE_FLOOR
 
     def _new_segments(self) -> list:
         segs = self.ring.segments()
@@ -182,6 +209,7 @@ class AudioTrigger:
                 d["start"], d["end"], at, d["ratio"], d["attack_ms"], d["why"])
             return d
         d["cut"] = True
+        self.cut_count += 1
         log.info("audio trigger: cutting %.1f..%.1fs around %.3f — x%.1f, %s",
                  d["start"], d["end"], at, d["ratio"], d["why"])
         if self.on_cut is not None:
@@ -193,7 +221,7 @@ class AudioTrigger:
         return d
 
 
-def build(cfg: dict, work_dir, runner, video_span=None):
+def build(cfg: dict, work_dir, runner, video_span=None, on_cut=None):
     """An AudioTrigger from config, or None when it is not asked for.
 
     Returning None rather than a disabled object is deliberate: every
@@ -252,6 +280,7 @@ def build(cfg: dict, work_dir, runner, video_span=None):
         before_sec=float(a.get("before_sec", DEFAULT_BEFORE_SEC)),
         after_sec=float(a.get("after_sec", DEFAULT_AFTER_SEC)),
         shadow=bool(a.get("shadow", True)),
+        on_cut=on_cut,
     )
     log.info(
         "audio trigger: %s, ratio x%.1f, zones %s, window %.0f..+%.0fs",

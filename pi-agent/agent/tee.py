@@ -31,6 +31,7 @@ from .common import (
     FrameBuffer,
     HeartbeatThread,
     build_audio_recorder,
+    clock_offset,
     mux_audio_into_video,
     drain_camera_settings,
     handle_camera_command,
@@ -878,6 +879,30 @@ class TeeAgent:
             if streamer is not None:
                 streamer.update_frame(frame)
 
+    def _cut_at_impact(self, decision: dict) -> None:
+        """Cut and upload a swing the audio trigger confirmed.
+
+        Called only when the trigger is LIVE -- in shadow it decides
+        and returns -- and only for a crack that had a golfer in the
+        named zone. Everything that can go wrong here is logged and
+        swallowed: the dwell is still running, still recording and
+        still uploading, so a failure costs bandwidth, not a swing.
+        """
+        if self._copy is None:
+            log.info("audio trigger: no copy engine — nothing to cut from")
+            return
+        _off = None
+        try:
+            _off, _ = clock_offset()
+        except Exception:  # noqa: BLE001
+            pass
+        self._copy.cut_at_impact(
+            self, float(decision["at"]),
+            before_sec=float(decision["at"]) - float(decision["start"]),
+            after_sec=float(decision["end"]) - float(decision["at"]),
+            clock_offset_sec=_off,
+        )
+
     def run(self) -> None:
         cap = open_camera(self.cam_cfg)
         # WHAT SIZE THE FRAMES ACTUALLY ARE, asked of the capture rather
@@ -914,6 +939,13 @@ class TeeAgent:
         # the zone is kept and seen_times() for the readers that only
         # want the clock.
         self._audio_trigger = None
+        # Whether a live audio trigger may suppress the dwell. Off by
+        # default: the dwell is the thing that has always produced
+        # clips, and standing it down is the LAST step, taken once
+        # shadow mode has shown the ears agree with it.
+        self._dwell_yields = bool(
+            (self.cfg.get("audio_trigger") or {}).get("replaces_dwell", False))
+        self._yielded_logged = False
         self._person_seen_at: list = []
         self.motion = None
         if _sw.get("enabled"):
@@ -1076,6 +1108,7 @@ class TeeAgent:
             self.cfg, self.work_dir, self,
             video_span=(self._copy.ring.span if self._copy is not None
                         else None),
+            on_cut=self._cut_at_impact,
         )
 
         # Start draining the camera into the buffer before we begin
@@ -1149,6 +1182,34 @@ class TeeAgent:
                     log.debug("nobody in a zone for over %.1fs before the "
                               "dwell was met — starting the clock over",
                               dwell.grace)
+                # THE DWELL STANDS ASIDE WHEN THE EARS WORK. In mode
+                # B the audio trigger registers its own events and the
+                # green cuts backwards from them, so a dwell trigger on
+                # top of that is a second event for the same golfer:
+                # green records live for nothing and the event has no
+                # clip to show for it.
+                #
+                # Only while the trigger is LIVE and demonstrably
+                # hearing something -- see AudioTrigger.healthy(). A
+                # mic that dies, or a camera whose Audio in gets
+                # unchecked, puts the dwell straight back in charge
+                # rather than quietly ending every recording on this
+                # rig. An operator Capture is never suppressed: that
+                # click means record now.
+                if (dwell_met and not forced
+                        and self._audio_trigger is not None
+                        and not self._audio_trigger.shadow
+                        and self._dwell_yields
+                        and self._audio_trigger.healthy()):
+                    if not self._yielded_logged:
+                        log.info("dwell met, but the audio trigger is live "
+                                 "and hearing the course — standing aside "
+                                 "and letting it cut the swings")
+                        self._yielded_logged = True
+                    dwell.reset()
+                    time.sleep(det_period)
+                    continue
+                self._yielded_logged = False
                 if forced or dwell_met:
                     session_id = str(uuid.uuid4())
                     log.info(

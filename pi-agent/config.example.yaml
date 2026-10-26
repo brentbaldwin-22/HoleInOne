@@ -688,3 +688,32 @@ log_level: "INFO"
 #   highpass_hz: 1500.0
 #   max_attack_ms: 30.0
 #   min_separation_sec: 6.0
+#
+#   # ---- paired green -------------------------------------------------
+#   # How much of the GREEN's ring to cut around the tee's impact. The
+#   # tee registers the event WITH the instant it heard, the backend
+#   # hands that to the green on the poll it is already sitting on, and
+#   # the green cuts backwards -- there is no recording that could be
+#   # started in time for a sound that has already happened.
+#   #
+#   # Generous after, because the flight time is not known at impact:
+#   # it is the thing the producer measures afterwards, and a window
+#   # that ends before the ball lands cannot be recovered. Short
+#   # before, because nothing worth watching on the green happens while
+#   # the ball is still on the tee. Set on the GREEN's config.
+#   green_before_sec: 2.0
+#   green_after_sec: 10.0
+#
+#   # ---- standing the dwell down ---------------------------------------
+#   # THE LAST STEP, and off until the shadow log has shown the ears
+#   # agree with the dwell. With this on, a dwell that is met while the
+#   # trigger is live AND hearing the course does not fire at all --
+#   # otherwise every golfer produces two events, the green records
+#   # live for nothing, and the dwell's event has no clip to show.
+#   #
+#   # "Hearing the course" is both halves: segments still arriving AND
+#   # a noise floor that implies a microphone. A camera whose Audio in
+#   # gets unchecked streams a perfectly healthy session of digital
+#   # silence -- the state the tee was in until 25 Oct -- and a check
+#   # that only counted segments would hand it the whole rig.
+#   replaces_dwell: false

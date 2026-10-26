@@ -534,6 +534,88 @@ class CopyEngine:
                 )
         return reason
 
+    # ---- audio-triggered cuts -------------------------------------------
+
+    def cut_at_impact(self, runner, impact_ts: float, *,
+                      before_sec: float, after_sec: float,
+                      clock_offset_sec=None) -> Optional[str]:
+        """Cut a swing the microphone already heard. Session id, or None.
+
+        BACKWARDS, WHICH IS THE POINT. A dwell says "somebody is here,
+        start recording"; a crack says "the ball has already gone".
+        Nothing can be started in time for that, so both rings are read
+        backwards instead -- which is what a ring is for, and why this
+        is a cut rather than a recording.
+
+        The event is registered WITH the impact instant, so the paired
+        green does the same thing to its own ring rather than starting
+        a recorder it is seconds too late to start.
+
+        Returns None on any failure, having uploaded nothing. The dwell
+        is still running and still records; this adds clips, and a
+        failure here costs a swing nothing.
+        """
+        t0 = float(impact_ts) - float(before_sec)
+        t1 = float(impact_ts) + float(after_sec)
+        first, last = self.ring.span()
+        if first is None or t0 < first or t1 > last:
+            log.info("copy: impact at %.1f needs %.1f..%.1f and the ring "
+                     "holds %s..%s — not cutting", impact_ts, t0, t1,
+                     first, last)
+            return None
+
+        session_id = str(uuid.uuid4())
+        clip_path = self.clips_dir / f"{session_id}.mp4"
+        res = self.ring.extract(t0, t1, clip_path)
+        if not res.get("ok"):
+            log.warning("copy: could not cut the impact at %.1f (%s)",
+                        impact_ts, res.get("why"))
+            return None
+
+        # Audio for exactly the span the video actually covers. From
+        # the ring, so there is no connect to measure and no pad to get
+        # wrong -- see RingAudioRecorder.
+        ring = getattr(getattr(runner, "_audio_trigger", None), "ring", None)
+        if ring is not None and not self.keep_audio:
+            from .audiocap import RingAudioRecorder
+            _wav = clip_path.with_suffix(".ring.wav")
+            try:
+                if RingAudioRecorder(ring).extract_span(
+                        float(res["start"]), float(res["end"]), _wav):
+                    mux_audio_into_video(clip_path, _wav,
+                                         audio_delay_seconds=0.0)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("copy: ring audio failed (%s) — silent clip", exc)
+            finally:
+                _wav.unlink(missing_ok=True)
+
+        # REGISTER BEFORE UPLOADING, so the green hears about it while
+        # its own ring still holds the flight. Registration failing is
+        # not fatal: the uploader's _recover_lost_event picks the
+        # session up when the link returns, and the tee half survives
+        # even though the green half cannot.
+        try:
+            runner.client.event_trigger(
+                session_id, impact_at=float(impact_ts),
+                clock_offset_sec=clock_offset_sec)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("copy: could not register the impact event (%s) — "
+                        "the clip will be recovered later, but the green "
+                        "half is lost", exc)
+
+        up = getattr(runner, "uploader", None)
+        if up is None:
+            clip_path.unlink(missing_ok=True)
+            return None
+        up.enqueue(session_id, clip_path, res["start"],
+                   real_fps=None, precompressed=True)
+        log.info(
+            "copy: AUDIO CUT session=%s — %.1fs (%.1f MB) around the impact "
+            "at %.3f", session_id, res["seconds"],
+            res["bytes"] / 1e6, impact_ts,
+        )
+        return session_id
+
     # ---- swing selection -----------------------------------------------
 
     def _enqueue_swings(self, runner, up, session_id, clip_path, res,

@@ -157,6 +157,43 @@ ring._names.append("aud-20261026-210005.pcm")
 check("...and the next new segment is judged", len(t.tick()), 1)
 
 print()
+print("healthy() — what the dwell asks before standing aside:")
+
+
+class L:
+    def __init__(self, med):
+        self.median = med
+
+    def feed(self, pcm, ts):
+        return []
+
+
+def trig(median, fed_ago=None):
+    import time as _t
+    t = AudioTrigger(FakeRing([]), L(median), sightings=lambda: [])
+    if fed_ago is not None:
+        t._fed_at = _t.monotonic() - fed_ago
+    return t
+
+
+check("never fed anything", trig(0.002).healthy(), False)
+check("fed just now, real noise floor", trig(0.002, 0.1).healthy(), True)
+# THE CASE THAT MATTERS. A camera whose Audio in got unchecked streams
+# a perfectly healthy session of digital silence: segments arrive at
+# the usual rate and any check that only counts files passes. That is
+# the exact state the tee was in until 25 Oct and the green is in now.
+check("fed just now, but DIGITAL SILENCE", trig(0.0, 0.1).healthy(), False)
+check("real noise but the ring went quiet 60s ago",
+      trig(0.002, 60.0).healthy(), False)
+
+print()
+print("cuts are counted, in live mode only:")
+t, d, cuts = build([(1, HIT)], zones=[0], sightings=[(999.6, 0)], shadow=False)
+check("live cut counted", t.cut_count, 1)
+t, d, cuts = build([(1, HIT)], zones=[0], sightings=[(999.6, 0)], shadow=True)
+check("shadow cut not counted", t.cut_count, 0)
+
+print()
 if FAILED:
     print("FAILED: %s" % ", ".join(FAILED))
     sys.exit(1)

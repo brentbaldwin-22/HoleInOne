@@ -470,11 +470,29 @@ class BackendClient:
             retries=2,
         )
 
-    def event_trigger(self, session_id: str) -> dict:
-        return self._retry(
-            "POST", "/event-trigger",
-            data={"session_id": session_id},
-        )
+    def event_trigger(self, session_id: str,
+                      impact_at: float | None = None,
+                      clock_offset_sec: float | None = None) -> dict:
+        """Register an event. With `impact_at`, register it AROUND one.
+
+        Without it this means what it always has -- somebody is on the
+        tee, start recording -- and the green starts a recorder. With
+        it, the club has ALREADY met the ball at that instant and the
+        green cuts backwards out of its own ring instead, which is the
+        only way a sound that has already happened can still produce a
+        paired clip.
+
+        `clock_offset_sec` travels with it because `impact_at` is on
+        THIS Pi's clock and the green will do arithmetic with it
+        against its own. The two were 0.69s apart when this was
+        written, which is most of a ball flight's worth of error.
+        """
+        data = {"session_id": session_id}
+        if impact_at is not None:
+            data["impact_at"] = repr(float(impact_at))
+            if clock_offset_sec is not None:
+                data["clock_offset_sec"] = repr(float(clock_offset_sec))
+        return self._retry("POST", "/event-trigger", data=data)
 
     def recover_event(self, session_id: str) -> dict:
         # Re-register a session whose trigger was lost, so an already

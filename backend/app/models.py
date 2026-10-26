@@ -663,6 +663,19 @@ class CameraEvent(Base):
     # itself, which is exactly the false confidence a bare offset would
     # have invited. Null on every clip written before this, which reads
     # as "no better information" and keeps the old behaviour.
+    # WHEN THE CLUB MET THE BALL, as the tee heard it. Set only by an
+    # audio-triggered event: the tee finds the impact in its own audio
+    # ring and registers the event around it, instead of the event
+    # meaning "somebody is standing on the tee". Green cuts its own
+    # ring backwards from this rather than starting a recorder, which
+    # is the whole reason a sound that has already happened can still
+    # produce a paired clip.
+    #
+    # Stored as the tee's wall clock, with `tee_clock_offset_sec`
+    # alongside saying how far that clock was from real time -- the
+    # two Pis were 0.69s apart when this was built, which is most of a
+    # ball flight's worth of error if nobody corrects for it.
+    impact_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     tee_clock_offset_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     tee_clock_error_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     green_clock_offset_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

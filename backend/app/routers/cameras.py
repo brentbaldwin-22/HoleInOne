@@ -1374,6 +1374,13 @@ async def event_trigger(
     token: str,
     session_id: str = Form(...),
     recover: bool = Form(False),
+    # AN AUDIO-TRIGGERED EVENT CARRIES ITS OWN MOMENT. Absent, this
+    # means what it always has: somebody is on the tee, start
+    # recording. Present, it means the club has ALREADY met the ball
+    # at that instant, and the green should cut backwards from its
+    # ring rather than start a recorder it is far too late to start.
+    impact_at: float | None = Form(None),
+    clock_offset_sec: float | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Tee-Pi-only: signals that a person was detected on the tee box
@@ -1452,6 +1459,27 @@ async def event_trigger(
     # being discarded, but the swing is minutes in the past: waking the
     # green now would only have it record an empty tee box and file it
     # under a session whose green half is long gone.
+    # Recorded on the event as well as handed to the green: the
+    # producer needs the impact instant to pace a tracer, and an event
+    # that was heard rather than dwelt upon is worth being able to
+    # tell apart afterwards.
+    _impact_epoch = None
+    _tee_off = None
+    if impact_at is not None:
+        try:
+            _impact_epoch = float(impact_at)
+            event.impact_at = datetime.utcfromtimestamp(_impact_epoch)
+        except (ValueError, OverflowError, OSError):
+            _impact_epoch = None
+    if clock_offset_sec is not None:
+        try:
+            _tee_off = float(clock_offset_sec)
+            event.tee_clock_offset_sec = _tee_off
+        except (TypeError, ValueError):
+            _tee_off = None
+    if _impact_epoch is not None or _tee_off is not None:
+        db.commit()
+
     partner_id = None if recover else cam.paired_with_camera_id
     if recover:
         # No green half is coming, so don't leave the event waiting for
@@ -1475,6 +1503,14 @@ async def event_trigger(
                     else None,
                     "tee_camera_id": cam.id,
                     "hole_number": cam.assigned_hole,
+                    # EPOCH, NOT ISO. The green has to do arithmetic
+                    # with this against its own clock and its own ring
+                    # filenames, and handing it a string to parse is
+                    # one more place for a timezone to go missing.
+                    # None keeps every older green on the path it has
+                    # always taken.
+                    "impact_at": _impact_epoch,
+                    "tee_clock_offset_sec": _tee_off,
                 }
             )
         except asyncio.QueueFull:
