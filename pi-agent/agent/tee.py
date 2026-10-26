@@ -453,6 +453,25 @@ def _in_roi(pt: tuple[int, int], roi) -> bool:
     return tee_roi.contains(pt, roi)
 
 
+def _roi_zone(pt, roi):
+    """WHICH zone holds this point, for the record only. Never raises.
+
+    Deliberately NOT part of the decision -- `_in_roi` above decides
+    whether to record and keeps being the one seam that does, because
+    the first version of this inlined the zone lookup into that branch
+    and silently replaced the test double the stop-policy suite patches
+    in. Annotating a sighting must not be able to change which
+    sightings there are, and a detector returning a point this cannot
+    read must not be able to stop a recording: that is a worse failure
+    than an unattributed sighting, which merely makes the audio
+    trigger fall back to "any zone".
+    """
+    try:
+        return tee_roi.which(pt, roi)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ---------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------
@@ -1345,9 +1364,7 @@ class TeeAgent:
             stance = detector.detect(snap[-1][1])
             with self._roi_lock:
                 _roi = self.roi
-            _zone = (tee_roi.which(stance, _roi)
-                     if stance is not None else None)
-            if _zone is not None:
+            if stance is not None and _in_roi(stance, _roi):
                 state["in_roi"] += 1
                 state["last_seen"] = now
                 # AND REMEMBER THAT WE SAW THEM, which this did not do
@@ -1382,7 +1399,7 @@ class TeeAgent:
                     # happened" rather than "was anybody anywhere".
                     # Older readers want a bare float, so `_seen_times`
                     # keeps giving them one.
-                    _seen.append((now, _zone))
+                    _seen.append((now, _roi_zone(stance, _roi)))
                 return None
             if now - state["last_seen"] >= no_person_timeout:
                 return "no_person"
@@ -1548,7 +1565,7 @@ class TeeAgent:
                         # a crash that only appears on whichever engine
                         # the rig happens to run.
                         _seen.append(
-                            (now, tee_roi.which(stance, self.tee_box_roi)))
+                            (now, _roi_zone(stance, self.tee_box_roi)))
                 elif now - last_person_seen > no_person_timeout:
                     log.info(
                         "no person for %.1fs; stopping (recorded %.1fs)",
