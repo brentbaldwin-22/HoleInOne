@@ -331,10 +331,22 @@ stop_poll_interval_seconds: 1.0
 # Two wins: (1) clips play in any browser — the raw mp4v the camera
 # writes won't play in desktop Chrome; (2) far smaller/faster to send on
 # a cellular SIM (a ~100 MB mp4v clip -> ~10 MB). Set to 0 to disable.
-# Code defaults differ by role if this is unset: the GREEN uses ~2.5
-# Mbps (cosmetic landing view), the TEE uses ~5 Mbps (its footage feeds
-# the ball tracer and needs more detail). Optionally downscale with
-# upload_scale_height (e.g. 720).
+# Code defaults differ by role if this is unset: the GREEN uses 1500
+# (green.py) and the TEE uses 3500 (tee.py). This comment used to say
+# 2.5 and 5 Mbps, which was true of neither -- and the green's real
+# default is the one that matters, because 1500 on a 1080p60 copy-engine
+# rig throws away two thirds of the camera's bits. Optionally downscale
+# with upload_scale_height (e.g. 720).
+#
+# ON A COPY-ENGINE RIG, PREFER A CEILING ABOVE THE CAMERA'S BITRATE.
+# compress_video skips the re-encode entirely when the target is at
+# least COMPRESS_MIN_SAVING (0.9) of what the clip already is, so a
+# ceiling above the camera's output means the clip ships first-
+# generation: the camera's own H.264, the camera's own GOV, and no
+# software x264 pass on a Pi that has no hardware encoder. A ceiling
+# BELOW it re-encodes at -preset veryfast and stamps libx264's default
+# 250-frame keyint on the clip -- a 4-second GOP at 60fps, which makes
+# frame-stepping in the editor decode up to 249 frames per step.
 #
 # "LEAVE UNSET TO KEEP CAPTURE RES" IS ONLY TRUE ON THE TEE, and this
 # line used to say it without that qualifier. The GREEN defaults to 720
