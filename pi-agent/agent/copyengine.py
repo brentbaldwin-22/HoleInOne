@@ -610,8 +610,8 @@ class CopyEngine:
         up.enqueue(session_id, clip_path, res["start"],
                    real_fps=None, precompressed=True)
         log.info(
-            "copy: AUDIO CUT session=%s — %.1fs (%.1f MB) around the impact "
-            "at %.3f", session_id, res["seconds"],
+            "copy: IMPACT CUT session=%s — %.1fs (%.1f MB) around the "
+            "impact at %.3f", session_id, res["seconds"],
             res["bytes"] / 1e6, impact_ts,
         )
         return session_id

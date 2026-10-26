@@ -378,8 +378,13 @@ class GreenAgent:
             return False
         self.uploader.enqueue(session_id, clip_path, res["start"],
                               real_fps=None, precompressed=True)
+        # IMPACT, NOT AUDIO. This green has no microphone and its
+        # clips are silent; what was heard was the TEE's audio, and
+        # this is the video cut around that instant. "AUDIO CUT" in a
+        # green journal reads as "cut with audio" and invites somebody
+        # to go looking for a mic that was never there.
         log.info(
-            "AUDIO CUT: session=%s — %.1fs (%.1f MB) spanning %.1f..%.1f "
+            "IMPACT CUT: session=%s — %.1fs (%.1f MB) spanning %.1f..%.1f "
             "around the tee's impact%s",
             session_id, res["seconds"], res["bytes"] / 1e6,
             -before, after, adj,
