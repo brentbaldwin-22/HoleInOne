@@ -5314,6 +5314,12 @@ AUDIO_SAMPLE_RATE = 22050
 # average out one-sample crackle but narrow enough to preserve the
 # sharp leading edge of the impact transient.
 AUDIO_ENVELOPE_WINDOW_MS = 10
+# Attack times are measured from this multiple of the median envelope
+# when 10% of the peak would fall below it. 2.0 sits clear of ordinary
+# ambient excursions without eating into a real impact's rise. See the
+# block in detect_swings_from_audio for why a peak-relative reference
+# alone silently rejected quiet strikes.
+AUDIO_ATTACK_NOISE_MULT = 2.0
 
 # Minimum peak-to-median ratio for us to trust the audio peak as a
 # real impact. Below this we treat the audio as too noisy to
@@ -10826,14 +10832,48 @@ def detect_swings_from_audio(
     above = envelope > threshold
     n = envelope.size
     # Raw peaks tagged with attack time: (pos, peak_value, attack_sec,
-    # passes_attack). Attack time = (peak_pos - last sample below 10 %
-    # of peak amplitude within a look-back window) / sample_rate. A
+    # passes_attack). Attack time = (peak_pos - last sample below the
+    # attack reference within a look-back window) / sample_rate. A
     # real club-on-ball impact rises from noise to peak in < 20 ms;
     # voices, rumble, and most ambient sounds are sustained and ramp
     # up over 50+ ms, so the attack filter drops them while keeping
     # impulsive transients.
+    #
+    # THE REFERENCE MUST SIT ABOVE THE NOISE FLOOR, and for five
+    # months it did not. It was a flat `0.10 * peak`: a fraction of
+    # the PEAK, compared against an envelope whose floor is ABSOLUTE.
+    # So how measurable a strike was depended on how loud it was --
+    #
+    #   x30 strike -> reference 3.0x median, well clear of the floor,
+    #                 crossing found, attack 7 ms, kept
+    #   x9.7 strike -> reference 0.97x median, i.e. AT the floor. An
+    #                 envelope essentially never dips below its own
+    #                 median inside the 90 ms window, so no crossing
+    #                 was found and the peak was scored
+    #                 `attack_lookback + 1` and dropped as "sustained".
+    #
+    # The filter was rejecting impacts for being QUIET, not for being
+    # slow, and silently: both outcomes produced the same number. Upload
+    # 1258 (back tees) is the case that exposed it -- two real swings,
+    # the x30 kept and the x9.7 dropped, and EVERY rejected peak in the
+    # readout reported exactly 90.0 ms. One value, never a spread, is
+    # what a failure sentinel looks like and what a measurement does
+    # not. tools/audio_attack_test.py holds the shape constant and
+    # varies only amplitude, so this cannot regress unnoticed.
+    #
+    # Floor the reference at AUDIO_ATTACK_NOISE_MULT x median. A loud
+    # peak is unaffected (0.10 * v already clears it); a quiet one
+    # measures the rise from just above the ambience, which is the
+    # thing the filter was always trying to ask about. A genuinely
+    # sustained sound still never crosses, so it is still rejected --
+    # now for the right reason.
     max_attack_samples = max(1, int(max_attack_sec * AUDIO_SAMPLE_RATE))
     attack_lookback = max(win, max_attack_samples * 3)
+    # THE VALUE THAT MEANS "NO ANSWER", named so the readout can say so.
+    # It used to be printed as though it were a measurement, which is
+    # how a filter rejecting quiet strikes went unnoticed: every drop
+    # showed the same 90.0 ms and nobody reads one number as a tell.
+    attack_sentinel_sec = float(attack_lookback + 1) / float(AUDIO_SAMPLE_RATE)
     raw_peaks: list[tuple[int, float, float, bool]] = []
     for i in range(5, n - 5):
         if not above[i]:
@@ -10845,14 +10885,24 @@ def detect_swings_from_audio(
             and v >= envelope[i - 5] and v >= envelope[i + 5]
         ):
             continue
-        thresh10 = 0.10 * v
+        attack_ref = max(0.10 * v, AUDIO_ATTACK_NOISE_MULT * median)
+        # TOO CLOSE TO THE FLOOR TO MEAN ANYTHING. When the reference
+        # reaches half the peak there is no rise left to time, so the
+        # answer would be noise either way. Say so rather than guess.
+        # This only ever binds below ratio ~4 (2 * median < 0.5 * v
+        # requires v > 4 * median), which the threshold gate rejects
+        # anyway at any sane min_peak_ratio.
+        if attack_ref >= 0.5 * v:
+            raw_peaks.append((i, v, float(attack_lookback + 1)
+                              / float(AUDIO_SAMPLE_RATE), False))
+            continue
         start_look = max(0, i - attack_lookback)
         # np.argwhere is slow per-peak, but the lookback window is small
-        # (a few hundred samples). Walk back to the most recent sub-10 %
-        # crossing.
+        # (a few hundred samples). Walk back to the most recent
+        # sub-reference crossing.
         attack_samples: int | None = None
         for k in range(i - 1, start_look - 1, -1):
-            if float(envelope[k]) < thresh10:
+            if float(envelope[k]) < attack_ref:
                 attack_samples = i - k
                 break
         if attack_samples is None:
@@ -10889,6 +10939,7 @@ def detect_swings_from_audio(
                     "peak_sec": round(pos / float(AUDIO_SAMPLE_RATE), 2),
                     "ratio": round(float(v) / median, 2) if median > 0 else None,
                     "attack_ms": round(a * 1000, 1),
+                    "attack_measured": a < attack_sentinel_sec - 1e-9,
                     "passes_attack": ok,
                     "kept": False,
                 }
@@ -10920,6 +10971,7 @@ def detect_swings_from_audio(
                 "peak_sec": round(pos / float(AUDIO_SAMPLE_RATE), 2),
                 "ratio": round(float(v) / median, 2) if median > 0 else None,
                 "attack_ms": round(a * 1000, 1),
+                "attack_measured": a < attack_sentinel_sec - 1e-9,
                 "passes_attack": ok,
                 "kept": pos in kept_set,
             }

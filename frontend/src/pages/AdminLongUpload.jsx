@@ -1118,7 +1118,16 @@ export default function AdminLongUpload() {
                                     <span key={i} style={{ marginRight: 10 }}>
                                       {p.peak_sec}s ×{p.ratio}
                                       {p.attack_ms != null && (
-                                        <> {p.attack_ms}ms{p.passes_attack ? "" : "✗atk"}</>
+                                        <>
+                                          {" "}
+                                          {/* "≥" marks the sentinel: the rise
+                                              never crossed the reference, so
+                                              this is "could not measure", not
+                                              a slow attack. Printing it as a
+                                              plain number hid a filter that
+                                              was dropping quiet strikes. */}
+                                          {p.attack_measured === false ? "≥" : ""}
+                                          {p.attack_ms}ms{p.passes_attack ? "" : "✗atk"}</>
                                       )}
                                       {" "}{p.kept ? "✓" : "✗"}
                                     </span>
