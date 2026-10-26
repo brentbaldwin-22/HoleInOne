@@ -1609,9 +1609,16 @@ class TeeAgent:
                 ),
             )
             if muxed:
+                # LOG THE DELAY THAT WAS ACTUALLY APPLIED, and both of
+                # its parts. Logging preroll_seconds alone understated
+                # it by the RTSP connect time, which is the one number
+                # you need when a clap is heard off its frame.
                 log.info(
-                    "audio: muxed into %s (delay=%.2fs)",
-                    clip_path.name, preroll_seconds,
+                    "audio: muxed into %s (delay=%.2fs = preroll %.2fs "
+                    "+ connect %.2fs)",
+                    clip_path.name,
+                    preroll_seconds + audio_recorder.lead_seconds,
+                    preroll_seconds, audio_recorder.lead_seconds,
                 )
 
         size = clip_path.stat().st_size if clip_path.exists() else 0

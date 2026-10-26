@@ -446,7 +446,16 @@ class CopyEngine:
                         clip_path, wav,
                         audio_delay_seconds=lead + audio.lead_seconds,
                     ):
-                        log.info("copy: audio muxed in (delay=%.2fs)", lead)
+                        # The applied delay is lead + the RTSP connect
+                        # time; logging lead alone understated it by
+                        # exactly the amount you'd be hunting for when
+                        # a clap lands off its frame.
+                        log.info(
+                            "copy: audio muxed in (delay=%.2fs = preroll "
+                            "%.2fs + connect %.2fs)",
+                            lead + audio.lead_seconds, lead,
+                            audio.lead_seconds,
+                        )
                         res["bytes"] = clip_path.stat().st_size
                 except Exception as exc:  # noqa: BLE001
                     log.warning("copy: muxing audio failed (%s) — uploading "
