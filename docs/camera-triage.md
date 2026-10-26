@@ -1853,3 +1853,52 @@ H.264 profile when last seen.
   build, terminal sizes, and the wiring order
 - [`field-deployment.md`](./field-deployment.md) — hardware BOM and
   placement
+
+---
+
+## A strike's pitch drops with distance, and the detector does not (26 Oct)
+
+**The 1.5 kHz high-pass in `detect_swings_from_audio` is tuned for a
+NEAR strike and actively removes a FAR one.** Its comment says a
+club-on-ball impact has most of its energy above 1.5 kHz while voices
+peak at 200-2 kHz. That is true at the back tees and inverted at the
+front tees, because air absorbs high frequencies far faster than low
+ones: the sharp crack loses its top end on the way and arrives as a
+dull thump.
+
+Measured on `event-1257-tee` (front tees, one real swing at 30.66s)
+against the ambient floor from the clip's own quiet stretch:
+
+| band | strike 30.66s | voice 11.32s | voice 25.21s | strike margin |
+|---|---|---|---|---|
+| 60-125 Hz | **153.3x** | 2.8x | 0.4x | **+17.4 dB** |
+| 125-250 Hz | **116.0x** | 2.4x | 0.9x | **+16.8 dB** |
+| 250-500 Hz | 7.9x | 1.7x | 1.1x | +6.6 dB |
+| 500-1000 Hz | 0.6x | 2.3x | 1.5x | -6.1 dB |
+| 1500-2500 Hz | 1.0x | 2.6x | 1.1x | -4.1 dB |
+| 4000-7000 Hz | 0.8x | 6.4x | 1.7x | -9.1 dB |
+
+Only 1.0% of that strike's energy is above 1.5 kHz. After the
+high-pass it measures x1.02 of the median envelope -- it IS the
+median, and no ratio setting can find it. The detector instead
+returns 11.32s, a voice, which is 59.5% high-frequency and survives
+the filter intact.
+
+**A FULL-BAND MEASUREMENT SAYS NOTHING ABOUT WHAT THE DETECTOR WILL
+DO**, and this page nearly recorded the opposite conclusion because of
+it. Measured full-band, that strike is x13.4 over the floor and looks
+comfortable. Run the actual code path before judging detectability.
+
+**DO NOT SIMPLY MOVE THE FILTER DOWN.** The loudest thing in that clip
+at 60-250 Hz is not the swing: an unidentified impulse at 7.24s reads
+x533 and x454 in those bands, roughly 3.5x the strike, with a 5 ms
+attack. A bag set down, the mount knocked, a gust on the capsule --
+low-frequency thumps live exactly where the far strike lives, and
+audio alone has nothing to tell them apart. A second low band needs a
+non-audio partner (the trigger zone, via `detect_swings_combined`),
+not a better cutoff.
+
+**What this means for range.** For audio alone the back tees are
+inside it and the front tees are outside it -- not because the strike
+is too quiet there, but because by then it is all bass, and bass is
+where the thumps are.
