@@ -53,7 +53,18 @@ def _impact(n, rise_ms=2.0, decay_ms=30.0):
 
 
 def _sustained(n, rise_ms=150.0):
-    """A voice-ish blob: slow rise, same HF band. Must be rejected."""
+    """A slow-rising blob in the same band. Must be rejected.
+
+    NOT A STAND-IN FOR TALKING, and do not read its rejection as
+    evidence the attack filter removes speech. It does not. Measured
+    on upload 1258, people talking attacked in 7.7-13.7 ms against
+    real swings at 5.3-9.4 ms -- indistinguishable. The 1.5 kHz
+    high-pass that runs first strips the vowels and leaves the
+    consonants, so by the time this filter sees speech it is already
+    impulsive. This fixture stands for rumble, wind and engine noise,
+    which stay sustained in any band; amplitude is what separates a
+    swing from a voice, and that is min_peak_ratio's job.
+    """
     t = np.arange(n) / SR
     rise = np.clip(t / (rise_ms / 1000.0), 0, 1)
     hold = np.ones(n)

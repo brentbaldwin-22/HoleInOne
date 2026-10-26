@@ -10834,10 +10834,25 @@ def detect_swings_from_audio(
     # Raw peaks tagged with attack time: (pos, peak_value, attack_sec,
     # passes_attack). Attack time = (peak_pos - last sample below the
     # attack reference within a look-back window) / sample_rate. A
-    # real club-on-ball impact rises from noise to peak in < 20 ms;
-    # voices, rumble, and most ambient sounds are sustained and ramp
-    # up over 50+ ms, so the attack filter drops them while keeping
-    # impulsive transients.
+    # real club-on-ball impact rises from noise to peak in < 20 ms.
+    #
+    # DO NOT EXPECT THIS TO REJECT TALKING. This comment used to claim
+    # voices "ramp up over 50+ ms", and that is true of speech only
+    # until the 1.5 kHz high-pass above has run. The filter strips the
+    # vowels -- the slow, low-frequency, genuinely sustained part --
+    # and leaves the consonants, which are plosives and sibilants and
+    # impulsive by construction. Measured on upload 1258 (back tees):
+    # two real swings attack in 6.7-8.8 ms and 5.3-9.4 ms, and the
+    # people talking at 52.14s and 58.41s attack in 7.7-13.7 ms. The
+    # two are indistinguishable by rise time.
+    #
+    # The frequency filter and the shape filter therefore work against
+    # each other: the first one exists to remove voices, and it hands
+    # the second one exactly the sharp part of them. On that clip only
+    # AMPLITUDE separated swing from speech (x30.0 and x9.7 against
+    # x7.2, x6.8 and x5.1), which is min_peak_ratio's job, not this
+    # filter's. What this filter still earns its place for is rumble,
+    # wind and engine noise, which stay sustained in any band.
     #
     # THE REFERENCE MUST SIT ABOVE THE NOISE FLOOR, and for five
     # months it did not. It was a flat `0.10 * peak`: a fraction of

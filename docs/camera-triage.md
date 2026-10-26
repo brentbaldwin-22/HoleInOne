@@ -1902,3 +1902,43 @@ not a better cutoff.
 inside it and the front tees are outside it -- not because the strike
 is too quiet there, but because by then it is all bass, and bass is
 where the thumps are.
+
+### ...and the attack filter cannot tell a strike from talking (26 Oct)
+
+**The 1.5 kHz high-pass and the attack filter work against each
+other.** The high-pass exists to remove voices by frequency. What it
+actually removes is the VOWELS -- slow, low-frequency, genuinely
+sustained -- and what it leaves is the consonants, which are plosives
+and sibilants and impulsive by construction. The attack filter then
+receives the sharp part of speech and passes it.
+
+Measured on upload 1258 (back tees, two real swings):
+
+| event | ratio | attack | what it is |
+|---|---|---|---|
+| 33.78s | x30.04 | 6.7-8.8 ms | swing |
+| 72.71s | x9.66 | 5.3-9.4 ms | swing |
+| 52.14s | x7.19 | 7.7-9.8 ms | people talking |
+| 58.41s | x6.83 | 13.7 ms | people talking |
+| 23.94s | x5.10 | — | people talking |
+
+Rise time does not separate them. **Only amplitude does**, which is
+`min_peak_ratio`'s job and not the attack filter's. At x5 the clip
+returns 5 windows, three of them junk; at x8 it returns exactly the
+two swings. The attack filter still earns its place against rumble,
+wind and engine noise, which stay sustained in any band.
+
+**x8 IS TUNED TO THIS CLIP AND THE MARGIN IS 1.34x** -- x9.66 for the
+quieter swing against x7.19 for the talking. A louder conversation or
+a thinner strike lands on the wrong side of it. Audio alone is doing
+discrimination it is not really equipped for here; the structural
+signal that is actually available is `detect_swings_combined`, which
+pairs the audio peak with motion in the trigger zone. Talking does not
+move the hitting area.
+
+**A PREDICTION THAT WAS WRONG, recorded because the reasoning was
+plausible.** With the attack measurement fixed, the expectation was
+that the talking would now be measured properly, show 50+ ms, and be
+rejected on its merits -- letting the ratio drop to x5 with a safer
+margin under the quietest real swing. The opposite happened. The
+run at x5 is above.
