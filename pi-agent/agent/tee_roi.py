@@ -104,15 +104,32 @@ def union(value) -> dict | None:
     return {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
 
 
+def which(point, value):
+    """The index of the FIRST zone holding this point, or None.
+
+    `contains` answers "is somebody on a tee", which is the right
+    question for deciding to record. It is the wrong question for
+    confirming a swing: a sound can only have come from the tee the
+    player is standing on, and a camera watching a back tee and a
+    forward tee sees both. Returning the index lets a caller ask about
+    one of them without re-deriving the geometry.
+
+    Index, not label: labels are operator text and may be blank,
+    duplicated or renamed between one capture and the next, while the
+    order of the list is what both ends already agree on.
+    """
+    px, py = point
+    for i, b in enumerate(boxes(value)):
+        if b["x"] <= px <= b["x"] + b["w"] and b["y"] <= py <= b["y"] + b["h"]:
+            return i
+    return None
+
+
 def contains(point, value) -> bool:
     """Is this point inside ANY zone? False when none are set — an
     unconfigured camera should not trigger on everything that walks
     past, and the caller that wants "anywhere" can say so itself."""
-    px, py = point
-    for b in boxes(value):
-        if b["x"] <= px <= b["x"] + b["w"] and b["y"] <= py <= b["y"] + b["h"]:
-            return True
-    return False
+    return which(point, value) is not None
 
 
 def scaled(value, to_w: int, to_h: int, assume=(1920, 1080)) -> dict:
@@ -163,3 +180,38 @@ def store(raw_boxes, frame_w: int, frame_h: int) -> dict:
             raise ValueError(
                 f"a zone falls outside the {frame_w}x{frame_h} frame")
     return {"boxes": cleaned, "frame": {"w": int(frame_w), "h": int(frame_h)}}
+
+
+def seen_times(sightings):
+    """Just the clock, from a list of (time, zone) or bare times.
+
+    `_person_seen_at` grew a zone index when the audio trigger needed
+    to ask WHICH tee somebody was on. Every older reader wants the
+    float it used to hold, and a rig mid-upgrade can have a list that
+    started one shape and finished the other, so accept both rather
+    than make the callers guess.
+    """
+    out = []
+    for s in sightings or []:
+        out.append(float(s[0]) if isinstance(s, (tuple, list)) else float(s))
+    return out
+
+
+def seen_in_zones(sightings, zones, at, tolerance_sec: float):
+    """Was anybody in one of `zones` within `tolerance_sec` of `at`?
+
+    `zones` is a list of indices, or None for "any zone". None is NOT
+    the same as an empty list: None means the caller is not asking
+    about geography, [] would mean "these zones" and name none, which
+    can never be true and would reject every swing.
+    """
+    for s in sightings or []:
+        if isinstance(s, (tuple, list)):
+            t, z = float(s[0]), s[1]
+        else:
+            t, z = float(s), None
+        if abs(t - at) > tolerance_sec:
+            continue
+        if zones is None or (z is not None and z in zones):
+            return True
+    return False

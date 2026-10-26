@@ -890,6 +890,9 @@ class TeeAgent:
         # but it is not free, and a rig in the field should not change
         # what it uploads because an agent was updated.
         _sw = self.cfg.get("swing_select") or {}
+        # (epoch, zone_index) pairs. See person_sightings() for why
+        # the zone is kept and seen_times() for the readers that only
+        # want the clock.
         self._person_seen_at: list = []
         self.motion = None
         if _sw.get("enabled"):
@@ -1342,7 +1345,9 @@ class TeeAgent:
             stance = detector.detect(snap[-1][1])
             with self._roi_lock:
                 _roi = self.roi
-            if stance is not None and _in_roi(stance, _roi):
+            _zone = (tee_roi.which(stance, _roi)
+                     if stance is not None else None)
+            if _zone is not None:
                 state["in_roi"] += 1
                 state["last_seen"] = now
                 # AND REMEMBER THAT WE SAW THEM, which this did not do
@@ -1369,7 +1374,15 @@ class TeeAgent:
                 # had triggered.
                 _seen = getattr(self, "_person_seen_at", None)
                 if _seen is not None:
-                    _seen.append(now)
+                    # WHICH ZONE, NOT JUST WHEN. A sound can only have
+                    # come from the tee its player is standing on, and
+                    # this camera watches more than one. Recorded as
+                    # (time, zone index) so the audio trigger can ask
+                    # "was anybody on the back tee when that crack
+                    # happened" rather than "was anybody anywhere".
+                    # Older readers want a bare float, so `_seen_times`
+                    # keeps giving them one.
+                    _seen.append((now, _zone))
                 return None
             if now - state["last_seen"] >= no_person_timeout:
                 return "no_person"
@@ -1529,7 +1542,13 @@ class TeeAgent:
                     # containing no golfer at all.
                     _seen = getattr(self, "_person_seen_at", None)
                     if _seen is not None:
-                        _seen.append(now)
+                        # (time, zone) in BOTH loops or neither. The two
+                        # paths write the same list and one reader
+                        # drains it; a float here and a tuple there is
+                        # a crash that only appears on whichever engine
+                        # the rig happens to run.
+                        _seen.append(
+                            (now, tee_roi.which(stance, self.tee_box_roi)))
                 elif now - last_person_seen > no_person_timeout:
                     log.info(
                         "no person for %.1fs; stopping (recorded %.1fs)",

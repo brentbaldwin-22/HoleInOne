@@ -46,6 +46,7 @@ from .common import (
     build_audio_recorder,
     mux_audio_into_video,
 )
+from . import tee_roi
 from .copycap import SegmentRing
 from .swingfind import coverage_fraction, find_swings, merge_windows
 
@@ -535,7 +536,8 @@ class CopyEngine:
             # None` collapsed the two and let cloud movement through on
             # a camera with no golfer in it.
             seen = getattr(runner, "_person_seen_at", None)
-            people = None if seen is None else [p - clip_start for p in seen]
+            people = (None if seen is None
+                      else [t - clip_start for t in tee_roi.seen_times(seen)])
 
             dbg: dict = {}
             windows = merge_windows(find_swings(
