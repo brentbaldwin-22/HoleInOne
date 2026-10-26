@@ -3991,11 +3991,56 @@ class RtspAudioRecorder:
         self._err_path: Optional[Path] = None
         self._err_fh = None
         self._t0: Optional[float] = None
+        # WHEN THE FIRST SAMPLE LANDED, watched for at the front rather
+        # than inferred at the back. See `_watch_first_sample`.
+        self._t_first: Optional[float] = None
+        self._watcher = None
         self.lead_seconds = 0.0
 
     def _host(self) -> str:
         from urllib.parse import urlsplit
         return urlsplit(self.device).hostname or "?"
+
+    def _watch_first_sample(self, wav_path: Path) -> None:
+        """Record when audio first reached the file.
+
+        MEASURE THE FRONT AT THE FRONT. The connect delay used to be
+        inferred as `elapsed - duration`: the window ffmpeg was alive
+        for, minus how much audio came out of it, with the remainder
+        attributed to the start. That is only true if nothing is
+        captured outside the window, and it is not -- `duration` is read
+        from the finished file and includes everything ffmpeg flushed
+        out of its RTSP buffer AFTER the SIGTERM that `elapsed` stops
+        at. Every flushed sample subtracts straight from the lead, and
+        `max(0.0, ...)` then silently clamps it to zero, so the
+        camera's whole RTSP negotiation goes unaccounted for and the
+        audio is padded short -- which plays it EARLY, by about the
+        length of the connect.
+
+        This is the same quantity the teardown fix was chasing from the
+        other side. That one moved `elapsed` to before terminate()
+        because the shutdown was landing in the lead and pushing audio
+        LATE ("three claps heard a second or two after they were
+        seen"). Both are artefacts of measuring one end and blaming the
+        other. The first sample's arrival is observable directly, so
+        observe it: poll the file until it grows past its 44-byte
+        header. Costs one small stat every 20ms for at most the connect
+        timeout, on a thread, and never touches the capture path.
+        """
+        t0 = self._t0 or time.monotonic()
+        deadline = t0 + max(2.0, self.connect_timeout * 3)
+        while time.monotonic() < deadline:
+            if self._proc is None or self._proc.poll() is not None:
+                return
+            try:
+                if wav_path.stat().st_size > 44:
+                    self._t_first = time.monotonic()
+                    log.info("audio: first sample after %.2fs",
+                             self._t_first - t0)
+                    return
+            except OSError:
+                pass
+            time.sleep(0.02)
 
     def start(self, session_id: str) -> Optional[Path]:
         if not self.enabled:
@@ -4027,6 +4072,12 @@ class RtspAudioRecorder:
                 stdout=subprocess.DEVNULL,
                 stderr=self._err_fh,
             )
+            self._t_first = None
+            self._watcher = threading.Thread(
+                target=self._watch_first_sample, args=(wav_path,),
+                daemon=True, name="audio-first-sample",
+            )
+            self._watcher.start()
         except FileNotFoundError:
             log.warning("audio: ffmpeg not installed — clip will be silent")
             return None
@@ -4122,13 +4173,33 @@ class RtspAudioRecorder:
         elapsed = _t_stop - (self._t0 or _t_stop)
         bytes_per_sec = self.sample_rate * self.channels * 2
         duration = max(0.0, (wav.stat().st_size - 44) / float(bytes_per_sec))
-        self.lead_seconds = max(
-            0.0, elapsed - duration,
-        ) + self.extra_lead_seconds
-        log.info(
-            "audio: %.1fs captured over %.1fs — lead %.2fs",
-            duration, elapsed, self.lead_seconds,
-        )
+        if self._t_first is not None and self._t0 is not None:
+            # OBSERVED, not inferred. Everything the subtraction got
+            # wrong -- the post-SIGTERM flush, the clamp to zero that
+            # hid it -- comes from blaming the front for what happened
+            # at the back. This is the front.
+            measured = max(0.0, self._t_first - self._t0)
+            self.lead_seconds = measured + self.extra_lead_seconds
+            log.info(
+                "audio: %.1fs captured over %.1fs — lead %.2fs "
+                "(first sample at %.2fs; the old estimate would have "
+                "said %.2fs)",
+                duration, elapsed, self.lead_seconds, measured,
+                max(0.0, elapsed - duration),
+            )
+        else:
+            # The watcher never saw the file grow -- a very fast clip,
+            # or a capture that failed before writing. Fall back to the
+            # old inference, which is wrong in a known direction rather
+            # than unknown.
+            self.lead_seconds = max(
+                0.0, elapsed - duration,
+            ) + self.extra_lead_seconds
+            log.info(
+                "audio: %.1fs captured over %.1fs — lead %.2fs "
+                "(estimated; the first sample was never seen)",
+                duration, elapsed, self.lead_seconds,
+            )
         return wav
 
 
