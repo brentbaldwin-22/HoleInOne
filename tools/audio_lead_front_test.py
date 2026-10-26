@@ -77,7 +77,8 @@ class FakeProc:
         self._stop = time.monotonic()
 
 
-def run(label, connect, flush, hold, want_lead, tol=0.12):
+def run(label, connect, flush, hold, want_lead, tol=0.12,
+        fake_first=None):
     import tempfile
     d = Path(tempfile.mkdtemp(prefix="leadfront-"))
     r = RtspAudioRecorder(work_dir=d, device="rtsp://x/y", sample_rate=SR,
@@ -91,6 +92,10 @@ def run(label, connect, flush, hold, want_lead, tol=0.12):
     threading.Thread(target=r._watch_first_sample, args=(wav,),
                      daemon=True).start()
     time.sleep(hold)
+    if fake_first is not None:
+        # Stand in for the buffered-output bug: a first-sample time far
+        # later than the audio in the file can account for.
+        r._t_first = r._t0 + fake_first
     r.stop()
     got = r.lead_seconds
     ok = abs(got - want_lead) <= tol
@@ -108,6 +113,16 @@ print("controls:")
 run("1.0s connect, no flush", 1.0, 0.0, 2.2, 1.0)
 run("instant connect, 0.8s flush", 0.05, 0.8, 2.2, 0.05, tol=0.15)
 run("0.5s connect, 0.5s flush", 0.5, 0.5, 2.0, 0.5)
+
+print()
+print("a measurement that cannot be true is refused:")
+# THE CASE THAT SHIPPED. The watcher timed ffmpeg's output buffer
+# filling rather than audio arriving, so it reported a first sample
+# 7.62s into an 83.8s window that held 84.4s of audio. Those cannot
+# both be true, and the agent padded every clip by seven seconds.
+run("first sample later than the audio allows", 0.05, 0.0, 2.2, 0.05,
+    tol=0.15, fake_first=1.9)
+run("...and a believable one still works", 0.8, 0.0, 2.2, 0.8)
 
 print()
 if FAILED:

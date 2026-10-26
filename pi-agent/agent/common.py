@@ -2835,6 +2835,14 @@ _LENS_PARAM = {
 # Fifteen minutes is often enough to catch a drift that matters and rare
 # enough that it costs nothing, and the cached answer is reused for
 # every clip in between.
+# How much audio may legitimately appear AFTER the stop was stamped:
+# whatever ffmpeg flushes out of its buffers on the way down. With
+# -flush_packets that is a packet or two -- 64ms at 16 kHz -- so 1.5s
+# is twenty times the real figure and still an order of magnitude
+# under the eight-second buffering artefact this exists to catch. Set
+# it looser and the check stops catching the thing it is for.
+_FLUSH_ALLOWANCE_SEC = 1.5
+
 _CLOCK_TTL_SEC = 900.0
 _CLOCK_SERVERS = ("time.cloudflare.com", "pool.ntp.org")
 _NTP_EPOCH_DELTA = 2208988800  # 1900 -> 1970
@@ -4056,6 +4064,16 @@ class RtspAudioRecorder:
             "-ac", str(self.channels),
             "-ar", str(self.sample_rate),
             "-acodec", "pcm_s16le",
+            # WRITE THROUGH. Without this ffmpeg holds output in its
+            # AVIO buffer, and at 32 kB/s a 256 KB buffer is EIGHT
+            # SECONDS before the file grows past its header. The
+            # first-sample watcher below polls that file, so without
+            # this it times the buffer filling and calls it the
+            # connect delay -- measured 7.78s against 0.08s with it.
+            # That is not a tuning detail; it is the difference
+            # between the watcher measuring the right quantity and the
+            # wrong one.
+            "-flush_packets", "1",
             "-t", str(self.max_seconds),
             str(wav_path),
         ]
@@ -4173,6 +4191,40 @@ class RtspAudioRecorder:
         elapsed = _t_stop - (self._t0 or _t_stop)
         bytes_per_sec = self.sample_rate * self.channels * 2
         duration = max(0.0, (wav.stat().st_size - 44) / float(bytes_per_sec))
+        # AN IMPOSSIBLE MEASUREMENT IS NOT A MEASUREMENT.
+        #
+        # Audio spans [t0 + lead, stop + flush], so
+        #     duration = elapsed + flush - lead
+        # and therefore lead can never exceed
+        #     elapsed - duration + flush.
+        #
+        # Observed on the tee, 26 Oct, before -flush_packets was added:
+        # "84.4s captured over 83.8s — lead 6.37s (first sample at
+        # 7.62s)". A first sample 7.62s into an 83.8s window leaves
+        # room for 76.2s of audio and the file held 84.4s. The two
+        # cannot both be true, the agent had everything it needed to
+        # say so, and instead it padded the clips by seven seconds and
+        # put every strike that far behind its own picture.
+        #
+        # So: check, and fall back to the inference when it fails. The
+        # inference is wrong in a KNOWN direction -- it loses the
+        # connect delay and plays audio early by it -- which is a far
+        # better failure than an arbitrary one.
+        _impossible = None
+        if self._t_first is not None and self._t0 is not None:
+            _m = max(0.0, self._t_first - self._t0)
+            if _m > (elapsed - duration) + _FLUSH_ALLOWANCE_SEC:
+                _impossible = _m
+        if _impossible is not None:
+            log.warning(
+                "audio: IGNORING a first-sample time that cannot be right "
+                "— %.2fs into a %.1fs window cannot leave room for the "
+                "%.1fs of audio in the file. Falling back to the estimate. "
+                "This usually means the output is being buffered rather "
+                "than written through.",
+                _impossible, elapsed, duration,
+            )
+            self._t_first = None
         if self._t_first is not None and self._t0 is not None:
             # OBSERVED, not inferred. Everything the subtraction got
             # wrong -- the post-SIGTERM flush, the clamp to zero that
