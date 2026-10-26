@@ -62,11 +62,22 @@ if not ring.start():
     print("could not start ffmpeg — skipping")
     sys.exit(0)
 try:
-    time.sleep(7.0)
-    segs = ring.segments()
+    # WAIT FOR SEGMENTS, DO NOT SLEEP AND HOPE. The first version slept
+    # a flat 7s and assumed four segments had appeared. Running this
+    # suite back to back with the others put enough load on the box
+    # that ffmpeg fell behind, three checks went red, and the failure
+    # did not reproduce in nine runs on its own -- which is exactly the
+    # kind of red that teaches you to ignore red.
+    deadline = time.time() + 40.0
+    segs = []
+    while time.time() < deadline:
+        segs = ring.segments()
+        if len(segs) >= 5 and all(p.stat().st_size > 0 for p in segs):
+            break
+        time.sleep(0.25)
     print("  %d finished segment(s)" % len(segs))
-    if len(segs) < 4:
-        print("FAIL: the ring produced almost nothing")
+    if len(segs) < 5:
+        print("FAIL: the ring produced almost nothing in 40s")
         sys.exit(1)
 
     print()
@@ -91,12 +102,29 @@ try:
 
     print()
     print("a hole is reported, not papered over:")
-    victim = segs[2]
-    vstart = _seg_start(victim)
-    victim.unlink()
-    r2 = ring.read(_seg_start(segs[1]), _seg_start(segs[3]) + 1.0)
-    check("still succeeds", r2["ok"], True)
-    near("...and says a second is missing", r2["missing_seconds"], 1.0, 0.01)
+    # THREE GENUINELY CONSECUTIVE SECONDS, found rather than assumed.
+    # Segments are named by -strftime at SECOND resolution while their
+    # real length is only approximately the segment time -- lavfi's
+    # -re pacing gives ~0.96s here -- so the names drift and
+    # segs[1..3] are not reliably one second apart. Asserting a
+    # 1.0s hole on a drifting triple is a test that fails twice in
+    # five runs for a reason that has nothing to do with the code.
+    trip = None
+    for i in range(len(segs) - 2):
+        a, b, c = (_seg_start(segs[i]), _seg_start(segs[i + 1]),
+                   _seg_start(segs[i + 2]))
+        if abs(b - a - 1.0) < 1e-6 and abs(c - b - 1.0) < 1e-6:
+            trip = (segs[i], segs[i + 1], segs[i + 2])
+            break
+    if trip is None:
+        print("  (no three consecutive seconds in the ring — skipped)")
+    else:
+        first, victim, last = trip
+        victim.unlink()
+        r2 = ring.read(_seg_start(first), _seg_start(last) + 1.0)
+        check("still succeeds", r2["ok"], True)
+        near("...and says a second is missing", r2["missing_seconds"],
+             1.0, 0.01)
 
     print()
     print("the sweep honours the window:")
