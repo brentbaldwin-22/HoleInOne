@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     stripe_publishable_key: str = ""
     stripe_webhook_secret: str = ""
     registration_price_cents: int = 2000
+    # The course's share of each entry, as a percent. Ours is the
+    # remainder, so the two can never drift apart or sum to anything
+    # other than the whole. Per-course deals, when they happen, belong
+    # on the Course row — this is the house default.
+    course_revenue_share_pct: int = 25
 
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""

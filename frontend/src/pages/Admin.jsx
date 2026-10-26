@@ -204,6 +204,8 @@ export default function Admin() {
         </div>
       )}
 
+      <RevenueCard adminPassword={adminPassword} courses={courses} onToast={showToast} />
+
       <TestEmailCard adminPassword={adminPassword} onToast={showToast} />
 
       <AppearanceCard adminPassword={adminPassword} onToast={showToast} />
@@ -264,6 +266,168 @@ export default function Admin() {
       </div>
 
       {toast && <div className="toast">{toast}</div>}
+    </div>
+  );
+}
+
+const money = (cents) =>
+  `$${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+/**
+ * Revenue per course, and the download of it.
+ *
+ * The figures on screen and the figures in the .xlsx come from one
+ * endpoint pair backed by one function, so there is no version of this
+ * where the dashboard and the spreadsheet a course gets sent disagree.
+ *
+ * "Paid" here means paid AND not refunded. The Revenue tile at the top
+ * of this page counts `paid` alone, so the two can differ by however
+ * many refunds there have been — that is the tile being loose, not this
+ * being wrong.
+ */
+function RevenueCard({ adminPassword, courses, onToast }) {
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [courseId, setCourseId] = useState("");
+  const [rep, setRep] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const params = { start, end, courseId: courseId || undefined };
+
+  async function load() {
+    if (!adminPassword) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setRep(await api.revenueReport(adminPassword, params));
+    } catch (e) {
+      setError(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // First paint shows all-time, so the card is never an empty form.
+  useEffect(() => {
+    if (adminPassword) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminPassword]);
+
+  async function download() {
+    setDownloading(true);
+    setError(null);
+    try {
+      const { blob, filename } = await api.revenueWorkbook(adminPassword, params);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Revoking immediately races the download in Safari; a tick is enough.
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      onToast?.(`Downloaded ${filename}`);
+    } catch (e) {
+      setError(String(e?.message || e));
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  const t = rep?.totals;
+
+  return (
+    <div className="card">
+      <h3 style={{ marginBottom: 4 }}>Revenue by course</h3>
+      <p className="small muted" style={{ marginBottom: 14 }}>
+        {rep
+          ? `${rep.period} · $${(rep.price_cents / 100).toFixed(2)} an entry · we keep ${rep.golfreelz_share_pct}%, the course takes ${rep.course_share_pct}%.`
+          : "Signups and the split, per course."}
+      </p>
+
+      <div className="chip-row" style={{ alignItems: "flex-end", gap: 10, marginBottom: 14 }}>
+        <label className="small">
+          <div className="muted">From</div>
+          <input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
+        </label>
+        <label className="small">
+          <div className="muted">To</div>
+          <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+        </label>
+        <label className="small">
+          <div className="muted">Course</div>
+          <select value={courseId} onChange={(e) => setCourseId(e.target.value)}>
+            <option value="">All courses</option>
+            {(courses || []).map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        </label>
+        <button className="btn secondary" onClick={load} disabled={busy}>
+          {busy ? "Loading…" : "Apply"}
+        </button>
+        <button className="btn" onClick={download} disabled={downloading || !rep}>
+          {downloading ? "Building…" : "Download Excel"}
+        </button>
+      </div>
+
+      {error && <div className="small" style={{ color: "var(--danger)", marginBottom: 10 }}>{error}</div>}
+
+      {rep && rep.by_course.length === 0 && (
+        <div className="muted small">No signups in this period.</div>
+      )}
+
+      {rep && rep.by_course.length > 0 && (
+        <table>
+          <thead>
+            <tr>
+              <th>Course</th>
+              <th>Signups</th>
+              <th>Paid</th>
+              <th>Gross</th>
+              <th>Golf Reelz ({rep.golfreelz_share_pct}%)</th>
+              <th>Course ({rep.course_share_pct}%)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rep.by_course.map((r) => (
+              <tr key={r.course_id}>
+                <td>
+                  <b>{r.course}</b>
+                  <div className="small muted">{r.location || "—"}</div>
+                </td>
+                <td>{r.signups}</td>
+                <td>
+                  {r.paid}
+                  {(r.refunded > 0 || r.unpaid > 0) && (
+                    <div className="small muted">
+                      {[r.refunded > 0 && `${r.refunded} refunded`, r.unpaid > 0 && `${r.unpaid} unpaid`]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </div>
+                  )}
+                </td>
+                <td>{money(r.gross_cents)}</td>
+                <td><b>{money(r.golfreelz_cents)}</b></td>
+                <td>{money(r.course_cents)}</td>
+              </tr>
+            ))}
+            {t && (
+              <tr>
+                <td><b>TOTAL</b></td>
+                <td><b>{t.signups}</b></td>
+                <td><b>{t.paid}</b></td>
+                <td><b>{money(t.gross_cents)}</b></td>
+                <td><b>{money(t.golfreelz_cents)}</b></td>
+                <td><b>{money(t.course_cents)}</b></td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

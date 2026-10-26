@@ -100,7 +100,7 @@ from ..schemas import (
     HIOReviewAction,
 )
 from ..services import notifications, storage, thanks, tracer_examples
-from ..services import lens_zoom, site_theme, tee_roi, workload
+from ..services import lens_zoom, revenue, site_theme, tee_roi, workload
 from ..services.matcher import match_clip
 from ..services.qr import generate_qr_png
 from ..services.auth import hash_password
@@ -459,6 +459,53 @@ def stats(db: Session = Depends(get_db)):
         ),
         "by_course": [{"course": c, "participants": n} for c, n in by_course],
     }
+
+
+@router.get("/revenue")
+def revenue_report(
+    start: str | None = None,  # YYYY-MM-DD, inclusive, on Participant.created_at
+    end: str | None = None,  # YYYY-MM-DD, inclusive
+    course_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Signups and the 75/25 split, per course. Same numbers as the
+    spreadsheet below — both call one function so the screen and the
+    download cannot drift."""
+    try:
+        return revenue.report(db, start=start, end=end, course_id=course_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/revenue.xlsx")
+def revenue_xlsx(
+    start: str | None = None,
+    end: str | None = None,
+    course_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """The same report as a real .xlsx. Built on every request from the
+    live database, so there is no stale copy of it anywhere."""
+    try:
+        rep = revenue.report(db, start=start, end=end, course_id=course_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    try:
+        data = revenue.workbook_bytes(rep)
+    except RuntimeError as exc:
+        # openpyxl missing: a deploy-order problem, not a bad request.
+        raise HTTPException(503, str(exc))
+    return Response(
+        content=data,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument"
+            ".spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": f'attachment; filename="{revenue.filename(rep)}"',
+            "Content-Length": str(len(data)),
+        },
+    )
 
 
 @router.get("/participants")

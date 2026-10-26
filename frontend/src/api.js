@@ -99,6 +99,15 @@ async function request(
   return res;
 }
 
+function revenueQuery({ start, end, courseId }) {
+  const q = new URLSearchParams();
+  if (start) q.set("start", start);
+  if (end) q.set("end", end);
+  if (courseId) q.set("course_id", String(courseId));
+  const s = q.toString();
+  return s ? `?${s}` : "";
+}
+
 export const api = {
   startWatchingCamera: (key, id) =>
     request(`/api/admin/cameras/${id}/watch`, {
@@ -332,6 +341,25 @@ export const api = {
       adminPassword: key,
     }),
   stats: (key) => request(`/api/admin/stats`, { adminPassword: key }),
+  revenueReport: (key, { start, end, courseId } = {}) =>
+    request(`/api/admin/revenue${revenueQuery({ start, end, courseId })}`, {
+      adminPassword: key,
+    }),
+  // The .xlsx comes back as bytes, and the admin password travels in a
+  // header — so this cannot be a plain <a href>, which is why it hands
+  // back a Blob for the caller to save rather than a URL.
+  revenueWorkbook: async (key, { start, end, courseId } = {}) => {
+    const res = await request(
+      `/api/admin/revenue.xlsx${revenueQuery({ start, end, courseId })}`,
+      { adminPassword: key },
+    );
+    const disposition = res.headers.get("content-disposition") || "";
+    const match = /filename="?([^"]+)"?/.exec(disposition);
+    return {
+      blob: await res.blob(),
+      filename: match ? match[1] : "golfreelz-revenue.xlsx",
+    };
+  },
   flaggedClips: (key) =>
     request(`/api/admin/flagged-clips`, { adminPassword: key }),
   listAllClips: (key, limit = 100, offset = 0) =>
