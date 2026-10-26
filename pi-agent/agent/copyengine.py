@@ -258,6 +258,17 @@ class CopyEngine:
         """
         if self.keep_audio:
             return None
+        # PREFER THE RING, when one is running. A second RTSP session to
+        # the same camera cost eight seconds to establish on the tee --
+        # against ~0.9s before the ring existed -- and every one of
+        # those seconds then has to be measured and padded back out.
+        # The ring has already got the audio, including the pre-roll
+        # the separate recorder can never have, so there is nothing a
+        # second session could add.
+        ring = getattr(getattr(runner, "_audio_trigger", None), "ring", None)
+        if ring is not None:
+            from .audiocap import RingAudioRecorder
+            return RingAudioRecorder(ring)
         return build_audio_recorder(runner.cfg, self.clips_dir)
 
     # ---- lifecycle -----------------------------------------------------
@@ -439,6 +450,33 @@ class CopyEngine:
                 wav = audio.stop()
             except Exception as exc:  # noqa: BLE001
                 log.warning("copy: audio capture failed (%s)", exc)
+                wav = None
+            # CUT FROM THE RING INSTEAD, when the recorder can. The
+            # span is known exactly here -- it is what the extract
+            # actually gave us -- so the audio is cut to match and
+            # needs NO delay. That is the point: a zero nobody has to
+            # get right, rather than a measurement that has been wrong
+            # in both directions inside one month.
+            _span = getattr(audio, "extract_span", None)
+            if _span is not None:
+                _out = clip_path.with_suffix(".ring.wav")
+                try:
+                    wav = _span(float(res["start"]), float(res["end"]), _out)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("copy: ring audio failed (%s)", exc)
+                    wav = None
+                if wav is not None:
+                    try:
+                        if mux_audio_into_video(clip_path, wav,
+                                                audio_delay_seconds=0.0):
+                            log.info("copy: audio cut from the ring "
+                                     "(delay=0, aligned by wall clock)")
+                            res["bytes"] = clip_path.stat().st_size
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("copy: muxing ring audio failed (%s) — "
+                                    "uploading the silent clip", exc)
+                    finally:
+                        _out.unlink(missing_ok=True)
                 wav = None
             if wav is not None:
                 lead = max(0.0, t_trigger - float(res["start"]))

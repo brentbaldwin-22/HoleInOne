@@ -297,17 +297,46 @@ class AudioRing:
                 f"ring holds {first}..{last}")}
         actual_start = chosen[0][0]
         actual_end = chosen[-1][0] + self.segment_seconds
+        # FILL THE HOLES, DO NOT CLOSE THEM. Concatenating only the
+        # segments that exist makes everything after a gap butt up
+        # against what came before it, so every sample past the hole
+        # lands early by the length of the hole -- which is the exact
+        # failure this ring exists to avoid, and the first version of
+        # this function merely REPORTED it while doing it. Measured on
+        # a fixture whose samples encode their own position: with one
+        # second missing, the sample four seconds into the span was the
+        # one recorded at seven seconds.
+        #
+        # Each slot is also padded or truncated to its nominal length.
+        # A segment's NAME is what says when it began, so a short one
+        # has a gap after it, and honouring the name keeps every later
+        # segment at the offset its own name implies.
+        step = self.segment_seconds
+        bps = self.bytes_per_sec
+        seg_bytes = int(round(step * bps)) // 2 * 2
+        by_slot = {}
+        for st, p in chosen:
+            by_slot[int(round((st - actual_start) / step))] = p
+        n_slots = max(1, int(round((actual_end - actual_start) / step)))
         buf = bytearray()
         got = 0
-        for _, p in chosen:
-            try:
-                buf += p.read_bytes()
-                got += 1
-            except OSError:
-                # Swept from under us. Keep going and report the hole.
-                pass
-        expected = max(1, int(round((actual_end - actual_start)
-                                    / self.segment_seconds)))
+        for k in range(n_slots):
+            p = by_slot.get(k)
+            data = b""
+            if p is not None:
+                try:
+                    data = p.read_bytes()
+                    got += 1
+                except OSError:
+                    # Swept from under us mid-read. Silence for this
+                    # slot, counted as missing.
+                    data = b""
+            if len(data) < seg_bytes:
+                data = data + b"\0" * (seg_bytes - len(data))
+            elif len(data) > seg_bytes:
+                data = data[:seg_bytes]
+            buf += data
+        expected = n_slots
         return {
             "ok": True,
             "pcm": bytes(buf),
@@ -318,3 +347,110 @@ class AudioRing:
             "segments": got,
             "missing_seconds": max(0, expected - got) * self.segment_seconds,
         }
+
+
+def _wav_header(n_bytes: int, sample_rate: int, channels: int) -> bytes:
+    import struct
+    byte_rate = sample_rate * channels * 2
+    return (b"RIFF" + struct.pack("<I", 36 + n_bytes) + b"WAVEfmt "
+            + struct.pack("<IHHIIHH", 16, 1, channels, sample_rate,
+                          byte_rate, channels * 2, 16)
+            + b"data" + struct.pack("<I", n_bytes))
+
+
+class RingAudioRecorder:
+    """The per-clip audio recorder's interface, served from the ring.
+
+    WHY THIS EXISTS. The recorder it replaces opens its own RTSP
+    session at the trigger, and that has three costs that are really
+    one cost:
+
+      * A SECOND SESSION TO THE SAME CAMERA. With the ring already
+        holding one, the Hanwha took EIGHT SECONDS to serve the second
+        -- measured on the tee 26 Oct, against ~0.9s before the ring
+        existed, and confirmed by two independent methods agreeing on
+        that clip (7.98s watched, 8.38s inferred).
+      * A CONNECT DELAY THAT HAS TO BE MEASURED. Every clip's audio is
+        then padded by that measurement, and getting it wrong puts
+        every strike out of sync. It has been got wrong in both
+        directions inside one month.
+      * A SILENT HEAD. The ring holds footage from BEFORE the trigger
+        and a recorder started AT the trigger has no sound for it, so
+        every clip opens with five seconds of correctly-aligned
+        nothing.
+
+    A ring has no connect, nothing to measure, and already holds the
+    pre-roll. Audio is cut from it by wall clock, the same way the
+    video is, so the two line up by construction and the mux delay is
+    zero -- not a number anybody has to get right.
+    """
+
+    def __init__(self, ring: AudioRing):
+        self.ring = ring
+        self.enabled = True
+        self.lead_seconds = 0.0
+        self._session: Optional[str] = None
+
+    # The recorder interface, such as it is.
+    def start(self, session_id: str):
+        self._session = session_id
+        return None
+
+    def stop(self):
+        # Nothing to stop and nothing to hand back: the caller asks for
+        # a SPAN once it knows what the clip actually covers, which it
+        # does not at the moment the recording ends.
+        return None
+
+    def extract_span(self, start_ts: float, end_ts: float, out_path):
+        """A WAV covering exactly [start_ts, end_ts], or None.
+
+        Exactly: the ring is cut on segment edges, so the span it
+        returns begins at or before what was asked for, and the extra
+        is trimmed here. A caller muxing this needs NO delay -- that is
+        the whole point, and an `audio_delay_seconds` applied on top
+        would shift it back out again.
+        """
+        out_path = Path(out_path)
+        r = self.ring.read(start_ts, end_ts)
+        if not r.get("ok"):
+            log.info("audio: the ring cannot cover this clip (%s)",
+                     r.get("why"))
+            return None
+        bps = self.ring.bytes_per_sec
+        pcm = r["pcm"]
+        # Byte-align to a whole sample, or every sample after the trim
+        # is half of one and half of the next.
+        off = int(round((start_ts - r["start"]) * bps)) // 2 * 2
+        if off >= 0:
+            pcm = pcm[off:]
+            pad = 0
+        else:
+            # The ring starts LATER than the clip -- it had not been
+            # running long enough. Pad the front rather than shift the
+            # audio earlier, which would misalign everything after it.
+            pad = -off
+            pcm = b"\0" * pad + pcm
+        want = int(round((end_ts - start_ts) * bps)) // 2 * 2
+        if len(pcm) > want:
+            pcm = pcm[:want]
+        elif len(pcm) < want:
+            pcm += b"\0" * (want - len(pcm))
+        try:
+            with open(out_path, "wb") as fh:
+                fh.write(_wav_header(len(pcm), self.ring.sample_rate,
+                                     self.ring.channels))
+                fh.write(pcm)
+        except OSError as exc:
+            log.warning("audio: could not write %s (%s)", out_path.name, exc)
+            return None
+        log.info(
+            "audio: %.1fs cut from the ring for %.1f..%.1f — no connect, "
+            "no pad%s%s",
+            len(pcm) / float(bps), start_ts, end_ts,
+            ", %.1fs of front padding (the ring was still filling)"
+            % (pad / float(bps)) if pad else "",
+            ", %.1fs missing" % r["missing_seconds"]
+            if r.get("missing_seconds") else "",
+        )
+        return out_path
