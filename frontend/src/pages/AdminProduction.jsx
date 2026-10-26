@@ -1168,6 +1168,96 @@ function RawSyncPlayer({
  * saved graphics, and commits it to Produced Clips — the same
  * pipeline as the wizard's Produce, minus the wizard.
  */
+// THE LEAD-IN'S VERDICT, SHOWN WHILE THERE IS STILL TIME TO FIX IT.
+//
+// The server decides at produce time whether the plotted descent
+// describes one flight, and refuses to extrapolate from it when it
+// does not. That refusal used to be invisible here: upload 909 was
+// refused, the green view opened with half a second of nothing before
+// the tracer appeared, and the panel said only "comet f2406→f2426" --
+// a failure that reads like a result.
+//
+// This mirrors green_flight.lead_in closely enough to answer "will it
+// run?", so the operator learns it while plotting rather than from a
+// produced clip. KEEP THE TWO CONSTANTS IN STEP with that module; if
+// they drift, this lies in the reassuring direction.
+const LEADIN_MAX_RMS_PX = 12.0;
+const LEADIN_MIN_POINTS = 4;
+
+function quadFit(ts, vs) {
+  // Normal equations for v = a + b t + c t^2, solved by elimination.
+  let n = ts.length, S = [0, 0, 0, 0, 0], T = [0, 0, 0];
+  for (let i = 0; i < n; i++) {
+    const t = ts[i], t2 = t * t;
+    S[0] += 1; S[1] += t; S[2] += t2; S[3] += t2 * t; S[4] += t2 * t2;
+    T[0] += vs[i]; T[1] += vs[i] * t; T[2] += vs[i] * t2;
+  }
+  const M = [[S[0], S[1], S[2]], [S[1], S[2], S[3]], [S[2], S[3], S[4]]];
+  const b = [T[0], T[1], T[2]];
+  for (let c = 0; c < 3; c++) {
+    let piv = c;
+    for (let r = c + 1; r < 3; r++) {
+      if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    }
+    if (Math.abs(M[piv][c]) < 1e-12) return null;
+    [M[c], M[piv]] = [M[piv], M[c]];
+    [b[c], b[piv]] = [b[piv], b[c]];
+    for (let r = 0; r < 3; r++) {
+      if (r === c) continue;
+      const k = M[r][c] / M[c][c];
+      for (let j = c; j < 3; j++) M[r][j] -= k * M[c][j];
+      b[r] -= k * b[c];
+    }
+  }
+  return [b[0] / M[0][0], b[1] / M[1][1], b[2] / M[2][2]];
+}
+
+function leadInVerdict(points, landingFrame, fps) {
+  const pts = (points || [])
+    .filter((p) => p && p.frame != null && p.x != null && p.y != null
+      && (landingFrame == null || p.frame <= landingFrame))
+    .sort((a, b) => a.frame - b.frame);
+  if (!(fps > 0)) return null;
+  if (pts.length < LEADIN_MIN_POINTS) {
+    return { ok: false, n: pts.length,
+             why: `needs ${LEADIN_MIN_POINTS} descent points, has ${pts.length}` };
+  }
+  const f0 = pts[0].frame;
+  const ts = pts.map((p) => (p.frame - f0) / fps);
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const ev = (c, t) => c[0] + c[1] * t + c[2] * t * t;
+  const fit = (idx) => {
+    const cx = quadFit(idx.map((i) => ts[i]), idx.map((i) => xs[i]));
+    const cy = quadFit(idx.map((i) => ts[i]), idx.map((i) => ys[i]));
+    if (!cx || !cy) return null;
+    const r = Math.sqrt(idx.reduce((a, i) => a
+      + (ev(cx, ts[i]) - xs[i]) ** 2 + (ev(cy, ts[i]) - ys[i]) ** 2, 0)
+      / idx.length);
+    return { cx, cy, rms: r };
+  };
+  let keep = pts.map((_, i) => i);
+  let f = fit(keep);
+  if (!f) return { ok: false, n: pts.length, why: "the fit was singular" };
+  let dropped = null;
+  // Same one-outlier tolerance the server has, for the same reason.
+  if (f.rms > LEADIN_MAX_RMS_PX && keep.length > LEADIN_MIN_POINTS) {
+    let worst = keep[0], wr = -1;
+    for (const i of keep) {
+      const r = (ev(f.cx, ts[i]) - xs[i]) ** 2 + (ev(f.cy, ts[i]) - ys[i]) ** 2;
+      if (r > wr) { wr = r; worst = i; }
+    }
+    const trial = keep.filter((i) => i !== worst);
+    const tf = fit(trial);
+    if (tf && tf.rms <= LEADIN_MAX_RMS_PX) {
+      keep = trial; f = tf; dropped = pts[worst].frame;
+    }
+  }
+  return f.rms > LEADIN_MAX_RMS_PX
+    ? { ok: false, n: pts.length, rms: f.rms,
+        why: `${f.rms.toFixed(1)}px RMS — these points do not sit on one flight` }
+    : { ok: true, n: keep.length, rms: f.rms, dropped };
+}
+
 function ClickToPlotModal({
   row, swingPos, addNew, adminPassword, onClose, onBackground, onDone,
 }) {
@@ -1740,11 +1830,24 @@ function ClickToPlotModal({
   // picture rather than on the toolbar: on the toolbar a sentence this
   // long is squeezed into a narrow column, wraps to a dozen lines, and
   // every one of them comes off the height of the map.
+  // Will the server be able to run the ball back to the cut from these
+  // points? Answered here, while they can still be adjusted.
+  const leadVerdict = (landing && cometPoints.length > 1)
+    ? leadInVerdict(cometPoints, landing.frame, Number(row.green_fps) || 0)
+    : null;
   const cometStatus = cometBusy
     ? "☄ walking back from the landing…"
     : cometPoints.length > 1
       ? `☄ ${cometPoints.length} frames (f${cometPoints[0].frame}→f${
           landing.frame}) — Save & close draws it on the clip`
+        + (leadVerdict
+          ? (leadVerdict.ok
+            ? ` · lead-in will run (${leadVerdict.rms.toFixed(1)}px RMS${
+              leadVerdict.dropped != null
+                ? `, ignoring f${leadVerdict.dropped}` : ""})`
+            : ` · NO LEAD-IN: ${leadVerdict.why} — the green view will `
+              + `open with no tracer until f${cometPoints[0].frame}`)
+          : "")
       : cometPoints.length === 1
         ? `landing marked at f${landing.frame}`
           + (cometReason ? ` — ${cometReason}. ` : " — ")
@@ -3024,7 +3127,9 @@ function ClickToPlotModal({
 
           <PlotField
             label="Tee↔green sync" icon="⇄"
-            accent={measuredDelta != null ? "#3ee37a" : undefined}
+            accent={measuredDelta == null ? undefined
+              : (measuredFlight != null && measuredFlight <= 0)
+                ? "#f87171" : "#3ee37a"}
             value={measuredDelta != null
               ? `${measuredDelta >= 0 ? "+" : ""}${measuredDelta.toFixed(2)}s`
               : (rawDelta?.sec != null
@@ -3032,8 +3137,21 @@ function ClickToPlotModal({
                 : null)}
             hint={measuredDelta != null
               ? (measuredFlight != null
-                ? `measured here — flight works out to ${
-                  measuredFlight.toFixed(2)}s`
+                // A FLIGHT OF ZERO OR LESS CANNOT HAVE HAPPENED, and
+                // printing it as a plain number reads like a result.
+                // measuredFlight reduces to
+                // (landing - greenImpact)/green_fps, so <= 0 means the
+                // green impact mark is at or after the landing -- on
+                // upload 909 it was ON the landing frame, the panel
+                // said "0.00s", and everything derived from the delta
+                // was quietly meaningless.
+                ? (measuredFlight <= 0
+                  ? `IMPOSSIBLE: flight works out to ${
+                    measuredFlight.toFixed(2)}s — the green impact mark `
+                    + `is at or after the landing. Mark the STRIKE on `
+                    + `the green view, not the arrival.`
+                  : `measured here — flight works out to ${
+                    measuredFlight.toFixed(2)}s`)
                 : "measured here from the two impact marks")
               : (greenImpactFrame != null
                 ? `green impact f${greenImpactFrame} — set the tee impact too`

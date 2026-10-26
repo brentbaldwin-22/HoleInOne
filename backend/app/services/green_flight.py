@@ -505,8 +505,42 @@ def lead_in(points, cut_frame: int, fps: float, frame_w: int, frame_h: int,
         if debug is not None:
             debug["lead_in"] = {"n": 0, "why": "the fit was singular"}
         return []
-    rms = (sum((_evaluate(cx, t) - x) ** 2 + (_evaluate(cy, t) - y) ** 2
-               for t, x, y in zip(ts, xs, ys)) / len(ts)) ** 0.5
+    def _rms(_cx, _cy, idx):
+        return (sum((_evaluate(_cx, ts[i]) - xs[i]) ** 2
+                    + (_evaluate(_cy, ts[i]) - ys[i]) ** 2
+                    for i in idx) / len(idx)) ** 0.5
+
+    keep = list(range(len(ts)))
+    rms = _rms(cx, cy, keep)
+    dropped = None
+    # ONE BAD POINT MUST NOT COST THE WHOLE LEAD-IN. The RMS gate is
+    # all-or-nothing -- 11.9px extrapolates, 12.1px refuses outright --
+    # and these points come from MOG2 on a near-vertical fall, where a
+    # single frame landing on the flagstick or a sprinkler head is
+    # ordinary. In sixteen points one 40px outlier adds about 10px to
+    # the RMS by itself, which is enough to tip a perfectly good flight
+    # over the line.
+    #
+    # Measured on upload 909: the operator's descent was refused and
+    # the green view opened with 0.5s of nothing before the tracer
+    # appeared, which is exactly the hole this function exists to fill.
+    #
+    # So: when the fit fails, drop the single worst point and look
+    # again. ONE, and only while enough remain to still be a fit --
+    # a set that needs two thrown away is not one flight, and the
+    # refusal is the right answer for it.
+    if rms > LEADIN_MAX_RMS_PX and len(keep) > LEADIN_MIN_POINTS:
+        res = [(_evaluate(cx, ts[i]) - xs[i]) ** 2
+               + (_evaluate(cy, ts[i]) - ys[i]) ** 2 for i in keep]
+        worst = max(keep, key=lambda i: res[i])
+        trial = [i for i in keep if i != worst]
+        tcx = _polyfit([ts[i] for i in trial], [xs[i] for i in trial], 2)
+        tcy = _polyfit([ts[i] for i in trial], [ys[i] for i in trial], 2)
+        if tcx is not None and tcy is not None:
+            trms = _rms(tcx, tcy, trial)
+            if trms <= LEADIN_MAX_RMS_PX:
+                cx, cy, keep, dropped = tcx, tcy, trial, pts[worst]["frame"]
+                rms = trms
     if rms > LEADIN_MAX_RMS_PX:
         if debug is not None:
             debug["lead_in"] = {
@@ -531,6 +565,7 @@ def lead_in(points, cut_frame: int, fps: float, frame_w: int, frame_h: int,
     if debug is not None:
         debug["lead_in"] = {
             "n": len(out), "rms_px": round(rms, 1),
+            "dropped_frame": dropped,
             "from_frame": out[0]["frame"] if out else None,
             "to_frame": f0,
             "capped_by": ("the frame edge"
