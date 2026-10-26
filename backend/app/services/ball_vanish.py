@@ -64,10 +64,36 @@ MATCH_PX = 6.0
 # HOW LONG IT MUST SIT STILL to count as a ball at address. This is the
 # shoe filter doing its work: the thing has to be motionless for
 # seconds before anybody cares that it left.
-REST_SEC = 1.5
+#
+# WAS 1.5, WHICH WAS TUNED ON FIXTURES AND IS FAR TOO LOOSE ON GRASS.
+# Real 1080p turf under H.264 is full of small bright things that sit
+# still for a moment and then quantise away. Measured on upload 1259
+# (back tees, impact at frame 1077 = 17.949s), zoned to the hitting
+# area:
+#
+#   rest_sec   windows returned   real swing among them
+#      1.5           36                  yes
+#      3.0           26                  yes
+#      5.0           16                  yes
+#      8.0            8                  yes   <- 5 of the 8 ARE the swing
+#
+# A teed ball sits while its player addresses it; on that clip it sat
+# for 17.65 s. Compression noise does not. Length of rest is the
+# cheapest thing that separates them, and it costs nothing to ask for.
+# 5.0 is the compromise shipped here: 8.0 was better on the one real
+# clip measured, but a player who walks up and hits quickly would miss
+# it, and one clip is not enough to spend that. Both are tunable from
+# the Test cut UI -- sweep them per course.
+REST_SEC = 5.0
 # ...and "still" means this still. Measured as the spread of its
 # positions, not drift from the first one, so a slow crawl fails it.
-REST_JITTER_PX = 4.0
+#
+# WAS 4.0, AND IT REJECTED A REAL BALL BY A TENTH OF A PIXEL. On 1259
+# the detector found the ball, tracked it sitting for 17.65 s, saw it
+# vanish at the right moment -- and threw it out for "moved 4.1px
+# while sitting". A drawn fixture ball does not move at all; an
+# 8-pixel blob on real turf wobbles as the encoder re-quantises it.
+REST_JITTER_PX = 6.0
 
 # ABSENT THIS LONG, AND NEVER SEEN AGAIN. The second half is what makes
 # a club at address harmless: an occlusion ends.
@@ -163,6 +189,7 @@ def find_ball_vanish(video_path, *, zones=None, zones_fractional: bool = False,
                      before_sec: float = 4.5, after_sec: float = 9.0,
                      rest_sec: float = REST_SEC,
                      gone_sec: float = GONE_SEC,
+                     rest_jitter_px: float = REST_JITTER_PX,
                      debug: Optional[dict] = None) -> list:
     """Windows around every ball that sat still and then vanished."""
     import cv2
@@ -220,7 +247,7 @@ def find_ball_vanish(video_path, *, zones=None, zones_fractional: bool = False,
         why = None
         if seen_for < rest_sec:
             why = f"only sat for {seen_for:.1f}s"
-        elif spread > REST_JITTER_PX:
+        elif spread > rest_jitter_px:
             # THE SHOE TEST. Something that wandered while it sat is
             # attached to a person.
             why = f"moved {spread:.1f}px while sitting"

@@ -13314,6 +13314,12 @@ def test_cut_long_upload(
     pi_smooth_seconds: float = Form(0.15),
     pi_max_burst_sec: float = Form(6.0),
     pi_sample_hz: float = Form(20.0),
+    # BALL-VANISH ONLY. Both were set on synthetic fixtures and both
+    # were wrong on real turf -- see the constants in ball_vanish.py.
+    # Exposed so they can be swept from the Test cut UI per course
+    # rather than guessed at once and baked in.
+    pi_rest_sec: float = Form(5.0),
+    pi_rest_jitter_px: float = Form(6.0),
     pi_use_zones: bool = Form(True),
     # ZONES FOR THIS RUN ONLY, as JSON [{x,y,w,h}] in 0-1 fractions of
     # the frame. NOTHING IS SAVED: the camera's own boxes are what the
@@ -13406,6 +13412,8 @@ def test_cut_long_upload(
             sample_hz=float(pi_sample_hz),
             before_sec=float(pi_before_sec),
             after_sec=float(pi_after_sec),
+            rest_sec=float(pi_rest_sec),
+            rest_jitter_px=float(pi_rest_jitter_px),
             debug=debug,
         )
         debug["zone_source"] = ("drawn for this test" if _bz_frac

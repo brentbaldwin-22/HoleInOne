@@ -154,6 +154,17 @@ export default function AdminLongUpload() {
       help: "kept before impact (the address)" },
     { key: "after_sec", short: "post s", def: 9, min: 1, step: 0.5, label: "after_sec",
       help: "kept after impact (the ball flight)" },
+    // BALL-VANISH ONLY. Both of these were set on synthetic fixtures and
+    // both were wrong on real turf, so they are exposed rather than
+    // buried -- sweep them per course. Measured on upload 1259: at
+    // rest 1.5 the hitting area returned 36 windows, at 8.0 it returned
+    // 8, five of which were the real swing.
+    { key: "rest_sec", short: "rest s", def: 5, min: 0.5, step: 0.5,
+      only: "ballgone", label: "rest_sec",
+      help: "how long the ball must sit still before anyone cares that it left. Longer is the cheapest thing that separates a teed ball from a grass glint" },
+    { key: "rest_jitter_px", short: "jitter px", def: 6, min: 1, step: 1,
+      only: "ballgone", label: "rest_jitter_px",
+      help: "how far it may wobble while sitting. 4 rejected a real ball by a tenth of a pixel; an 8px blob on real turf moves more than a drawn one" },
   ];
 
   async function testCutPrior(uploadId) {
@@ -481,7 +492,10 @@ export default function AdminLongUpload() {
                       {["pi", "ballgone"].includes(
                         testCutDetector[u.id] || "motion") && (
                         <>
-                          {PI_FIELDS.map((f) => (
+                          {PI_FIELDS.filter((f) => (
+                            !f.only
+                            || f.only === (testCutDetector[u.id] || "motion")
+                          )).map((f) => (
                             <label
                               key={f.key}
                               style={{ display: "inline-flex", flexDirection: "column",
