@@ -221,6 +221,12 @@ def _migrate() -> None:
             statements.append(
                 "ALTER TABLE camera_events ADD COLUMN green_recording_started_at TIMESTAMP"
             )
+        for _c in ("tee_clock_offset_sec", "tee_clock_error_sec",
+                   "green_clock_offset_sec", "green_clock_error_sec"):
+            if _c not in ce_cols:
+                statements.append(
+                    f"ALTER TABLE camera_events ADD COLUMN {_c} DOUBLE PRECISION"
+                )
         if "produce_retries" not in ce_cols:
             statements.append(
                 "ALTER TABLE camera_events ADD COLUMN produce_retries "

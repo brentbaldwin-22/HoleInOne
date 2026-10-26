@@ -400,6 +400,8 @@ def _record_event_clip(
     fname: str,
     recording_started_at: float | None,
     db: Session,
+    clock_offset_sec: float | None = None,
+    clock_error_sec: float | None = None,
 ) -> dict:
     """Attach a stored clip to its event, advance the status, and kick
     off post-processing. Shared by the whole-file and resumable upload
@@ -413,14 +415,30 @@ def _record_event_clip(
             started_dt = datetime.utcfromtimestamp(float(recording_started_at))
         except (ValueError, OverflowError, OSError):
             started_dt = None
+    # ...and what that Pi's clock was worth when it stamped it. A rig
+    # that could not reach an NTP server sends neither, which reads as
+    # "no better information" and leaves the old behaviour intact.
+    _off = _err = None
+    if clock_offset_sec is not None:
+        try:
+            _off = float(clock_offset_sec)
+            _err = float(clock_error_sec) if clock_error_sec is not None else 0.0
+        except (TypeError, ValueError):
+            _off = _err = None
     if role == "tee":
         event.tee_clip_filename = fname
         if started_dt is not None:
             event.tee_recording_started_at = started_dt
+        if _off is not None:
+            event.tee_clock_offset_sec = _off
+            event.tee_clock_error_sec = _err
     else:
         event.green_clip_filename = fname
         if started_dt is not None:
             event.green_recording_started_at = started_dt
+        if _off is not None:
+            event.green_clock_offset_sec = _off
+            event.green_clock_error_sec = _err
 
     # Decide the new status + whether we're ready to process. A paired
     # event needs both clips; an unpaired tee event needs only its own.
@@ -1587,6 +1605,8 @@ def upload_event(
     token: str,
     session_id: str = Form(...),
     recording_started_at: float | None = Form(None),
+    clock_offset_sec: float | None = Form(None),
+    clock_error_sec: float | None = Form(None),
     video: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
@@ -1623,7 +1643,8 @@ def upload_event(
         )
 
     fname = _save_event_clip(data, event.id, role, video.filename)
-    return _record_event_clip(event, role, fname, recording_started_at, db)
+    return _record_event_clip(event, role, fname, recording_started_at, db,
+                              clock_offset_sec, clock_error_sec)
 
 
 @router.get("/{token}/upload-status")
@@ -1730,6 +1751,8 @@ def upload_complete(
     total_size: int = Form(...),
     filename: str | None = Form(None),
     recording_started_at: float | None = Form(None),
+    clock_offset_sec: float | None = Form(None),
+    clock_error_sec: float | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Seal a fully-transferred clip and hand it to the normal pipeline.
@@ -1761,7 +1784,8 @@ def upload_complete(
         "cameras: resumable upload complete — event=%s role=%s %.1f MB",
         event.id, role, int(total_size) / (1024 * 1024),
     )
-    return _record_event_clip(event, role, fname, recording_started_at, db)
+    return _record_event_clip(event, role, fname, recording_started_at, db,
+                              clock_offset_sec, clock_error_sec)
 
 
 # ---------------------------------------------------------------------

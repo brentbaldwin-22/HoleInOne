@@ -549,6 +549,13 @@ class BackendClient:
         # the tee/green delta to align the dual-camera cut by real time.
         if recording_started_at is not None:
             data["recording_started_at"] = repr(float(recording_started_at))
+            # ...AND HOW MUCH THAT STAMP IS WORTH. The stamp above is
+            # only as good as this Pi's clock, and the backend has no
+            # other way to know. See clock_offset().
+            _off, _err = clock_offset()
+            if _off is not None:
+                data["clock_offset_sec"] = repr(float(_off))
+                data["clock_error_sec"] = repr(float(_err or 0.0))
 
         # Hand _retry a factory so it re-opens the file for each attempt.
         # The tee's clips are larger than the green's and can stall long
@@ -815,6 +822,13 @@ class BackendClient:
         }
         if recording_started_at is not None:
             data["recording_started_at"] = repr(float(recording_started_at))
+            # ...AND HOW MUCH THAT STAMP IS WORTH. The stamp above is
+            # only as good as this Pi's clock, and the backend has no
+            # other way to know. See clock_offset().
+            _off, _err = clock_offset()
+            if _off is not None:
+                data["clock_offset_sec"] = repr(float(_off))
+                data["clock_error_sec"] = repr(float(_err or 0.0))
         out = self._retry(
             "POST", "/upload-complete", data=data, timeout=60, retries=3,
         )
@@ -2813,6 +2827,102 @@ _LENS_PARAM = {
     "simple_focus": lambda a: ("Mode", "SimpleFocus"),
     "reset_focus":  lambda a: ("Mode", "Reset"),
 }
+
+
+# ---- how far this Pi's clock can be trusted ---------------------------
+
+# HOW OFTEN TO RE-MEASURE. The clock does not move fast; the link does.
+# Fifteen minutes is often enough to catch a drift that matters and rare
+# enough that it costs nothing, and the cached answer is reused for
+# every clip in between.
+_CLOCK_TTL_SEC = 900.0
+_CLOCK_SERVERS = ("time.cloudflare.com", "pool.ntp.org")
+_NTP_EPOCH_DELTA = 2208988800  # 1900 -> 1970
+_clock_cache: dict = {"at": 0.0, "offset": None, "error": None}
+
+
+def clock_offset(timeout: float = 5.0, force: bool = False):
+    """(offset_sec, error_sec) for this Pi's clock, or (None, None).
+
+    WHY THE AGENT MEASURES THIS AT ALL. The backend aligns a dual-camera
+    cut from `green_recording_started_at - tee_recording_started_at`,
+    which is only as good as the two Pis agreeing about what time it is.
+    Measured 26 Oct, within a quarter of an hour of each other:
+
+        tee    offset -0.018s   round trip  205 ms
+        green  offset +0.668s   round trip 1518 ms
+
+    0.69s of skew lands directly in the hang time and shifts the cut by
+    the same amount -- and D3_LANDING_LEAD_SEC is 0.75s, so that is very
+    nearly the whole lead. On upload 826 the same mechanism was worth
+    2.07s and put the ball in the air for 8.4s against the 6.6s the
+    green camera's own frames show.
+
+    THE ERROR BAR IS THE POINT, not the offset. SNTP infers the offset
+    by assuming the path is symmetric, and on a congested cellular link
+    it is not: the worst case is half the round trip, so green's
+    reading above is +0.668 +/- 0.76s -- a number whose own uncertainty
+    is larger than the thing it is measuring. Shipping the offset alone
+    would invite exactly the false confidence this exists to prevent,
+    so the round trip travels with it and the backend decides how much
+    to believe.
+
+    Never raises and never blocks for long: a rig with no uplink must
+    still record, and a clip without this is simply one the backend
+    treats the old way.
+    """
+    import struct
+
+    now = time.monotonic()
+    if not force and _clock_cache["offset"] is not None:
+        if now - _clock_cache["at"] < _CLOCK_TTL_SEC:
+            return _clock_cache["offset"], _clock_cache["error"]
+
+    for host in _CLOCK_SERVERS:
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(timeout)
+            t1 = time.time()
+            sock.sendto(b"\x1b" + 47 * b"\0", (host, 123))
+            data, _ = sock.recvfrom(1024)
+            t4 = time.time()
+            if len(data) < 48:
+                continue
+            u = struct.unpack("!12I", data[:48])
+            t2 = u[8] + u[9] / 2 ** 32 - _NTP_EPOCH_DELTA
+            t3 = u[10] + u[11] / 2 ** 32 - _NTP_EPOCH_DELTA
+            offset = ((t2 - t1) + (t3 - t4)) / 2.0
+            # Round trip minus the server's own processing time, halved:
+            # the largest the offset can be wrong by if the path is
+            # entirely one-sided.
+            error = max(0.0, ((t4 - t1) - (t3 - t2)) / 2.0)
+            _clock_cache.update({"at": now, "offset": offset, "error": error})
+            log.info("clock: offset %+.3fs +/- %.3fs against %s",
+                     offset, error, host)
+            return offset, error
+        except Exception as exc:  # noqa: BLE001
+            log.debug("clock: %s did not answer (%s)", host, exc)
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:  # noqa: BLE001
+                    pass
+    # A STALE READING BEATS NO READING, because the failure mode that
+    # produced it -- a link too poor to carry an NTP exchange -- is
+    # exactly the one that makes the clock worth doubting. Keep serving
+    # the last answer rather than silently falling back to "we have no
+    # idea", which the backend cannot tell apart from "fine".
+    if _clock_cache["offset"] is not None:
+        log.info("clock: no server answered; reusing the last reading "
+                 "(%+.3fs +/- %.3fs, %.0fs old)",
+                 _clock_cache["offset"], _clock_cache["error"],
+                 now - _clock_cache["at"])
+        return _clock_cache["offset"], _clock_cache["error"]
+    log.info("clock: could not measure the offset; the backend will fall "
+             "back to trusting the wall clocks")
+    return None, None
 
 
 def _sunapi(cam_cfg: dict, submenu: str, action: str,

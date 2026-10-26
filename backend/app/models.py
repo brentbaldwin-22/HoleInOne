@@ -648,6 +648,25 @@ class CameraEvent(Base):
     # clocks; null on older clips → cut falls back to frame-aligned.
     tee_recording_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     green_recording_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # ...AND WHAT EACH OF THOSE STAMPS IS WORTH. "Requires NTP-synced Pi
+    # clocks" above was an assumption nothing checked, and on this
+    # deployment it is false: measured 26 Oct, the tee was 18ms off
+    # real time and the green 668ms, which is 0.69s of skew landing
+    # straight in the delta -- very nearly the whole 0.75s the cut
+    # leads the landing by. On upload 826 the same thing was worth
+    # 2.07s.
+    #
+    # The offset lets the backend SUBTRACT the skew rather than merely
+    # report it. The error is half the NTP round trip, i.e. how wrong
+    # the offset could be if the path was entirely one-sided -- on
+    # green's congested link that was +/-0.76s, larger than the offset
+    # itself, which is exactly the false confidence a bare offset would
+    # have invited. Null on every clip written before this, which reads
+    # as "no better information" and keeps the old behaviour.
+    tee_clock_offset_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tee_clock_error_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    green_clock_offset_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    green_clock_error_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # Set by the tee Pi's /event-stop call once the tee box has been
     # empty long enough. The green Pi polls /event-status looking for
     # this so both clips end at roughly the same wall-clock moment.

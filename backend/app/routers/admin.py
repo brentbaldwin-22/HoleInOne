@@ -7063,6 +7063,20 @@ def list_long_uploads(
                     if cam_event and cam_event.green_recording_started_at
                     else (r.edit_metrics or {}).get("source_green_started_at")
                 ),
+                # WHAT THOSE TWO STAMPS ARE WORTH. Each Pi measures its
+                # own clock against an NTP server and ships the result
+                # with the clip, so the panel can correct the skew and,
+                # just as importantly, say how far the corrected number
+                # could still be out. Null on anything recorded before
+                # the agent shipped this.
+                "tee_clock_offset_sec": (
+                    cam_event.tee_clock_offset_sec if cam_event else None),
+                "tee_clock_error_sec": (
+                    cam_event.tee_clock_error_sec if cam_event else None),
+                "green_clock_offset_sec": (
+                    cam_event.green_clock_offset_sec if cam_event else None),
+                "green_clock_error_sec": (
+                    cam_event.green_clock_error_sec if cam_event else None),
                 "swing_count": r.swing_count or "multiple",
                 "tee_filename": r.tee_filename,
                 "tee_original_filename": r.tee_original_filename,
@@ -26943,6 +26957,34 @@ def _d3_first_frame_instants(db, row):
     return None, None, None
 
 
+def _d3_clock(db, row, role: str):
+    """(offset_sec, error_sec) that role's Pi reported, or None.
+
+    The error is half the NTP round trip -- how far the offset could be
+    wrong if the path there and back was entirely one-sided. It is not
+    decoration: on green's congested link the round trip was 1518ms, so
+    its +0.668s offset was good to no better than +/-0.76s, an error
+    bar larger than the correction. Carried through so the panel can
+    say how much the sync is worth instead of implying it is exact.
+    """
+    # Same single source as the stamps themselves. A mirrored upload has
+    # no event row and therefore no offsets, which is the honest answer:
+    # nothing recorded what those clocks were worth.
+    if not getattr(row, "camera_event_id", None):
+        return None
+    ev = db.get(CameraEvent, row.camera_event_id)
+    if ev is None:
+        return None
+    off = getattr(ev, f"{role}_clock_offset_sec", None)
+    if off is None:
+        return None
+    try:
+        return float(off), float(
+            getattr(ev, f"{role}_clock_error_sec", None) or 0.0)
+    except (TypeError, ValueError):
+        return None
+
+
 def _d3_green_delta_sec(db, row) -> tuple[float, str]:
     """(green_start − tee_start) in seconds, and where it came from.
 
@@ -26995,7 +27037,32 @@ def _d3_green_delta_sec(db, row) -> tuple[float, str]:
             pass
     t_tee, t_green, _src = _d3_first_frame_instants(db, row)
     if t_tee is not None and t_green is not None:
-        return (t_green - t_tee).total_seconds(), _src
+        _d = (t_green - t_tee).total_seconds()
+        # SUBTRACT THE SKEW RATHER THAN INHERIT IT. Each Pi now ships
+        # how far its own clock was from real time when it stamped the
+        # clip (agent/common.py::clock_offset), so the part of this
+        # difference that is only the two clocks disagreeing can be
+        # taken straight back out:
+        #
+        #     true_start = stamp - that_pi's_offset
+        #     delta      = (green_stamp - tee_stamp)
+        #                  - (green_offset - tee_offset)
+        #
+        # Measured 26 Oct: tee -0.018s, green +0.668s. That 0.69s went
+        # into every delta untouched, and D3_LANDING_LEAD_SEC is 0.75s
+        # -- very nearly the whole lead. On upload 826 it was 2.07s and
+        # reported a 6.6s flight as 8.4s.
+        #
+        # Both sides or neither: correcting one clock and not the other
+        # moves the delta by that clock's whole offset and is worse
+        # than leaving it alone. Clips recorded before the agent shipped
+        # this have no offsets and take the old path, unchanged.
+        _to = _d3_clock(db, row, "tee")
+        _go = _d3_clock(db, row, "green")
+        if _to is not None and _go is not None:
+            _d -= (_go[0] - _to[0])
+            return _d, _src + "+clock"
+        return _d, _src
     try:
         # A STORED ZERO IS NOT AN ANSWER. See `_d3_save_swing`: a zero
         # here is a previous run's assumption written back, and reading

@@ -1575,8 +1575,29 @@ function ClickToPlotModal({
     const a_ = row.tee_recording_started_at;
     const b_ = row.green_recording_started_at;
     if (a_ && b_) {
-      const d = (new Date(b_).getTime() - new Date(a_).getTime()) / 1000;
-      if (Number.isFinite(d)) return { sec: d, source: "stamps" };
+      let d = (new Date(b_).getTime() - new Date(a_).getTime()) / 1000;
+      if (Number.isFinite(d)) {
+        // TAKE THE CLOCK SKEW BACK OUT. Each Pi ships how far its own
+        // clock was from real time when it stamped the clip, so the
+        // part of this difference that is only the two disagreeing can
+        // be subtracted. Both or neither: correcting one side alone
+        // moves the delta by that clock's whole offset.
+        const to_ = row.tee_clock_offset_sec, go_ = row.green_clock_offset_sec;
+        if (to_ != null && go_ != null) {
+          d -= (Number(go_) - Number(to_));
+          // How far the corrected number could STILL be out. Each
+          // error is half that Pi's NTP round trip -- the most the
+          // offset can be wrong by if the path was one-sided -- and
+          // they add, because either could be wrong in either
+          // direction. On green's congested link this was +/-0.76s,
+          // an error bar larger than the skew it was correcting,
+          // which is the thing a bare number would have hidden.
+          const err = (Number(row.tee_clock_error_sec) || 0)
+                    + (Number(row.green_clock_error_sec) || 0);
+          return { sec: d, source: "stamps, clock-corrected", err };
+        }
+        return { sec: d, source: "stamps" };
+      }
     }
     // A SAVED OFFSET IS NOT A CAMERA STAMP. This used to report itself
     // as measured, so an upload with no per-camera stamps at all said
@@ -1590,6 +1611,8 @@ function ClickToPlotModal({
     }
     return { sec: 0, source: "assumed" };
   }, [row.tee_recording_started_at, row.green_recording_started_at,
+      row.tee_clock_offset_sec, row.green_clock_offset_sec,
+      row.tee_clock_error_sec, row.green_clock_error_sec,
       row.edit_metrics?.tee_green_delta_sec]);
   // THE LANDING, IN THE TEE PICTURE. Stored in green pixels because
   // that is the camera that sees it land, but the tee view is where the
@@ -3155,8 +3178,15 @@ function ClickToPlotModal({
                 : "measured here from the two impact marks")
               : (greenImpactFrame != null
                 ? `green impact f${greenImpactFrame} — set the tee impact too`
-                : `from the cameras' clocks (${rawDelta?.source || "?"}). `
-                  + "Mark the strike on the green view to measure it instead.")}
+                : `from the cameras' clocks (${rawDelta?.source || "?"})`
+                  + (rawDelta?.err != null
+                    ? `, good to ±${rawDelta.err.toFixed(2)}s. `
+                      + (rawDelta.err > 0.25
+                        ? "That is too loose to pace a flight — mark the "
+                          + "strike on the green view to measure it instead."
+                        : "Accurate enough to leave this empty.")
+                    : ". Mark the strike on the green view to measure it "
+                      + "instead."))}
           >
             <button type="button" className="ghost small"
                     style={{ width: "100%" }}
