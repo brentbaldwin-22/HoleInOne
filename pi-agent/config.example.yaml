@@ -632,3 +632,59 @@ work_dir: "/var/lib/golfreelz-agent"
 
 # Log verbosity. INFO covers normal operation; DEBUG is loud.
 log_level: "INFO"
+
+# ---------------------------------------------------------------------
+# Audio trigger  (tee only, OFF by default)
+# ---------------------------------------------------------------------
+#
+# Cut a swing because it was HEARD, instead of because somebody stood
+# still long enough. Needs the copy engine (it cuts from the segment
+# ring) and a camera with a working microphone.
+#
+# WHY BOTH SIGNALS. Measured on this course: motion alone found 13 of
+# 20 swings at its best setting with no stable pair -- a foursome
+# walking and pulling clubs is the noise floor and it is high. Sound
+# alone cannot tell WHOSE swing it is, and at ratio 8 it clears
+# talking by only ~1.3x. So a cut needs a crack AND a golfer standing
+# in the named zone at that moment; a false peak then has to coincide
+# with somebody on that tee before it costs anything.
+#
+# NOTHING HERE CAN LOSE A SWING. The dwell keeps recording and
+# uploading exactly as it does now; this adds clips, it does not gate
+# them.
+#
+# audio_trigger:
+#   enabled: false
+#   # SHADOW FIRST, ALWAYS. Writes the cut it WOULD have made to the
+#   # journal and changes nothing. Run it a day and compare against
+#   # what the dwell actually recorded before trusting it:
+#   #   journalctl -u golfreelz-agent | grep 'audio trigger'
+#   shadow: true
+#   # Peak / rolling-median ratio. Measured on hole 8: swings x19-x30,
+#   # talking x5-x7. 8 splits them with about a 1.3x margin, which is
+#   # thin -- re-measure per course with the Test cut audio detector
+#   # before assuming it travels.
+#   min_ratio: 8.0
+#   # Which trigger zones count, BY INDEX in the camera's box list.
+#   # Omit (or leave empty) for "any zone". A back-tee-only rig is
+#   # [0] if the back tee is the first box drawn.
+#   confirm_zones: [0]
+#   confirm_tolerance_sec: 6.0   # a player at address barely moves
+#   before_sec: 4.5
+#   after_sec: 9.0
+#   # The listener's own baseline. Too short and a loud passage raises
+#   # the bar until a swing inside it cannot clear; too long and it is
+#   # slow to notice the course going quiet.
+#   baseline_sec: 30.0
+#   window_seconds: 185.0        # match the video ring, or a cut can
+#                                # outlive its own audio
+#   # A STRIKE AT FRONT-TEE RANGE IS INVISIBLE TO THIS. Air absorbs
+#   # high frequencies fastest, so a far strike arrives as a dull thump
+#   # with ~1% of its energy above 1.5 kHz and the high-pass removes
+#   # exactly what survived the trip: measured x13.4 full-band and
+#   # x1.02 after the filter. Lowering this does not fix it -- the
+#   # band where a far strike lives is also where bag thumps and wind
+#   # live. The dwell is the fallback for those tees.
+#   highpass_hz: 1500.0
+#   max_attack_ms: 30.0
+#   min_separation_sec: 6.0

@@ -43,6 +43,7 @@ from .common import (
     DeliveryMeter,
     TriggerGate,
 )
+from . import audiotrigger
 from . import tee_roi
 from .focus_meter import FocusMeter
 from .livestream import LiveStreamer
@@ -912,6 +913,7 @@ class TeeAgent:
         # (epoch, zone_index) pairs. See person_sightings() for why
         # the zone is kept and seen_times() for the readers that only
         # want the clock.
+        self._audio_trigger = None
         self._person_seen_at: list = []
         self.motion = None
         if _sw.get("enabled"):
@@ -1065,6 +1067,16 @@ class TeeAgent:
         self._copy = CopyEngine.from_config(self.cfg, self.work_dir)
         if self._copy is not None:
             self._copy.start()
+        # LISTENING FOR THE SWING ITSELF, alongside everything above and
+        # changing none of it. Off unless asked for, and shadow by
+        # default: it writes the cut it WOULD have made and nothing
+        # else, so a day of it can be compared against what the dwell
+        # actually recorded before any clip depends on it.
+        self._audio_trigger = audiotrigger.build(
+            self.cfg, self.work_dir, self,
+            video_span=(self._copy.ring.span if self._copy is not None
+                        else None),
+        )
 
         # Start draining the camera into the buffer before we begin
         # detecting, so the pre-roll is already populated at trigger.
@@ -1107,6 +1119,15 @@ class TeeAgent:
                 # Consumed on sight, so it fires exactly once.
                 # Operator-requested Capture (admin Cameras page) carries
                 # an explicit duration; the SSH sentinel does not.
+                # Cheap: at most one new second of audio exists per
+                # second of wall clock, and a tick with nothing new is
+                # a directory listing. Wrapped because a detector that
+                # throws must not take the recorder down with it.
+                if self._audio_trigger is not None:
+                    try:
+                        self._audio_trigger.tick()
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("audio trigger: tick failed (%s)", exc)
                 pending_secs = self._take_pending_capture()
                 forced = _take_force_trigger() or pending_secs is not None
                 if not forced and now < _cooldown_until:
@@ -1302,6 +1323,7 @@ class TeeAgent:
             streamer.stop()
             if getattr(self, "_copy", None) is not None:
                 self._copy.stop()
+            audiotrigger.stop(getattr(self, "_audio_trigger", None))
 
     # -----------------------------------------------------------------
 
