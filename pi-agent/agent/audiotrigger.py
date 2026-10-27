@@ -307,7 +307,8 @@ def build(cfg: dict, work_dir, runner, video_span=None, on_cut=None):
         on_cut=on_cut,
     )
     log.info(
-        "audio trigger: %s, ratio x%.1f, zones %s, window %.0f..+%.0fs",
+        "audio trigger: %s, gate x%.1f (min_ratio), zones %s, "
+        "window %.0f..+%.0fs",
         "SHADOW (deciding, not cutting)" if t.shadow else "LIVE",
         listener.min_peak_ratio,
         "any" if zones is None else zones, t.before_sec, t.after_sec,

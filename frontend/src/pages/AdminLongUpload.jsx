@@ -1096,9 +1096,9 @@ export default function AdminLongUpload() {
                             </>
                           ) : testCutResults[u.id].detector === "audio" ? (
                             <>
-                              audio: median={testCutResults[u.id].debug.median_envelope?.toFixed(4)}{" "}
-                              · threshold={testCutResults[u.id].debug.threshold?.toFixed(4)}{" "}
-                              (×{testCutResults[u.id].debug.min_peak_ratio_used})
+                              audio: noise floor={testCutResults[u.id].debug.median_envelope?.toFixed(4)}{" "}
+                              · gate ×{testCutResults[u.id].debug.min_peak_ratio_used}
+                              {" "}(min_ratio) = {testCutResults[u.id].debug.threshold?.toFixed(4)}
                               {testCutResults[u.id].debug.highpass_hz_used > 0 && (
                                 <> · highpass @ {testCutResults[u.id].debug.highpass_hz_used} Hz</>
                               )}
@@ -1112,21 +1112,22 @@ export default function AdminLongUpload() {
                                 </span></>
                               )}
                               <br />
-                              peaks: raw={testCutResults[u.id].debug.n_raw_peaks}
+                              peaks: {testCutResults[u.id].debug.n_raw_peaks} over the gate
                               {testCutResults[u.id].debug.n_after_attack != null && (
-                                <> · attack_ok={testCutResults[u.id].debug.n_after_attack}
-                                {" "}(≤{Math.round((testCutResults[u.id].debug.max_attack_sec_used ?? 0)*1000)}ms)</>
+                                <> · {testCutResults[u.id].debug.n_after_attack} passed attack
+                                {" "}(≤{Math.round((testCutResults[u.id].debug.max_attack_sec_used ?? 0)*1000)}ms, max_attack_ms)</>
                               )}
-                              {" "}· kept_after_nms={testCutResults[u.id].debug.n_after_nms}
-                              {" "}· min_sep={testCutResults[u.id].debug.min_separation_sec}s
+                              {" "}· {testCutResults[u.id].debug.n_after_nms} after separation
+                              {" "}({testCutResults[u.id].debug.min_separation_sec}s, min_separation_sec)
                               {" "}over {testCutResults[u.id].debug.duration_sec?.toFixed(1)}s
                               {Array.isArray(testCutResults[u.id].debug.top_peaks) &&
                                 testCutResults[u.id].debug.top_peaks.length > 0 && (
                                 <>
                                   <br />
-                                  top peaks (sec, ×ratio, attack-ms, kept):
-                                  {" "}✗-attack = sustained sound (voice/rumble);
-                                  {" "}✗-nms = suppressed by another peak nearby.
+                                  top peaks (sec, ×ratio over the noise floor,
+                                  {" "}attack ms, kept):
+                                  {" "}✗attack = too slow a rise (voice/rumble);
+                                  {" "}✗-sep = another peak within min_separation_sec.
                                   <br />
                                   {testCutResults[u.id].debug.top_peaks.map((p, i) => (
                                     <span key={i} style={{ marginRight: 10 }}>
@@ -1141,9 +1142,10 @@ export default function AdminLongUpload() {
                                               plain number hid a filter that
                                               was dropping quiet strikes. */}
                                           {p.attack_measured === false ? "≥" : ""}
-                                          {p.attack_ms}ms{p.passes_attack ? "" : "✗atk"}</>
+                                          {p.attack_ms}ms{p.passes_attack ? "" : "✗attack"}</>
                                       )}
-                                      {" "}{p.kept ? "✓" : "✗"}
+                                      {" "}{p.kept ? "✓"
+                                        : (p.passes_attack === false ? "" : "✗sep")}
                                     </span>
                                   ))}
                                 </>

@@ -128,7 +128,7 @@ def main() -> int:
         print("  *** DIGITAL SILENCE. The ring is recording nothing. The")
         print("  *** stream is connected but carries no audio -- check the")
         print("  *** camera's Audio in on the profile the agent pulls.")
-    print("threshold : x%.1f of that = %.6f" % (ratio, med * ratio))
+    print("gate      : x%.1f (min_ratio) = %.6f" % (ratio, med * ratio))
     print()
     import datetime
     import math
@@ -145,7 +145,7 @@ def main() -> int:
               % (datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S"), r,
                  raw, 20 * math.log10(raw) if raw > 0 else -99))
     print()
-    print("loudest filtered ratio in the window: x%.2f against a x%.1f gate"
+    print("loudest ratio over the noise floor: x%.2f against a x%.1f gate"
           % (best_ratio, ratio))
     if med > 0 and best_ratio < ratio:
         print("  -> nothing came within %.0f%% of firing. At front-tee range a"
