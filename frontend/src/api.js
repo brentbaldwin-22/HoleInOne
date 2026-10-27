@@ -341,6 +341,11 @@ export const api = {
       adminPassword: key,
     }),
   stats: (key) => request(`/api/admin/stats`, { adminPassword: key }),
+  // Disk headroom. Reachable only with the admin header, so there was
+  // no way to see it from a browser at all -- and a full disk is what
+  // stops previews rendering, frames extracting and video streaming,
+  // none of which say "disk" when they fail.
+  storage: (key) => request(`/api/admin/storage`, { adminPassword: key }),
   revenueReport: (key, { start, end, courseId } = {}) =>
     request(`/api/admin/revenue${revenueQuery({ start, end, courseId })}`, {
       adminPassword: key,

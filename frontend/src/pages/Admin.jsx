@@ -41,6 +41,7 @@ export default function Admin() {
   const [authed, setAuthed] = useState(() => !!readStoredPassword());
   const [courses, setCourses] = useState([]);
   const [stats, setStats] = useState(null);
+  const [disk, setDisk] = useState(null);
   const [flagged, setFlagged] = useState([]);
   const [error, setError] = useState(null);
   const [toast, setToast] = useState(null);
@@ -49,6 +50,12 @@ export default function Admin() {
     try {
       const [c, s, f] = await Promise.all([api.listCourses(key), api.stats(key), api.flaggedClips(key)]);
       setCourses(c); setStats(s); setFlagged(f);
+      // SEPARATE, AND ALLOWED TO FAIL. The disk readout walks the
+      // clips directory, so it is the slowest call on this page and
+      // the most likely to time out on the very deployment whose disk
+      // is in trouble. Joining it to the Promise.all above would mean
+      // a struggling server showed no dashboard at all.
+      api.storage(key).then(setDisk).catch(() => setDisk(null));
       setAuthed(true);
       localStorage.setItem(ADMIN_PW_STORAGE, key);
       setError(null);
@@ -181,6 +188,35 @@ export default function Admin() {
                 : Object.entries(stats.clips_by_status).map(([k, v]) => `${k}:${v}`).join("  ·  ")}
             </div>
           </div>
+          {disk && (
+            <div className="stat">
+              <div className="icon-bg"><Icon name="chart" size={16} /></div>
+              <div className="label">Disk</div>
+              <div
+                className="value"
+                // A FULL DISK IS NOT A STATISTIC, it is an outage: every
+                // ffmpeg write fails, previews stop rendering, frames
+                // stop extracting, and nothing in the UI says "disk".
+                // So this tile shouts before it is too late to act,
+                // rather than reporting a number nobody reads.
+                style={{ color: disk.disk_used_pct >= 90 ? "#dc2626"
+                  : disk.disk_used_pct >= 75 ? "#d97706" : undefined }}
+              >
+                {disk.disk_used_pct}%
+              </div>
+              <div className="sub">
+                {disk.disk_free_gb} GB free of {disk.disk_total_gb}
+                {disk.disk_used_pct >= 90 && (
+                  <><br /><b>Full. Produce and previews will fail.</b></>
+                )}
+                {disk.by_category?.raw_video && (
+                  <><br />raw footage {disk.by_category.raw_video.gb} GB
+                  {" "}in {disk.by_category.raw_video.files} files,
+                  {" "}kept {disk.retention_days} days</>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
