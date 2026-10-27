@@ -16,6 +16,7 @@ finished segments, which the agent has already closed.
 """
 import struct
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -56,11 +57,39 @@ def main() -> int:
         print("  only one segment so far — wait a few seconds and re-run")
         return 1
 
+    # THE WHOLE DIRECTORY, not just the slice this probe reads. The
+    # ring is swept by AudioRing.tick, which for a long time had no
+    # caller at all: window_seconds bounded nothing, the directory grew
+    # at 32 KB/s forever, and `segments()` globs and sorts every file
+    # in it on every tick -- so an unswept ring costs CPU that grows
+    # without bound, five times a second, on a Pi that is also
+    # capturing video. Reading only the recent slice would show a
+    # perfectly healthy ring sitting on top of that.
+    all_segs = sorted(d.glob(_NAME_GLOB))
+    all_bytes = 0
+    for q in all_segs:
+        try:
+            all_bytes += q.stat().st_size
+        except OSError:
+            pass
+    want = float(a.get("window_seconds", 185.0))
+    print("on disk   : %d files, %.1f MB (the window asks for %.0f files)"
+          % (len(all_segs), all_bytes / 1e6, want))
+    if len(all_segs) > want * 2:
+        print("  *** THE RING IS NOT BEING SWEPT. Every tick globs and")
+        print("  *** sorts all %d of these, five times a second. Update"
+              % len(all_segs))
+        print("  *** the agent; the next tick clears it.")
+    _age = time.time() - (_seg_start(all_segs[-1]) or 0) if all_segs else None
+    if _age is not None:
+        print("newest    : %s (%.0fs ago)%s"
+              % (all_segs[-1].name, _age,
+                 "  *** STALLED: ffmpeg is not writing" if _age > 10 else ""))
+
     total = sum(p.stat().st_size for p in segs)
-    print("segments  : %d spanning %.0fs, %.1f MB"
+    print("read here : %d segments spanning %.0fs, %.1f MB"
           % (len(segs), len(segs) * float(a.get("segment_seconds", 1.0)),
              total / 1e6))
-    print("newest    : %s" % segs[-1].name)
 
     zero = sum(1 for p in segs if p.stat().st_size == 0)
     if zero:
