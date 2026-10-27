@@ -53,9 +53,21 @@ class FakeRing:
 
     def __init__(self, names):
         self._names = list(names)
+        self.ticks = 0
 
     def segments(self):
         return [FakeSeg(n) for n in self._names]
+
+    def tick(self):
+        # AudioRing.tick is sweep + restart-if-stalled. Counting the
+        # calls is the whole assertion: for as long as the audio
+        # trigger existed, nothing called it at all.
+        self.ticks += 1
+
+
+class ExplodingRing(FakeRing):
+    def tick(self):
+        raise RuntimeError("boom")
 
 
 class FakeListener:
@@ -192,6 +204,33 @@ t, d, cuts = build([(1, HIT)], zones=[0], sightings=[(999.6, 0)], shadow=False)
 check("live cut counted", t.cut_count, 1)
 t, d, cuts = build([(1, HIT)], zones=[0], sightings=[(999.6, 0)], shadow=True)
 check("shadow cut not counted", t.cut_count, 0)
+
+print()
+print("the ring is swept and restarted from here, by the only caller:")
+# AudioRing.tick is sweep + restart-if-stalled, and its docstring says
+# "call from the agent's loop". Nothing did. For as long as the audio
+# trigger has existed, window_seconds bounded nothing -- the directory
+# grew at 32 KB/s, 1.4 GB a day, never cleared across restarts -- and
+# an ffmpeg that died stayed dead, because the restart lives in the
+# same uncalled method. One call fixed both; this is what keeps it.
+_r = FakeRing([])
+_t = AudioTrigger(_r, FakeListener({}), sightings=lambda: [])
+check("construction alone sweeps nothing", _r.ticks, 0)
+_t.tick()
+check("a tick sweeps the ring", _r.ticks, 1)
+_t.tick()
+_t.tick()
+check("every tick does", _r.ticks, 3)
+
+# And housekeeping must not be able to cost the listening it serves.
+_e = ExplodingRing(["aud-20261026-220000.pcm"])
+_et = AudioTrigger(_e, FakeListener({}), sightings=lambda: [])
+_crashed = False
+try:
+    _et.tick()
+except Exception:
+    _crashed = True
+check("a ring that throws does not stop the trigger", _crashed, False)
 
 print()
 if FAILED:

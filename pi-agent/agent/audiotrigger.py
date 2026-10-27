@@ -100,7 +100,25 @@ class AudioTrigger:
     # ---- the loop ------------------------------------------------------
 
     def tick(self) -> list:
-        """Feed whatever audio is new, and judge whatever it hears."""
+        """Feed whatever audio is new, and judge whatever it hears.
+
+        AND KEEP THE RING ITSELF ALIVE. AudioRing.tick says "call from
+        the agent's loop" and nothing ever did, so for as long as the
+        audio trigger has existed the ring has neither swept nor
+        restarted: `window_seconds` bounded nothing, the directory grew
+        at 32 KB/s -- 1.4 GB a day, never cleared, across every restart
+        -- and an ffmpeg that died stayed dead with no log line, since
+        the restart lives in the same uncalled method.
+
+        Here rather than in the agent loop because this is already the
+        one thing the loop calls on the audio path, and a second call
+        site is a second thing to forget.
+        """
+        try:
+            self.ring.tick()
+        except Exception as exc:  # noqa: BLE001
+            # Housekeeping must not cost the listening it serves.
+            log.warning("audio ring: tick failed (%s)", exc)
         out = []
         for seg in self._new_segments():
             from .audiocap import _seg_start
