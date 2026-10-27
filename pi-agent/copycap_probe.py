@@ -148,30 +148,50 @@ def main() -> int:
         # The comparison that decides it: what the CURRENT path costs for
         # the same footage, on this same Pi, right now.
         target_kbps = int(cfg.get("upload_bitrate_kbps", 2500))
-        enc = workdir / "reencoded.mp4"
-        t0 = time.time()
-        r = subprocess.run(
-            ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(out),
-             "-c:v", "libx264", "-b:v", f"{target_kbps}k", str(enc)],
-            capture_output=True, timeout=900,
-        )
-        took = time.time() - t0
-        print(f"\nRE-ENCODE (what the agent does today, {target_kbps} kbps)")
-        if r.returncode == 0 and enc.exists():
-            emb = enc.stat().st_size / 1e6
-            print(f"  {emb:.2f} MB in {took:.1f}s")
-            print(f"\nVERDICT for {secs:.1f}s of video on this Pi")
-            print(f"  cpu   : {took/max(res['took'],0.001):.0f}x cheaper to copy "
-                  f"({res['took']}s vs {took:.1f}s)")
-            print(f"  bytes : {mb/max(emb,0.001):.1f}x larger to copy "
-                  f"({mb:.2f} MB vs {emb:.2f} MB)")
-            print(f"\n  To make the copy affordable, lower the CAMERA's profile "
-                  f"bitrate\n  toward {target_kbps} kbps — its encoder then does the "
-                  f"job this Pi\n  is doing now, in hardware, with no second "
-                  f"generation of loss.")
+        # ZERO MEANS THE AGENT DOES NOT RE-ENCODE AT ALL -- see the
+        # `self._kbps_now > 0` gate in common.Uploader. Running the
+        # comparison anyway asks libx264 for "-b:v 0k", prints a
+        # re-encode the agent would never perform, and then advises
+        # lowering the CAMERA toward 0 kbps, which is advice nobody
+        # should take. There is nothing to compare: say so and stop.
+        if target_kbps <= 0:
+            print("\nRE-ENCODE: none. upload_bitrate_kbps is 0, so this rig "
+                  "sends\n  the camera's own H.264 untouched -- which is "
+                  "what the copy\n  engine is for. Nothing to compare.")
+            print(f"\n  The size above IS the upload size for "
+                  f"{secs:.1f}s: {mb:.2f} MB.")
+            print("  To change it, change the CAMERA's profile bitrate; "
+                  "this Pi\n  no longer has a say.")
+            _reencode = False
         else:
-            print(f"  failed after {took:.1f}s: "
-                  f"{(r.stderr or b'').decode('utf-8','replace')[:200]}")
+            _reencode = True
+        if _reencode:
+            enc = workdir / "reencoded.mp4"
+            t0 = time.time()
+            r = subprocess.run(
+                ["ffmpeg", "-nostdin", "-loglevel", "error", "-y",
+                 "-i", str(out), "-c:v", "libx264",
+                 "-b:v", f"{target_kbps}k", str(enc)],
+                capture_output=True, timeout=900,
+            )
+            took = time.time() - t0
+            print(f"\nRE-ENCODE (what the agent does today, "
+                  f"{target_kbps} kbps)")
+            if r.returncode == 0 and enc.exists():
+                emb = enc.stat().st_size / 1e6
+                print(f"  {emb:.2f} MB in {took:.1f}s")
+                print(f"\nVERDICT for {secs:.1f}s of video on this Pi")
+                print(f"  cpu   : {took/max(res['took'],0.001):.0f}x cheaper "
+                      f"to copy ({res['took']}s vs {took:.1f}s)")
+                print(f"  bytes : {mb/max(emb,0.001):.1f}x larger to copy "
+                      f"({mb:.2f} MB vs {emb:.2f} MB)")
+                print(f"\n  To make the copy affordable, lower the CAMERA's "
+                      f"profile\n  bitrate toward {target_kbps} kbps — its "
+                      f"encoder then does the job\n  this Pi is doing now, in "
+                      f"hardware, with no second generation\n  of loss.")
+            else:
+                print(f"  failed after {took:.1f}s: "
+                      f"{(r.stderr or b'').decode('utf-8','replace')[:200]}")
 
         print(f"\nring cpu while recording: "
               f"{time.process_time()-cpu0:.2f}s of python over "
