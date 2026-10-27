@@ -79,7 +79,9 @@ class Fake:
         self.buffer = Buffer(frames)
         self._roi_lock = threading.Lock()
         self.roi = ROI
-        self._person_seen_at: list = []
+        self._person_seen_at = __import__('collections').deque(
+            maxlen=tee_mod._SIGHTING_MAXLEN)
+        self._note_sighting = tee_mod.TeeAgent._note_sighting.__get__(self)
         self._det = Detector(centroid)
 
     def stop_policy(self, det_period=0.0):
@@ -99,12 +101,64 @@ def test_a_person_in_the_zone_is_remembered():
           [z for _t, z in f._person_seen_at], [0, 0, 0])
 
 
+def test_the_detection_loop_records_them_too():
+    """THE BUG THIS EXISTS FOR.
+
+    Only the RECORDING paths wrote sightings -- `_copy_stop_policy` and
+    `_record_and_upload`, both of which run once a clip is already
+    being made. Outside a recording the list stayed empty, and empty
+    does not mean "no information" to the readers: it means "we looked
+    and nobody was there".
+
+    So the audio trigger, which asks "was anybody in a zone when that
+    crack happened", could only ever be satisfied while the dwell
+    happened to be recording. Measured on the rig 27 Oct: 146 impacts
+    heard, 20 cut, the rest declined for "nobody in any zone" on a tee
+    with a golfer standing on it.
+    """
+    import inspect
+
+    f = Fake(INSIDE)
+    f._note_sighting(100.0, INSIDE, ROI)
+    f._note_sighting(100.5, INSIDE, ROI)
+    check("the loop can record a sighting with nothing recording",
+          tee_roi.seen_times(f._person_seen_at), [100.0, 100.5])
+    check("...attributed to a zone",
+          [z for _t, z in f._person_seen_at], [0, 0])
+
+    # It must not be able to disturb the detector's decision.
+    f._note_sighting(101.0, None, "not an roi")
+    check("garbage is swallowed, not raised", len(f._person_seen_at), 3)
+
+    # AND THE LOOP MUST ACTUALLY CALL IT. The method existing is not
+    # the fix; the fix is the detection loop using it, which is what
+    # was missing.
+    src = inspect.getsource(tee_mod.TeeAgent.run)
+    check("the detection loop calls it", "_note_sighting(" in src, True)
+    check("...guarded by in_roi, so a sighting means a tee",
+          "if in_roi:" in src, True)
+
+
+def test_the_list_cannot_grow_for_ever():
+    """Written 5/s for the life of the agent now, not just while
+    recording -- so an unbounded list is a leak, and every reader
+    walks it linearly."""
+    f = Fake(INSIDE)
+    for i in range(tee_mod._SIGHTING_MAXLEN + 500):
+        f._note_sighting(float(i), INSIDE, ROI)
+    check("it stops at the bound", len(f._person_seen_at),
+          tee_mod._SIGHTING_MAXLEN)
+    check("...keeping the NEWEST, which is what every reader wants",
+          f._person_seen_at[-1][0], float(tee_mod._SIGHTING_MAXLEN + 499))
+
+
 def test_a_person_outside_the_zone_is_not():
     f = Fake(OUTSIDE)
     stop = f.stop_policy()
     for t in (100.0, 100.5, 101.0):
         stop(t)
-    check("nobody in the zone, nothing remembered", f._person_seen_at, [])
+    check("nobody in the zone, nothing remembered",
+          list(f._person_seen_at), [])
 
 
 def test_no_frames_records_nothing():
@@ -112,7 +166,7 @@ def test_no_frames_records_nothing():
     f = Fake(INSIDE, frames=0)
     stop = f.stop_policy()
     check("it does not stop the clip", stop(100.0), None)
-    check("and it claims no sighting", f._person_seen_at, [])
+    check("and it claims no sighting", list(f._person_seen_at), [])
 
 
 def test_what_the_empty_list_did_to_the_swing_finder():
@@ -153,6 +207,8 @@ def test_what_the_empty_list_did_to_the_swing_finder():
 
 
 for fn in (test_a_person_in_the_zone_is_remembered,
+           test_the_detection_loop_records_them_too,
+           test_the_list_cannot_grow_for_ever,
            test_a_person_outside_the_zone_is_not,
            test_no_frames_records_nothing,
            test_what_the_empty_list_did_to_the_swing_finder):

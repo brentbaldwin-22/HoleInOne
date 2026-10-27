@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from collections import deque
 from typing import Optional
 
 import cv2
@@ -340,6 +341,14 @@ class MotionFallbackDetector:
 
     def close(self):
         pass
+
+
+# How many sightings to keep. At the detection rate (5/s) this is about
+# ten minutes, which covers every reader: the audio trigger asks about
+# +/-6s around an impact -- but can ask minutes late, because the loop
+# that feeds it is blocked while a clip records -- and find_swings asks
+# about the length of one clip.
+_SIGHTING_MAXLEN = 4000
 
 
 class Dwell:
@@ -1008,6 +1017,33 @@ class TeeAgent:
         except Exception:  # noqa: BLE001
             return None
 
+    def _note_sighting(self, now, stance, roi) -> None:
+        """Remember that somebody was standing on a tee just now.
+
+        THE DETECTION LOOP HAS TO DO THIS, and for a long time only the
+        recording paths did -- `_copy_stop_policy` and
+        `_record_and_upload`, both of which run only once a clip is
+        already being made. So outside a recording the sighting list
+        was empty, and an empty list does not mean "no information" to
+        the readers: it means "we looked and nobody was there".
+
+        The audio trigger asks "was anybody in a zone when that crack
+        happened" before it cuts. With nothing recorded outside a
+        recording, that could only ever be true while the dwell
+        happened to be running -- so a struck ball heard on an idle tee
+        was declined with "nobody in any zone", and the one impact that
+        did cut was the one that landed inside a dwell clip. Measured
+        on the rig, 27 Oct: 146 impacts heard, 20 cut.
+
+        Never raises. A sighting is bookkeeping; the detector's answer
+        about whether to record has already been taken by the time this
+        is called, and nothing here may disturb it.
+        """
+        try:
+            self._person_seen_at.append((float(now), _roi_zone(stance, roi)))
+        except Exception:  # noqa: BLE001
+            pass
+
     def _zone_name(self, roi, index):
         """An operator's word for a zone index, or None.
 
@@ -1162,7 +1198,14 @@ class TeeAgent:
         self._dwell_yields = _dwell_yield_zones(
             (self.cfg.get("audio_trigger") or {}).get("replaces_dwell", False))
         self._yielded_logged = False
-        self._person_seen_at: list = []
+        # BOUNDED, because this is now written five times a second for
+        # as long as the agent runs rather than only during a
+        # recording. The readers want minutes, not hours: the audio
+        # trigger asks about +/-6s around an impact, and find_swings
+        # about the length of one clip. Ten minutes at the detection
+        # rate is a few thousand tuples and covers both with room to
+        # spare.
+        self._person_seen_at: deque = deque(maxlen=_SIGHTING_MAXLEN)
         self.motion = None
         if _sw.get("enabled"):
             self.motion = MotionTracker(
@@ -1363,6 +1406,8 @@ class TeeAgent:
                 with self._roi_lock:
                     _roi_now = self.roi
                 in_roi = stance is not None and _in_roi(stance, _roi_now)
+                if in_roi:
+                    self._note_sighting(now, stance, _roi_now)
                 # Manual trigger, for testing the record+upload path
                 # without anyone walking into frame:
                 #     touch /tmp/golfreelz-trigger
