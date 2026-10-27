@@ -1374,7 +1374,6 @@ async def post_still(token: str, request: Request):
     return {"ok": True, "bytes": len(body)}
 
 
-@router.post("/{token}/event-trigger")
 def _parse_trigger_detail(raw):
     """The Pi's account of why it fired, or None.
 
@@ -1400,6 +1399,7 @@ def _parse_trigger_detail(raw):
     return out if isinstance(out, dict) else None
 
 
+@router.post("/{token}/event-trigger")
 async def event_trigger(
     token: str,
     session_id: str = Form(...),
