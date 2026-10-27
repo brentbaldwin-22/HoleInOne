@@ -159,6 +159,43 @@ run("a x10 strike, not just a x30 one",
     build(20, [(10.0, A_STRIKE_QUIET, "strike")]), [10.0])
 
 print()
+print("IT MUST STILL BE LISTENING AFTER THE BASELINE WINDOW FILLS:")
+# THE BUG THIS EXISTS FOR. The scan cursor was an index into a deque
+# with a maxlen of baseline_sec * ENVELOPE_HZ. Once that filled,
+# len(_env) stopped growing, the cursor pinned to the right-hand edge,
+# and every later scan computed hi <= lo and returned without looking
+# at one sample -- deaf after 30 seconds, until the process restarted.
+#
+# Every fixture above is 20-24s long, which is why nothing caught it
+# for the life of the feature. On the rig it meant a x24 strike sat in
+# the ring under the words "NO IMPACTS".
+for _at in (10.0, 29.0, 31.0, 45.0, 120.0, 600.0):
+    _n = int(_at) + 10
+    _sig = build(_n, [(_at, A_STRIKE, "strike")])
+    _li = SwingListener(SR, baseline_sec=30.0)
+    _hits = []
+    for _k in range(_n):
+        _hits += _li.feed(pcm(_sig[_k * SR:(_k + 1) * SR]), float(_k))
+    _ok = any(abs(h["at"] - _at) < 0.15 for h in _hits)
+    print("  %-52s %s" % ("a strike %.0fs in is still heard" % _at,
+                          "ok" if _ok else "FAIL: deaf"))
+    if not _ok:
+        FAILED.append("deaf at %.0fs" % _at)
+
+# ...and it must not re-report what it already reported. A cursor that
+# fixes deafness by rescanning would turn one swing into a clip per
+# second, which is worse than missing it.
+_sig = build(90, [(45.0, A_STRIKE, "strike")])
+_li = SwingListener(SR, baseline_sec=30.0)
+_all = []
+for _k in range(90):
+    _all += _li.feed(pcm(_sig[_k * SR:(_k + 1) * SR]), float(_k))
+print("  %-52s %s" % ("...and reports it exactly once",
+                      "ok" if len(_all) == 1 else "FAIL: %d times" % len(_all)))
+if len(_all) != 1:
+    FAILED.append("duplicate reports")
+
+print()
 print("envelope_max must answer in FILTERED units, not raw ones:")
 # The probe reported raw peaks beside a filtered threshold, so a mower
 # looked like a near-miss. This is the assertion that keeps the two

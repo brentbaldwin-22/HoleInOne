@@ -126,7 +126,17 @@ class SwingListener:
         # (time, envelope) at ENVELOPE_HZ, over the baseline window.
         self._env: deque = deque(maxlen=int(baseline_sec * ENVELOPE_HZ))
         self._t_next: Optional[float] = None
-        self._scanned_to = 0
+        # HOW FAR THE SCAN HAS GOT, BY CLOCK AND NOT BY INDEX. It was
+        # an index into `_env`, which is a deque with a maxlen: once
+        # the baseline window filled, len(_env) stopped growing, the
+        # cursor pinned itself to the right-hand edge, and every
+        # subsequent scan found hi <= lo and returned without looking
+        # at a single sample. The detector went deaf after
+        # `baseline_sec` and stayed deaf until the process restarted --
+        # which is why a x24 strike could sit in the ring with "no
+        # impacts" printed under it. A timestamp cannot be invalidated
+        # by the deque dropping entries from the left.
+        self._scanned_t: Optional[float] = None
         self._last_hit: Optional[float] = None
         self.median = 0.0
 
@@ -197,22 +207,35 @@ class SwingListener:
         # both sides, and the attack walk-back needs history. Anything
         # inside the tail is scanned on the next feed.
         tail = int(0.12 * ENVELOPE_HZ)
-        lo = max(1, self._scanned_to)
-        hi = len(env) - tail
+        # One list, not repeated deque indexing: env[i] on a deque walks
+        # from the nearer end, so the old loop was quadratic in the
+        # window it scanned.
+        items = list(env)
+        hi = len(items) - tail
         hits = []
+        if hi <= 1:
+            return hits
+        if self._scanned_t is None:
+            lo = 1
+        else:
+            # Walk back from the edge over what is new, which is one
+            # feed's worth -- not over the whole baseline window.
+            j = hi - 1
+            while j >= 1 and items[j][0] > self._scanned_t:
+                j -= 1
+            lo = max(1, j + 1)
         if hi <= lo:
-            self._scanned_to = max(0, len(env) - tail)
             return hits
         for i in range(lo, hi):
-            t, v = env[i]
+            t, v = items[i]
             if v < thresh:
                 continue
-            if not (v >= env[i - 1][1] and v >= env[i + 1][1]):
+            if not (v >= items[i - 1][1] and v >= items[i + 1][1]):
                 continue
             if self._last_hit is not None and \
                     t - self._last_hit < self.min_separation_sec:
                 continue
-            atk = self._attack(i, v)
+            atk = self._attack(items, i, v)
             if atk is None or atk > self.max_attack_sec:
                 continue
             self._last_hit = t
@@ -220,21 +243,23 @@ class SwingListener:
                          "attack_sec": atk})
             log.info("audio: impact at %.3f — x%.1f, attack %.0f ms",
                      t, v / self.median, atk * 1000)
-        # The deque has been trimmed from the left by whatever it
-        # dropped, so the cursor has to move with it rather than with
-        # the raw index, or a trimmed window rescans old audio.
-        self._scanned_to = max(0, len(env) - tail)
+        self._scanned_t = items[hi - 1][0]
         return hits
 
-    def _attack(self, i: int, v: float) -> Optional[float]:
-        """Seconds from the ambience to the peak, or None if unmeasurable."""
+    def _attack(self, items, i: int, v: float) -> Optional[float]:
+        """Seconds from the ambience to the peak, or None if unmeasurable.
+
+        Walks `items`, the snapshot _scan is working from, rather than
+        the live deque: a feed arriving between the two would shift
+        every index and this would measure the attack of whatever had
+        slid into that slot.
+        """
         ref = max(0.10 * v, ATTACK_NOISE_MULT * self.median)
         if ref >= 0.5 * v or v < ATTACK_MIN_HEADROOM * self.median:
             return None
-        env = self._env
         back = int(3 * self.max_attack_sec * ENVELOPE_HZ)
-        t_pk = env[i][0]
+        t_pk = items[i][0]
         for k in range(i - 1, max(0, i - back) - 1, -1):
-            if env[k][1] < ref:
-                return t_pk - env[k][0]
+            if items[k][1] < ref:
+                return t_pk - items[k][0]
         return None
