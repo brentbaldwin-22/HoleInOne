@@ -17300,6 +17300,25 @@ def run_clip_retention(
     return retention.sweep_clips(db, days=days, dry_run=dry_run)
 
 
+@router.post("/storage/headroom")
+def run_headroom_sweep(
+    dry_run: bool = True,
+    min_free_gb: float | None = None,
+    db: Session = Depends(get_db),
+):
+    """Delete the oldest raw footage until the disk has room again.
+
+    For the case the age horizon cannot answer: a disk that fills
+    faster than footage ages out, which is what took this deployment
+    down on 2026-10-24 and 2026-10-27. Dry run by default, like its
+    sibling, because nothing deleted here can be recovered.
+    """
+    from ..services import retention
+
+    return retention.sweep_to_headroom(
+        db, min_free_gb=min_free_gb, dry_run=dry_run)
+
+
 @router.get("/storage")
 def storage_usage():
     """Disk headroom and what is sitting on it, by category.

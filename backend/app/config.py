@@ -315,6 +315,23 @@ class Settings(BaseSettings):
     # difference between re-producing an old shot with new framing and
     # losing that footage -- at a cost of roughly a gigabyte.
     clip_retention_keep_produced: bool = True
+    # AND A FLOOR UNDER THE FREE SPACE, because an age horizon alone
+    # cannot keep a disk alive. Measured on this deployment: 20 GB of
+    # raw footage accumulates in about two weeks, so a 30-day horizon
+    # has nothing old enough to delete while the disk fills underneath
+    # it. It filled on 2026-10-24 and again on 2026-10-27, both times
+    # with a sweeper running faithfully every six hours and finding no
+    # candidates.
+    #
+    # When free space is under this, the sweeper keeps deleting the
+    # OLDEST unprotected raw footage -- ignoring the horizon -- until
+    # it is satisfied. 0 turns that off and leaves age alone in charge.
+    clip_retention_min_free_gb: float = 3.0
+    # Never sweep footage younger than this, whatever the free space.
+    # A disk at 100% is exactly when clips are being written, and an
+    # emergency sweep that deletes the upload currently landing turns
+    # one outage into a lost round.
+    clip_retention_min_age_hours: float = 12.0
 
 
 settings = Settings()

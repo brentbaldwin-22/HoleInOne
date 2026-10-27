@@ -225,6 +225,149 @@ def sweep_clips(
     return report
 
 
+def sweep_to_headroom(
+    db: Session,
+    *,
+    min_free_gb: float | None = None,
+    min_age_hours: float | None = None,
+    dry_run: bool = True,
+    clips_dir: Path | None = None,
+) -> dict:
+    """Delete the OLDEST unprotected raw footage until the disk has room.
+
+    AN AGE HORIZON CANNOT KEEP A DISK ALIVE. Measured here: 20 GB of raw
+    footage accumulates in about two weeks, so a 30-day horizon has
+    nothing old enough to delete while the disk fills underneath it.
+    The disk hit 100% on 2026-10-24 and again on 2026-10-27, both times
+    with the age sweeper running every six hours and correctly finding
+    no candidates. Age says what is worth keeping; only free space says
+    what is affordable.
+
+    So this runs after the age sweep and only when the disk is already
+    under the floor. It takes the oldest first, which is the same
+    preference the horizon expresses, and stops the moment there is
+    room -- it is a brake, not a policy.
+
+    THE SAME TWO REFUSALS AS THE AGE SWEEP, for the same reasons: an
+    empty protected set means "I could not find out", not "nothing is
+    worth keeping", and a dry run is the default because nothing can be
+    rehydrated afterwards. Plus one more of its own: footage younger
+    than `min_age_hours` is never touched. A disk at 100% is precisely
+    when clips are being written, and an emergency sweep that deletes
+    the upload currently landing turns an outage into a lost round.
+    """
+    import shutil
+
+    floor_gb = (settings.clip_retention_min_free_gb
+                if min_free_gb is None else min_free_gb)
+    min_age = (settings.clip_retention_min_age_hours
+               if min_age_hours is None else min_age_hours)
+    directory = clips_dir or CLIPS_DIR
+
+    report: dict = {
+        "dry_run": dry_run,
+        "min_free_gb": floor_gb,
+        "min_age_hours": min_age,
+        "clips_dir": str(directory),
+        "deleted": 0,
+        "bytes": 0,
+        "errors": 0,
+        "too_young": 0,
+        "protected_hits": 0,
+        "sample": [],
+    }
+    if floor_gb <= 0:
+        report["skipped"] = "headroom sweep disabled (min_free_gb=0)"
+        return report
+    if not directory.is_dir():
+        report["skipped"] = f"no such directory: {directory}"
+        return report
+
+    try:
+        free_gb = shutil.disk_usage(directory).free / 1e9
+    except OSError as exc:
+        report["skipped"] = f"could not read disk usage: {exc}"
+        return report
+    report["free_gb_before"] = round(free_gb, 2)
+    if free_gb >= floor_gb:
+        report["skipped"] = (
+            f"{free_gb:.2f} GB free is already at or above the "
+            f"{floor_gb:.2f} GB floor"
+        )
+        return report
+
+    keep = protected_names(db)
+    report["protected_by_db"] = len(keep)
+    if not keep:
+        report["skipped"] = (
+            "protected set is empty; refusing to sweep by size alone"
+        )
+        log.warning("retention: %s", report["skipped"])
+        return report
+
+    young_cutoff = time.time() - min_age * 3600.0
+    candidates = []
+    for path in directory.iterdir():
+        try:
+            if not _is_sweepable(path):
+                continue
+            if path.name in keep:
+                report["protected_hits"] += 1
+                continue
+            stat = path.stat()
+            if stat.st_mtime >= young_cutoff:
+                report["too_young"] += 1
+                continue
+        except OSError:
+            continue
+        candidates.append((stat.st_mtime, stat.st_size, path))
+
+    candidates.sort(key=lambda c: c[0])      # oldest first
+    need_bytes = (floor_gb - free_gb) * 1e9
+    freed = 0
+    for mtime, size, path in candidates:
+        if freed >= need_bytes:
+            break
+        if len(report["sample"]) < 25:
+            report["sample"].append({
+                "name": path.name,
+                "mb": round(size / 1e6, 2),
+                "modified": datetime.utcfromtimestamp(mtime).strftime(
+                    "%Y-%m-%d"),
+            })
+        freed += size
+        report["bytes"] += size
+        if dry_run:
+            report["deleted"] += 1       # "would delete"
+            continue
+        try:
+            path.unlink()
+            report["deleted"] += 1
+        except OSError as exc:
+            report["errors"] += 1
+            report["bytes"] -= size
+            freed -= size
+            log.warning("retention: could not delete %s: %s", path.name, exc)
+
+    report["gb"] = round(report["bytes"] / 1e9, 2)
+    report["short_by_gb"] = round(max(0.0, (need_bytes - freed) / 1e9), 3)
+    if report["short_by_gb"] > 0:
+        # SAY SO RATHER THAN LOOK SUCCESSFUL. Everything left is either
+        # protected, too young, or a deliverable -- which means the
+        # disk is too small for the retention policy, and that is a
+        # decision for a person.
+        log.warning(
+            "retention: headroom sweep could not reach the %.2f GB floor "
+            "-- %.2f GB short after %d deletion(s). What remains is "
+            "protected, too young, or not raw footage.",
+            floor_gb, report["short_by_gb"], report["deleted"])
+    log.info(
+        "retention: headroom %s -- %.2f GB from %d file(s), %d error(s)",
+        "dry run" if dry_run else "sweep",
+        report["gb"], report["deleted"], report["errors"])
+    return report
+
+
 def start_retention_sweeper(interval_sec: float = SWEEP_INTERVAL_SEC) -> None:
     """Run sweep_clips on a loop. Idempotent to start.
 
@@ -244,14 +387,23 @@ def start_retention_sweeper(interval_sec: float = SWEEP_INTERVAL_SEC) -> None:
         from ..database import SessionLocal
 
         log.info(
-            "retention: sweeper started (%d day horizon, %.0fh interval)",
-            settings.clip_retention_days, interval_sec / 3600,
+            "retention: sweeper started (%d day horizon, %.1f GB floor, "
+            "%.0fh interval)",
+            settings.clip_retention_days,
+            settings.clip_retention_min_free_gb, interval_sec / 3600,
         )
         while True:
             time.sleep(interval_sec)
             db = SessionLocal()
             try:
                 sweep_clips(db, dry_run=False)
+                # AGE FIRST, THEN SIZE. The horizon expresses what is
+                # worth keeping; the floor expresses what is
+                # affordable. Running the horizon first means the
+                # headroom sweep usually finds the disk already fine
+                # and does nothing, which is the intended shape: a
+                # brake, not a policy.
+                sweep_to_headroom(db, dry_run=False)
             except Exception as exc:  # noqa: BLE001
                 log.warning("retention: sweep failed: %s", exc)
                 try:
