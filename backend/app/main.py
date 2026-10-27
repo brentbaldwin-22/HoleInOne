@@ -612,9 +612,31 @@ def _seed_default_courses() -> None:
         db.close()
 
 
+# WHAT THIS BUILD UNDERSTANDS, so "is the backend deployed?" has an
+# answer. Render auto-deploys from main, which means it is usually
+# already done and nobody can tell -- /health said only that something
+# was alive, and the rigs send fields an older build silently ignores.
+# An agent that sends `impact_at` to a server that drops it produces a
+# paired event whose green half starts recording seconds too late,
+# which looks like a detector bug and is not one.
+#
+# A STATIC LIST, NOT A DB QUERY. This is Render's liveness probe; a
+# healthcheck that touches the database turns a slow query into a
+# restart loop. These names are facts about the CODE, so a constant is
+# both accurate and free.
+BUILD_FEATURES = (
+    # /event-trigger accepts impact_at + clock_offset_sec, stores them,
+    # and forwards them to the paired green's poll.
+    "impact_at",
+    # camera_events carries each Pi's measured NTP offset, and the
+    # tee/green delta is corrected with it.
+    "clock_offsets",
+)
+
+
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "app": "golfreelz"}
+    return {"ok": True, "app": "golfreelz", "features": list(BUILD_FEATURES)}
 
 
 app.include_router(public.router)
