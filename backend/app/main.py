@@ -635,6 +635,12 @@ BUILD_FEATURES = (
     # camera_events carries each Pi's measured NTP offset, and the
     # tee/green delta is corrected with it.
     "clock_offsets",
+    # /event-trigger accepts the Pi's account of WHY it fired, stores
+    # it on the event, and the admin events list serves it back. An
+    # older build drops the field silently, and the page then shows
+    # "not recorded" for every event on a rig that is reporting
+    # perfectly well -- which reads as an agent problem and is not one.
+    "trigger_detail",
 )
 
 
