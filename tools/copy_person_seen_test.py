@@ -35,6 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pi-agent"))
 
 from agent import tee as tee_mod  # noqa: E402
+from agent import tee_roi  # noqa: E402
 from agent.swingfind import find_swings  # noqa: E402
 
 FAIL: list[str] = []
@@ -93,7 +94,9 @@ def test_a_person_in_the_zone_is_remembered():
         check(f"  t={t}: keeps recording", stop(t), None)
     check("the sightings are kept", len(f._person_seen_at), 3)
     check("and they are the times they happened",
-          f._person_seen_at, [100.0, 100.5, 101.0])
+          tee_roi.seen_times(f._person_seen_at), [100.0, 100.5, 101.0])
+    check("...each attributed to the zone they stood in",
+          [z for _t, z in f._person_seen_at], [0, 0, 0])
 
 
 def test_a_person_outside_the_zone_is_not():

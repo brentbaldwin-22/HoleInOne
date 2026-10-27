@@ -716,4 +716,33 @@ log_level: "INFO"
 #   # gets unchecked streams a perfectly healthy session of digital
 #   # silence -- the state the tee was in until 25 Oct -- and a check
 #   # that only counted segments would hand it the whole rig.
+#   #
+#   # NAME ZONES, NOT true. One camera watches tees at different
+#   # ranges and the ears only reach some of them: measured on this
+#   # course, a back-tee strike is x19-x30 after the high-pass and the
+#   # same strike from the forward tees is x1.02, which is the noise
+#   # floor. So `true` is wrong for any rig whose frame holds a tee
+#   # out of earshot -- it suppresses the only trigger that tee has.
+#   #
+#   #   false      the dwell always fires (the default)
+#   #   [1, 2]     it stands down in zones 1 and 2 only
+#   #   true       it stands down anywhere (single-tee rigs)
+#   #
+#   # Indices are positions in the camera's zone list, counting from
+#   # 0, in the order they were drawn -- the same indices
+#   # confirm_zones uses. MIND THE OFF-BY-ONE: the zone editor draws
+#   # "Zone 1" and "Zone 2" over the boxes, counting from one, so the
+#   # back tee labelled Zone 2 on screen is index 1 here. The agent
+#   # logs the mapping at startup rather than leave it to arithmetic:
+#   #
+#   #   zone 1 ("Zone 2" on screen, Middle): dwell STANDS DOWN ...
+#   #
+#   # An empty list means NOWHERE, the opposite of what
+#   # `confirm_zones: []` means, because a wrong guess here costs a
+#   # lost swing and a wrong guess there costs a surplus clip.
+#   #
+#   # A zone listed here that confirm_zones excludes has NO trigger at
+#   # all -- the dwell waves the ears through and the ears are barred
+#   # on geography. The agent warns about that at startup; it cannot
+#   # refuse, because a rig that will not start records nothing either.
 #   replaces_dwell: false

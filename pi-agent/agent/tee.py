@@ -474,6 +474,50 @@ def _roi_zone(pt, roi):
         return None
 
 
+def _dwell_yield_zones(value):
+    """Where the dwell may stand down for the audio trigger.
+
+    Returns None for "nowhere", True for "any zone", or a set of zone
+    indices.
+
+    ONE CAMERA WATCHES TEES AT DIFFERENT RANGES, and the ears only
+    reach some of them. A strike from a back tee measures x19-x30 after
+    the high-pass; the same strike from a forward tee measures x1.02,
+    because air absorbs the high frequencies first and the high-pass
+    then removes what little survived. So "the audio trigger replaces
+    the dwell" is true of one half of this frame and false of the
+    other, and a single boolean has to answer for both: on, and every
+    forward-tee swing is lost; off, and every back-tee golfer makes two
+    events. Neither is the setting anybody wants.
+
+    Hence a LIST, and three shapes:
+
+        replaces_dwell: false      the dwell always fires (the default)
+        replaces_dwell: true       it stands down in any zone
+        replaces_dwell: [1, 2]     only in zones 1 and 2
+
+    AN EMPTY LIST IS "NOWHERE", not "anywhere" -- the opposite of what
+    `confirm_zones: []` means a few lines down in the same config, and
+    deliberately so. These two settings push in opposite directions: a
+    permissive confirm_zones records a few clips nobody wanted, while a
+    permissive replaces_dwell suppresses the dwell across tees the
+    microphone cannot hear and quietly records nothing at all. When the
+    operator's intent is unclear, each falls to the side where the
+    failure is a surplus clip rather than a missing one.
+    """
+    if value is True:
+        return True
+    if isinstance(value, (list, tuple, set)):
+        out = set()
+        for z in value:
+            try:
+                out.add(int(z))
+            except (TypeError, ValueError):
+                continue
+        return out or None
+    return None
+
+
 # ---------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------
@@ -879,6 +923,92 @@ class TeeAgent:
             if streamer is not None:
                 streamer.update_frame(frame)
 
+    def _check_dwell_yield_zones(self) -> None:
+        """Say which zone is which, then shout if one stands its dwell
+        down for ears that are barred from it.
+
+        THE INDICES ARE ZERO-BASED AND THE OPERATOR'S SCREEN IS NOT.
+        The zone editor draws "Zone 1" and "Zone 2" over the boxes,
+        counting from one, while confirm_zones and replaces_dwell are
+        positions in the list, counting from zero -- so the back tee an
+        operator sees as Zone 2 is index 1 in the config, and setting
+        the number on the screen stands down the wrong tee. Nothing can
+        make those two agree now without renumbering a deployed
+        setting, so the rig states the mapping at startup and the
+        journal answers the question instead of arithmetic.
+
+        replaces_dwell and confirm_zones are separate lists and nothing
+        makes them agree. Name zone 2 in the first and leave it out of
+        the second and zone 2 has no trigger at all: the dwell declines
+        to fire because the ears have it, and the ears decline to
+        confirm because the geography is wrong. The rig looks healthy,
+        the log is empty, and every swing on that tee is lost -- the
+        one failure mode this whole change exists to prevent, arrived
+        at by a different route.
+
+        A warning rather than a refusal: an agent that will not start
+        is a camera that records nothing either, and the operator may
+        be mid-edit.
+        """
+        if self._dwell_yields is None:
+            return
+        for i, b in enumerate(tee_roi.boxes(self.roi)):
+            log.info("zone %d (\"Zone %d\" on screen, %s): dwell %s",
+                     i, i + 1, b.get("label") or "unlabelled",
+                     "STANDS DOWN for the audio trigger"
+                     if (self._dwell_yields is True
+                         or i in self._dwell_yields) else "fires")
+        t = self._audio_trigger
+        if t is None:
+            return
+        cz = t.confirm_zones
+        if cz is None:                      # confirms anywhere, fine
+            return
+        if self._dwell_yields is True:
+            orphans = "every zone outside %s" % sorted(cz)
+        else:
+            missing = sorted(z for z in self._dwell_yields if z not in cz)
+            if not missing:
+                return
+            orphans = "zone(s) %s" % missing
+        log.warning(
+            "CONFIG: replaces_dwell stands the dwell down for %s, but "
+            "confirm_zones=%s bars the audio trigger from firing there "
+            "— swings on those tees will be recorded by NOTHING. Add "
+            "them to confirm_zones or drop them from replaces_dwell.",
+            orphans, sorted(cz))
+
+    def _yield_zone_for(self, stance, roi):
+        """The zone whose dwell may stand down, or None to fire it.
+
+        A NAME, so the caller logs WHICH tee stood aside rather than
+        that one did -- the zone is attributed before the setting is
+        consulted, so even `replaces_dwell: true` has to land on a real
+        zone to stand anything down. None means record, which is the
+        direction every unknown falls in. Three of them do:
+
+          * a stance this cannot be attributed to a zone -- a detector
+            point `tee_roi.which` will not read, or zones that changed
+            under the lock between the dwell test and this one;
+          * a zone outside the configured list, which is the forward
+            tee doing exactly what it is meant to;
+          * anything thrown in here at all.
+
+        In each case the dwell fires and the worst outcome is a second
+        event for one golfer. The opposite default would hand a tee
+        the microphone cannot hear to a trigger that will never fire on
+        it, and the rig would record nothing while looking healthy.
+        """
+        try:
+            z = _roi_zone(stance, roi)
+            if z is None:
+                return None
+            if self._dwell_yields is True or z in self._dwell_yields:
+                return "zone %d" % z
+            return None
+        except Exception:  # noqa: BLE001
+            return None
+
     def _cut_at_impact(self, decision: dict) -> None:
         """Cut and upload a swing the audio trigger confirmed.
 
@@ -939,11 +1069,13 @@ class TeeAgent:
         # the zone is kept and seen_times() for the readers that only
         # want the clock.
         self._audio_trigger = None
-        # Whether a live audio trigger may suppress the dwell. Off by
-        # default: the dwell is the thing that has always produced
-        # clips, and standing it down is the LAST step, taken once
-        # shadow mode has shown the ears agree with it.
-        self._dwell_yields = bool(
+        # WHERE a live audio trigger may suppress the dwell: None,
+        # True for anywhere, or a set of zone indices. Off by default:
+        # the dwell is the thing that has always produced clips, and
+        # standing it down is the LAST step, taken once shadow mode
+        # has shown the ears agree with it. See _dwell_yield_zones for
+        # why this is not a boolean.
+        self._dwell_yields = _dwell_yield_zones(
             (self.cfg.get("audio_trigger") or {}).get("replaces_dwell", False))
         self._yielded_logged = False
         self._person_seen_at: list = []
@@ -1110,6 +1242,7 @@ class TeeAgent:
                         else None),
             on_cut=self._cut_at_impact,
         )
+        self._check_dwell_yield_zones()
 
         # Start draining the camera into the buffer before we begin
         # detecting, so the pre-roll is already populated at trigger.
@@ -1196,15 +1329,23 @@ class TeeAgent:
                 # rather than quietly ending every recording on this
                 # rig. An operator Capture is never suppressed: that
                 # click means record now.
+                #
+                # AND ONLY FOR THE TEES THE EARS REACH. replaces_dwell
+                # names zones, because a forward tee in the same frame
+                # is out of earshot -- see _dwell_yield_zones.
+                _yield_zone = None
                 if (dwell_met and not forced
                         and self._audio_trigger is not None
                         and not self._audio_trigger.shadow
-                        and self._dwell_yields
+                        and self._dwell_yields is not None
                         and self._audio_trigger.healthy()):
+                    _yield_zone = self._yield_zone_for(stance, _roi_now)
+                if _yield_zone is not None:
                     if not self._yielded_logged:
-                        log.info("dwell met, but the audio trigger is live "
-                                 "and hearing the course — standing aside "
-                                 "and letting it cut the swings")
+                        log.info("dwell met in %s, but the audio trigger is "
+                                 "live and hearing the course — standing "
+                                 "aside and letting it cut the swings",
+                                 _yield_zone)
                         self._yielded_logged = True
                     dwell.reset()
                     time.sleep(det_period)
