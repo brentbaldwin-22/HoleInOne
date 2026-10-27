@@ -950,16 +950,15 @@ class TeeAgent:
         is a camera that records nothing either, and the operator may
         be mid-edit.
         """
-        if self._dwell_yields is None:
-            return
+        y = self._dwell_yields
         for i, b in enumerate(tee_roi.boxes(self.roi)):
+            stands_down = y is True or (y is not None and i in y)
             log.info("zone %d (\"Zone %d\" on screen, %s): dwell %s",
                      i, i + 1, b.get("label") or "unlabelled",
-                     "STANDS DOWN for the audio trigger"
-                     if (self._dwell_yields is True
-                         or i in self._dwell_yields) else "fires")
+                     "STANDS DOWN for the audio trigger" if stands_down
+                     else "fires")
         t = self._audio_trigger
-        if t is None:
+        if t is None or self._dwell_yields is None:
             return
         cz = t.confirm_zones
         if cz is None:                      # confirms anywhere, fine

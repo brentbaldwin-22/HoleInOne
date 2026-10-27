@@ -183,7 +183,9 @@ check("index 0 is \"Zone 1\" on screen and fires",
       "zone 0 (\"Zone 1\"" in _m[0] and "fires" in _m[0], True)
 check("index 1 is \"Zone 2\" on screen and stands down",
       "zone 1 (\"Zone 2\"" in _m[1] and "STANDS DOWN" in _m[1], True)
-check("nothing configured -> nothing said", len(mapping(None)), 0)
+_n = mapping(None)
+check("the map is printed BEFORE anything is configured", len(_n), 2)
+check("...with every zone firing", all("fires" in m for m in _n), True)
 check("true stands every zone down",
       all("STANDS DOWN" in m for m in mapping(True)), True)
 
