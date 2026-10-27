@@ -74,12 +74,12 @@ d = make_dir(TMP / "a", [("old.mp4", 500, 999)])
 r = sweep(d, free_gb=0.009)
 check("a disk already above the floor is left alone",
       "already at or above" in (r.get("skipped") or ""), True)
-check("...and nothing is listed as deletable", r["deleted"], 0)
+check("...and nothing is listed as deletable", r["candidates"], 0)
 
 r = sweep(d, free_gb=0.0001, protected=())
 check("AN EMPTY PROTECTED SET REFUSES THE WHOLE SWEEP",
       "protected set is empty" in (r.get("skipped") or ""), True)
-check("...deleting nothing", r["deleted"], 0)
+check("...deleting nothing", r["candidates"], 0)
 
 r = sweep(d, free_gb=0.0001, min_free_gb=0)
 check("a zero floor is the off switch",
@@ -104,7 +104,11 @@ d = make_dir(TMP / "b", [
     ("notes.txt", 100, 999),         # not video
 ])
 r = sweep(d, free_gb=0.0005, dry_run=True)      # needs 2.5 MB
-check("takes enough to clear the floor", r["deleted"], 3)
+# A DRY RUN REPORTS `candidates`, exactly as the age sweep does, and
+# leaves `deleted` at zero. Two dry runs printing 0 and 264 for the
+# same kind of answer is how an operator deletes the wrong thing.
+check("takes enough to clear the floor", r["candidates"], 3)
+check("...and a dry run deleted nothing, and says so", r["deleted"], 0)
 check("...AND NO MORE, with two eligible files left untouched",
       sorted(x["name"] for x in r["sample"]),
       ["middle.mp4", "newest.mp4", "oldest.mp4"])
@@ -134,7 +138,7 @@ r = sweep(d, free_gb=0.0001, dry_run=True)       # needs 2.9 MB, can free 0.2
 # megabytes prints as "0.00 GB short", which is the one thing this
 # field exists not to say.
 check("it reports how far short it fell", r["short_by_gb"], 0.003)
-check("...having taken what it could", r["deleted"], 1)
+check("...having taken what it could", r["candidates"], 1)
 
 # ---- the real thing ----------------------------------------------------
 print()

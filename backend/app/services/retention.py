@@ -269,6 +269,7 @@ def sweep_to_headroom(
         "min_free_gb": floor_gb,
         "min_age_hours": min_age,
         "clips_dir": str(directory),
+        "candidates": 0,
         "deleted": 0,
         "bytes": 0,
         "errors": 0,
@@ -337,8 +338,8 @@ def sweep_to_headroom(
             })
         freed += size
         report["bytes"] += size
+        report["candidates"] += 1
         if dry_run:
-            report["deleted"] += 1       # "would delete"
             continue
         try:
             path.unlink()
