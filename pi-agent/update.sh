@@ -114,6 +114,9 @@ install -m 755 -o "$SERVICE_USER" -g "$SERVICE_USER" \
   "$TMP_DIR/repo/pi-agent/point-at.sh" \
   "$INSTALL_DIR/point-at.sh"
 install -m 755 -o "$SERVICE_USER" -g "$SERVICE_USER" \
+  "$TMP_DIR/repo/pi-agent/audioring_probe.py" \
+  "$INSTALL_DIR/audioring_probe.py"
+install -m 755 -o "$SERVICE_USER" -g "$SERVICE_USER" \
   "$TMP_DIR/repo/pi-agent/copycap_probe.py" \
   "$INSTALL_DIR/copycap_probe.py"
 
