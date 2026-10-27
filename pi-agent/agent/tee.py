@@ -1008,6 +1008,69 @@ class TeeAgent:
         except Exception:  # noqa: BLE001
             return None
 
+    def _zone_name(self, roi, index):
+        """An operator's word for a zone index, or None.
+
+        The index is what the config and the Pi agree on; the LABEL is
+        what the person reading the events page drew on the screen.
+        Reporting only the index makes them count boxes, which is the
+        arithmetic the startup map exists to spare them.
+        """
+        try:
+            if index is None:
+                return None
+            bs = tee_roi.boxes(roi)
+            if 0 <= int(index) < len(bs):
+                return bs[int(index)].get("label") or None
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    def _dwell_detail(self, *, now, stance, roi, dwell, forced, pending_secs):
+        """Why a dwell/manual trigger fired, for the events page.
+
+        INCLUDING WHAT THE EARS WERE DOING AT THE TIME. "The dwell
+        fired" is half an answer while an audio trigger is also
+        running: the useful question is whether the microphone was
+        listening and heard nothing, or was not listening at all. Those
+        two look identical on the page and need different fixes, and
+        the rig is the only place that knows which it was.
+
+        Never raises. This is an annotation on a trigger, and an
+        annotation must not be able to cost the recording.
+        """
+        try:
+            kind = ("capture" if pending_secs is not None
+                    else "manual" if forced else "dwell")
+            z = _roi_zone(stance, roi) if stance is not None else None
+            d = {
+                "kind": kind,
+                "at": round(float(now), 3),
+                "zone": z,
+                "zone_label": self._zone_name(roi, z),
+                "stance": [int(stance[0]), int(stance[1])]
+                          if stance is not None else None,
+            }
+            if kind == "capture":
+                d["capture_sec"] = round(float(pending_secs), 1)
+            if kind == "dwell":
+                d["dwell_sec"] = round(float(dwell.dwell), 1)
+                if dwell.first_seen is not None:
+                    d["stood_sec"] = round(float(now - dwell.first_seen), 1)
+                d["restarts"] = int(dwell.restarts)
+            t = self._audio_trigger
+            if t is not None:
+                d["audio"] = {
+                    "shadow": bool(t.shadow),
+                    "healthy": bool(t.healthy()),
+                    "heard": int(t.heard),
+                    "confirmed": int(t.confirmed),
+                    "cuts": int(t.cut_count),
+                }
+            return d
+        except Exception:  # noqa: BLE001
+            return None
+
     def _cut_at_impact(self, decision: dict) -> None:
         """Cut and upload a swing the audio trigger confirmed.
 
@@ -1025,11 +1088,33 @@ class TeeAgent:
             _off, _ = clock_offset()
         except Exception:  # noqa: BLE001
             pass
+        _detail = None
+        try:
+            with self._roi_lock:
+                _roi = self.roi
+            _z = decision.get("zone")
+            _detail = {
+                "kind": "audio",
+                "at": round(float(decision["at"]), 3),
+                "ratio": decision.get("ratio"),
+                "attack_ms": decision.get("attack_ms"),
+                "zone": _z,
+                "zone_label": self._zone_name(_roi, _z),
+                "why": decision.get("why"),
+                "window": [round(float(decision["start"]), 3),
+                           round(float(decision["end"]), 3)],
+                "confirm_tolerance_sec": (
+                    self._audio_trigger.confirm_tolerance_sec
+                    if self._audio_trigger is not None else None),
+            }
+        except Exception:  # noqa: BLE001
+            _detail = None
         self._copy.cut_at_impact(
             self, float(decision["at"]),
             before_sec=float(decision["at"]) - float(decision["start"]),
             after_sec=float(decision["end"]) - float(decision["at"]),
             clock_offset_sec=_off,
+            detail=_detail,
         )
 
     def run(self) -> None:
@@ -1361,7 +1446,13 @@ class TeeAgent:
                     _ack = None
                     self._unregistered_session = None
                     try:
-                        _ack = self.client.event_trigger(session_id) or {}
+                        _ack = self.client.event_trigger(
+                            session_id,
+                            detail=self._dwell_detail(
+                                now=now, stance=stance, roi=_roi_now,
+                                dwell=dwell, forced=forced,
+                                pending_secs=pending_secs),
+                        ) or {}
                     except BackendUnreachable as exc:
                         # SILENCE IS NOT A REFUSAL, and this used to be
                         # treated as one. A trigger that times out took

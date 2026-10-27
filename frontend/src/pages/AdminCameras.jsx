@@ -867,6 +867,141 @@ function ageSeconds(iso) {
 /** One clip's arrival state. This is the single most useful thing on the
  *  page: it separates "the Pi never sent it" from "it arrived and produce
  *  did nothing with it". */
+/** Wall-clock from the Pi's epoch seconds, to a tenth.
+ *
+ * A TENTH BECAUSE THE QUESTION IS SUB-SECOND. "The sound came a second
+ * before the picture" was this project's hardest bug to see; a line
+ * that rounds impact to the nearest second cannot be used to check
+ * that kind of claim against the clip.
+ */
+function clockOf(epochSec) {
+  if (epochSec == null || !isFinite(epochSec)) return null;
+  const d = new Date(epochSec * 1000);
+  if (isNaN(d.getTime())) return null;
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`
+    + `.${Math.floor((epochSec % 1) * 10)}`;
+}
+
+/** A zone as a person refers to it: its label, falling back to index.
+ *
+ * The index is what the config speaks; the label is what the operator
+ * drew. Neither alone is enough -- a label can be blank, and an index
+ * on its own makes them count boxes -- so show the label and keep the
+ * index beside it.
+ */
+function zoneOf(detail) {
+  if (!detail) return null;
+  const { zone, zone_label: label } = detail;
+  if (label && zone != null) return `${label} (zone ${zone})`;
+  if (label) return label;
+  if (zone != null) return `zone ${zone}`;
+  return null;
+}
+
+/** WHAT MADE THIS EVENT. One line, in the order a person asks it in.
+ *
+ * The page has always said an event happened and never why, so a clip
+ * of somebody walking to their cart and a clip of a struck ball read
+ * identically -- and "why did this fire?" is the question an operator
+ * actually has when a clip is wrong. It is also the only way to see,
+ * from here, whether the microphone or the motion dwell is doing the
+ * work on a given tee.
+ *
+ * Every field is optional. A Pi that predates this sends nothing, a Pi
+ * that could not describe itself sends nothing, and both say so rather
+ * than render an empty frame that looks like a value of zero.
+ */
+function TriggerLine({ detail }) {
+  if (!detail || typeof detail !== "object") {
+    return (
+      <div className="small muted" style={{ marginTop: 6 }}>
+        Trigger: not recorded — this Pi is running an agent from before
+        the trigger was described, or could not describe it.
+      </div>
+    );
+  }
+  const kind = detail.kind;
+  const zone = zoneOf(detail);
+  const at = clockOf(detail.at);
+  const bits = [];
+  let head = "Trigger";
+  let tone = TONE_CLASS.info;
+
+  if (kind === "audio") {
+    head = "Audio — impact heard";
+    tone = TONE_CLASS.ok;
+    if (at) bits.push(`at ${at}`);
+    if (detail.ratio != null) bits.push(`\u00d7${detail.ratio} over the noise floor`);
+    if (detail.attack_ms != null) bits.push(`attack ${detail.attack_ms} ms`);
+    bits.push(zone
+      ? `movement in ${zone}`
+      + (detail.confirm_tolerance_sec != null
+          ? ` within ${detail.confirm_tolerance_sec}s`
+          : "")
+      : (detail.why || "confirmed"));
+    if (Array.isArray(detail.window) && detail.window.length === 2) {
+      const a = clockOf(detail.window[0]);
+      const b = clockOf(detail.window[1]);
+      const len = detail.window[1] - detail.window[0];
+      if (a && b) bits.push(`cut ${a}–${b} (${len.toFixed(1)}s)`);
+    }
+  } else if (kind === "dwell") {
+    head = "Motion dwell";
+    if (zone) {
+      bits.push(detail.stood_sec != null
+        ? `somebody stood in ${zone} for ${detail.stood_sec}s`
+        : `somebody stood in ${zone}`);
+    } else if (detail.stood_sec != null) {
+      bits.push(`somebody stood on the tee for ${detail.stood_sec}s`);
+    }
+    if (detail.dwell_sec != null) bits.push(`threshold ${detail.dwell_sec}s`);
+    // A RESTART IS A BLINK FORGIVEN, not a fault -- but a trigger that
+    // needed several of them is one the detector nearly missed, which
+    // is worth seeing next to a clip that starts late.
+    if (detail.restarts) bits.push(`${detail.restarts} restart(s)`);
+    if (at) bits.push(`at ${at}`);
+  } else if (kind === "capture") {
+    head = "Operator capture";
+    if (detail.capture_sec != null) bits.push(`${detail.capture_sec}s requested`);
+    if (zone) bits.push(`somebody in ${zone}`);
+    if (at) bits.push(`at ${at}`);
+  } else if (kind === "manual") {
+    head = "Manual trigger";
+    bits.push("fired by the /tmp/golfreelz-trigger sentinel on the Pi");
+    if (at) bits.push(`at ${at}`);
+  } else {
+    bits.push(JSON.stringify(detail).slice(0, 200));
+  }
+
+  // THE EARS, ALONGSIDE THE DWELL THAT FIRED. "The dwell did it" is
+  // half an answer while an audio trigger is also running: what the
+  // operator needs is whether the microphone was listening and heard
+  // nothing, or was not listening at all. Those need different fixes
+  // and look identical from here without this.
+  const a = detail.audio;
+  let ears = null;
+  if (a && kind !== "audio") {
+    ears = !a.healthy
+      ? "ears NOT hearing the course (mic off, or the ring has stalled)"
+      : a.shadow
+        ? `ears listening in shadow — ${a.heard} impact(s) heard so far`
+        : `ears live — ${a.heard} heard, ${a.cuts} cut`;
+  }
+
+  return (
+    <div className="small" style={{ marginTop: 6, lineHeight: 1.5 }}>
+      <span className={`pill small ${tone}`}><b>{head}</b></span>{" "}
+      <span className="muted">{bits.filter(Boolean).join(" · ")}</span>
+      {ears && (
+        <div className="muted" style={{ marginTop: 2 }}>
+          {a.healthy ? "" : "⚠ "}{ears}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ClipChip({ label, filename, sizeMb, durationSec, missing, url,
                    inFlight }) {
   const arrived = !!filename;
@@ -1393,6 +1528,8 @@ function CameraEventsPanel({ adminPassword }) {
                 />
               )}
             </div>
+
+            <TriggerLine detail={ev.trigger_detail} />
 
             {(() => {
               // A HELD EVENT GETS ITS OWN LINE. Not the stuck copy,

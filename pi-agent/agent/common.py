@@ -46,6 +46,13 @@ SHRINK_FLOOR_KBPS = 400
 # brief good patch should not undo an adaptation the link earned.
 KBPS_RECOVER_AFTER = 10
 
+# A ceiling on the trigger-provenance blob. It is diagnostics riding on
+# the one request a swing cannot afford to lose, on a modem that
+# re-enumerates every few minutes -- so it stays small enough to be
+# free, and anything that outgrows this is dropped rather than allowed
+# to slow the registration down.
+_TRIGGER_DETAIL_MAX = 2000
+
 # CHUNK SIZE HAS TO FIT THE LINK, not the other way round. Measured on
 # the tee at Snee Farm: the uplink held a steady 12-24 KB/s all morning
 # -- not cycling, just slow -- and a 512 KB chunk needs ~34s at that
@@ -472,7 +479,8 @@ class BackendClient:
 
     def event_trigger(self, session_id: str,
                       impact_at: float | None = None,
-                      clock_offset_sec: float | None = None) -> dict:
+                      clock_offset_sec: float | None = None,
+                      detail: dict | None = None) -> dict:
         """Register an event. With `impact_at`, register it AROUND one.
 
         Without it this means what it always has -- somebody is on the
@@ -492,6 +500,23 @@ class BackendClient:
             data["impact_at"] = repr(float(impact_at))
             if clock_offset_sec is not None:
                 data["clock_offset_sec"] = repr(float(clock_offset_sec))
+        # WHY THIS FIRED, for the operator reading the events page
+        # afterwards. The row has always said an event happened and
+        # never which mechanism produced it, so a dwell on a walker and
+        # a crack off the back tee look identical once the clip is in.
+        #
+        # Never fatal: a detail that will not serialise must not cost
+        # the trigger it describes.
+        if detail:
+            try:
+                blob = json.dumps(detail, default=str)
+                if len(blob) <= _TRIGGER_DETAIL_MAX:
+                    data["trigger_detail"] = blob
+                else:
+                    log.debug("trigger detail too long (%d bytes), dropped",
+                              len(blob))
+            except (TypeError, ValueError) as exc:
+                log.debug("trigger detail would not serialise (%s)", exc)
         return self._retry("POST", "/event-trigger", data=data)
 
     def recover_event(self, session_id: str) -> dict:

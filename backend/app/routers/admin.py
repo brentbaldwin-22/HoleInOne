@@ -7390,6 +7390,12 @@ def list_camera_events(
                 "green_camera_id": r.green_camera_id,
                 "green_camera_name": green_cam.name if green_cam else None,
                 "dual_camera": r.green_camera_id is not None,
+                # WHY THE PI FIRED, as it saw it. Null on every event
+                # from before the agent reported it, which the page
+                # renders as "not recorded" rather than guessing.
+                "trigger_detail": getattr(r, "trigger_detail", None),
+                "impact_at": (
+                    r.impact_at.isoformat() if r.impact_at else None),
                 "tee_clip_filename": r.tee_clip_filename,
                 "tee_url": tee_meta["url"],
                 "tee_thumbnail_url": tee_meta["thumbnail_url"],

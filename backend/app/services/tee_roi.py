@@ -1,5 +1,17 @@
 """THE TRIGGER ZONES: where a person has to be for the tee camera to fire.
 
+COPIED VERBATIM TO pi-agent/agent/tee_roi.py, below the header. The
+agent ships as its own tree with no path into this package, so the file
+is duplicated rather than imported — and the two ends have to agree
+exactly about what a zone means, because the server decides whether a
+box may be saved and the Pi decides whether a golfer is standing in it.
+A disagreement is a camera that never fires.
+
+They drifted once already: `which`, `seen_times` and `seen_in_zones`
+were added on the Pi for the audio trigger and never arrived here.
+tools/tee_roi_sync_test.py compares the two function by function so the
+next divergence is a failing test rather than a quiet one.
+
 ONE BOX WAS NEVER ENOUGH FOR A REAL TEE. A par 3 is played from a back
 tee and a middle tee, and often a forward tee as well — separate patches
 of turf, tens of feet apart in the frame. A single rectangle covering
@@ -98,15 +110,32 @@ def union(value) -> dict | None:
     return {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
 
 
+def which(point, value):
+    """The index of the FIRST zone holding this point, or None.
+
+    `contains` answers "is somebody on a tee", which is the right
+    question for deciding to record. It is the wrong question for
+    confirming a swing: a sound can only have come from the tee the
+    player is standing on, and a camera watching a back tee and a
+    forward tee sees both. Returning the index lets a caller ask about
+    one of them without re-deriving the geometry.
+
+    Index, not label: labels are operator text and may be blank,
+    duplicated or renamed between one capture and the next, while the
+    order of the list is what both ends already agree on.
+    """
+    px, py = point
+    for i, b in enumerate(boxes(value)):
+        if b["x"] <= px <= b["x"] + b["w"] and b["y"] <= py <= b["y"] + b["h"]:
+            return i
+    return None
+
+
 def contains(point, value) -> bool:
     """Is this point inside ANY zone? False when none are set — an
     unconfigured camera should not trigger on everything that walks
     past, and the caller that wants "anywhere" can say so itself."""
-    px, py = point
-    for b in boxes(value):
-        if b["x"] <= px <= b["x"] + b["w"] and b["y"] <= py <= b["y"] + b["h"]:
-            return True
-    return False
+    return which(point, value) is not None
 
 
 def scaled(value, to_w: int, to_h: int, assume=(1920, 1080)) -> dict:
@@ -157,3 +186,72 @@ def store(raw_boxes, frame_w: int, frame_h: int) -> dict:
             raise ValueError(
                 f"a zone falls outside the {frame_w}x{frame_h} frame")
     return {"boxes": cleaned, "frame": {"w": int(frame_w), "h": int(frame_h)}}
+
+
+def seen_times(sightings):
+    """Just the clock, from a list of (time, zone) or bare times.
+
+    `_person_seen_at` grew a zone index when the audio trigger needed
+    to ask WHICH tee somebody was on. Every older reader wants the
+    float it used to hold, and a rig mid-upgrade can have a list that
+    started one shape and finished the other, so accept both rather
+    than make the callers guess.
+    """
+    out = []
+    for s in sightings or []:
+        out.append(float(s[0]) if isinstance(s, (tuple, list)) else float(s))
+    return out
+
+
+def seen_in_zones(sightings, zones, at, tolerance_sec: float):
+    """Was anybody in one of `zones` within `tolerance_sec` of `at`?
+
+    `zones` is a list of indices, or None for "any zone". None is NOT
+    the same as an empty list: None means the caller is not asking
+    about geography, [] would mean "these zones" and name none, which
+    can never be true and would reject every swing.
+
+    THE AUTHORITY ON WHETHER ANYTHING MATCHED. `zone_seen_in` below
+    answers which zone it was, and cannot answer this question too:
+    a sighting recorded before the zone index existed matches on time
+    alone and has no zone to name, so "no index" and "no match" are
+    different answers that a single return value would merge.
+    """
+    for s in sightings or []:
+        if isinstance(s, (tuple, list)):
+            t, z = float(s[0]), s[1]
+        else:
+            t, z = float(s), None
+        if abs(t - at) > tolerance_sec:
+            continue
+        if zones is None or (z is not None and z in zones):
+            return True
+    return False
+
+
+def zone_seen_in(sightings, zones, at, tolerance_sec: float):
+    """WHICH zone somebody was in near `at`, or None.
+
+    For saying so afterwards -- "movement in the back zone at 10:42"
+    is what an operator can check against their memory of the hole,
+    while "confirmed" is only the machine agreeing with itself. The
+    nearest sighting in time wins, because a golfer walking between
+    two tees is in both within the tolerance and the closer one is the
+    better account of where the sound came from.
+
+    NOT the gate. `seen_in_zones` decides; this only describes, and
+    returns None whenever it cannot describe -- an older sighting list
+    with no zones in it, nobody near enough, no sightings at all.
+    """
+    best_t, best_z = None, None
+    for s in sightings or []:
+        if not isinstance(s, (tuple, list)):
+            continue
+        t, z = float(s[0]), s[1]
+        if z is None or abs(t - at) > tolerance_sec:
+            continue
+        if zones is not None and z not in zones:
+            continue
+        if best_t is None or abs(t - at) < abs(best_t - at):
+            best_t, best_z = t, z
+    return best_z

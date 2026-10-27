@@ -231,6 +231,10 @@ def _migrate() -> None:
                 statements.append(
                     f"ALTER TABLE camera_events ADD COLUMN {_c} DOUBLE PRECISION"
                 )
+        if "trigger_detail" not in ce_cols:
+            statements.append(
+                "ALTER TABLE camera_events ADD COLUMN trigger_detail JSON"
+            )
         if "produce_retries" not in ce_cols:
             statements.append(
                 "ALTER TABLE camera_events ADD COLUMN produce_retries "

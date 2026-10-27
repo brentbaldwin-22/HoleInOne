@@ -204,6 +204,12 @@ def seen_in_zones(sightings, zones, at, tolerance_sec: float):
     the same as an empty list: None means the caller is not asking
     about geography, [] would mean "these zones" and name none, which
     can never be true and would reject every swing.
+
+    THE AUTHORITY ON WHETHER ANYTHING MATCHED. `zone_seen_in` below
+    answers which zone it was, and cannot answer this question too:
+    a sighting recorded before the zone index existed matches on time
+    alone and has no zone to name, so "no index" and "no match" are
+    different answers that a single return value would merge.
     """
     for s in sightings or []:
         if isinstance(s, (tuple, list)):
@@ -215,3 +221,31 @@ def seen_in_zones(sightings, zones, at, tolerance_sec: float):
         if zones is None or (z is not None and z in zones):
             return True
     return False
+
+
+def zone_seen_in(sightings, zones, at, tolerance_sec: float):
+    """WHICH zone somebody was in near `at`, or None.
+
+    For saying so afterwards -- "movement in the back zone at 10:42"
+    is what an operator can check against their memory of the hole,
+    while "confirmed" is only the machine agreeing with itself. The
+    nearest sighting in time wins, because a golfer walking between
+    two tees is in both within the tolerance and the closer one is the
+    better account of where the sound came from.
+
+    NOT the gate. `seen_in_zones` decides; this only describes, and
+    returns None whenever it cannot describe -- an older sighting list
+    with no zones in it, nobody near enough, no sightings at all.
+    """
+    best_t, best_z = None, None
+    for s in sightings or []:
+        if not isinstance(s, (tuple, list)):
+            continue
+        t, z = float(s[0]), s[1]
+        if z is None or abs(t - at) > tolerance_sec:
+            continue
+        if zones is not None and z not in zones:
+            continue
+        if best_t is None or abs(t - at) < abs(best_t - at):
+            best_t, best_z = t, z
+    return best_z

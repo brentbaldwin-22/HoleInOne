@@ -167,6 +167,11 @@ _pending_triggers: dict[int, asyncio.Queue] = {}
 # without rejecting legitimate captures.
 MAX_EVENT_CLIP_BYTES = 500 * 1024 * 1024
 
+# Matches _TRIGGER_DETAIL_MAX on the agent. Both ends cap it: the Pi so
+# a diagnostic cannot slow a registration on a bad modem, the server so
+# a Pi with a bug cannot write unbounded rows.
+_TRIGGER_DETAIL_MAX = 2000
+
 # RESUMABLE UPLOAD. The tee's uplink is a USB cellular modem that
 # reboots itself every ~30 seconds under load: alive for ~23s at
 # ~125 KB/s, then gone for ~8s while it re-enumerates. A 6.5 MB clip
@@ -1370,6 +1375,31 @@ async def post_still(token: str, request: Request):
 
 
 @router.post("/{token}/event-trigger")
+def _parse_trigger_detail(raw):
+    """The Pi's account of why it fired, or None.
+
+    EVERY FAILURE IS None. This is an annotation arriving on the one
+    request a swing cannot afford to lose: a Pi mid-upgrade sending a
+    shape this does not expect, a truncated body, a field that is not
+    JSON at all must all cost the event nothing. Nothing downstream
+    branches on the result, so there is no case where refusing the
+    registration would be better than storing less.
+
+    Size is capped here as well as on the Pi, because the cap on the
+    Pi protects the modem and this one protects the database.
+    """
+    if not raw:
+        return None
+    if len(raw) > _TRIGGER_DETAIL_MAX:
+        log.info("cameras: trigger detail of %d bytes dropped", len(raw))
+        return None
+    try:
+        out = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    return out if isinstance(out, dict) else None
+
+
 async def event_trigger(
     token: str,
     session_id: str = Form(...),
@@ -1381,6 +1411,11 @@ async def event_trigger(
     # ring rather than start a recorder it is far too late to start.
     impact_at: float | None = Form(None),
     clock_offset_sec: float | None = Form(None),
+    # WHY IT FIRED, as JSON the Pi assembled at the moment it did.
+    # Diagnostics only -- nothing downstream branches on it -- so it is
+    # parsed defensively and dropped rather than allowed to fail a
+    # registration a swing depends on.
+    trigger_detail: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Tee-Pi-only: signals that a person was detected on the tee box
@@ -1477,7 +1512,10 @@ async def event_trigger(
             event.tee_clock_offset_sec = _tee_off
         except (TypeError, ValueError):
             _tee_off = None
-    if _impact_epoch is not None or _tee_off is not None:
+    _detail = _parse_trigger_detail(trigger_detail)
+    if _detail is not None:
+        event.trigger_detail = _detail
+    if _impact_epoch is not None or _tee_off is not None or _detail is not None:
         db.commit()
 
     partner_id = None if recover else cam.paired_with_camera_id

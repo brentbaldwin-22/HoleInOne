@@ -165,6 +165,9 @@ class AudioTrigger:
             "confirmed": False,
             "why": None,
             "cut": False,
+            # Which tee the movement was on, for saying so afterwards.
+            # None whenever it cannot be said -- see zone_seen_in.
+            "zone": None,
         }
         seen = self.sightings() if self.sightings else None
         if seen is None:
@@ -175,7 +178,10 @@ class AudioTrigger:
         elif tee_roi.seen_in_zones(seen, self.confirm_zones, at,
                                    self.confirm_tolerance_sec):
             d["confirmed"] = True
-            d["why"] = "person in zone"
+            d["zone"] = tee_roi.zone_seen_in(
+                seen, self.confirm_zones, at, self.confirm_tolerance_sec)
+            d["why"] = ("person in zone %d" % d["zone"]
+                        if d["zone"] is not None else "person in zone")
         else:
             d["why"] = ("nobody in %s within %.0fs"
                         % ("any zone" if self.confirm_zones is None

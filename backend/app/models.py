@@ -680,6 +680,23 @@ class CameraEvent(Base):
     tee_clock_error_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     green_clock_offset_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     green_clock_error_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # WHY THIS EVENT EXISTS, as the tee Pi saw it at the moment it
+    # fired. The row has always recorded that an event happened and
+    # never which mechanism produced it, so a dwell on somebody walking
+    # to their cart and a struck ball off the back tee are
+    # indistinguishable once the clips are in -- which is the question
+    # an operator actually has when a clip is wrong.
+    #
+    # JSON rather than columns because the shape genuinely differs by
+    # mechanism: a dwell has a zone and a stood-for time, an audio cut
+    # has a ratio, an attack and the window it took. Flattening both
+    # into one set of columns would leave most of them null on every
+    # row and still need a new migration for the third mechanism.
+    #
+    # Null on every event recorded before the agent shipped this, and
+    # on any event whose Pi could not describe itself -- the detail is
+    # an annotation on a trigger and must never cost one.
+    trigger_detail: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # Set by the tee Pi's /event-stop call once the tee box has been
     # empty long enough. The green Pi polls /event-status looking for
     # this so both clips end at roughly the same wall-clock moment.

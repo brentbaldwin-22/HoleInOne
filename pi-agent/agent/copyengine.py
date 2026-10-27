@@ -538,7 +538,7 @@ class CopyEngine:
 
     def cut_at_impact(self, runner, impact_ts: float, *,
                       before_sec: float, after_sec: float,
-                      clock_offset_sec=None) -> Optional[str]:
+                      clock_offset_sec=None, detail=None) -> Optional[str]:
         """Cut a swing the microphone already heard. Session id, or None.
 
         BACKWARDS, WHICH IS THE POINT. A dwell says "somebody is here,
@@ -597,7 +597,7 @@ class CopyEngine:
         try:
             runner.client.event_trigger(
                 session_id, impact_at=float(impact_ts),
-                clock_offset_sec=clock_offset_sec)
+                clock_offset_sec=clock_offset_sec, detail=detail)
         except Exception as exc:  # noqa: BLE001
             log.warning("copy: could not register the impact event (%s) — "
                         "the clip will be recovered later, but the green "
