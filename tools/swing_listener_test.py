@@ -159,6 +159,44 @@ run("a x10 strike, not just a x30 one",
     build(20, [(10.0, A_STRIKE_QUIET, "strike")]), [10.0])
 
 print()
+print("envelope_max must answer in FILTERED units, not raw ones:")
+# The probe reported raw peaks beside a filtered threshold, so a mower
+# looked like a near-miss. This is the assertion that keeps the two
+# apart: a rumble is LOUDER than a quiet strike in raw samples and far
+# quieter after the high-pass.
+_li = SwingListener(SR, baseline_sec=30.0)
+_sig = build(20, [(5.0, 0.30, "rumble"), (12.0, A_STRIKE_QUIET, "strike")])
+_raw, _env = {}, {}
+for _k in range(20):
+    _chunk = _sig[_k * SR:(_k + 1) * SR]
+    _li.feed(pcm(_chunk), float(_k))
+    _raw[_k] = max(abs(v) for v in _chunk)
+    _env[_k] = _li.envelope_max(float(_k), float(_k) + 1.0)
+_med = _li.median
+for _label, _cond in (
+    ("the rumble second is the loudest RAW second",
+     _raw[5] > _raw[12]),
+    ("...and is quieter than the strike once FILTERED",
+     _env[5] < _env[12]),
+    ("...and scores under the x8 gate",
+     _med > 0 and _env[5] / _med < 8.0),
+    ("the strike second scores over it",
+     _med > 0 and _env[12] / _med >= 8.0),
+    ("a quiet second sits near the floor",
+     _med > 0 and _env[2] / _med < 4.0),
+    ("the window bounds are honoured (asked after all 20s is in)",
+     _li.envelope_max(2.0, 3.0) < _env[12] / 4.0),
+    ("an empty window reports nothing",
+     _li.envelope_max(1e9, 1e9 + 1.0) == 0.0),
+):
+    print("  %-52s %s" % (_label, "ok" if _cond else "FAIL"))
+    if not _cond:
+        FAILED.append(_label)
+print("    rumble raw %.3f env x%5.2f | strike raw %.3f env x%5.2f"
+      % (_raw[5], _env[5] / _med if _med else 0,
+         _raw[12], _env[12] / _med if _med else 0))
+
+print()
 if FAILED:
     print("FAILED: %s" % ", ".join(FAILED))
     sys.exit(1)

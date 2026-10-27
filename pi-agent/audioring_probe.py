@@ -70,7 +70,8 @@ def main() -> int:
     li = SwingListener(sr, highpass_hz=float(a.get("highpass_hz", 1500.0)),
                        min_peak_ratio=ratio,
                        baseline_sec=float(a.get("baseline_sec", 30.0)))
-    hits, peaks = [], []
+    seg_len = float(a.get("segment_seconds", 1.0))
+    hits, rows = [], []
     for p in segs:
         try:
             pcm = p.read_bytes()
@@ -78,12 +79,17 @@ def main() -> int:
             continue
         ts = _seg_start(p)
         hits += li.feed(pcm, ts)
-        # Loudest sample in this second, as a multiple of the median,
-        # so a near-miss is visible and not just an absence.
+        # TWO numbers per second, because they disagree and the
+        # disagreement is the whole story. The raw peak is what a
+        # person would hear; the envelope is what the threshold is
+        # measured against, AFTER the high-pass has thrown away
+        # everything below highpass_hz. A mower pins the first and
+        # leaves the second alone.
         n = len(pcm) // 2
+        raw = 0.0
         if n:
-            s = struct.unpack("<%dh" % n, pcm[:n * 2])
-            peaks.append((ts, max(abs(v) for v in s) / 32768.0))
+            raw = max(abs(v) for v in struct.unpack("<%dh" % n, pcm[:n * 2])) / 32768.0
+        rows.append((ts, raw, li.envelope_max(ts, ts + seg_len)))
 
     med = li.median
     print()
@@ -95,12 +101,28 @@ def main() -> int:
         print("  *** camera's Audio in on the profile the agent pulls.")
     print("threshold : x%.1f of that = %.6f" % (ratio, med * ratio))
     print()
-    print("loudest seconds in the window (raw peak sample):")
-    for ts, v in sorted(peaks, key=lambda r: -r[1])[:8]:
-        import datetime
-        print("  %s  peak %.5f  (%.1f dBFS)"
-              % (datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S"), v,
-                 20 * __import__("math").log10(v) if v > 0 else -99))
+    import datetime
+    import math
+    print("closest the window came, by FILTERED ratio (what the gate sees).")
+    print("'raw' is the unfiltered peak -- a loud raw with a low ratio is")
+    print("energy the high-pass discarded, i.e. not a nearby strike.")
+    print()
+    print("    time        ratio   raw peak")
+    best_ratio = 0.0
+    for ts, raw, env in sorted(rows, key=lambda r: -r[2])[:8]:
+        r = (env / med) if med > 0 else 0.0
+        best_ratio = max(best_ratio, r)
+        print("  %s  x%6.2f   %.5f (%.1f dBFS)"
+              % (datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S"), r,
+                 raw, 20 * math.log10(raw) if raw > 0 else -99))
+    print()
+    print("loudest filtered ratio in the window: x%.2f against a x%.1f gate"
+          % (best_ratio, ratio))
+    if med > 0 and best_ratio < ratio:
+        print("  -> nothing came within %.0f%% of firing. At front-tee range a"
+              % (100.0 * best_ratio / ratio))
+        print("     real strike measures about x1 here (measured on 1257), so")
+        print("     this is the expected reading for those tees, not a fault.")
     print()
     if hits:
         print("IMPACTS the live settings would have fired on:")
@@ -111,9 +133,8 @@ def main() -> int:
                      h["ratio"], h["attack_sec"] * 1000))
     else:
         print("NO IMPACTS at x%.1f over this window." % ratio)
-        print("Re-run with a lower ratio to see how close it came:")
-        print("  min_ratio in config is %.1f; the probe uses it directly."
-              % ratio)
+        print("Ratio is only the first gate; a second above it can still be")
+        print("declined on attack time. The table above is the ratio gate.")
     return 0
 
 

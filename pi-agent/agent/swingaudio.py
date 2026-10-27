@@ -162,6 +162,26 @@ class SwingListener:
         self._t_next = t + n * step
         return self._scan()
 
+    def envelope_max(self, t0: float, t1: float) -> float:
+        """Loudest post-high-pass envelope value in [t0, t1).
+
+        The envelope -- not the raw sample -- is what the threshold is
+        measured against, so a caller asking "how close did that noise
+        come?" has to ask in these units. A raw peak says nothing: a
+        truck can clip the input and leave the envelope flat, because
+        the high-pass took its energy away.
+
+        Only the baseline window is kept, so a t0 older than that
+        returns what survives of it.
+        """
+        best = 0.0
+        for t, v in reversed(self._env):
+            if t < t0:
+                break
+            if t < t1 and v > best:
+                best = v
+        return best
+
     # ---- detection ----------------------------------------------------
 
     def _scan(self) -> list:
