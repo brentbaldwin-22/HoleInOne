@@ -1201,6 +1201,7 @@ export default function AdminLongUpload() {
                                 <th style={{ padding: "2px 10px 2px 0" }}>#</th>
                                 <th style={{ padding: "2px 10px 2px 0" }}>peak</th>
                                 <th style={{ padding: "2px 10px 2px 0" }}>×ratio</th>
+                                <th style={{ padding: "2px 10px 2px 0" }}>attack</th>
                                 <th style={{ padding: "2px 10px 2px 0" }}>window</th>
                                 <th style={{ padding: "2px 10px 2px 0" }}>conf</th>
                               </tr>
@@ -1214,6 +1215,20 @@ export default function AdminLongUpload() {
                                   </td>
                                   <td style={{ padding: "1px 10px 1px 0" }}>
                                     {c.ratio != null ? `×${c.ratio.toFixed(1)}` : "—"}
+                                  </td>
+                                  <td style={{ padding: "1px 10px 1px 0" }}>
+                                    {c.attack_ms == null ? "—" : (
+                                      <span style={{
+                                        color: c.max_attack_ms
+                                          && c.attack_ms > c.max_attack_ms * 0.66
+                                          ? "#d97706" : undefined,
+                                      }}>
+                                        {c.attack_measured === false ? "≥" : ""}
+                                        {c.attack_ms}ms
+                                        {c.max_attack_ms
+                                          ? ` / ${c.max_attack_ms}` : ""}
+                                      </span>
+                                    )}
                                   </td>
                                   <td style={{ padding: "1px 10px 1px 0" }}>
                                     {c.start_sec.toFixed(1)}–{c.end_sec.toFixed(1)}s

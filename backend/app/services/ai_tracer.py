@@ -10993,11 +10993,20 @@ def detect_swings_from_audio(
             for pos, v, a, ok in top_sorted_by_time
         ]
 
+    # THE ATTACK TRAVELS WITH THE SWING, not only with the rejected
+    # peaks in `debug`. It is the measurement that separates a strike
+    # from range noise on this course -- confirmed strikes rise in
+    # 9-14 ms, the false positives in 22-27 ms -- so the operator
+    # reading a detected swing needs it beside the ratio, and tuning
+    # max_attack_ms from the ratio alone is guesswork.
+    attack_by_pos = {pos: (a, ok) for pos, _v, a, ok in raw_peaks}
+
     segments: list[dict] = []
     for pos in accepted_positions:
         peak_t = pos / float(AUDIO_SAMPLE_RATE)
         peak_value = float(envelope[pos])
         ratio = (peak_value / median) if median > 0 else float("inf")
+        _a, _ok = attack_by_pos.get(pos, (None, None))
         if ratio >= 15:
             conf = "high"
         elif ratio >= 8:
@@ -11010,6 +11019,13 @@ def detect_swings_from_audio(
             "end_sec": min(duration_sec, peak_t + after_impact_sec),
             "ratio": float(ratio) if ratio != float("inf") else None,
             "confidence": conf,
+            "attack_ms": (round(_a * 1000, 1) if _a is not None else None),
+            # False means the rise never crossed the reference, so this
+            # is "could not measure", not "measured as slow" -- a
+            # distinction that once hid a filter dropping quiet strikes.
+            "attack_measured": (None if _a is None
+                                else _a < attack_sentinel_sec - 1e-9),
+            "max_attack_ms": round(max_attack_sec * 1000, 1),
         })
     log.info(
         "ai_tracer: detect_swings — %d swing windows from audio "
