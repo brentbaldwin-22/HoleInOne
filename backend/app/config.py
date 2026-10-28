@@ -333,5 +333,19 @@ class Settings(BaseSettings):
     # one outage into a lost round.
     clip_retention_min_age_hours: float = 12.0
 
+    # NARROWING THE ASCENT SEARCH WITH THE CLIP'S OWN AUDIO. A dwell
+    # recording is ninety seconds of a golfer arriving, swinging and
+    # walking off; the ball's climb occupies about two of them. The
+    # other eighty-eight supply the birds, carts and branches that
+    # chain into false flights.
+    #
+    # Deliberately MORE PERMISSIVE than a trigger would be: a missed
+    # impact here only widens the search back to the whole clip, while
+    # an extra one costs a couple of seconds of scanning. The rig's own
+    # gate is the place to be strict.
+    ascent_audio_min_ratio: float = 4.0
+    ascent_audio_min_separation_sec: float = 2.0
+    ascent_audio_max_attack_ms: float = 25.0
+
 
 settings = Settings()

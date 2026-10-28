@@ -22666,6 +22666,90 @@ def get_tee_box(upload_id: int, db: Session = Depends(get_db)):
     return out
 
 
+# How far either side of a strike a ball's climb can be. A ball leaves
+# the tee within a frame or two of impact and is out of the band in
+# well under two seconds; the lead is for a mis-stamped impact, not for
+# the flight.
+ASCENT_WIN_PRE_SEC = 1.0
+ASCENT_WIN_POST_SEC = 4.0
+
+
+def _ascent_windows(db, row, src_path, fps, rep=None):
+    """Frames worth searching for a ball leaving, or None for all of them.
+
+    TWO WAYS TO KNOW, and the clip's own audio is the one that works
+    for a dwell clip. A dwell recording is ninety seconds of a golfer
+    arriving, swinging and walking off: the ascent lives in about two
+    of those seconds, and the other eighty-eight are where the birds,
+    the carts and the branches are. Scanning them costs the time AND
+    supplies the false chains -- "7 chain(s) rose out of the band
+    above the golfers, none of them a ball leaving the tee" is that
+    sentence written from the other side.
+
+    1. The rig's own impact, when the clip was cut around one. Exact,
+       free, and already confirmed by the swing judge.
+    2. Otherwise the clip's audio, read here with the same detector
+       the rig runs.
+
+    None whenever neither answers, and the caller then scans the whole
+    clip exactly as before. This narrows a search; it must never be
+    able to hide a ball.
+    """
+    def _note(msg, spans=None):
+        if rep is not None:
+            rep.setdefault("stages", []).append(
+                {"name": "ascent window", "detail": msg,
+                 "spans": spans})
+        log.info("ascent window: %s", msg)
+
+    def _around(times):
+        out = []
+        for t in times:
+            out.append((int((t - ASCENT_WIN_PRE_SEC) * fps),
+                        int((t + ASCENT_WIN_POST_SEC) * fps)))
+        return out or None
+
+    # 1. The rig heard it.
+    try:
+        ev_id = getattr(row, "camera_event_id", None)
+        ev = db.get(CameraEvent, ev_id) if ev_id else None
+        if (ev is not None and ev.impact_at is not None
+                and ev.tee_recording_started_at is not None):
+            off = (ev.impact_at - ev.tee_recording_started_at).total_seconds()
+            if 0.0 <= off <= 24 * 3600:
+                w = _around([off])
+                _note("the rig's impact at %.2fs" % off, w)
+                return w
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ascent window: could not read the rig's impact (%s)", exc)
+
+    # 2. The clip's own audio, same detector the rig runs.
+    try:
+        from ..services.ai_tracer import detect_swings_from_audio
+
+        dbg: dict = {}
+        hits = detect_swings_from_audio(
+            src_path, fps=fps,
+            min_peak_ratio=float(settings.ascent_audio_min_ratio),
+            min_separation_sec=float(settings.ascent_audio_min_separation_sec),
+            max_attack_sec=float(settings.ascent_audio_max_attack_ms) / 1000.0,
+            debug=dbg,
+        ) or []
+        times = [float(h["peak_time_sec"]) for h in hits
+                 if h.get("peak_time_sec") is not None]
+        if times:
+            w = _around(times)
+            _note("%d impact(s) heard in the clip: %s"
+                  % (len(times), ", ".join("%.1fs" % t for t in times)), w)
+            return w
+        _note("nothing heard in the clip (%s) — scanning all of it"
+              % (dbg.get("reason") or "no peak over the gate"))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ascent window: audio pass failed (%s) — scanning all",
+                    exc)
+    return None
+
+
 def _ascent_produce_run(row, src_path, db, progress=None,
                         hole_number=None) -> dict:
     """Find every ball leaving, then produce a clip for each."""
@@ -22736,7 +22820,9 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     _gt, _gt_key, _gt_why = _gate_tuning_for(db, row, hole_hint=hole_number)
     rep["gate_key"] = _gt_key
     rep["gate_key_reason"] = _gt_why
+    _win = _ascent_windows(db, row, src_path, fps, rep)
     sweep = _d3.sweep_ascents(src_path, fps, roi=_roi.get("roi"),
+                              windows=_win,
                               gates=_gt,
                               **_search_area_for(db, row)) or {}
     _ball_scan_sweep_image(row, src_path, sweep)

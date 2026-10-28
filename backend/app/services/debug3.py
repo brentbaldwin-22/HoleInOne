@@ -5674,6 +5674,15 @@ def sweep_ascents(
     # width. See `_ascent_x_span`.
     left_frac: float | None = None,
     right_frac: float | None = None,
+    # WHERE TO LOOK, when something already knows. A ball leaves the
+    # tee in the second after the strike, so scanning a 90s dwell clip
+    # end to end spends nearly all its work on footage that cannot hold
+    # an ascent -- and every extra frame is another chance for a bird,
+    # a cart or a branch to be chained into a flight.
+    #
+    # (f_lo, f_hi) pairs in frames. None scans the whole clip exactly
+    # as before, which is what happens whenever nothing knows better.
+    windows: list | None = None,
 ) -> dict:
     """Every ball leaving the tee in the WHOLE video, found from above.
 
@@ -5781,13 +5790,25 @@ def sweep_ascents(
         _x0, _x1 = _ascent_x_span(frame_w, left_frac, right_frac)
         out["band"] = [_x0, 0, _x1 - _x0, band_h]
         _stats: dict = {}
-        dets = detect_movers_by_diff(input_path, 0, n_frames - 1,
-                                     sens=int(sens),
-                                     per_frame=_per_frame,
-                                     roi=(_x0, 0, _x1 - _x0, band_h),
-                                     cap=200000, three_frame=_three,
-                                     ghost_px=_ghost, prefer_area=_prefer,
-                                     merge_px=_merge, stats=_stats)
+        _spans = []
+        for _lo, _hi in (windows or [(0, n_frames - 1)]):
+            _lo, _hi = max(0, int(_lo)), min(n_frames - 1, int(_hi))
+            if _hi > _lo:
+                _spans.append((_lo, _hi))
+        if not _spans:
+            _spans = [(0, n_frames - 1)]
+        out["scanned_spans"] = _spans
+        out["scanned_frames"] = sum(b - a for a, b in _spans)
+        dets = []
+        for _lo, _hi in _spans:
+            dets += detect_movers_by_diff(input_path, _lo, _hi,
+                                          sens=int(sens),
+                                          per_frame=_per_frame,
+                                          roi=(_x0, 0, _x1 - _x0, band_h),
+                                          cap=200000, three_frame=_three,
+                                          ghost_px=_ghost, prefer_area=_prefer,
+                                          merge_px=_merge, stats=_stats)
+        dets.sort(key=lambda d: getattr(d, "frame", 0))
         out["n_dets"] = len(dets)
         # THE ANSWER TO "WHY IS THE BALL NOT IN HERE AT ALL". When the
         # cap binds on most frames the ball is not losing a gate, it is
