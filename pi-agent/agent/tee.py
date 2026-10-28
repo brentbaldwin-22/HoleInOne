@@ -1423,6 +1423,15 @@ class TeeAgent:
                         self._audio_trigger.tick()
                     except Exception as exc:  # noqa: BLE001
                         log.warning("audio trigger: tick failed (%s)", exc)
+                    # AND SHIP A SWING WHOSE WINDOW HAS CLOSED. Nothing
+                    # else calls this, and a swing held but never
+                    # shipped is worse than one never held: the clip is
+                    # on the card and nobody is waiting for it.
+                    try:
+                        self._copy.flush_pick_best(self)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("copy: could not flush the held "
+                                    "swing (%s)", exc)
                 pending_secs = self._take_pending_capture()
                 forced = _take_force_trigger() or pending_secs is not None
                 if not forced and now < _cooldown_until:

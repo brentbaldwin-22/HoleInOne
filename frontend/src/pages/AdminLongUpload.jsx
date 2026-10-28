@@ -32,6 +32,22 @@ const EMPTY_SEG = {
   ball_in_cup: false,
 };
 
+// WHAT THE RIG ACTUALLY RUNS. Test Cut exists to predict the rig, and
+// it opened on ratio 10 / sep 6 / attack 30 / no quiet period while
+// the tee ran 4 / 2 / 18 / 12 -- so its first answer on every clip
+// was a different detector's answer, and the numbers had to be retyped
+// by hand before the tool said anything useful.
+//
+// KEEP THESE IN STEP WITH config.yaml ON THE RIG. They are the one
+// thing here that is a copy of something else, and a copy that drifts
+// is worse than no default at all: it looks like a measurement.
+const RIG_AUDIO = {
+  minRatio: 4,
+  minSeparationSec: 2,
+  maxAttackMs: 18,
+  refractorySec: 12,
+};
+
 export default function AdminLongUpload() {
   const adminPassword =
     localStorage.getItem(ADMIN_PW_STORAGE) ||
@@ -191,13 +207,21 @@ export default function AdminLongUpload() {
     const detector = testCutDetector[uploadId] || "motion";
     const opts = {};
     if (detector === "audio") {
-      const ratio = parseFloat(audioMinRatio[uploadId]);
+      const ratio = parseFloat(
+        audioMinRatio[uploadId] ?? RIG_AUDIO.minRatio);
       if (Number.isFinite(ratio) && ratio > 0) opts.audioMinPeakRatio = ratio;
-      const sep = parseFloat(audioMinSep[uploadId]);
+      // THE BOX AND THE REQUEST HAVE TO AGREE. These read the state
+      // only, so an untouched box showed the rig's number and sent the
+      // SERVER's -- the one arrangement worse than a wrong default,
+      // because the screen and the run disagree without saying so.
+      const sep = parseFloat(
+        audioMinSep[uploadId] ?? RIG_AUDIO.minSeparationSec);
       if (Number.isFinite(sep) && sep > 0) opts.audioMinSeparationSec = sep;
-      const atk = parseFloat(audioMaxAttack[uploadId]);
+      const atk = parseFloat(
+        audioMaxAttack[uploadId] ?? RIG_AUDIO.maxAttackMs);
       if (Number.isFinite(atk) && atk > 0) opts.audioMaxAttackMs = atk;
-      const ref = parseFloat(verifyRefractory[uploadId]);
+      const ref = parseFloat(
+        verifyRefractory[uploadId] ?? RIG_AUDIO.refractorySec);
       if (Number.isFinite(ref) && ref >= 0) opts.verifyRefractorySec = ref;
     } else if (detector === "combined") {
       const aRatio = parseFloat(audioMinRatio[uploadId] ?? 5);
@@ -494,14 +518,14 @@ export default function AdminLongUpload() {
                           type="number"
                           min="1"
                           step="0.5"
-                          value={audioMinRatio[u.id] ?? 10}
+                          value={audioMinRatio[u.id] ?? RIG_AUDIO.minRatio}
                           onChange={(e) =>
                             setAudioMinRatio((r) => ({ ...r, [u.id]: e.target.value }))
                           }
                           disabled={!!testCutting[u.id] || missing || busy}
                           className="small"
                           style={{ width: 60, fontSize: 12, padding: "2px 6px" }}
-                          title="Minimum peak/median ratio. Higher = stricter (only the loudest thwacks). Default 10."
+                          title={`Minimum peak/median ratio. Higher = stricter (only the loudest thwacks). Defaults to what the rig runs: ${RIG_AUDIO.minRatio}.`}
                         />
                       )}
                       {(testCutDetector[u.id] || "motion") === "audio" && (
@@ -513,7 +537,7 @@ export default function AdminLongUpload() {
                             type="number"
                             min="0.2"
                             step="0.5"
-                            value={audioMinSep[u.id] ?? 6}
+                            value={audioMinSep[u.id] ?? RIG_AUDIO.minSeparationSec}
                             onChange={(e) =>
                               setAudioMinSep((r) => ({ ...r, [u.id]: e.target.value }))
                             }
@@ -531,7 +555,7 @@ export default function AdminLongUpload() {
                           atk
                           <input
                             type="number" min="1" step="1"
-                            value={audioMaxAttack[u.id] ?? 30}
+                            value={audioMaxAttack[u.id] ?? RIG_AUDIO.maxAttackMs}
                             onChange={(e) =>
                               setAudioMaxAttack((r) => ({ ...r, [u.id]: e.target.value }))
                             }
@@ -550,7 +574,7 @@ export default function AdminLongUpload() {
                           quiet
                           <input
                             type="number" min="0" step="1"
-                            value={verifyRefractory[u.id] ?? 0}
+                            value={verifyRefractory[u.id] ?? RIG_AUDIO.refractorySec}
                             onChange={(e) =>
                               setVerifyRefractory((r) => ({ ...r, [u.id]: e.target.value }))
                             }

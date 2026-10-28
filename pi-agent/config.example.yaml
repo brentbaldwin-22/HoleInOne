@@ -794,3 +794,35 @@ log_level: "INFO"
 #   # through, short enough that the next player in a group is not
 #   # swallowed. 0 turns it off.
 #   refractory_sec: 0.0
+#
+#   # HOW LONG TO HOLD A CONFIRMED SWING AND LOOK FOR A BETTER ONE,
+#   # in seconds. 0 keeps the old behaviour: the first confirmed swing
+#   # ships at once and refractory_sec closes the ears behind it.
+#   #
+#   # A WAGGLE IS A SWING TO THE JUDGE. A golfer waggles, takes a
+#   # practice swing, then hits, and all three paint the compact figure
+#   # and thin plume the judge looks for -- so a sound coinciding with
+#   # one of the first two is enough to cut on, and the refractory then
+#   # closes the ears before the real strike. Event 1492: a waggle at
+#   # 4.85s judged a swing with MEDIUM confidence, the strike at 10.46s
+#   # judged one with HIGH, and the strike was never cut at all. The
+#   # first candidate did not merely win -- it was the only entrant.
+#   #
+#   # With this set, a confirmed swing OPENS a window instead of ending
+#   # one. The ears stay open, every candidate inside it is cut and
+#   # judged, and the best one ships when the window closes; the losers
+#   # are parked on the card beside the refused clips, never deleted.
+#   # The refractory then starts from the swing that SHIPPED.
+#   #
+#   # Strictly higher confidence replaces the leader and nothing else
+#   # does: a tie keeps the FIRST, because a golfer lowering his
+#   # follow-through paints the same picture and arrives AFTER the
+#   # strike. Only a judge that is MORE sure about the later one is
+#   # evidence the earlier was a rehearsal.
+#   #
+#   # COSTS: the clip is delayed by this many seconds (the green cuts
+#   # backwards from its own ring, so it is unaffected), and several
+#   # clips may be cut and judged per window -- a vision call each,
+#   # capped at four. It SAVES the link, which is the expensive part:
+#   # one upload instead of two. Set it to refractory_sec.
+#   pick_best_sec: 0.0

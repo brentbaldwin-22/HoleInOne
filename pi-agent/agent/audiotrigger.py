@@ -79,6 +79,21 @@ class AudioTrigger:
         verify_drops: bool = False,
         verify_window_sec: float = 0.5,
         refractory_sec: float = 0.0,
+        # HOW LONG TO HOLD A CONFIRMED SWING AND LOOK FOR A BETTER
+        # ONE, in seconds. 0 keeps the old behaviour: the first
+        # confirmed swing ships at once and the refractory closes the
+        # ears behind it.
+        #
+        # WHY IT IS NEEDED. A golfer waggles, takes a practice swing,
+        # then hits. The waggle and the practice swing paint the same
+        # compact-figure-and-plume the judge is looking for, and a
+        # sound that coincides with one is enough to cut on. Event
+        # 1492: a waggle at 4.85s judged a swing with MEDIUM
+        # confidence, the real strike at 10.46s judged one with HIGH
+        # -- and the refractory had already closed the ears, so the
+        # strike was never cut, never judged, and never seen. The
+        # first candidate does not merely win, it is the only entrant.
+        pick_best_sec: float = 0.0,
         on_cut: Optional[Callable[[dict], None]] = None,
     ) -> None:
         self.ring = ring
@@ -118,6 +133,7 @@ class AudioTrigger:
         # verdict of "swing", so nothing that was never a swing can
         # silence one.
         self.refractory_sec = float(refractory_sec)
+        self.pick_best_sec = float(pick_best_sec)
         self._quiet_until = 0.0
         self.on_cut = on_cut
         self._fed: Optional[str] = None
@@ -355,6 +371,7 @@ def build(cfg: dict, work_dir, runner, video_span=None, on_cut=None):
         verify_drops=bool(a.get("verify_drops", False)),
         verify_window_sec=float(a.get("verify_window_sec", 0.5)),
         refractory_sec=float(a.get("refractory_sec", 0.0)),
+        pick_best_sec=float(a.get("pick_best_sec", 0.0)),
         on_cut=on_cut,
     )
     log.info(
@@ -367,7 +384,9 @@ def build(cfg: dict, work_dir, runner, video_span=None, on_cut=None):
          else ("asked, and may REFUSE an upload" if t.verify_drops
                else "asked, logged only")),
         ("%.0fs quiet after a confirmed swing" % t.refractory_sec
-         if t.refractory_sec > 0 else "no quiet period"),
+         if t.refractory_sec > 0 else "no quiet period")
+        + ("" if t.pick_best_sec <= 0 else
+           ", holding %.0fs to pick the best of them" % t.pick_best_sec),
     )
     return t
 

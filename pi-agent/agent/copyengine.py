@@ -173,6 +173,23 @@ REFUSED_MAX_AGE_SEC = 48 * 3600
 REFUSED_MAX_BYTES = 1024 * 1024 * 1024
 
 
+# HOW SURE THE JUDGE WAS, as a number that can be compared. Anything
+# it has not been taught ranks below everything it has, so a new
+# confidence string can never beat a known one by accident.
+_CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
+
+# HOW MANY CANDIDATES ONE WINDOW WILL ENTERTAIN. The ears stay open
+# while a window is running, so a noisy tee could cut and judge a clip
+# every couple of seconds for the whole period -- each one an ffmpeg
+# concat, a composite and a vision call. Four is more than a golfer
+# produces (waggle, practice swing, strike) and bounds the worst case.
+_PICK_BEST_MAX_ENTRANTS = 4
+
+
+def _confidence_rank(conf) -> int:
+    return _CONFIDENCE_RANK.get(str(conf or "").strip().lower(), 0)
+
+
 def _keep_refused(clips_dir, clip_path):
     """Park a clip the judge refused. Its name, or None if it is gone.
 
@@ -240,6 +257,10 @@ class CopyEngine:
         self.clips_dir = Path(work_dir)
         self._extracted = 0
         self._failed = 0
+        # THE SWING CURRENTLY WINNING ITS WINDOW, or None. See
+        # _hold_candidate: a confirmed swing is held rather than
+        # shipped while a better one might still arrive.
+        self._held: dict | None = None
         self._last: dict = {}
 
     # ---- construction --------------------------------------------------
@@ -710,11 +731,6 @@ class CopyEngine:
                 if detail is not None:
                     detail["verdict"] = False
                 return None
-        if _verdict is True and _t is not None:
-            try:
-                _t.note_swing(float(impact_ts))
-            except Exception:  # noqa: BLE001
-                pass
         if detail is not None and _verdict is not None:
             detail["verdict"] = bool(_verdict)
             detail["verdict_confidence"] = _vconf
@@ -724,6 +740,140 @@ class CopyEngine:
             # afford to lose, and an exception's text has no bound.
             detail["verdict_why"] = str(_vwhy)[:200]
 
+        # A WAGGLE IS A SWING TO THE JUDGE. A golfer waggles, takes a
+        # practice swing, then hits, and all three paint the compact
+        # figure and thin plume the judge is looking for -- so a sound
+        # that coincides with one of the first two is enough to cut
+        # on, and the first candidate used to be the only entrant:
+        # the refractory closed the ears behind it before the real
+        # strike arrived. Event 1492: waggle at 4.85s judged a swing
+        # with MEDIUM confidence, the strike at 10.46s judged one with
+        # HIGH, and the strike was never cut at all.
+        #
+        # So a confirmed swing opens a window instead of ending one.
+        _hold = (float(getattr(_t, "pick_best_sec", 0.0) or 0.0)
+                 if (_verdict is True and _t is not None) else 0.0)
+        if _hold > 0:
+            return self._hold_candidate(
+                runner, session_id, clip_path, impact_ts, clock_offset_sec,
+                detail, res, _vconf, _hold)
+        return self._ship_impact(
+            runner, session_id, clip_path, impact_ts, clock_offset_sec,
+            detail, res, confirmed=(_verdict is True))
+
+    def _hold_candidate(self, runner, session_id, clip_path, impact_ts,
+                        clock_offset_sec, detail, res, conf, hold_sec):
+        """Keep this confirmed swing; ship the best one when time is up.
+
+        STRICTLY HIGHER CONFIDENCE REPLACES THE HELD ONE, and nothing
+        else does. A tie keeps the FIRST, deliberately: the codebase
+        already knows that "a golfer holding and lowering his
+        follow-through paints the same figure-and-plume a swing does",
+        and that ghost arrives AFTER the strike. Preferring the later
+        of two equal candidates would hand it the clip. Only a judge
+        that is MORE sure about the second one is evidence the first
+        was the rehearsal.
+        """
+        held = self._held
+        cand = {
+            "session_id": session_id, "clip_path": clip_path,
+            "impact_ts": float(impact_ts),
+            "clock_offset_sec": clock_offset_sec, "detail": detail,
+            "res": res, "conf": conf, "rank": _confidence_rank(conf),
+            # THE DEADLINE BELONGS TO THE WINDOW, not to its current
+            # leader: a late challenger must not be able to extend it
+            # indefinitely and sit on a swing that should have shipped.
+            "until": time.time() + float(hold_sec),
+            "entrants": 1,
+        }
+        if held is None:
+            self._held = cand
+            log.info("copy: HOLDING %s (%s) for %.0fs — looking for a "
+                     "better swing before spending the link",
+                     session_id, conf or "no confidence", hold_sec)
+            return None
+
+        cand["until"] = held["until"]
+        cand["entrants"] = held["entrants"] + 1
+        if cand["entrants"] > _PICK_BEST_MAX_ENTRANTS:
+            # Enough. Ship the leader now and let the refractory it
+            # starts quieten whatever else is making this noise.
+            log.info("copy: %d candidates in one window — shipping %s and "
+                     "closing it", cand["entrants"], held["session_id"])
+            self._park(cand)
+            return self._flush_held(runner)
+
+        if cand["rank"] > held["rank"]:
+            log.info("copy: %s (%s) beats held %s (%s) — the earlier one "
+                     "was the rehearsal", session_id, conf or "-",
+                     held["session_id"], held["conf"] or "-")
+            self._park(held)
+            self._held = cand
+        else:
+            log.info("copy: %s (%s) does not beat held %s (%s) — parked",
+                     session_id, conf or "-", held["session_id"],
+                     held["conf"] or "-")
+            self._park(cand)
+            self._held["entrants"] = cand["entrants"]
+        return None
+
+    def _park(self, cand):
+        """Set a losing candidate aside on the card, never delete it.
+
+        A pick that is wrong costs the swing, and the clip still being
+        here is the cheapest insurance -- the same reason a refused
+        clip is parked rather than removed. Same directory, same
+        sweeper.
+        """
+        try:
+            _kept = _keep_refused(self.clips_dir, cand["clip_path"])
+            log.info("copy: not uploading %s — a better swing was found "
+                     "in the same window. %s", cand["session_id"],
+                     ("Kept as %s" % _kept) if _kept else "Clip removed")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("copy: could not park %s (%s)",
+                        cand["session_id"], exc)
+
+    def _flush_held(self, runner):
+        """Ship whatever is holding. Returns its session id, or None."""
+        cand = self._held
+        self._held = None
+        if cand is None:
+            return None
+        # Only a confirmed swing is ever held, so shipping one always
+        # starts the quiet period.
+        return self._ship_impact(
+            runner, cand["session_id"], cand["clip_path"], cand["impact_ts"],
+            cand["clock_offset_sec"], cand["detail"], cand["res"],
+            confirmed=True)
+
+    def flush_pick_best(self, runner, now=None):
+        """Ship a held swing once its window has closed.
+
+        DRIVEN FROM THE DETECTION LOOP, beside the audio trigger's own
+        tick. Nothing else would ever call it, and a swing that is
+        held and never shipped is worse than one that was never held:
+        the clip is on the card and nobody is waiting for it.
+        """
+        cand = self._held
+        if cand is None:
+            return None
+        if (now if now is not None else time.time()) < cand["until"]:
+            return None
+        log.info("copy: window closed — shipping %s (%s), best of %d",
+                 cand["session_id"], cand["conf"] or "no confidence",
+                 cand["entrants"])
+        return self._flush_held(runner)
+
+    def _ship_impact(self, runner, session_id, clip_path, impact_ts,
+                     clock_offset_sec, detail, res, confirmed=False):
+        """Register the event and hand the clip to the uploader.
+
+        SPLIT OUT so a held candidate can be shipped later by
+        flush_pick_best without a second copy of this, which is the
+        one place where getting the ORDER wrong strands the green
+        half for ever.
+        """
         # REGISTER ONLY ONCE IT IS WORTH REGISTERING -- the verdict
         # above has already run, because registration wakes the green
         # and a clip refused afterwards would leave an event with a
@@ -749,6 +899,19 @@ class CopyEngine:
             return None
         up.enqueue(session_id, clip_path, res["start"],
                    real_fps=None, precompressed=True)
+        # AND NOW GO QUIET -- but ONLY for a confirmed swing. The
+        # refractory starts when the swing SHIPS rather than when the
+        # first candidate was confirmed, because starting it earlier is
+        # exactly what stopped the real strike on event 1492 from ever
+        # being cut. Moving it here must not also hand the quiet period
+        # to a clip that merely uploaded: "could not tell" is not "yes",
+        # and a verdict that could not be had must never close the ears.
+        _t = getattr(runner, "_audio_trigger", None)
+        if confirmed and _t is not None:
+            try:
+                _t.note_swing(float(impact_ts))
+            except Exception:  # noqa: BLE001
+                pass
         log.info(
             "copy: IMPACT CUT session=%s — %.1fs (%.1f MB) around the "
             "impact at %.3f", session_id, res["seconds"],
