@@ -12549,10 +12549,33 @@ def scan_plot_region(
             2: (8, 10, 900, 2000),
             3: (5, 16, 1400, 3000),
         }[_sens]
+        # SLOTS THE BIGGEST BLOBS CANNOT HAVE.
+        #
+        # The per-frame cut kept the largest few, on the reasoning that
+        # "the ball blob beats foliage sparkle". That holds in the
+        # quiet corner this endpoint was written for and fails
+        # completely on a tee with four people on it: golfers,
+        # trolleys, wind in the pines and a shimmering bunker edge all
+        # measure hundreds of pixels, a ball measures tens, and the
+        # ball never enters the top ten. Measured on upload 1130 at
+        # f335-f339 -- two thousand dots on the houses, the treeline
+        # and the bunker, and not one on a ball the operator can
+        # plainly see leaving the tee.
+        #
+        # So part of the budget is reserved for the SMALL end. Not for
+        # a guessed ball area -- nothing here is calibrated, which is
+        # why ascent_prefer_area still defaults to 0 -- but for the
+        # smallest blobs that are not single-pixel sensor noise, which
+        # needs no calibration and is exactly the half that was being
+        # thrown away. The dot count per frame is unchanged.
+        _SMALL_SLOTS = max(1, _PER_FRAME // 3)
+        _SMALL_FLOOR = 3
+        _n_small = 0
 
         cap.set(cv2.CAP_PROP_POS_FRAMES, float(start))
         prev = None
         dots: list[dict] = []
+        _stopped_at = None
         for f in range(start, end + 1):
             ok, frame = cap.read()
             if not ok:
@@ -12574,16 +12597,35 @@ def scan_plot_region(
                             (area, float(cents[i][0]), float(cents[i][1])),
                         )
                 # Largest few per frame — keeps foliage sparkle from
-                # burying the ball blob in a noisy region.
+                # burying the ball blob in a noisy region — AND the
+                # smallest few, which is where the ball actually is.
                 frame_hits.sort(reverse=True)
-                for _area, cx, cy in frame_hits[:_PER_FRAME]:
+                _keep = frame_hits[:max(0, _PER_FRAME - _SMALL_SLOTS)]
+                _rest = frame_hits[len(_keep):]
+                _small = sorted(
+                    (hh for hh in _rest if hh[0] >= _SMALL_FLOOR),
+                    key=lambda hh: hh[0],
+                )[:_SMALL_SLOTS]
+                _n_small += len(_small)
+                for _area, cx, cy in _keep + _small:
                     dots.append({
                         "frame": int(f),
                         "x": int(round(x + cx)),
                         "y": int(round(y + cy)),
+                        # WHAT SIZE IT ACTUALLY IS. Click the ball and
+                        # the number it was refused on is right there;
+                        # without it the only way to calibrate a size
+                        # gate is to guess at one.
+                        "area": int(_area),
                     })
             prev = gray
             if len(dots) >= _CAP:
+                # THE SCAN STOPS HERE, it does not thin. A busy region
+                # hits this in a couple of hundred frames, so the rest
+                # of the window is never looked at -- and an empty
+                # stretch at the end reads as "the ball is not there"
+                # rather than "nobody went and checked".
+                _stopped_at = int(f)
                 break
     finally:
         cap.release()
@@ -12596,6 +12638,12 @@ def scan_plot_region(
         "dots": dots[:_CAP],
         "which": _cam,
         "sensitivity": _sens,
+        # Only true when the cap ended the scan early, and then the
+        # frame it ended on -- which is the difference between "nothing
+        # moved after here" and "nothing looked after here".
+        "truncated": _stopped_at is not None,
+        "scanned_to_frame": _stopped_at,
+        "n_small_slot": _n_small,
         "n_frames": end - start + 1,
         "start_frame": start,
         "end_frame": end,

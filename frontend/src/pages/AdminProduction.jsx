@@ -1939,8 +1939,16 @@ function ClickToPlotModal({
       setGreenLevel(level);
       setGreenNote(
         found.length
-          ? `${found.length} dots over f${out.start_frame}–f${out.end_frame} `
+          ? `${found.length} dots over f${out.start_frame}–f${
+              out.truncated ? out.scanned_to_frame : out.end_frame} `
             + `(level ${level}) — click the one where it lands`
+            // THE CAP ENDS THE SCAN, it does not thin it. Without this
+            // the frames past it look empty, and empty reads as "the
+            // ball is not there" rather than "nobody went and looked".
+            + (out.truncated
+                ? ` · stopped at the ${found.length}-dot cap, f${
+                    out.scanned_to_frame}–f${out.end_frame} not scanned`
+                : "")
           : level >= 3
             ? "no motion at all in the green window — the ball did not "
               + "land in this camera's view"
