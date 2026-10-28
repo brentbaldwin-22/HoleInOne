@@ -7083,6 +7083,19 @@ def list_long_uploads(
                     if cam_event.triggered_at
                     else None
                 ),
+                # WHY THE RIG CUT THIS, AND WHAT THE JUDGE TOLD IT.
+                # Test Cut re-runs the judge here and shows its
+                # verdict; the rig's own verdict was on another page
+                # entirely, so "the judge says not a swing, why did
+                # this upload?" needed two tabs and a matching-up of
+                # event numbers by hand. A dwell clip is the other
+                # half of that question: it never took the test at
+                # all, and nothing on this card said so.
+                "trigger_detail": (
+                    cam_event.trigger_detail
+                    if isinstance(cam_event.trigger_detail, dict)
+                    else None
+                ),
             }
             if cam_event
             else {"kind": "upload"}

@@ -8471,6 +8471,51 @@ function DistanceToPinModal({ row, slot, adminPassword, onClose, onSaved }) {
 // WHAT EACH GATE MEANS, in words. The colours and the order come from
 // the backend so the legend cannot disagree with the picture; only the
 // prose lives here, because that is the one part OpenCV has no use for.
+/** HOW THE RIG CAME TO CUT THIS, in one pill.
+ *
+ * THE TWO JUDGES WERE ON DIFFERENT PAGES. Test Cut re-runs the swing
+ * judge on an upload and prints its verdict; the rig asked the same
+ * judge BEFORE it spent the link, and that answer lived on the events
+ * page. So "the judge says this is not a swing -- why did it upload?"
+ * meant two tabs and matching event numbers up by hand.
+ *
+ * AND A DWELL CLIP NEVER TOOK THE TEST. The judge runs in the audio
+ * path only: a dwell recording is cut while somebody stands on the
+ * tee, with no impact instant to build a composite around, so it
+ * uploads unjudged by design. Nothing on this card said so, which
+ * makes every unjudged dwell clip look like the judge failing.
+ */
+function rigTrigger(detail) {
+  if (!detail || typeof detail !== "object") return null;
+  const kind = detail.kind;
+  if (kind === "audio") {
+    let judge = "judge: not asked";
+    let tone = "warn";
+    if (detail.verdict != null) {
+      judge = `judge: ${detail.verdict ? "swing" : "NOT a swing"}`;
+      tone = detail.verdict ? "ok" : "bad";
+    } else if (detail.verdict_asked) {
+      judge = `judge: could not tell${
+        detail.verdict_why ? ` — ${detail.verdict_why}` : ""}`;
+    }
+    return { label: `Audio${detail.ratio != null
+      ? ` ×${detail.ratio}` : ""} · ${judge}`, tone,
+      title: detail.verdict_reason || undefined };
+  }
+  if (kind === "dwell") {
+    // NOT A FAILURE, AND IT MUST NOT READ AS ONE. The judge cannot be
+    // asked about a clip that was never cut around an impact.
+    return { label: "Motion dwell · not judged (no impact to judge)",
+             tone: "warn",
+             title: "The swing judge runs on audio-triggered cuts only: "
+                  + "a dwell clip has no impact instant to build a "
+                  + "composite around." };
+  }
+  if (kind === "capture") return { label: "Operator capture", tone: "info" };
+  if (kind === "manual") return { label: "Manual trigger", tone: "info" };
+  return null;
+}
+
 // THE COLOUR KEY, FROM THE SAME DICT THE PICTURE WAS DRAWN FROM. The
 // backend reports `why_colors` and `why_order`; only the prose is here,
 // because that is the one part OpenCV has no use for. Shared by both
@@ -17027,6 +17072,14 @@ export default function AdminProduction() {
                     || `Camera #${row.source.camera_id}`}
                 </span>
               ) : null}
+              {(() => {
+                const t = rigTrigger(row.source?.trigger_detail);
+                return t ? (
+                  <span className={`pill small ${t.tone}`} title={t.title}>
+                    {t.label}
+                  </span>
+                ) : null;
+              })()}
               <span className="small muted">·</span>
               <span className="small muted">
                 {row.source?.kind === "camera"
