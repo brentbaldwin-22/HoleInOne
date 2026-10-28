@@ -2426,13 +2426,31 @@ function ClickToPlotModal({
   // What a flight time works out to with it, because that is the number
   // an operator can sanity-check against the shot they watched. A
   // towering iron is six seconds and change; eight is a tell.
+  // THE GAP THE PREDICTED TRACER HAS TO CROSS, which is what paces it.
+  //
+  // This used to be impact -> landing, and that is a different
+  // quantity: the whole flight, most of which both cameras can see and
+  // neither needs predicted. What the tracer actually invents is the
+  // span between the LAST point the tee camera still has the ball and
+  // the FIRST point the green camera picks it up again -- so that is
+  // the span whose duration decides whether the invented arc arrives
+  // early, late or right.
+  //
+  // Measured across the two clocks: the tee frame in tee seconds, the
+  // green frame in green seconds, with the sync delta between them.
+  const lastAscentFrame = (() => {
+    const fs = Object.keys(marks).map(Number).filter((n) => Number.isFinite(n));
+    return fs.length ? Math.max(...fs) : null;
+  })();
+  const firstDescentFrame = cometPoints.length ? cometPoints[0].frame : null;
   const measuredFlight = (() => {
-    if (measuredDelta == null || !landing) return null;
+    if (measuredDelta == null) return null;
+    if (lastAscentFrame == null || firstDescentFrame == null) return null;
     const tf = Number(row.tee_fps) || 0;
     const gf = Number(row.green_fps) || 0;
-    if (tf <= 0 || gf <= 0 || impactFrame == null) return null;
-    return ((Number(landing.frame) / gf) + measuredDelta)
-      - (Number(impactFrame) / tf);
+    if (tf <= 0 || gf <= 0) return null;
+    return ((Number(firstDescentFrame) / gf) + measuredDelta)
+      - (Number(lastAscentFrame) / tf);
   })();
 
   const syncMoved = (
@@ -3215,21 +3233,24 @@ function ClickToPlotModal({
                 : null)}
             hint={measuredDelta != null
               ? (measuredFlight != null
-                // A FLIGHT OF ZERO OR LESS CANNOT HAVE HAPPENED, and
+                // A GAP OF ZERO OR LESS CANNOT HAVE HAPPENED, and
                 // printing it as a plain number reads like a result.
-                // measuredFlight reduces to
-                // (landing - greenImpact)/green_fps, so <= 0 means the
-                // green impact mark is at or after the landing -- on
-                // upload 909 it was ON the landing frame, the panel
-                // said "0.00s", and everything derived from the delta
-                // was quietly meaningless.
+                // measuredFlight is now first-descent minus
+                // last-ascent across the sync delta, so <= 0 means the
+                // green camera has the ball before the tee loses it --
+                // which usually means the green impact mark is on the
+                // arrival rather than the strike, and leaves everything
+                // derived from the delta quietly meaningless. Upload
+                // 909 showed the same symptom under the old
+                // impact->landing formula.
                 ? (measuredFlight <= 0
-                  ? `IMPOSSIBLE: flight works out to ${
-                    measuredFlight.toFixed(2)}s — the green impact mark `
-                    + `is at or after the landing. Mark the STRIKE on `
-                    + `the green view, not the arrival.`
-                  : `measured here — flight works out to ${
-                    measuredFlight.toFixed(2)}s`)
+                  ? `IMPOSSIBLE: the unseen gap works out to ${
+                    measuredFlight.toFixed(2)}s — the green picks the `
+                    + `ball up before the tee loses it. Check the green `
+                    + `impact mark is the STRIKE, not the arrival.`
+                  : `measured here — the tracer has ${
+                    measuredFlight.toFixed(2)}s to cross, tee f${
+                    lastAscentFrame} to green f${firstDescentFrame}`)
                 : "measured here from the two impact marks")
               : (greenImpactFrame != null
                 ? `green impact f${greenImpactFrame} — set the tee impact too`
@@ -3267,65 +3288,23 @@ function ClickToPlotModal({
           </PlotField>
 
           <PlotField
-            label="Ball landing spot" icon="◍"
-            value={landing ? `${landing.x}, ${landing.y}` : null}
-            accent="#e2e8f0"
-            hint={!row.green_filename
-              ? "no green camera on this upload"
-              : landing
-                ? "Drag the ball on the green view."
-                : "Click the green view where it came down."}
-          >
-            {!landing && row.green_filename && (
-              <button type="button"
-                      className={placeOnGreen === "landing"
-                        ? "small" : "ghost small"}
-                      style={{ width: "100%" }}
-                      onClick={() => {
-                        setCam("green");
-                        setPlaceOnGreen((v) => (v === "landing"
-                          ? null : "landing"));
-                      }}>
-                {placeOnGreen === "landing"
-                  ? "click the green view…" : "place it"}
-              </button>
-            )}
-          </PlotField>
-
-          <PlotField
-            label="Landing frame" icon="⧖"
-            value={landing ? `f${landing.frame}` : null}
+            label="Descent" icon="⧖"
+            value={cometPoints.length
+              ? `${cometPoints.length} point${cometPoints.length === 1 ? "" : "s"}`
+              : null}
             hint={cometPoints.length > 1
-              ? `${cometPoints.length} descent points`
-              : !landing
-                ? "Mark the ball landing spot first — this moves that "
-                  + "point to another frame."
-                : "The frame it comes down on."}
+              ? `f${cometPoints[0].frame}–f${
+                cometPoints[cometPoints.length - 1].frame} on the green`
+              : "Where the ball comes down, plotted on the green view."}
           >
-            <button type="button" className="ghost small"
-                    style={{ width: "100%" }}
-                    disabled={greenCurrent == null || !landing
-                      || greenCurrent === landing.frame}
-                    onClick={() => {
-                      setLandingFrame(greenCurrent);
-                      if (cam === "raw") setGreenViewFrame(greenCurrent);
-                    }}
-                    title={!landing
-                      ? "Mark the ball landing spot first — this moves that point to another frame, and there is nothing to move without it."
-                      : (cam === "raw"
-                        ? "Use the green frame the raw player is stopped on. Pause it on the bounce, then press this."
-                        : "Use the frame the green view is showing.")}>
-              set to current{greenCurrent != null ? ` (f${greenCurrent})` : ""}
-              {cam === "raw" && greenCurrent == null ? " — pause first" : ""}
-            </button>
             <button type="button"
                     className={placeOnGreen === "plot" ? "small" : "ghost small"}
-                    style={{ width: "100%", marginTop: 3 }}
+                    style={{ width: "100%" }}
                     onClick={() => {
                       setCam("green");
                       setPlaceOnGreen((v) => (v === "plot" ? null : "plot"));
                     }}
-                    title="Click the green view to drop a descent point on the frame it is showing. Stays on: step a frame, click, step, click. Click it again to stop.">
+                    title="Click the green view to add a descent point on the frame it is showing. A detected dot under the click is taken instead, so hand points and the detector's mix freely. Stays on: step a frame, click, step, click.">
               {placeOnGreen === "plot"
                 ? "✎ plotting — click the green view (press to stop)"
                 : "✎ plot descent by hand"}
