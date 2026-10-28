@@ -1616,6 +1616,30 @@ DESCENT_MAX_TILT_DEG = 55.0
 # foreground grass a few feet from the lens, waving. None of them was
 # on the green, which is where a ball that lands on the green lands.
 DESCENT_EDGE_MARGIN_FRAC = 0.04
+# HOW HIGH IN THE PICTURE A LANDING MAY BE, as a fraction of frame
+# height from the top. Above this it is sky, and nothing lands there.
+#
+# THE EDGE MARGIN IS THE WRONG SHAPE FOR THIS. It is a border band --
+# 0.04 of frame height, 43px on a 1080 frame -- and it asks whether a
+# landing is close to leaving the picture. A branch waving in the top
+# corner is not close to leaving the picture; it is simply nowhere a
+# ball can be.
+#
+# Measured on event 1490's green: a dark branch across the top-right
+# corner drew an eleven-point chain that fell 322px, bent 0.39px
+# against a limit of 1.0, leaned 4.1 degrees against a limit of 55,
+# and was seen on 41% of the frames it crossed. It passed every gate
+# there is, and it "landed" at y=72 in a 1080-tall frame -- 117px from
+# the right edge, so the edge gate let it through by a whisker, and
+# about seven hundred pixels above the putting surface.
+#
+# A GREEN CAMERA IS AIMED AT A GREEN, which puts the ground in the
+# lower part of its picture and the treeline, the sky and the power
+# lines in the upper. 0.25 refuses the top quarter, which is sky on
+# every green camera on this course and nowhere a ball has ever been
+# seen to come down. Per hole, because a camera mounted lower or
+# aimed flatter wants a different line -- set it to 0 to turn it off.
+DESCENT_MIN_LAND_Y_FRAC = 0.25
 # HOW FAR A DESCENT'S PER-FRAME STEP MAY GO BACKWARDS, as a fraction of
 # its own median step.
 #
@@ -1931,6 +1955,8 @@ DESCENT_WHY_COLORS = {
     "tilt": "#2fa8b5",
     # "Landed" at the very edge of the picture, which means it left.
     "edge": "#7d6b4f",
+    # "Landed" up where the sky is, which means it is not a ball.
+    "sky": "#4f6b7d",
     # Its per-frame step jumps about; not something falling.
     "uneven": "#c0392b",
     # Mostly gaps -- specks joined across frames the ball was not in.
@@ -2718,6 +2744,11 @@ def find_descents(
     DESCENT_MAX_TILT_DEG = _G["descent_max_tilt_deg"]
     DESCENT_MAX_STEP_BACK = _G["descent_max_step_back"]
     DESCENT_MIN_DENSITY = _G["descent_min_density"]
+    # TUNED PER HOLE, read here like every other one. A camera aimed
+    # flatter than the rest wants a different line, and reading the
+    # module default instead would make tuning it do nothing -- the
+    # exact trap `points` fell into just below.
+    DESCENT_MIN_LAND_Y_FRAC = _G["descent_min_land_y_frac"]
     # THE POINTS VERDICT IS NOT THE SEARCH WIDTH, and this is where the
     # two were being confused. The `points` gate below read the module
     # constant while `min_points` -- the parameter callers widen -- read
@@ -3163,6 +3194,16 @@ def find_descents(
             _rej(pts, f"landed at {int(land['x'])},{int(land['y'])}, "
                       f"within {int(_m)}px of the picture's edge",
                  drop_px=int(drop), fall_rate=round(rate, 3))
+        # AND NOT IN THE SKY. See DESCENT_MIN_LAND_Y_FRAC: the edge
+        # margin asks whether a landing is about to leave the picture,
+        # which a branch in the top corner is not. This asks whether it
+        # is anywhere a ball can come down at all.
+        _sky = DESCENT_MIN_LAND_Y_FRAC * frame_h
+        if _sky > 0 and float(land["y"]) < _sky:
+            _why.append("sky")
+            _rej(pts, f"landed at {int(land['x'])},{int(land['y'])}, "
+                      f"above {int(_sky)}px — that is sky, not ground",
+                 drop_px=int(drop), fall_rate=round(rate, 3))
         # EVERY NUMBER DESCRIBES THE CHAIN THAT IS KEPT.
         #
         # The gates above ran on the WHOLE track and the points reported
@@ -3422,6 +3463,15 @@ def find_descents(
         {"key": "edge", "limit": f"{DESCENT_EDGE_MARGIN_FRAC:g} of the frame",
          "what": "how close to the frame edge it ran. A chain hugging the "
                  "border is the picture moving, not a ball."},
+        {"key": "sky", "limit": f"{DESCENT_MIN_LAND_Y_FRAC:g} of the frame "
+                                f"from the top",
+         "what": "how high in the picture it came down. A green camera "
+                 "is aimed at a green, so the ground is the lower part "
+                 "of the picture and the upper part is treeline and "
+                 "sky. Measured on event 1490: a branch in the top-right "
+                 "corner fell 322px, bent 0.39px, leaned 4.1 degrees, "
+                 "passed every other gate, and 'landed' seven hundred "
+                 "pixels above the putting surface."},
         {"key": "trimmed", "limit": "—",
          "what": "points were cut off the front of the chain before it "
                  "was judged, and what remained was too short to judge."},
@@ -7816,6 +7866,9 @@ GATE_SPEC = {
     "descent_max_tilt_deg":     (DESCENT_MAX_TILT_DEG,   1.0,   90.0, False),
     "descent_max_step_back":    (DESCENT_MAX_STEP_BACK, 0.01,   10.0, False),
     "descent_min_density":      (DESCENT_MIN_DENSITY,   0.05,    1.0, False),
+    # 0 turns it off, for a camera aimed flat enough that the ground
+    # reaches the top of its picture.
+    "descent_min_land_y_frac":  (DESCENT_MIN_LAND_Y_FRAC, 0.0,   0.9, False),
 }
 
 # What each one refuses, in the words the report already uses. Kept
@@ -7832,6 +7885,7 @@ GATE_VERDICT = {
     "descent_rate_hi": "rate", "descent_max_bend_px": "bend",
     "descent_max_tilt_deg": "tilt", "descent_max_step_back": "uneven",
     "descent_min_density": "sparse",
+    "descent_min_land_y_frac": "sky",
 }
 
 GATE_DEFAULTS = {k: v[0] for k, v in GATE_SPEC.items()}
