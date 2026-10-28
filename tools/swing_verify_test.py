@@ -146,6 +146,32 @@ import shutil  # noqa: E402
 shutil.rmtree(TMP, ignore_errors=True)
 
 print()
+print("the quiet period starts on a YES and nothing else:")
+# THE RULE THAT MAKES THIS SAFE. min_separation_sec suppresses by
+# LOUDNESS across a whole clip, which is how a false positive at
+# 15.43s deleted a real swing at 21s. This suppresses by VERDICT, in
+# time order, so something that was never a swing cannot silence one.
+import agent.audiotrigger as _at  # noqa: E402
+
+
+def quiet(verdict, refractory=12.0):
+    t = object.__new__(_at.AudioTrigger)
+    t.refractory_sec = refractory
+    t._quiet_until = 0.0
+    if verdict is True:
+        t.note_swing(100.0)
+    return t._quiet_until
+
+
+check("a confirmed swing goes quiet", quiet(True), 112.0)
+check("could not tell does NOT", quiet(None), 0.0)
+check("not a swing does NOT", quiet(False), 0.0)
+check("off by default",
+      inspect.signature(_at.AudioTrigger.__init__)
+      .parameters["refractory_sec"].default, 0.0)
+check("a zero period never goes quiet", quiet(True, 0.0), 0.0)
+
+print()
 if FAILED:
     print("FAILED: %s" % ", ".join(FAILED))
     sys.exit(1)

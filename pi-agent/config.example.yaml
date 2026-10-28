@@ -774,3 +774,23 @@ log_level: "INFO"
 #   # deleted.
 #   verify_drops: false
 #   verify_window_sec: 0.5
+#
+#   # ---- quiet after a confirmed swing ----------------------------------
+#   # Nobody swings twice in ten seconds. But a golfer STANDS in his
+#   # follow through with the club up, and lowering it paints the same
+#   # compact figure with a thin plume above it that the swing did --
+#   # so the judge calls it a swing, correctly by shape and wrongly by
+#   # fact. Observed 28 Oct: a real strike at 7.62s and its own
+#   # follow-through at 15.71s, both judged "swing (high)".
+#   #
+#   # This is NOT min_separation_sec. That is non-maximum suppression
+#   # across a clip sorted by LOUDNESS, so the loudest peak wins
+#   # whatever it was -- which is how a false positive at 15.43s
+#   # deleted a genuine swing 5.6s later. This runs in time order and
+#   # starts only on a verdict of "swing", so nothing that was never a
+#   # swing can silence one. It needs `verify: true` to do anything.
+#   #
+#   # 10-15s is the range worth trying: long enough to cover a follow
+#   # through, short enough that the next player in a group is not
+#   # swallowed. 0 turns it off.
+#   refractory_sec: 0.0

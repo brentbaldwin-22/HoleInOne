@@ -84,6 +84,14 @@ export default function AdminLongUpload() {
   // peak, which is how a false positive at 15.43s swallowed a genuine
   // swing at 21s that no min_ratio could recover.
   const [audioMinSep, setAudioMinSep] = useState({});
+  // The rig's own attack gate, so Test Cut can predict it. It ran the
+  // function default of 30ms while the tee runs 18, which made the
+  // tool disagree with the rig by construction.
+  const [audioMaxAttack, setAudioMaxAttack] = useState({});
+  // Seconds of quiet after a CONFIRMED swing. Sequential and gated on
+  // the verdict, so unlike separation a false positive cannot silence
+  // a real swing.
+  const [verifyRefractory, setVerifyRefractory] = useState({});
   const [showSource, setShowSource] = useState({}); // {id: true}
   const [segHole, setSegHole] = useState({}); // {"uploadId-cutIndex": holeNumber}
   const [segProcessing, setSegProcessing] = useState({}); // {"uploadId-cutIndex": true}
@@ -187,6 +195,10 @@ export default function AdminLongUpload() {
       if (Number.isFinite(ratio) && ratio > 0) opts.audioMinPeakRatio = ratio;
       const sep = parseFloat(audioMinSep[uploadId]);
       if (Number.isFinite(sep) && sep > 0) opts.audioMinSeparationSec = sep;
+      const atk = parseFloat(audioMaxAttack[uploadId]);
+      if (Number.isFinite(atk) && atk > 0) opts.audioMaxAttackMs = atk;
+      const ref = parseFloat(verifyRefractory[uploadId]);
+      if (Number.isFinite(ref) && ref >= 0) opts.verifyRefractorySec = ref;
     } else if (detector === "combined") {
       const aRatio = parseFloat(audioMinRatio[uploadId] ?? 5);
       const mRatio = parseFloat(motionRatio[uploadId] ?? 2);
@@ -509,6 +521,43 @@ export default function AdminLongUpload() {
                             className="small"
                             style={{ width: 54, fontSize: 12, padding: "2px 6px" }}
                             title="Seconds between accepted peaks. It exists to collapse the several detections ONE strike produces (often at the same timestamp), which needs well under a second — but at 6s it also discards a quieter real swing within six seconds of a louder peak. Try 1."
+                          />
+                        </label>
+                      )}
+                      {(testCutDetector[u.id] || "motion") === "audio" && (
+                        <label className="tiny muted"
+                               style={{ display: "inline-flex",
+                                        alignItems: "center", gap: 3 }}>
+                          atk
+                          <input
+                            type="number" min="1" step="1"
+                            value={audioMaxAttack[u.id] ?? 30}
+                            onChange={(e) =>
+                              setAudioMaxAttack((r) => ({ ...r, [u.id]: e.target.value }))
+                            }
+                            disabled={!!testCutting[u.id] || missing || busy}
+                            className="small"
+                            style={{ width: 54, fontSize: 12, padding: "2px 6px" }}
+                            title="Milliseconds a sound may take to rise from ambience to its peak. A struck ball is 7-14ms here; voices and engines are 22-27ms. SET THIS TO WHAT THE RIG RUNS (max_attack_ms in config.yaml) or this tool will not predict it."
+                          />
+                        </label>
+                      )}
+                      {(testCutDetector[u.id] || "motion") === "audio"
+                        && verifySwings[u.id] && (
+                        <label className="tiny muted"
+                               style={{ display: "inline-flex",
+                                        alignItems: "center", gap: 3 }}>
+                          quiet
+                          <input
+                            type="number" min="0" step="1"
+                            value={verifyRefractory[u.id] ?? 0}
+                            onChange={(e) =>
+                              setVerifyRefractory((r) => ({ ...r, [u.id]: e.target.value }))
+                            }
+                            disabled={!!testCutting[u.id] || missing || busy}
+                            className="small"
+                            style={{ width: 54, fontSize: 12, padding: "2px 6px" }}
+                            title="Seconds to stay quiet after a CONFIRMED swing. Nobody swings twice in ten seconds, but a golfer holding and lowering his follow-through paints the same figure-and-plume a swing does. Only a 'swing' verdict starts the period, so — unlike separation — a false positive can never silence a real swing. 0 = off."
                           />
                         </label>
                       )}

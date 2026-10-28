@@ -78,6 +78,7 @@ class AudioTrigger:
         verify: bool = False,
         verify_drops: bool = False,
         verify_window_sec: float = 0.5,
+        refractory_sec: float = 0.0,
         on_cut: Optional[Callable[[dict], None]] = None,
     ) -> None:
         self.ring = ring
@@ -102,6 +103,22 @@ class AudioTrigger:
         self.verify = bool(verify)
         self.verify_drops = bool(verify_drops)
         self.verify_window_sec = float(verify_window_sec)
+        # QUIET FOR A WHILE AFTER A CONFIRMED SWING. A golfer does not
+        # swing twice in ten seconds, but he does stand in his follow
+        # through with the club up, and lowering it paints the same
+        # compact figure with a plume above it that a swing does. The
+        # judge calls that a swing, correctly by shape and wrongly by
+        # fact.
+        #
+        # SEQUENTIAL AND CONDITIONAL, which is what makes this safe
+        # where min_separation_sec is not. Separation is non-maximum
+        # suppression across a whole clip sorted by loudness, so the
+        # LOUDEST peak wins and a false positive can delete a real
+        # swing 5s later -- measured, 28 Oct. This starts only on a
+        # verdict of "swing", so nothing that was never a swing can
+        # silence one.
+        self.refractory_sec = float(refractory_sec)
+        self._quiet_until = 0.0
         self.on_cut = on_cut
         self._fed: Optional[str] = None
         self._fed_at = 0.0
@@ -148,6 +165,18 @@ class AudioTrigger:
             for hit in self.listener.feed(pcm, ts):
                 out.append(self._judge(hit))
         return out
+
+    def note_swing(self, at: float) -> None:
+        """A cut was CONFIRMED a swing: go quiet for a while.
+
+        Called from the cut path once the judge has answered, because
+        only then is it known that something worth being quiet after
+        has happened. A verdict of "not a swing", or no verdict at
+        all, must leave the ears wide open -- that is the whole
+        difference between this and suppressing by loudness.
+        """
+        if self.refractory_sec > 0:
+            self._quiet_until = float(at) + self.refractory_sec
 
     def healthy(self) -> bool:
         """Is this actually listening to something right now?
@@ -199,6 +228,12 @@ class AudioTrigger:
             # None whenever it cannot be said -- see zone_seen_in.
             "zone": None,
         }
+        if self.refractory_sec > 0 and at < self._quiet_until:
+            d["why"] = ("%.0fs quiet after a confirmed swing (%.1fs left)"
+                        % (self.refractory_sec, self._quiet_until - at))
+            log.info("audio trigger: heard x%.1f at %.3f — not cutting (%s)",
+                     d["ratio"], at, d["why"])
+            return d
         seen = self.sightings() if self.sightings else None
         if seen is None:
             # No detector ran. Do not gate -- a camera whose person
@@ -319,6 +354,7 @@ def build(cfg: dict, work_dir, runner, video_span=None, on_cut=None):
         verify=bool(a.get("verify", False)),
         verify_drops=bool(a.get("verify_drops", False)),
         verify_window_sec=float(a.get("verify_window_sec", 0.5)),
+        refractory_sec=float(a.get("refractory_sec", 0.0)),
         on_cut=on_cut,
     )
     log.info(

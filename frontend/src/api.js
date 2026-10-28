@@ -1176,6 +1176,12 @@ export const api = {
         fd.append("verify_window_sec",
           String(opts.verifyWindowSec != null ? opts.verifyWindowSec : 0.5));
       }
+      if (opts.audioMaxAttackMs != null) {
+        fd.append("audio_max_attack_ms", String(opts.audioMaxAttackMs));
+      }
+      if (opts.verifyRefractorySec != null) {
+        fd.append("verify_refractory_sec", String(opts.verifyRefractorySec));
+      }
       if (opts.audioMinSeparationSec != null) {
         fd.append("audio_min_separation_sec",
           String(opts.audioMinSeparationSec));

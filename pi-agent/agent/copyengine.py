@@ -648,6 +648,11 @@ class CopyEngine:
                 if detail is not None:
                     detail["verdict"] = False
                 return None
+        if _verdict is True and _t is not None:
+            try:
+                _t.note_swing(float(impact_ts))
+            except Exception:  # noqa: BLE001
+                pass
         if detail is not None and _verdict is not None:
             detail["verdict"] = bool(_verdict)
             detail["verdict_confidence"] = _vconf

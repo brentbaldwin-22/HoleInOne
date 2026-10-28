@@ -13321,6 +13321,19 @@ def test_cut_long_upload(
     detector: str = Form("motion"),
     audio_min_peak_ratio: float = Form(10.0),
     audio_min_separation_sec: float = Form(6.0),
+    # THE RIG'S OWN ATTACK GATE. Test Cut ran the function default of
+    # 30 ms while the tee runs 18, so a peak the rig would reject on
+    # rise time showed up here as a detection -- and the tool used to
+    # predict the rig disagreed with it by construction.
+    audio_max_attack_ms: float = Form(30.0),
+    # QUIET AFTER A CONFIRMED SWING, applied in time order rather than
+    # by loudness. A golfer stands in his follow through with the club
+    # up, and lowering it paints the same figure-plus-plume a swing
+    # does; the judge reads that as a swing, correctly by shape and
+    # wrongly by fact. Only a verdict of "swing" starts the period, so
+    # unlike separation a false positive can never silence a real one.
+    # Needs verify_swings to mean anything.
+    verify_refractory_sec: float = Form(0.0),
     motion_ratio: float = Form(4.0),
     combined_pair_window_sec: float = Form(3.0),
     cut_clips: bool = Form(True),
@@ -13421,6 +13434,7 @@ def test_cut_long_upload(
             fps=tee_fps,
             min_peak_ratio=float(audio_min_peak_ratio),
             min_separation_sec=float(audio_min_separation_sec),
+            max_attack_sec=float(audio_max_attack_ms) / 1000.0,
             debug=debug,
         )
     elif detector == "ballgone":
@@ -13611,6 +13625,7 @@ def test_cut_long_upload(
     cuts: list[dict] = []
     t_loop_start = time.monotonic()
     n_windows_total = len(windows)
+    _quiet_until = 0.0
     for idx, w in enumerate(windows):
         start_sec = float(w["start_sec"])
         end_sec = float(w["end_sec"])
@@ -13632,7 +13647,15 @@ def test_cut_long_upload(
             "attack_measured": w.get("attack_measured"),
             "max_attack_ms": w.get("max_attack_ms"),
         }
-        if verify_swings and peak_time_sec is not None:
+        if (verify_swings and peak_time_sec is not None
+                and verify_refractory_sec > 0
+                and peak_time_sec < _quiet_until):
+            cut_entry["is_swing"] = None
+            cut_entry["verify_reason"] = (
+                "%.0fs quiet after the confirmed swing at %.2fs"
+                % (verify_refractory_sec,
+                   _quiet_until - verify_refractory_sec))
+        elif verify_swings and peak_time_sec is not None:
             # Never fatal: this is a second opinion, and a detector run
             # that dies because the opinion could not be had is worse
             # than one that reports without it.
@@ -13684,6 +13707,8 @@ def test_cut_long_upload(
                 log.warning("test-cut: verify failed on peak %.2f: %s",
                             peak_time_sec, exc)
                 cut_entry["verify_reason"] = f"verify failed: {exc}"
+            if cut_entry.get("is_swing") is True and verify_refractory_sec > 0:
+                _quiet_until = peak_time_sec + float(verify_refractory_sec)
 
         if not cut_clips:
             # Detection-only mode: no ffmpeg, no files. Operator just
