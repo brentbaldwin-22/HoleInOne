@@ -132,8 +132,39 @@ check("a flat NO, when the operator allowed it",
       run(False, tmp=TMP)[0], False)
 # AND THE CLIP SURVIVES IT. A wrong verdict costs a swing; the
 # cheapest insurance is the footage still being on the card.
+_refused = TMP / copyengine.REFUSED_DIR
 check("...and the clip is kept, not deleted",
-      any(p.name.endswith(".notswing.mp4") for p in TMP.iterdir()), True)
+      _refused.is_dir() and any(_refused.glob("*.mp4")), True)
+
+print()
+print("but refused clips cannot pile up for ever:")
+# NOTHING ELSE SWEEPS THE WORK DIRECTORY. The spool has _prune_spool;
+# this had nothing, so 7 MB per false positive would accumulate until
+# the card filled. The audio ring made this exact mistake and nobody
+# noticed for a week.
+import os, time as _t  # noqa: E402
+_old = _refused / "ancient.mp4"
+_old.write_bytes(b"\0" * 1024)
+_stale = _t.time() - copyengine.REFUSED_MAX_AGE_SEC - 60
+os.utime(_old, (_stale, _stale))
+copyengine._keep_refused(TMP, (TMP / "fresh.mp4"))  # does not exist: no-op
+(TMP / "fresh.mp4").write_bytes(b"\0" * 1024)
+copyengine._keep_refused(TMP, (TMP / "fresh.mp4"))
+check("one older than the age cap is swept", _old.exists(), False)
+check("...and the fresh one is not",
+      (_refused / "fresh.mp4").exists(), True)
+
+_tiny = copyengine.REFUSED_MAX_BYTES
+try:
+    copyengine.REFUSED_MAX_BYTES = 2048
+    for _i in range(6):
+        _f = TMP / ("big%d.mp4" % _i)
+        _f.write_bytes(b"\0" * 1024)
+        copyengine._keep_refused(TMP, _f)
+    _held = sum(q.stat().st_size for q in _refused.glob("*.mp4"))
+    check("the total is held under the byte cap", _held <= 2048 + 1024, True)
+finally:
+    copyengine.REFUSED_MAX_BYTES = _tiny
 
 print()
 print("the judge is asked once, and only when wanted:")

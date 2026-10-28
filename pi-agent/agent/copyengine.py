@@ -159,6 +159,63 @@ def _subcut(src: Path, dst: Path, start: float, end: float) -> bool:
     return True
 
 
+# How long a refused clip stays on the card, and how much of the card
+# they may hold between them.
+#
+# THEY ARE KEPT BECAUSE THE VERDICT MIGHT BE WRONG -- a swing thrown
+# away is the one failure this whole path must not have -- and they are
+# swept because nothing else sweeps them. The spool has `_prune_spool`;
+# the work directory has nothing, so an unswept 7 MB per false positive
+# accumulates until the card is full. The audio ring made exactly this
+# mistake and went unnoticed for a week.
+REFUSED_DIR = "notswing"
+REFUSED_MAX_AGE_SEC = 48 * 3600
+REFUSED_MAX_BYTES = 1024 * 1024 * 1024
+
+
+def _keep_refused(clips_dir, clip_path):
+    """Park a clip the judge refused. Its name, or None if it is gone.
+
+    Never raises: this runs on a path whose whole purpose is that
+    nothing it does may cost a swing, and the swing in question has
+    already been declined.
+    """
+    try:
+        d = Path(clips_dir) / REFUSED_DIR
+        d.mkdir(parents=True, exist_ok=True)
+        dest = d / clip_path.name
+        try:
+            clip_path.rename(dest)
+        except OSError:
+            clip_path.unlink(missing_ok=True)
+            return None
+        # Oldest out first, by age then by total size.
+        now = time.time()
+        kept = []
+        for q in sorted(d.glob("*.mp4"), key=lambda x: -x.stat().st_mtime):
+            try:
+                st = q.stat()
+            except OSError:
+                continue
+            if now - st.st_mtime > REFUSED_MAX_AGE_SEC:
+                q.unlink(missing_ok=True)
+                continue
+            kept.append((q, st.st_size))
+        total = 0
+        for q, size in kept:
+            total += size
+            if total > REFUSED_MAX_BYTES:
+                q.unlink(missing_ok=True)
+        return str(dest)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("copy: could not park a refused clip (%s)", exc)
+        try:
+            clip_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+
 class CopyEngine:
     """Owns the ring and turns a trigger into an uploaded clip."""
 
@@ -623,14 +680,10 @@ class CopyEngine:
                 # that is wrong costs a swing, and the cheapest
                 # insurance against finding that out too late is the
                 # clip still being on the card.
-                _kept = clip_path.with_suffix(".notswing.mp4")
-                try:
-                    clip_path.rename(_kept)
-                except OSError:
-                    clip_path.unlink(missing_ok=True)
+                _kept = _keep_refused(self.clips_dir, clip_path)
                 log.info("copy: NOT UPLOADING %s — judged not a swing (%s). "
-                         "Kept as %s", session_id, _vreason or "no reason",
-                         _kept.name)
+                         "%s", session_id, _vreason or "no reason",
+                         ("Kept as %s" % _kept) if _kept else "Clip removed")
                 if detail is not None:
                     detail["verdict"] = False
                 return None
