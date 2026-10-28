@@ -589,20 +589,6 @@ class CopyEngine:
             finally:
                 _wav.unlink(missing_ok=True)
 
-        # REGISTER BEFORE UPLOADING, so the green hears about it while
-        # its own ring still holds the flight. Registration failing is
-        # not fatal: the uploader's _recover_lost_event picks the
-        # session up when the link returns, and the tee half survives
-        # even though the green half cannot.
-        try:
-            runner.client.event_trigger(
-                session_id, impact_at=float(impact_ts),
-                clock_offset_sec=clock_offset_sec, detail=detail)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("copy: could not register the impact event (%s) — "
-                        "the clip will be recovered later, but the green "
-                        "half is lost", exc)
-
         _verdict = None
         _vconf = _vreason = None
         _t = getattr(runner, "_audio_trigger", None)
@@ -657,6 +643,25 @@ class CopyEngine:
             detail["verdict"] = bool(_verdict)
             detail["verdict_confidence"] = _vconf
             detail["verdict_reason"] = _vreason
+
+        # REGISTER ONLY ONCE IT IS WORTH REGISTERING -- the verdict
+        # above has already run, because registration wakes the green
+        # and a clip refused afterwards would leave an event with a
+        # green half and no tee half for ever.
+        #
+        # Register before UPLOADING, so the green hears about it while
+        # its own ring still holds the flight. Registration failing is
+        # not fatal: the uploader's _recover_lost_event picks the
+        # session up when the link returns, and the tee half survives
+        # even though the green half cannot.
+        try:
+            runner.client.event_trigger(
+                session_id, impact_at=float(impact_ts),
+                clock_offset_sec=clock_offset_sec, detail=detail)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("copy: could not register the impact event (%s) — "
+                        "the clip will be recovered later, but the green "
+                        "half is lost", exc)
 
         up = getattr(runner, "uploader", None)
         if up is None:

@@ -48,12 +48,17 @@ class FakeClient:
         self.verdict = verdict
         self.raises = raises
         self.asked = 0
+        self.registered = 0
+        self.order = []
 
     def event_trigger(self, *a, **kw):
+        self.registered += 1
+        self.order.append("register")
         return {}
 
     def verify_swing(self, image_path, timeout=25.0):
         self.asked += 1
+        self.order.append("ask")
         if self.raises:
             raise RuntimeError("link died")
         return {"is_swing": self.verdict, "confidence": "high",
@@ -101,7 +106,8 @@ def run(verdict, *, verify=True, drops=True, raises=False,
             eng, runner, 100.0, before_sec=4.5, after_sec=9.0)
     finally:
         sh.build = _orig
-    return bool(runner.uploader.sent), runner.client.asked
+    return (bool(runner.uploader.sent), runner.client.asked,
+            runner.client.order)
 
 
 import tempfile  # noqa: E402
@@ -116,7 +122,7 @@ check("a judge that throws uploads", run(None, raises=True, tmp=TMP)[0], True)
 check("no composite uploads, unasked", run(True, composite=False, tmp=TMP)[0],
       True)
 check("verify off uploads without asking",
-      run(False, verify=False, tmp=TMP), (True, 0))
+      run(False, verify=False, tmp=TMP)[:2], (True, 0))
 check("asked but not allowed to drop: uploads anyway",
       run(False, drops=False, tmp=TMP)[0], True)
 
@@ -142,8 +148,20 @@ check("verify defaults off", sig["verify"].default, False)
 check("dropping defaults off", sig["verify_drops"].default, False)
 check("half a second either side", sig["verify_window_sec"].default, 0.5)
 
-import shutil  # noqa: E402
-shutil.rmtree(TMP, ignore_errors=True)
+print()
+print("A REFUSED CLIP MUST NOT REGISTER AN EVENT:")
+# Registration wakes the paired green, which cuts and uploads its own
+# half. A clip refused AFTER registration therefore leaves an event
+# with a green half and no tee half -- "PARTIAL, TEE never arrived" --
+# permanently, plus a green upload spent on a sound that was not a
+# swing. Asked first, a refusal costs nothing at all.
+_, _, order_no = run(False, tmp=TMP)
+check("nothing is registered for a refused clip",
+      "register" in order_no, False)
+_, _, order_yes = run(True, tmp=TMP)
+check("a swing does register", "register" in order_yes, True)
+check("...and was asked BEFORE it registered",
+      order_yes.index("ask") < order_yes.index("register"), True)
 
 print()
 print("the quiet period starts on a YES and nothing else:")
@@ -170,6 +188,9 @@ check("off by default",
       inspect.signature(_at.AudioTrigger.__init__)
       .parameters["refractory_sec"].default, 0.0)
 check("a zero period never goes quiet", quiet(True, 0.0), 0.0)
+
+import shutil  # noqa: E402
+shutil.rmtree(TMP, ignore_errors=True)
 
 print()
 if FAILED:
