@@ -2665,6 +2665,11 @@ def _run_long_upload_job(
             segs = list(seg_list or [])
             auto_used = False
             used_pose = False
+            pinned_from_rig = None
+            if not segs and auto_detect_swings:
+                pinned_from_rig = _audio_impact_segment(db, row, upload_id)
+                if pinned_from_rig is not None:
+                    segs = [pinned_from_rig]
             if not segs and auto_detect_swings:
                 auto_used = True
                 tee_fps = probe_fps(src_path) or 30.0
@@ -3833,6 +3838,55 @@ def _build_tracer_diagnostics(
         "ball_verdict": ball_verdict,
         "ts": datetime.utcnow().isoformat(),
     }
+
+
+def _audio_impact_segment(db, row, upload_id):
+    """One segment pinned to the impact the RIG heard, or None.
+
+    Returns None whenever anything is missing or implausible -- no
+    camera event, no audio impact (a dwell-triggered clip), no
+    recording start to measure the offset against, or an offset that
+    falls outside the clip. In every one of those the caller runs its
+    own detectors exactly as before: this is a shortcut past work
+    already done, never a new way to fail.
+    """
+    try:
+        ev_id = getattr(row, "camera_event_id", None)
+        if not ev_id:
+            return None
+        ev = db.get(CameraEvent, ev_id)
+        if ev is None or ev.impact_at is None:
+            return None
+        started = ev.tee_recording_started_at
+        if started is None:
+            # WITHOUT IT THE INSTANT CANNOT BE PLACED IN THE CLIP. The
+            # impact is a wall clock; the clip is an offset from its
+            # own first frame, and only this says where that was.
+            log.info("long-upload %s: event %s has an audio impact but no "
+                     "tee_recording_started_at — detecting instead",
+                     upload_id, ev_id)
+            return None
+        offset = (ev.impact_at - started).total_seconds()
+        if not (0.0 <= offset <= 24 * 3600):
+            log.warning("long-upload %s: audio impact is %.1fs into the clip "
+                        "— implausible, detecting instead", upload_id, offset)
+            return None
+        log.info("long-upload %s: impact taken from the rig — %.2fs into the "
+                 "tee clip (event %s), skipping detection",
+                 upload_id, offset, ev_id)
+        return {
+            "hole_number": ev.hole_number,
+            "peak_time_sec": float(offset),
+            "start_sec": max(0.0, offset - 3.5),
+            "end_sec": offset + 5.0,
+            "confidence": 1.0,
+            "impact_pinned": True,
+            "from_rig_audio": True,
+        }
+    except Exception as exc:  # noqa: BLE001
+        log.warning("long-upload %s: could not read the rig's impact (%s) "
+                    "— detecting instead", upload_id, exc)
+        return None
 
 
 def _process_long_upload_segments(

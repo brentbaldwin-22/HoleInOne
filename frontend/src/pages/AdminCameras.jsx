@@ -946,6 +946,21 @@ function TriggerLine({ detail }) {
       const len = detail.window[1] - detail.window[0];
       if (a && b) bits.push(`cut ${a}–${b} (${len.toFixed(1)}s)`);
     }
+    // THE VERDICT WAS STORED AND NOT SHOWN. The rig asks the swing
+    // judge before it uploads and carries the answer on the event,
+    // and the line explaining why a clip exists left out the one
+    // field saying whether anything agreed it was a swing -- so
+    // three clips around one golfer read as unexplained when the
+    // explanation had already been recorded.
+    if (detail.verdict != null) {
+      bits.push(`judge: ${detail.verdict ? "swing" : "NOT a swing"}${
+        detail.verdict_confidence ? ` (${detail.verdict_confidence})` : ""}`);
+      if (detail.verdict_reason) bits.push(`"${detail.verdict_reason}"`);
+    } else {
+      // "Nobody asked" and "judged a swing" look identical when the
+      // field is simply absent, and they call for opposite actions.
+      bits.push("judge: not asked");
+    }
   } else if (kind === "dwell") {
     head = "Motion dwell";
     if (zone) {
