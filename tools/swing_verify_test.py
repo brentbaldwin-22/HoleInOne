@@ -44,9 +44,10 @@ class FakeUploader:
 
 
 class FakeClient:
-    def __init__(self, verdict, raises=False):
+    def __init__(self, verdict, raises=False, reason="because"):
         self.verdict = verdict
         self.raises = raises
+        self.reason = reason
         self.asked = 0
         self.registered = 0
         self.order = []
@@ -62,7 +63,7 @@ class FakeClient:
         if self.raises:
             raise RuntimeError("link died")
         return {"is_swing": self.verdict, "confidence": "high",
-                "reason": "because"}
+                "reason": self.reason}
 
 
 class FakeRing:
@@ -75,7 +76,7 @@ class FakeRing:
 
 
 def run(verdict, *, verify=True, drops=True, raises=False,
-        composite=True, tmp=None):
+        composite=True, tmp=None, detail=None, reason="because"):
     """One cut_at_impact, with the judge stubbed. Returns (uploaded, kept)."""
     eng = object.__new__(copyengine.CopyEngine)
     eng.ring = FakeRing()
@@ -89,7 +90,7 @@ def run(verdict, *, verify=True, drops=True, raises=False,
     trig.ring = None
 
     runner = types.SimpleNamespace(
-        client=FakeClient(verdict, raises=raises),
+        client=FakeClient(verdict, raises=raises, reason=reason),
         uploader=FakeUploader(), _audio_trigger=trig, roi=None,
     )
 
@@ -103,7 +104,7 @@ def run(verdict, *, verify=True, drops=True, raises=False,
         (tmp / "heat.jpg").write_bytes(b"\xff\xd8\xff")
     try:
         copyengine.CopyEngine.cut_at_impact(
-            eng, runner, 100.0, before_sec=4.5, after_sec=9.0)
+            eng, runner, 100.0, before_sec=4.5, after_sec=9.0, detail=detail)
     finally:
         sh.build = _orig
     return (bool(runner.uploader.sent), runner.client.asked,
@@ -193,6 +194,51 @@ _, _, order_yes = run(True, tmp=TMP)
 check("a swing does register", "register" in order_yes, True)
 check("...and was asked BEFORE it registered",
       order_yes.index("ask") < order_yes.index("register"), True)
+
+print()
+print("the event records that it ASKED, not only what came back:")
+# "Nobody asked" and "asked, and nothing came back" arrive at the
+# events page as the same absent verdict, and they call for opposite
+# fixes: turn verify on, or find out why the judge could not be
+# reached. Event 1447 was cut, uploaded, and read as "judge: not
+# asked" with no way to tell which of those it was.
+
+
+def detail_of(verdict, **kw):
+    d = {"kind": "audio"}
+    run(verdict, tmp=TMP, detail=d, **kw)
+    return d
+
+
+_yes = detail_of(True)
+check("a yes is recorded", _yes.get("verdict"), True)
+check("...and the ask with it", _yes.get("verdict_asked"), True)
+_none = detail_of(None)
+check("could not tell leaves no verdict", "verdict" in _none, False)
+check("...but does record the ask", _none.get("verdict_asked"), True)
+# THE SERVER'S OWN WORDS WHEN IT HAS ANY -- "no key configured" is
+# worth more on the page than a generic shrug -- and the shrug only
+# when it sent none.
+check("...and why, in the server's words", _none.get("verdict_why"), "because")
+check("...or a plain shrug when it said nothing",
+      detail_of(None, reason=None).get("verdict_why"), "no answer")
+_broke = detail_of(None, raises=True)
+check("a judge that throws records the ask",
+      _broke.get("verdict_asked"), True)
+check("...and names the failure",
+      str(_broke.get("verdict_why", "")).startswith("check failed:"), True)
+_nocomp = detail_of(True, composite=False)
+check("no composite records the ask", _nocomp.get("verdict_asked"), True)
+check("...and says so", _nocomp.get("verdict_why"), "no composite")
+_off = detail_of(True, verify=False)
+check("verify off records NOTHING, which is how the page knows",
+      _off.get("verdict_asked"), None)
+# UNBOUNDED TEXT ON A REQUEST A SWING DEPENDS ON. An exception's
+# message has no length, and the whole detail is dropped over 2000
+# bytes -- which would cost the provenance of the very event it is
+# explaining.
+check("the why is capped", len(str(_broke.get("verdict_why", ""))) <= 200,
+      True)
 
 print()
 print("the quiet period starts on a YES and nothing else:")

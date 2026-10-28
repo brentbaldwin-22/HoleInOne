@@ -647,9 +647,17 @@ class CopyEngine:
                 _wav.unlink(missing_ok=True)
 
         _verdict = None
-        _vconf = _vreason = None
+        _vconf = _vreason = _vwhy = None
         _t = getattr(runner, "_audio_trigger", None)
         if _t is not None and getattr(_t, "verify", False):
+            # ASKED IS NOT ANSWERED. Recording only the answer makes
+            # "nobody asked" and "asked, and nothing came back" the
+            # same absent field on the event, and those call for
+            # opposite fixes: turn verify on, or find out why the
+            # judge could not be reached. The flag goes down before
+            # the attempt so it survives anything the attempt raises.
+            if detail is not None:
+                detail["verdict_asked"] = True
             try:
                 from . import swingheat
                 _crop = swingheat.zone_crop(
@@ -670,10 +678,14 @@ class CopyEngine:
                                  _verdict, "could not tell"),
                              _vconf or "-", _vreason or "")
                     _img.unlink(missing_ok=True)
+                    if _verdict is None:
+                        _vwhy = _vreason or "no answer"
                 else:
+                    _vwhy = "no composite"
                     log.info("copy: no composite for %s — uploading unjudged",
                              session_id)
             except Exception as exc:  # noqa: BLE001
+                _vwhy = "check failed: %s" % (exc,)
                 log.warning("copy: swing check failed (%s) — uploading", exc)
             if _verdict is False and _t.verify_drops:
                 # SPOOLED, NOT DELETED, while this is young. A verdict
@@ -696,6 +708,10 @@ class CopyEngine:
             detail["verdict"] = bool(_verdict)
             detail["verdict_confidence"] = _vconf
             detail["verdict_reason"] = _vreason
+        elif detail is not None and _vwhy:
+            # Capped: this rides on the one request a swing cannot
+            # afford to lose, and an exception's text has no bound.
+            detail["verdict_why"] = str(_vwhy)[:200]
 
         # REGISTER ONLY ONCE IT IS WORTH REGISTERING -- the verdict
         # above has already run, because registration wakes the green

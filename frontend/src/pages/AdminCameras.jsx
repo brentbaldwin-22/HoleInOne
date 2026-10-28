@@ -899,6 +899,35 @@ function zoneOf(detail) {
   return null;
 }
 
+/** WHAT THE SWING JUDGE SAID, as the words beside the clip.
+ *
+ * THREE STATES, NOT TWO. The rig asks the judge before it spends the
+ * link on an upload, and reporting only the answer collapses "nobody
+ * asked" into "asked, and nothing came back" -- an event with no
+ * verdict field then reads as a configuration the operator should
+ * change when the real fault may be a key or a link on the server.
+ * They call for opposite actions, so they get different words.
+ *
+ * A clip refused outright is never registered, so "NOT a swing" is
+ * only reachable while verify_drops is off -- which is exactly when
+ * somebody is checking the judge against real golf and most wants to
+ * see it.
+ */
+function judgeOf(detail) {
+  if (!detail || typeof detail !== "object") return [];
+  if (detail.verdict != null) {
+    const out = [`judge: ${detail.verdict ? "swing" : "NOT a swing"}${
+      detail.verdict_confidence ? ` (${detail.verdict_confidence})` : ""}`];
+    if (detail.verdict_reason) out.push(`"${detail.verdict_reason}"`);
+    return out;
+  }
+  if (detail.verdict_asked) {
+    return [`judge: could not tell${
+      detail.verdict_why ? ` — ${detail.verdict_why}` : ""} (uploaded anyway)`];
+  }
+  return ["judge: not asked"];
+}
+
 /** WHAT MADE THIS EVENT. One line, in the order a person asks it in.
  *
  * The page has always said an event happened and never why, so a clip
@@ -946,21 +975,7 @@ function TriggerLine({ detail }) {
       const len = detail.window[1] - detail.window[0];
       if (a && b) bits.push(`cut ${a}–${b} (${len.toFixed(1)}s)`);
     }
-    // THE VERDICT WAS STORED AND NOT SHOWN. The rig asks the swing
-    // judge before it uploads and carries the answer on the event,
-    // and the line explaining why a clip exists left out the one
-    // field saying whether anything agreed it was a swing -- so
-    // three clips around one golfer read as unexplained when the
-    // explanation had already been recorded.
-    if (detail.verdict != null) {
-      bits.push(`judge: ${detail.verdict ? "swing" : "NOT a swing"}${
-        detail.verdict_confidence ? ` (${detail.verdict_confidence})` : ""}`);
-      if (detail.verdict_reason) bits.push(`"${detail.verdict_reason}"`);
-    } else {
-      // "Nobody asked" and "judged a swing" look identical when the
-      // field is simply absent, and they call for opposite actions.
-      bits.push("judge: not asked");
-    }
+    for (const b of judgeOf(detail)) bits.push(b);
   } else if (kind === "dwell") {
     head = "Motion dwell";
     if (zone) {

@@ -29,7 +29,8 @@ function grab(name) {
 
 const mod = await import(
   "data:text/javascript," + encodeURIComponent(
-    `${grab("clockOf")}\n${grab("zoneOf")}\nexport { clockOf, zoneOf };`));
+    `${grab("clockOf")}\n${grab("zoneOf")}\n${grab("judgeOf")}\n`
+    + `export { clockOf, zoneOf, judgeOf };`));
 
 const failed = [];
 function check(label, got, want) {
@@ -74,6 +75,30 @@ check("a label with no index still reads",
       mod.zoneOf({ zone_label: "Back" }), "Back");
 check("nothing to say", mod.zoneOf({}), null);
 check("no detail at all", mod.zoneOf(null), null);
+
+console.log("");
+console.log("the swing judge gets three states, not two:");
+check("a yes says so",
+      mod.judgeOf({ verdict: true, verdict_confidence: "high" }),
+      ["judge: swing (high)"]);
+check("a no is loud, and carries its reason",
+      mod.judgeOf({ verdict: false, verdict_reason: "only edge speckle" }),
+      ['judge: NOT a swing', '"only edge speckle"']);
+// THE DISTINCTION THIS EXISTS FOR. Both of these have no verdict, and
+// collapsing them sends the operator to the config file when the
+// fault is a key or a link on the server.
+check("asked, and nothing came back, is not 'not asked'",
+      mod.judgeOf({ verdict_asked: true, verdict_why: "no answer" }),
+      ["judge: could not tell — no answer (uploaded anyway)"]);
+check("asked, with no why recorded",
+      mod.judgeOf({ verdict_asked: true }),
+      ["judge: could not tell (uploaded anyway)"]);
+check("never asked", mod.judgeOf({}), ["judge: not asked"]);
+check("a Pi from before any of this", mod.judgeOf(null), []);
+// A VERDICT OF false IS A VERDICT. `if (detail.verdict)` would file it
+// under "not asked", which is the same class of bug as zone 0.
+check("a false verdict is not an absent one",
+      mod.judgeOf({ verdict: false })[0], "judge: NOT a swing");
 
 console.log("");
 if (failed.length) {
