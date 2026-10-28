@@ -3027,6 +3027,8 @@ def swing_heat_check(
     ball_hint=None,
     debug_dir=None,
     debug_prefix: str = "heatchk",
+    before_sec: float = 2.0,
+    after_sec: float = 2.5,
 ) -> dict:
     """Confirm a suspected swing with MOG2 physics.
 
@@ -3066,9 +3068,12 @@ def swing_heat_check(
             det_scale = DETECT_MAX_WIDTH / float(width)
         det_w = max(1, int(round(width * det_scale)))
         det_h = max(1, int(round(height * det_scale)))
-        start_f = max(0, int((float(peak_time_sec) - 2.0) * fps))
-        end_f = int((float(peak_time_sec) + 2.5) * fps)
         warmup = 12
+        _lead = max(warmup / max(fps, 1.0), 0.4)
+        accum_f0 = max(0, int((float(peak_time_sec) - float(before_sec)) * fps))
+        start_f = max(0, int(
+            (float(peak_time_sec) - float(before_sec) - _lead) * fps))
+        end_f = int((float(peak_time_sec) + float(after_sec)) * fps)
         bg = cv2.createBackgroundSubtractorMOG2(
             history=150, varThreshold=BG_VAR_THRESHOLD, detectShadows=False,
         )
@@ -3091,7 +3096,7 @@ def swing_heat_check(
                     if det_scale != 1.0 else frame
                 )
                 fg = bg.apply(det)
-                if idx - start_f < warmup:
+                if idx - start_f < warmup or idx < accum_f0:
                     continue
                 okp, png = cv2.imencode(".png", fg)
                 if okp:

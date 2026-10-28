@@ -13341,6 +13341,24 @@ def test_cut_long_upload(
     pi_rest_sec: float = Form(5.0),
     pi_rest_jitter_px: float = Form(6.0),
     pi_use_zones: bool = Form(True),
+    # A SECOND OPINION ON EACH PEAK, from the thing that reads a swing
+    # as a shape rather than as a number. The audio gate says a sharp
+    # loud sound happened; it cannot say a club caused it, and on this
+    # course the false positives sit at the same ratio as the quiet
+    # real strikes. The motion-heat composite shows the club fan, and
+    # the AI judge reads it correctly where the ray-counting heuristic
+    # inverted.
+    #
+    # Off by default: it is a vision call per peak, so it costs money
+    # and seconds, and Test Cut is also used for runs where nobody is
+    # asking that question.
+    verify_swings: bool = Form(False),
+    # HALF A SECOND EITHER SIDE, because the audio gives an impact
+    # instant rather than a region. The old 2.0/2.5 window was sized
+    # for a pose peak, which is only known to within a second or so --
+    # at that width a golfer walking up, a practice waggle and the
+    # swing itself all land in one composite and the fan is buried.
+    verify_window_sec: float = Form(0.5),
     # ZONES FOR THIS RUN ONLY, as JSON [{x,y,w,h}] in 0-1 fractions of
     # the frame. NOTHING IS SAVED: the camera's own boxes are what the
     # rig records against, and a tester that quietly rewrote them could
@@ -13609,6 +13627,46 @@ def test_cut_long_upload(
             "confidence": w.get("confidence"),
             "burst_duration_sec": w.get("burst_duration_sec"),
         }
+        if verify_swings and peak_time_sec is not None:
+            # Never fatal: this is a second opinion, and a detector run
+            # that dies because the opinion could not be had is worse
+            # than one that reports without it.
+            try:
+                from ..services.tracer import swing_heat_check
+                _chk = swing_heat_check(
+                    tee_path, peak_time_sec, tee_fps,
+                    debug_dir=CLIPS_DIR,
+                    debug_prefix=f"verify-{upload_id}-{idx:02d}-"
+                                 f"{secrets.token_hex(3)}",
+                    before_sec=float(verify_window_sec),
+                    after_sec=float(verify_window_sec),
+                )
+                cut_entry["heat_image_url"] = _clip_url(
+                    _chk.get("image_clean") or _chk.get("image"))
+                cut_entry["verify_window_sec"] = float(verify_window_sec)
+                if (_chk.get("image_clean")
+                        and os.environ.get("ANTHROPIC_API_KEY")):
+                    _j = judge_swing_heat_image(
+                        CLIPS_DIR / _chk["image_clean"])
+                    cut_entry["is_swing"] = _j.get("is_swing")
+                    cut_entry["verify_confidence"] = _j.get("confidence")
+                    cut_entry["verify_reason"] = _j.get("reason")
+                else:
+                    # SAY WHICH ANSWER THIS IS. The fan heuristic and
+                    # the judge disagree often enough that reporting
+                    # one as the other would mislead a tuning session.
+                    cut_entry["is_swing"] = (
+                        True if _chk.get("verdict") == "club_swing"
+                        else False if _chk.get("verdict") == "no_swing"
+                        else None)
+                    cut_entry["verify_confidence"] = "low"
+                    cut_entry["verify_reason"] = (
+                        "club-fan heuristic (no ANTHROPIC_API_KEY)")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("test-cut: verify failed on peak %.2f: %s",
+                            peak_time_sec, exc)
+                cut_entry["verify_reason"] = f"verify failed: {exc}"
+
         if not cut_clips:
             # Detection-only mode: no ffmpeg, no files. Operator just
             # wants to see the peak times to debug the detector.

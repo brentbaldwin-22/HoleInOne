@@ -72,6 +72,11 @@ export default function AdminLongUpload() {
   const [motionRatio, setMotionRatio] = useState({}); // {id: number}
   const [pairWindow, setPairWindow] = useState({}); // {id: number} -> combined-mode pair window
   const [detectOnly, setDetectOnly] = useState({}); // {id: true} -> skip cutting
+  // A SECOND OPINION PER PEAK. The audio gate says a sharp loud sound
+  // happened and cannot say a club caused it, so this asks the thing
+  // that reads a swing as a shape: a half-second of motion heat
+  // around the impact, judged for the club's fan.
+  const [verifySwings, setVerifySwings] = useState({});
   const [showSource, setShowSource] = useState({}); // {id: true}
   const [segHole, setSegHole] = useState({}); // {"uploadId-cutIndex": holeNumber}
   const [segProcessing, setSegProcessing] = useState({}); // {"uploadId-cutIndex": true}
@@ -197,6 +202,10 @@ export default function AdminLongUpload() {
       if (Number.isFinite(ratio) && ratio > 0) opts.motionRatio = ratio;
     }
     if (detectOnly[uploadId]) opts.cutClips = false;
+    if (verifySwings[uploadId]) {
+      opts.verifySwings = true;
+      opts.verifyWindowSec = 0.5;
+    }
     setTestCutting((t) => ({ ...t, [uploadId]: true }));
     setError(null);
     setTestCutError((r) => ({ ...r, [uploadId]: null }));
@@ -639,6 +648,22 @@ export default function AdminLongUpload() {
                           style={{ margin: 0 }}
                         />
                         detect only
+                      </label>
+                      <label
+                        className="tiny"
+                        style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                        title="Ask the AI judge whether each detected peak looks like a club swing, from a half-second of motion heat either side of the impact. One vision call per peak — slower, and it costs."
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!!verifySwings[u.id]}
+                          onChange={(e) =>
+                            setVerifySwings((d) => ({ ...d, [u.id]: e.target.checked }))
+                          }
+                          disabled={!!testCutting[u.id] || missing || busy}
+                          style={{ margin: 0 }}
+                        />
+                        verify ±0.5s
                       </label>
                       <button
                         type="button"
@@ -1202,6 +1227,7 @@ export default function AdminLongUpload() {
                                 <th style={{ padding: "2px 10px 2px 0" }}>peak</th>
                                 <th style={{ padding: "2px 10px 2px 0" }}>×ratio</th>
                                 <th style={{ padding: "2px 10px 2px 0" }}>attack</th>
+                                <th style={{ padding: "2px 10px 2px 0" }}>swing?</th>
                                 <th style={{ padding: "2px 10px 2px 0" }}>window</th>
                                 <th style={{ padding: "2px 10px 2px 0" }}>conf</th>
                               </tr>
@@ -1229,6 +1255,25 @@ export default function AdminLongUpload() {
                                           ? ` / ${c.max_attack_ms}` : ""}
                                       </span>
                                     )}
+                                  </td>
+                                  <td style={{ padding: "1px 10px 1px 0" }}
+                                      title={c.verify_reason || ""}>
+                                    {c.is_swing == null
+                                      ? (c.verify_reason ? "?" : "—")
+                                      : (
+                                        <a href={c.heat_image_url || undefined}
+                                           target="_blank" rel="noreferrer"
+                                           style={{
+                                             color: c.is_swing
+                                               ? "#16a34a" : "#dc2626",
+                                             textDecoration: c.heat_image_url
+                                               ? "underline" : "none",
+                                           }}>
+                                          {c.is_swing ? "✓ swing" : "✗ not"}
+                                          {c.verify_confidence
+                                            ? ` (${c.verify_confidence})` : ""}
+                                        </a>
+                                      )}
                                   </td>
                                   <td style={{ padding: "1px 10px 1px 0" }}>
                                     {c.start_sec.toFixed(1)}–{c.end_sec.toFixed(1)}s

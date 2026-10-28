@@ -1171,6 +1171,11 @@ export const api = {
       xhr.onerror = () => reject(new Error("network error"));
       const fd = new FormData();
       fd.append("detector", detector);
+      if (opts.verifySwings) {
+        fd.append("verify_swings", "true");
+        fd.append("verify_window_sec",
+          String(opts.verifyWindowSec != null ? opts.verifyWindowSec : 0.5));
+      }
       if (opts.audioMinPeakRatio != null) {
         fd.append("audio_min_peak_ratio", String(opts.audioMinPeakRatio));
       }
