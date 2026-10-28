@@ -75,6 +75,9 @@ class AudioTrigger:
         before_sec: float = DEFAULT_BEFORE_SEC,
         after_sec: float = DEFAULT_AFTER_SEC,
         shadow: bool = True,
+        verify: bool = False,
+        verify_drops: bool = False,
+        verify_window_sec: float = 0.5,
         on_cut: Optional[Callable[[dict], None]] = None,
     ) -> None:
         self.ring = ring
@@ -90,6 +93,15 @@ class AudioTrigger:
         self.before_sec = float(before_sec)
         self.after_sec = float(after_sec)
         self.shadow = bool(shadow)
+        # ASK THE JUDGE, AND WHETHER ITS ANSWER MAY STOP AN UPLOAD.
+        # Two flags, not one, because the useful first state is asking
+        # without acting: the verdict is logged and carried on the
+        # event while the dwell keeps uploading everything, so the
+        # judge can be checked against a week of real swings before it
+        # is allowed to throw one away.
+        self.verify = bool(verify)
+        self.verify_drops = bool(verify_drops)
+        self.verify_window_sec = float(verify_window_sec)
         self.on_cut = on_cut
         self._fed: Optional[str] = None
         self._fed_at = 0.0
@@ -304,14 +316,20 @@ def build(cfg: dict, work_dir, runner, video_span=None, on_cut=None):
         before_sec=float(a.get("before_sec", DEFAULT_BEFORE_SEC)),
         after_sec=float(a.get("after_sec", DEFAULT_AFTER_SEC)),
         shadow=bool(a.get("shadow", True)),
+        verify=bool(a.get("verify", False)),
+        verify_drops=bool(a.get("verify_drops", False)),
+        verify_window_sec=float(a.get("verify_window_sec", 0.5)),
         on_cut=on_cut,
     )
     log.info(
         "audio trigger: %s, gate x%.1f (min_ratio), zones %s, "
-        "window %.0f..+%.0fs",
+        "window %.0f..+%.0fs, judge %s",
         "SHADOW (deciding, not cutting)" if t.shadow else "LIVE",
         listener.min_peak_ratio,
         "any" if zones is None else zones, t.before_sec, t.after_sec,
+        ("off" if not t.verify
+         else ("asked, and may REFUSE an upload" if t.verify_drops
+               else "asked, logged only")),
     )
     return t
 

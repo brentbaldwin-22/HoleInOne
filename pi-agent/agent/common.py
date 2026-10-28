@@ -519,6 +519,34 @@ class BackendClient:
                 log.debug("trigger detail would not serialise (%s)", exc)
         return self._retry("POST", "/event-trigger", data=data)
 
+    def verify_swing(self, image_path, timeout: float = 25.0) -> dict:
+        """Ask the backend whether this composite shows a club swing.
+
+        Returns {"is_swing": True|False|None, ...}. NULL IS NOT FALSE
+        and callers must not treat it as one: no key on the server, a
+        model that would not answer, a link that dropped -- all arrive
+        as None, and the clip they describe is as likely a swing as
+        any other. Upload on None.
+
+        One attempt, short timeout. This is spent to AVOID spending
+        ~7 MB on a clip nobody wanted; a verification that costs more
+        than the upload it saves has defeated itself.
+        """
+        out = {"is_swing": None, "confidence": None, "reason": None}
+        try:
+            with open(image_path, "rb") as fh:
+                r = self._retry(
+                    "POST", "/verify-swing",
+                    files={"image": ("heat.jpg", fh, "image/jpeg")},
+                    retries=1, timeout=timeout,
+                ) or {}
+            for k in out:
+                if k in r:
+                    out[k] = r[k]
+        except Exception as exc:  # noqa: BLE001
+            out["reason"] = "ask failed: %s" % exc
+        return out
+
     def recover_event(self, session_id: str) -> dict:
         # Re-register a session whose trigger was lost, so an already
         # recorded clip has something to attach to. `recover` keeps the

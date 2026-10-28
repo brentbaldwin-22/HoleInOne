@@ -603,6 +603,56 @@ class CopyEngine:
                         "the clip will be recovered later, but the green "
                         "half is lost", exc)
 
+        _verdict = None
+        _vconf = _vreason = None
+        _t = getattr(runner, "_audio_trigger", None)
+        if _t is not None and getattr(_t, "verify", False):
+            try:
+                from . import swingheat
+                _crop = swingheat.zone_crop(
+                    getattr(runner, "roi", None), tee_roi.boxes)
+                _img = swingheat.build(
+                    clip_path, float(impact_ts) - float(res["start"]),
+                    before_sec=_t.verify_window_sec,
+                    after_sec=_t.verify_window_sec,
+                    crop=_crop,
+                )
+                if _img is not None:
+                    _v = runner.client.verify_swing(_img)
+                    _verdict = _v.get("is_swing")
+                    _vconf, _vreason = _v.get("confidence"), _v.get("reason")
+                    log.info("copy: swing check on %s — %s (%s) %s",
+                             session_id,
+                             {True: "SWING", False: "not a swing"}.get(
+                                 _verdict, "could not tell"),
+                             _vconf or "-", _vreason or "")
+                    _img.unlink(missing_ok=True)
+                else:
+                    log.info("copy: no composite for %s — uploading unjudged",
+                             session_id)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("copy: swing check failed (%s) — uploading", exc)
+            if _verdict is False and _t.verify_drops:
+                # SPOOLED, NOT DELETED, while this is young. A verdict
+                # that is wrong costs a swing, and the cheapest
+                # insurance against finding that out too late is the
+                # clip still being on the card.
+                _kept = clip_path.with_suffix(".notswing.mp4")
+                try:
+                    clip_path.rename(_kept)
+                except OSError:
+                    clip_path.unlink(missing_ok=True)
+                log.info("copy: NOT UPLOADING %s — judged not a swing (%s). "
+                         "Kept as %s", session_id, _vreason or "no reason",
+                         _kept.name)
+                if detail is not None:
+                    detail["verdict"] = False
+                return None
+        if detail is not None and _verdict is not None:
+            detail["verdict"] = bool(_verdict)
+            detail["verdict_confidence"] = _vconf
+            detail["verdict_reason"] = _vreason
+
         up = getattr(runner, "uploader", None)
         if up is None:
             clip_path.unlink(missing_ok=True)

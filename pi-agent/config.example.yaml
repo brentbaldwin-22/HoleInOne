@@ -746,3 +746,31 @@ log_level: "INFO"
 #   # on geography. The agent warns about that at startup; it cannot
 #   # refuse, because a rig that will not start records nothing either.
 #   replaces_dwell: false
+#
+#   # ---- the second opinion ---------------------------------------------
+#   # A SHARP LOUD SOUND IS NOT A CLUB. The gates above measure
+#   # loudness and rise time, and on this course the false positives
+#   # sit at the same ratios as the quiet real swings -- measured 28
+#   # Oct, genuine strikes at x6.5 and x7.8 against noise at x8.0-x9.8.
+#   # No threshold separates those. Shape does: a motion-heat
+#   # composite of the half second either side of the impact shows a
+#   # compact turning figure with the club as a thin plume above it,
+#   # and the AI judge reads that correctly where the numbers cannot.
+#   #
+#   # The rig BUILDS the picture (~100 KB) and the server asks the
+#   # model -- the API key never comes near the Pi. Done before the
+#   # upload, a "no" saves the ~7 MB clip that would have followed; a
+#   # verdict asked for afterwards saves nothing.
+#   verify: false
+#   # ...and whether that answer may actually stop an upload. Separate
+#   # on purpose: the useful first state is asking WITHOUT acting, so
+#   # the verdict is logged and carried on the event while the dwell
+#   # keeps uploading everything, and the judge can be checked against
+#   # a week of real golf before it is allowed to discard any.
+#   #
+#   # Even then it only ever acts on an explicit NO. "Could not tell"
+#   # -- no key, no answer, a dropped link -- uploads, and a clip it
+#   # refuses is renamed to .notswing.mp4 on the card rather than
+#   # deleted.
+#   verify_drops: false
+#   verify_window_sec: 0.5

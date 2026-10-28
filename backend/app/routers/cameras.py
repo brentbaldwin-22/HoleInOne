@@ -46,6 +46,7 @@ import json
 import logging
 import re
 import secrets
+import tempfile
 import threading
 import time
 from datetime import datetime, timedelta
@@ -1372,6 +1373,63 @@ async def post_still(token: str, request: Request):
     cam_id = await asyncio.to_thread(_store)
     log.info("cameras: still stored for camera %s (%d bytes)", cam_id, len(body))
     return {"ok": True, "bytes": len(body)}
+
+
+MAX_VERIFY_IMAGE_BYTES = 4 * 1024 * 1024
+
+
+@router.post("/{token}/verify-swing")
+async def verify_swing(
+    token: str,
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Judge a motion-heat composite the rig built: swing, or not?
+
+    The rig cuts a clip the moment it hears an impact and then has to
+    decide whether to spend ~7 MB of a cellular link on it. The audio
+    gate cannot tell a club from a dropped bag; the judge can, and
+    this is how the rig reaches it without holding the API key.
+
+    ALWAYS ANSWERS. `is_swing: null` means "could not tell" -- no key,
+    no model, a malformed reply -- and the agent is required to upload
+    on null exactly as it uploads on true. A verification that cannot
+    be had must never cost a swing.
+    """
+    cam = _get_camera_by_token(token, db)
+    db.commit()                      # keep the last_seen_at bump
+    out = {"ok": True, "is_swing": None, "confidence": None, "reason": None}
+
+    data = await image.read()
+    if not data:
+        out["reason"] = "empty image"
+        return out
+    if len(data) > MAX_VERIFY_IMAGE_BYTES:
+        out["reason"] = f"image too large ({len(data)} bytes)"
+        return out
+
+    tmp = Path(tempfile.gettempdir()) / (
+        f"verify-{cam.id}-{secrets.token_hex(6)}.jpg")
+    try:
+        tmp.write_bytes(data)
+        from ..services.ai_tracer import judge_swing_heat_image
+
+        j = judge_swing_heat_image(tmp)
+        out["is_swing"] = j.get("is_swing")
+        out["confidence"] = j.get("confidence")
+        out["reason"] = j.get("reason")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("verify-swing: judge failed for camera %s: %s",
+                    cam.id, exc)
+        out["reason"] = f"judge failed: {exc}"
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    log.info("verify-swing: camera=%s -> %s (%s)",
+             cam.id, out["is_swing"], out["reason"])
+    return out
 
 
 def _parse_trigger_detail(raw):
