@@ -13641,7 +13641,7 @@ def test_cut_long_upload(
                     before_sec=float(verify_window_sec),
                     after_sec=float(verify_window_sec),
                 )
-                cut_entry["heat_image_url"] = _clip_url(
+                cut_entry["heat_image_url"] = _clip_url_for(
                     _chk.get("image_clean") or _chk.get("image"))
                 cut_entry["verify_window_sec"] = float(verify_window_sec)
                 if (_chk.get("image_clean")

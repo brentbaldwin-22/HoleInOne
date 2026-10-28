@@ -1256,24 +1256,41 @@ export default function AdminLongUpload() {
                                       </span>
                                     )}
                                   </td>
-                                  <td style={{ padding: "1px 10px 1px 0" }}
+                                  <td style={{ padding: "1px 10px 1px 0",
+                                               verticalAlign: "top" }}
                                       title={c.verify_reason || ""}>
-                                    {c.is_swing == null
-                                      ? (c.verify_reason ? "?" : "—")
-                                      : (
-                                        <a href={c.heat_image_url || undefined}
-                                           target="_blank" rel="noreferrer"
-                                           style={{
-                                             color: c.is_swing
-                                               ? "#16a34a" : "#dc2626",
-                                             textDecoration: c.heat_image_url
-                                               ? "underline" : "none",
-                                           }}>
-                                          {c.is_swing ? "✓ swing" : "✗ not"}
-                                          {c.verify_confidence
-                                            ? ` (${c.verify_confidence})` : ""}
-                                        </a>
-                                      )}
+                                    <div style={{
+                                      color: c.is_swing == null ? undefined
+                                        : (c.is_swing ? "#16a34a" : "#dc2626"),
+                                    }}>
+                                      {c.is_swing == null
+                                        ? (c.verify_reason ? "?" : "—")
+                                        : `${c.is_swing ? "✓ swing" : "✗ not"}${
+                                          c.verify_confidence
+                                            ? ` (${c.verify_confidence})` : ""}`}
+                                    </div>
+                                    {c.heat_image_url && (
+                                      <a href={c.heat_image_url}
+                                         target="_blank" rel="noreferrer"
+                                         title="Open the full-size composite the judge was shown">
+                                        <img src={c.heat_image_url}
+                                             alt={`motion heat around ${
+                                               c.peak_time_sec}s`}
+                                             style={{
+                                               width: 200, display: "block",
+                                               marginTop: 3, borderRadius: 4,
+                                               border: "1px solid var(--border, #333)",
+                                             }} />
+                                      </a>
+                                    )}
+                                    {c.verify_reason && (
+                                      <div className="muted" style={{
+                                        maxWidth: 200, marginTop: 2,
+                                        whiteSpace: "normal", lineHeight: 1.3,
+                                      }}>
+                                        {c.verify_reason}
+                                      </div>
+                                    )}
                                   </td>
                                   <td style={{ padding: "1px 10px 1px 0" }}>
                                     {c.start_sec.toFixed(1)}–{c.end_sec.toFixed(1)}s
