@@ -672,6 +672,17 @@ class CopyEngine:
                     _v = runner.client.verify_swing(_img)
                     _verdict = _v.get("is_swing")
                     _vconf, _vreason = _v.get("confidence"), _v.get("reason")
+                    if detail is not None:
+                        # THE PICTURE AND THE INSTANT IT WAS BUILT FROM.
+                        # Test Cut re-derives the impact from the cut
+                        # clip and can land somewhere else entirely;
+                        # without this number the two composites cannot
+                        # be compared, only their verdicts, which is how
+                        # a disagreement becomes unarguable.
+                        if _v.get("image"):
+                            detail["verdict_image"] = str(_v["image"])[:120]
+                        detail["verdict_at_sec"] = round(
+                            float(impact_ts) - float(res["start"]), 2)
                     log.info("copy: swing check on %s — %s (%s) %s",
                              session_id,
                              {True: "SWING", False: "not a swing"}.get(

@@ -532,7 +532,12 @@ class BackendClient:
         ~7 MB on a clip nobody wanted; a verification that costs more
         than the upload it saves has defeated itself.
         """
-        out = {"is_swing": None, "confidence": None, "reason": None}
+        out = {"is_swing": None, "confidence": None, "reason": None,
+               # WHAT THE JUDGE WAS LOOKING AT. The server keeps the
+               # composite and names it back; carrying the name onto
+               # the event is what lets the picture be found again when
+               # a verdict is argued with.
+               "image": None}
         try:
             with open(image_path, "rb") as fh:
                 r = self._retry(

@@ -8499,7 +8499,9 @@ function rigTrigger(detail) {
         detail.verdict_why ? ` — ${detail.verdict_why}` : ""}`;
     }
     return { label: `Audio${detail.ratio != null
-      ? ` ×${detail.ratio}` : ""} · ${judge}`, tone,
+      ? ` ×${detail.ratio}` : ""} · ${judge}${
+      detail.verdict_at_sec != null
+        ? ` @ ${detail.verdict_at_sec}s` : ""}`, tone,
       title: detail.verdict_reason || undefined };
   }
   if (kind === "dwell") {
@@ -17074,11 +17076,27 @@ export default function AdminProduction() {
               ) : null}
               {(() => {
                 const t = rigTrigger(row.source?.trigger_detail);
-                return t ? (
-                  <span className={`pill small ${t.tone}`} title={t.title}>
-                    {t.label}
-                  </span>
-                ) : null;
+                if (!t) return null;
+                return (
+                  <>
+                    <span className={`pill small ${t.tone}`} title={t.title}>
+                      {t.label}
+                    </span>
+                    {/* THE PICTURE THE RIG'S JUDGE SAW. Test Cut shows
+                        its own composite below; the judge, its prompt
+                        and its model are the same on both paths, so
+                        when the verdicts differ the two pictures are
+                        the only place the difference can be. */}
+                    {row.source?.verdict_image_url ? (
+                      <a href={row.source.verdict_image_url} target="_blank"
+                         rel="noreferrer" title="What the rig's judge saw">
+                        <img src={row.source.verdict_image_url} alt=""
+                             style={{ height: 34, borderRadius: 4,
+                                      verticalAlign: "middle" }} />
+                      </a>
+                    ) : null}
+                  </>
+                );
               })()}
               <span className="small muted">·</span>
               <span className="small muted">

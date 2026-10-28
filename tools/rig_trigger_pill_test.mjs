@@ -64,6 +64,21 @@ check("the reason rides on the tooltip, not the pill", mod.rigTrigger(
   { kind: "audio", verdict: false, verdict_reason: "no plume" }).title,
       "no plume");
 
+// THE INSTANT THE RIG JUDGED, which is the number that makes a
+// disagreement arguable. Test Cut re-derives the impact from the cut
+// clip and can land half a second away; two composites half a second
+// apart, each half a second wide, barely overlap.
+check("it carries the instant it judged", mod.rigTrigger(
+  { kind: "audio", ratio: 4.1, verdict: true, verdict_at_sec: 5.0 }).label,
+      "Audio ×4.1 · judge: swing @ 5s");
+check("...and omits it when the rig did not send one", mod.rigTrigger(
+  { kind: "audio", verdict: true }).label.includes("@"), false);
+// ZERO SECONDS IS AN INSTANT. `if (detail.verdict_at_sec)` would drop
+// it, which is the zone-0 mistake again.
+check("an impact at 0s is still an instant", mod.rigTrigger(
+  { kind: "audio", verdict: true, verdict_at_sec: 0 }).label.includes("@ 0s"),
+      true);
+
 console.log("");
 console.log("A DWELL CLIP SAYS IT WAS NEVER JUDGED:");
 check("it says so", mod.rigTrigger({ kind: "dwell" }).label,

@@ -7096,6 +7096,15 @@ def list_long_uploads(
                     if isinstance(cam_event.trigger_detail, dict)
                     else None
                 ),
+                # THE PICTURE THE RIG'S JUDGE SAW, so it can be put
+                # beside the one Test Cut builds. The verdicts
+                # disagree; the judge, its prompt and its model are
+                # identical on both paths, so the composite is the
+                # only thing left that can differ -- and until now it
+                # existed for a few milliseconds in a temp file.
+                "verdict_image_url": _clip_url_for(
+                    (cam_event.trigger_detail or {}).get("verdict_image")
+                    if isinstance(cam_event.trigger_detail, dict) else None),
             }
             if cam_event
             else {"kind": "upload"}

@@ -1377,6 +1377,41 @@ async def post_still(token: str, request: Request):
 
 MAX_VERIFY_IMAGE_BYTES = 4 * 1024 * 1024
 
+# HOW LONG A RIG'S COMPOSITE IS KEPT. Long enough to answer "why did
+# this upload?" about a round that finished yesterday, and no longer:
+# these are ~100 KB each and arrive once per audio trigger, which on a
+# busy tee is a few hundred a day.
+RIG_HEAT_MAX_AGE_SEC = 7 * 24 * 3600
+RIG_HEAT_MAX_FILES = 4000
+_rig_heat_swept_at = 0.0
+
+
+def _sweep_rig_heat() -> None:
+    """Age the kept composites out. Never raises.
+
+    NOTHING ELSE SWEEPS THEM, and this exact omission has now cost
+    twice on this project: the audio ring grew until the card filled,
+    and the refused-clip directory shipped with no sweeper at all. A
+    directory that only ever gains files is a disk-full outage with a
+    delay on it.
+    """
+    global _rig_heat_swept_at
+    now = time.time()
+    if now - _rig_heat_swept_at < 3600.0:
+        return
+    _rig_heat_swept_at = now
+    try:
+        files = sorted(CLIPS_DIR.glob("righeat-*.jpg"),
+                       key=lambda q: q.stat().st_mtime)
+        for q in files[:max(0, len(files) - RIG_HEAT_MAX_FILES)]:
+            q.unlink(missing_ok=True)
+        cutoff = now - RIG_HEAT_MAX_AGE_SEC
+        for q in files[max(0, len(files) - RIG_HEAT_MAX_FILES):]:
+            if q.stat().st_mtime < cutoff:
+                q.unlink(missing_ok=True)
+    except OSError as exc:
+        log.debug("verify-swing: sweep failed (%s)", exc)
+
 
 @router.post("/{token}/verify-swing")
 async def verify_swing(
@@ -1408,13 +1443,30 @@ async def verify_swing(
         out["reason"] = f"image too large ({len(data)} bytes)"
         return out
 
-    tmp = Path(tempfile.gettempdir()) / (
-        f"verify-{cam.id}-{secrets.token_hex(6)}.jpg")
+    # KEPT, NOT DISCARDED. This was written to a temp file, judged and
+    # deleted -- so the one picture that explains a verdict existed for
+    # a few milliseconds on a server nobody was watching.
+    #
+    # WHY THAT MATTERED. Test Cut re-runs the SAME judge, with the same
+    # prompt and the same model, on its own composite of the same clip,
+    # and the two disagree: the rig passed uploads 1118 and 1131 that
+    # Test Cut then refused. The judge is not the variable -- the
+    # picture is, and the two are built by different code, from
+    # different instants, under different crops. None of that is
+    # arguable from the verdicts alone, and the composite is ~100 KB
+    # already sitting in this request.
+    _name = f"righeat-{cam.id}-{secrets.token_hex(6)}.jpg"
+    _dest = CLIPS_DIR / _name
     try:
-        tmp.write_bytes(data)
+        _dest.write_bytes(data)
+        out["image"] = _name
+    except OSError as exc:
+        log.warning("verify-swing: could not keep the composite (%s)", exc)
+        _dest = None
+    try:
         from ..services.ai_tracer import judge_swing_heat_image
 
-        j = judge_swing_heat_image(tmp)
+        j = judge_swing_heat_image(_dest if _dest is not None else None)
         out["is_swing"] = j.get("is_swing")
         out["confidence"] = j.get("confidence")
         out["reason"] = j.get("reason")
@@ -1422,11 +1474,7 @@ async def verify_swing(
         log.warning("verify-swing: judge failed for camera %s: %s",
                     cam.id, exc)
         out["reason"] = f"judge failed: {exc}"
-    finally:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
+    _sweep_rig_heat()
     log.info("verify-swing: camera=%s -> %s (%s)",
              cam.id, out["is_swing"], out["reason"])
     return out
