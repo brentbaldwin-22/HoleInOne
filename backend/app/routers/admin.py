@@ -6751,6 +6751,12 @@ def upload_long_video(
     }
 
 
+# THE TRIGGERS THE LIST CAN BE NARROWED TO. A closed set, because an
+# unrecognised value must show EVERYTHING rather than nothing: a
+# filter that silently empties the page reads as "the round is gone".
+_TRIGGER_KINDS = ("audio", "dwell", "capture", "manual")
+
+
 @router.get("/long-uploads")
 def list_long_uploads(
     limit: int = 100,
@@ -6758,6 +6764,14 @@ def list_long_uploads(
     course: str = "",
     sort: str = "created",
     order: str = "desc",
+    # WHAT MADE THE CLIP: "" (everything), "audio", or "dwell".
+    #
+    # FILTERED HERE AND NOT IN THE BROWSER, because the list is
+    # paginated: a filter applied to the twenty-five rows already
+    # loaded would answer "audio" with however many of THOSE were
+    # audio, and "load more" would then fetch twenty-five more of
+    # everything. The question is about the whole table.
+    trigger: str = "",
     db: Session = Depends(get_db),
 ):
     """List previously-uploaded long videos so the operator can re-edit /
@@ -6778,6 +6792,17 @@ def list_long_uploads(
         q = q.join(Course, Course.id == LongVideoUpload.course_id).filter(
             Course.name.ilike(f"%{course_q}%")
         )
+
+    # ONE KIND OF TRIGGER. The kind lives in the camera event's
+    # trigger_detail, so this needs the join; an upload with no camera
+    # event behind it (a manual upload, or a Pi from before the
+    # trigger was described) has no kind and belongs in neither
+    # bucket, which the inner join gives for free.
+    trig = (trigger or "").strip().lower()
+    if trig in _TRIGGER_KINDS:
+        q = q.join(CameraEvent,
+                   CameraEvent.id == LongVideoUpload.camera_event_id).filter(
+            CameraEvent.trigger_detail["kind"].as_string() == trig)
 
     descending = (order or "desc").lower() != "asc"
     if sort == "course":

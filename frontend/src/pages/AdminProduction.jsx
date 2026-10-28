@@ -15965,6 +15965,11 @@ export default function AdminProduction() {
   const [courseSearch, setCourseSearch] = useState("");
   const [courseQuery, setCourseQuery] = useState("");
   const [sortKey, setSortKey] = useState("created_desc");
+  // WHAT MADE THE CLIP. "" is everything; the server does the
+  // narrowing, because this list is paginated and a filter applied to
+  // the rows already loaded would answer "audio" with however many of
+  // those twenty-five happened to be audio.
+  const [triggerKind, setTriggerKind] = useState("");
   useEffect(() => {
     const t = setTimeout(() => setCourseQuery(courseSearch.trim()), 350);
     return () => clearTimeout(t);
@@ -15984,8 +15989,9 @@ export default function AdminProduction() {
         course: courseQuery,
         sort: sortField,
         order: sortOrder,
+        trigger: triggerKind,
       }),
-    [adminPassword, courseQuery, sortField, sortOrder],
+    [adminPassword, courseQuery, sortField, sortOrder, triggerKind],
   );
   const fetchEvents = useCallback(
     (limit, offset) => api.listCameraEvents(adminPassword, limit, offset),
@@ -15993,7 +15999,10 @@ export default function AdminProduction() {
   );
   const uploadsList = useInfiniteList(fetchUploads, {
     pageSize: 25,
-    deps: [adminPassword, courseQuery, sortField, sortOrder],
+    // IN THE DEPS OR THE LIST KEEPS THE OLD ROWS. fetchUploads already
+    // closes over the kind; without it here the hook does not know the
+    // question changed and never refetches.
+    deps: [adminPassword, courseQuery, sortField, sortOrder, triggerKind],
   });
   const eventsList = useInfiniteList(fetchEvents, {
     pageSize: 25,
@@ -16895,8 +16904,34 @@ export default function AdminProduction() {
             <option value="course_desc">Course — Z→A</option>
           </select>
         </label>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span className="tiny upper muted">Trigger</span>
+          <select
+            value={triggerKind}
+            onChange={(e) => setTriggerKind(e.target.value)}
+            className="small"
+            style={{ width: "auto" }}
+            title="What made the rig cut this clip"
+          >
+            <option value="">All triggers</option>
+            <option value="audio">Audio — impact heard</option>
+            <option value="dwell">Motion dwell</option>
+            <option value="capture">Operator capture</option>
+            <option value="manual">Manual trigger</option>
+          </select>
+        </label>
         {courseQuery ? (
           <span className="tiny muted">filtering “{courseQuery}”</span>
+        ) : null}
+        {/* AN EMPTY LIST UNDER A FILTER IS NOT A MISSING ROUND, and it
+            looks exactly like one. Uploads from before the trigger was
+            described, and manual uploads, carry no kind at all and are
+            in neither bucket. */}
+        {triggerKind ? (
+          <span className="tiny muted">
+            only {triggerKind}-triggered clips — uploads with no recorded
+            trigger are hidden
+          </span>
         ) : null}
       </div>
 

@@ -404,6 +404,8 @@ export const api = {
     if (opts.course) params.set("course", opts.course);
     if (opts.sort) params.set("sort", opts.sort);
     if (opts.order) params.set("order", opts.order);
+    // "" means every trigger, so only send a real one.
+    if (opts.trigger) params.set("trigger", opts.trigger);
     return request(
       `/api/admin/long-uploads?${params.toString()}`,
       { adminPassword: key },
