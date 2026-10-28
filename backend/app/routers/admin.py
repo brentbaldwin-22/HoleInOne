@@ -20836,8 +20836,13 @@ def _ball_scan_finish_timing(rep: dict, t_run: float) -> None:
                      if _total else 0.0)
     rep["timing"] = {
         "total_sec": _total,
+        # .get, NOT ["n"]. An entry that is not a numbered stage is a
+        # diagnostic that wandered in, and it must not be able to end
+        # the run it was describing -- which is exactly what it did:
+        # KeyError('n') surfaced on the card as a red 'n'.
         "by_stage": {int(st["n"]): st["seconds"]
-                     for st in (rep.get("stages") or [])},
+                     for st in (rep.get("stages") or [])
+                     if st.get("n") is not None},
         "unattributed_sec": round(max(0.0, _total - _staged), 2),
         # INSIDE THE STAGES. `_pt_reset()` at the top of the run means
         # this is that run's ffmpeg and render work alone, broken out by
@@ -22600,8 +22605,9 @@ def _ball_scan_run(row, src_path, db, progress=None) -> dict:
         "ball scan timing upload=%s total=%.1fs over %d candidate(s): %s "
         "| unattributed %.1fs",
         getattr(row, "id", None), rep["timing"]["total_sec"], len(spots),
-        ", ".join(f"{st['n']}.{st['title']} {st['seconds']}s "
-                  f"({st.get('pct', 0)}%)" for st in rep["stages"]),
+        ", ".join(f"{st.get('n', '-')}.{st.get('title') or st.get('name')} "
+                  f"{st['seconds']}s ({st.get('pct', 0)}%)"
+                  for st in rep["stages"]),
         rep["timing"]["unattributed_sec"],
     )
     return rep
@@ -22697,9 +22703,12 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
     """
     def _note(msg, spans=None):
         if rep is not None:
-            rep.setdefault("stages", []).append(
-                {"name": "ascent window", "detail": msg,
-                 "spans": spans})
+            # ITS OWN KEY, NOT rep["stages"]. This went in among the
+            # numbered stages, and the timing table reads every stage
+            # as int(st["n"]) -- so a dict without one raised
+            # KeyError('n'), which reached the card as a red 'n' and
+            # took down every ascent run with it.
+            rep["window"] = {"detail": msg, "spans": spans}
             # THE ONE LINE THE OPERATOR IS WATCHING. The toast is the
             # only feedback during a sweep that takes a minute, and
             # saying "the whole clip" while searching two seconds of
@@ -24304,9 +24313,11 @@ def _ball_scan_produce_run(row, src_path, db, progress=None,
         "ball scan produce timing upload=%s total=%.1fs over %d "
         "candidate(s): %s | scan inside: %s | unattributed %.1fs",
         getattr(row, "id", None), rep["timing"]["total_sec"], len(spots),
-        ", ".join(f"{st['n']}.{st['title']} {st['seconds']}s "
-                  f"({st.get('pct', 0)}%)" for st in rep["stages"]),
-        ", ".join(f"{st['n']}.{st['title']} {st['seconds']}s"
+        ", ".join(f"{st.get('n', '-')}.{st.get('title') or st.get('name')} "
+                  f"{st['seconds']}s ({st.get('pct', 0)}%)"
+                  for st in rep["stages"]),
+        ", ".join(f"{st.get('n', '-')}.{st.get('title') or st.get('name')} "
+                  f"{st['seconds']}s"
                   for st in rep["scan_stages"]) or "none",
         rep["timing"]["unattributed_sec"],
     )
@@ -29625,7 +29636,7 @@ def _debug3_run(row, src_path, db, progress=None, debug_artifacts=True,
         "total_sec": _total,
         "by_stage": {
             int(st["n"]): round(float(st.get("seconds") or 0.0), 2)
-            for st in rep["stages"]
+            for st in rep["stages"] if st.get("n") is not None
         },
         # Not one of the seven: whole-video scans and debug-image writes.
         "outside_stages": {k: round(v, 2) for k, v in _overhead.items()},
@@ -29651,8 +29662,8 @@ def _debug3_run(row, src_path, db, progress=None, debug_artifacts=True,
         "debug3 timing upload=%s total=%.1fs over %d swing(s): %s | "
         "outside stages: %s | unattributed %.1fs",
         upload_id, _total, len(cands),
-        ", ".join(f"{st['n']}.{st['name']} {st['seconds']}s "
-                  f"({st['pct']}%)" for st in rep["stages"]),
+        ", ".join(f"{st.get('n', '-')}.{st.get('name') or st.get('title')} "
+                  f"{st['seconds']}s ({st['pct']}%)" for st in rep["stages"]),
         ", ".join(f"{k} {v}s" for k, v in _overhead.items()) or "none",
         rep["timing"]["unattributed_sec"],
     )

@@ -124,6 +124,48 @@ check("the attack is at or over the rig's",
       settings.ascent_audio_max_attack_ms >= 18.0, True)
 
 print()
+print("the window note cannot take down the run it is describing:")
+# WHAT ACTUALLY HAPPENED. _note put {"name", "detail", "spans"} into
+# rep["stages"], and the timing table reads every stage as
+# int(st["n"]). The KeyError that raised was caught, stringified, and
+# reached the card as a red 'n' -- str(KeyError("n")) == "'n'" -- so
+# every Find Ascents and Produce Ascents run died with a one-character
+# error naming nothing.
+check("that is in fact what the error said", str(KeyError("n")), "'n'")
+
+import importlib  # noqa: E402
+
+_adm = importlib.import_module("backend.app.routers.admin")
+
+_rep = {"stages": [
+    {"n": 1, "title": "Balls leaving the tee", "seconds": 1.0},
+    # The shape _note used to append. Kept in the fixture on purpose:
+    # the finisher must survive one, wherever it comes from.
+    {"name": "ascent window", "detail": "the rig's impact at 5.42s",
+     "spans": [(264, 564)]},
+    {"n": 2, "title": "Tracing", "seconds": 2.0},
+]}
+import time as _time  # noqa: E402
+
+_adm._ball_scan_finish_timing(_rep, _time.perf_counter() - 3.0)
+check("the timing table survives a stage with no number",
+      sorted(_rep["timing"]["by_stage"]), [1, 2])
+check("...and does not invent one for it",
+      len(_rep["timing"]["by_stage"]), 2)
+
+# AND THE NOTE IS NOT A STAGE ANY MORE. Hardening the reader is the
+# belt; not putting a diagnostic among the numbered stages is the
+# braces, and the modal is organised by those numbers.
+_src = Path("backend/app/routers/admin.py").read_text()
+_note_fn = _src[_src.index("def _ascent_windows("):]
+_note_fn = _note_fn[:_note_fn.index("def _ascent_produce_run(")]
+check("_note no longer appends to stages",
+      'rep.setdefault("stages"' in _note_fn, False)
+check("...it writes its own key", 'rep["window"] = ' in _note_fn, True)
+check("...and the line the toast reads",
+      'rep["window_detail"] = msg' in _note_fn, True)
+
+print()
 if FAILED:
     print("FAILED: %s" % ", ".join(FAILED))
     sys.exit(1)
