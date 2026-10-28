@@ -77,6 +77,13 @@ export default function AdminLongUpload() {
   // that reads a swing as a shape: a half-second of motion heat
   // around the impact, judged for the club's fan.
   const [verifySwings, setVerifySwings] = useState({});
+  // HOW CLOSE TWO ACCEPTED PEAKS MAY BE. It collapses the several
+  // detections one strike produces -- one impact came back seven
+  // times at the same timestamp on a 126s clip -- but at 6s it also
+  // discards a quieter real swing within six seconds of a louder
+  // peak, which is how a false positive at 15.43s swallowed a genuine
+  // swing at 21s that no min_ratio could recover.
+  const [audioMinSep, setAudioMinSep] = useState({});
   const [showSource, setShowSource] = useState({}); // {id: true}
   const [segHole, setSegHole] = useState({}); // {"uploadId-cutIndex": holeNumber}
   const [segProcessing, setSegProcessing] = useState({}); // {"uploadId-cutIndex": true}
@@ -178,6 +185,8 @@ export default function AdminLongUpload() {
     if (detector === "audio") {
       const ratio = parseFloat(audioMinRatio[uploadId]);
       if (Number.isFinite(ratio) && ratio > 0) opts.audioMinPeakRatio = ratio;
+      const sep = parseFloat(audioMinSep[uploadId]);
+      if (Number.isFinite(sep) && sep > 0) opts.audioMinSeparationSec = sep;
     } else if (detector === "combined") {
       const aRatio = parseFloat(audioMinRatio[uploadId] ?? 5);
       const mRatio = parseFloat(motionRatio[uploadId] ?? 2);
@@ -482,6 +491,26 @@ export default function AdminLongUpload() {
                           style={{ width: 60, fontSize: 12, padding: "2px 6px" }}
                           title="Minimum peak/median ratio. Higher = stricter (only the loudest thwacks). Default 10."
                         />
+                      )}
+                      {(testCutDetector[u.id] || "motion") === "audio" && (
+                        <label className="tiny muted"
+                               style={{ display: "inline-flex",
+                                        alignItems: "center", gap: 3 }}>
+                          sep
+                          <input
+                            type="number"
+                            min="0.2"
+                            step="0.5"
+                            value={audioMinSep[u.id] ?? 6}
+                            onChange={(e) =>
+                              setAudioMinSep((r) => ({ ...r, [u.id]: e.target.value }))
+                            }
+                            disabled={!!testCutting[u.id] || missing || busy}
+                            className="small"
+                            style={{ width: 54, fontSize: 12, padding: "2px 6px" }}
+                            title="Seconds between accepted peaks. It exists to collapse the several detections ONE strike produces (often at the same timestamp), which needs well under a second — but at 6s it also discards a quieter real swing within six seconds of a louder peak. Try 1."
+                          />
+                        </label>
                       )}
                       {(testCutDetector[u.id] || "motion") === "motion" && (
                         <input

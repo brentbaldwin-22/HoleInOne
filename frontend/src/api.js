@@ -1176,6 +1176,10 @@ export const api = {
         fd.append("verify_window_sec",
           String(opts.verifyWindowSec != null ? opts.verifyWindowSec : 0.5));
       }
+      if (opts.audioMinSeparationSec != null) {
+        fd.append("audio_min_separation_sec",
+          String(opts.audioMinSeparationSec));
+      }
       if (opts.audioMinPeakRatio != null) {
         fd.append("audio_min_peak_ratio", String(opts.audioMinPeakRatio));
       }

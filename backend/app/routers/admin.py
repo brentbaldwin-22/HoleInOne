@@ -13320,6 +13320,7 @@ def test_cut_long_upload(
     upload_id: int,
     detector: str = Form("motion"),
     audio_min_peak_ratio: float = Form(10.0),
+    audio_min_separation_sec: float = Form(6.0),
     motion_ratio: float = Form(4.0),
     combined_pair_window_sec: float = Form(3.0),
     cut_clips: bool = Form(True),
@@ -13419,6 +13420,7 @@ def test_cut_long_upload(
             src_path,
             fps=tee_fps,
             min_peak_ratio=float(audio_min_peak_ratio),
+            min_separation_sec=float(audio_min_separation_sec),
             debug=debug,
         )
     elif detector == "ballgone":
