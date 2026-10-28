@@ -22891,7 +22891,15 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
             progress(f"Finding the tee spot for ball {i + 1} of {len(_asc)}",
                      i, len(_asc))
         _entry = {"n": i + 1, "seen_frame": a.get("first_frame"),
-                  "seen_sec": a.get("first_sec"), "ok": False,
+                  "seen_sec": a.get("first_sec"),
+                  # THE LAST FRAME THE BALL WAS SEEN ON THIS CAMERA.
+                  # The green's search window is placed from it: it is
+                  # a detection, where `impact_frame` is a chain run
+                  # backwards through a fitted deceleration, and an
+                  # extrapolation that is half a second out moves the
+                  # whole window half a second with it.
+                  "last_frame": a.get("last_frame"),
+                  "last_sec": a.get("last_sec"), "ok": False,
                   "reason": None}
         _spot = _ascent_tee_spot(row, src_path, db, a, fps, _roi.get("roi"))
         _entry.update(_spot)
@@ -23324,12 +23332,45 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
             log.warning("ascent descents: could not derive the offset "
                         "on %s: %s", row.id, exc)
 
+    # FROM WHERE THE BALL WAS LAST SEEN, not from where it was struck.
+    #
+    # The ascent chain's last point is the one instant in the flight
+    # that both halves can be measured against: it is a detection on
+    # the tee camera, where `impact_frame` is that same chain run
+    # BACKWARDS through a fitted deceleration to a tee line it never
+    # quite reaches. An extrapolation half a second out drags the whole
+    # green window half a second with it, and the window is only a few
+    # seconds wide.
+    #
+    # It is also how the shot reads: the ball left the top of the tee
+    # frame HERE, so it comes down shortly after -- which is the span
+    # worth searching and nothing either side of it is.
+    _from_end = bool(int(_gates.get("descent_from_ascent_end", 1)))
+    _win_sec = float(_gates.get("descent_window_sec", 5.0))
+    out["window_anchor"] = ("the last frame of the ascent" if _from_end
+                            else "the impact frame")
+    out["window_sec"] = _win_sec if _from_end else (
+        FLIGHT_HI_SEC - FLIGHT_LO_SEC + ASCENT_DESCENT_LEAD_SEC)
     _wins: list = []
     for c in _clips:
         _imp = c.get("impact_frame")
         if _imp is None:
             continue
         _base = float(_imp) / float(fps or 30.0) - float(out["delta_sec"])
+        if _from_end and c.get("last_frame") is not None:
+            _end = float(c["last_frame"]) / float(fps or 30.0)
+            _lo = _end - float(out["delta_sec"])
+            _hi = _lo + _win_sec
+            c["landing_window_sec"] = [round(_lo, 2), round(_hi, 2)]
+            c["landing_window_from"] = "ascent end"
+            _flo = max(0, int(_lo * _gfps))
+            _fhi = int(_hi * _gfps)
+            if _n_green:
+                _fhi = min(_fhi, _n_green - 1)
+            if _fhi > _flo:
+                _wins.append((_flo, _fhi))
+            continue
+        c["landing_window_from"] = "impact"
         # A WINDOW ON THE LANDING IS NOT A WINDOW ON THE DESCENT.
         #
         # FLIGHT_LO_SEC/FLIGHT_HI_SEC bracket the instant the ball comes
@@ -23545,6 +23586,19 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                              int(_e["landing_xy"][1])]
         c["landing_sec"] = _e.get("last_descent_sec")
         c["landing_points"] = _e.get("n_points_drawn")
+        # HOW LONG AFTER THE BALL LEFT THE TEE FRAME IT CAME DOWN.
+        # The window's width is currently set from ONE measured flight;
+        # this records the real number on every match so it can be set
+        # from a week of golf instead. If a landing ever goes missing,
+        # this column says what the window should have been.
+        try:
+            if c.get("last_frame") is not None and c.get("landing_sec") is not None:
+                c["descent_lag_sec"] = round(
+                    float(c["landing_sec"])
+                    - (float(c["last_frame"]) / float(fps or 30.0)
+                       - float(out["delta_sec"])), 2)
+        except (TypeError, ValueError):
+            pass
         # THE COMET IS THE CHAIN WE ALREADY HAVE. Without this the
         # renderer re-derives it with `find_path`, walking back from the
         # landing and capable of a different answer than the search that
@@ -23560,6 +23614,25 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
             f"{_e.get('fall_px')}px vertically at "
             f"{_e.get('tilt_deg')} degrees off vertical")
         out["n_matched"] += 1
+
+    # EVERY LAG THIS RUN MEASURED, on the report and in the log. The
+    # window's width rests on one flight timed off two wall clocks;
+    # this is how that becomes a population. A lag at or beyond the
+    # width is the warning that the next shot will fall outside it.
+    _lags = [c["descent_lag_sec"] for c in _clips
+             if c.get("descent_lag_sec") is not None]
+    if _lags:
+        out["descent_lags_sec"] = _lags
+        out["descent_lag_max_sec"] = max(_lags)
+        out["window_too_tight"] = bool(
+            _from_end and max(_lags) > _win_sec - 0.5)
+        log.info(
+            "ascent descents: upload=%s lag from the ascent's last frame "
+            "to the landing: %s (window %.1fs from %s)%s", row.id,
+            ", ".join("%.2fs" % v for v in _lags), out["window_sec"],
+            out["window_anchor"],
+            " — WITHIN HALF A SECOND OF THE EDGE" if out["window_too_tight"]
+            else "")
 
     # ── where it came to REST, which is a different question ────────
     #

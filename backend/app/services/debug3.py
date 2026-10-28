@@ -6042,6 +6042,11 @@ def sweep_ascents(
                 "first_frame": int(pts[0]["frame"]),
                 "last_frame": int(pts[-1]["frame"]),
                 "first_sec": round(int(pts[0]["frame"]) / float(fps or 30.0), 2),
+                # WHERE THE BALL STOPPED BEING VISIBLE ON THIS CAMERA,
+                # which is the one instant in the flight that is
+                # MEASURED on both halves: the descent window is placed
+                # from it rather than from the extrapolated impact.
+                "last_sec": round(int(pts[-1]["frame"]) / float(fps or 30.0), 2),
                 "n_points": len(pts),
                 "rise_px": int(round(rise)),
                 "rate": round(rate, 3),
@@ -7716,6 +7721,29 @@ GATE_SPEC = {
     # A switch rather than a deletion: a green without brush behind it
     # is a different proposition, and this is the hole that has one.
     "ascent_descent_search":    (0,                        0,      1, True),
+    # WHERE THE GREEN'S SEARCH WINDOW IS ANCHORED (1/0).
+    #
+    # 1: on the LAST FRAME OF THE ASCENT CHAIN -- the last time this
+    # ball was actually seen -- and `descent_window_sec` wide from
+    # there. A measured instant, and the one the operator reasons in:
+    # the ball left the tee frame here, so it comes down shortly
+    # after.
+    #
+    # 0: the old placement, FLIGHT_LO_SEC..FLIGHT_HI_SEC after the
+    # EXTRAPOLATED impact frame, less a lead for the approach.
+    #
+    # WHAT THE CHANGE COSTS, stated because it is a real cost: the
+    # ascent chain ends roughly half a second after impact, so a
+    # five-second window from it closes around impact+5.5s. The one
+    # flight on this course with wall clocks on both cameras took
+    # 6.37s, and a window that tight would have ended before the ball
+    # landed. Widen `descent_window_sec` the moment a landing goes
+    # missing -- and the lag this now records on every match is the
+    # evidence for what to widen it to.
+    "descent_from_ascent_end":  (1,                        0,      1, True),
+    # HOW LONG THE WINDOW IS, in seconds, from that anchor. Only read
+    # when `descent_from_ascent_end` is 1.
+    "descent_window_sec":       (5.0,                    1.0,   15.0, False),
     # HOW CLOSE TO THE PREVIOUS FRAME'S DETECTION counts as that
     # frame's ghost, in pixels, with two-frame differencing. Only read
     # when ascent_three_frame is 0 — the AND has no ghosts to remove —
