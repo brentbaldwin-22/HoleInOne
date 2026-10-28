@@ -3242,7 +3242,10 @@ function ClickToPlotModal({
             value={landing ? `f${landing.frame}` : null}
             hint={cometPoints.length > 1
               ? `${cometPoints.length} descent points`
-              : "The frame it comes down on."}
+              : !landing
+                ? "Mark the ball landing spot first — this moves that "
+                  + "point to another frame."
+                : "The frame it comes down on."}
           >
             <button type="button" className="ghost small"
                     style={{ width: "100%" }}
