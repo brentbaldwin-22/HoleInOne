@@ -22700,6 +22700,11 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
             rep.setdefault("stages", []).append(
                 {"name": "ascent window", "detail": msg,
                  "spans": spans})
+            # THE ONE LINE THE OPERATOR IS WATCHING. The toast is the
+            # only feedback during a sweep that takes a minute, and
+            # saying "the whole clip" while searching two seconds of
+            # it is how a narrowed search reads as a broken one.
+            rep["window_detail"] = msg
         log.info("ascent window: %s", msg)
 
     def _around(times):
@@ -22811,8 +22816,6 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     rep["roi_source"] = _roi.get("source")
 
     # ── 1. every ball leaving ─────────────────────────────────────────
-    if progress:
-        progress("Sweeping the whole clip for balls leaving the tee", 0, 0)
     _t = time.perf_counter()
     # THIS HOLE'S GATES. Empty for a hole nobody has tuned, which is what
     # resolve_gates wants in order to hand back the module defaults --
@@ -22820,7 +22823,24 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     _gt, _gt_key, _gt_why = _gate_tuning_for(db, row, hole_hint=hole_number)
     rep["gate_key"] = _gt_key
     rep["gate_key_reason"] = _gt_why
+    # WORK OUT WHERE TO LOOK BEFORE SAYING WHERE YOU ARE LOOKING. The
+    # toast was emitted above this line and always read "the whole
+    # clip", so an audio-windowed sweep of two seconds announced
+    # itself as a sweep of ninety -- and the only way to tell whether
+    # the windowing had taken effect at all was to read the log.
+    if progress:
+        progress("Working out where to look for a ball leaving the tee",
+                 0, 0)
     _win = _ascent_windows(db, row, src_path, fps, rep)
+    if progress:
+        if _win:
+            _secs = sum(max(0, b - a) for a, b in _win) / max(fps, 1.0)
+            progress("Searching %.1fs of the clip — %s"
+                     % (_secs, rep.get("window_detail") or "windowed"),
+                     0, 0)
+        else:
+            progress("Sweeping the whole clip for balls leaving the tee",
+                     0, 0)
     sweep = _d3.sweep_ascents(src_path, fps, roi=_roi.get("roi"),
                               windows=_win,
                               gates=_gt,
@@ -24426,10 +24446,20 @@ def _produce_run(row, src_path, db, progress=None, debug_artifacts=False,
                         for c in (rep.get("clips") or [])[:3])
                 )
             else:
+                # AND OVER WHAT. Windowing turned "11 chains, none of
+                # them a ball" into "0 chains", and 0 chains reads as
+                # an empty video whether the window was right or two
+                # seconds off the swing. The span is the difference.
+                _scanned = ""
+                _sp = _sw.get("scanned_spans") or []
+                _fp = float(_sw.get("fps") or 0.0) or 30.0
+                if _sp and _sw.get("windowed"):
+                    _scanned = " (searched %s)" % ", ".join(
+                        "%.1f–%.1fs" % (a / _fp, b / _fp) for a, b in _sp[:4])
                 _err = (
                     f"no swings detected: {_n_ch} chain(s) rose out of "
-                    f"the band above the golfers, none of them a ball "
-                    f"leaving the tee"
+                    f"the band above the golfers{_scanned}, none of them "
+                    f"a ball leaving the tee"
                     + (" — refused on " + ", ".join(
                         f"{k} {v}" for k, v in
                         sorted(_tally.items(), key=lambda kv: -kv[1])

@@ -5799,6 +5799,15 @@ def sweep_ascents(
             _spans = [(0, n_frames - 1)]
         out["scanned_spans"] = _spans
         out["scanned_frames"] = sum(b - a for a, b in _spans)
+        # WAS THIS NARROWED, OR IS IT THE WHOLE CLIP WRITTEN AS ONE
+        # SPAN? The caller reports the span it searched when a refusal
+        # finds nothing, and "searched 0.0-89.9s" on every failure is
+        # noise that teaches the reader to skip the line that matters.
+        # A window asked for and then clamped back to everything is
+        # not a narrowed search either.
+        out["windowed"] = bool(
+            windows and _spans != [(0, n_frames - 1)])
+        out["fps"] = round(float(fps or 0.0), 3)
         dets = []
         for _lo, _hi in _spans:
             dets += detect_movers_by_diff(input_path, _lo, _hi,

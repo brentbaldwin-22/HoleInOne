@@ -65,12 +65,52 @@ check("two strikes", spans([(60, 300), (3000, 3240)], 5400),
       [(60, 300), (3000, 3240)])
 
 print()
+print("a narrowed search says it was narrowed, and nothing else does:")
+
+
+# Lifted exactly as sweep_ascents reports it.
+def windowed(windows, n_frames):
+    return bool(windows and spans(windows, n_frames) != [(0, n_frames - 1)])
+
+
+check("a real window", windowed([(60, 300)], 5400), True)
+check("no windows is not a narrowed search", windowed(None, 5400), False)
+check("nor an empty list", windowed([], 5400), False)
+# THE TWO THAT FALL BACK. Both end up scanning the whole clip, and
+# reporting "searched 0.0-89.9s" on a failure would be a line that
+# teaches the reader to skip the line that matters.
+check("one entirely past the end fell back, so: not narrowed",
+      windowed([(9000, 9900)], 5400), False)
+check("an impossible one fell back too",
+      windowed([(300, 100)], 5400), False)
+check("a window spelling out the whole clip is not a narrowing",
+      windowed([(0, 5399)], 5400), False)
+
+print()
 print("the sweep accepts them:")
 import inspect  # noqa: E402
 sig = inspect.signature(sweep_ascents).parameters
 check("sweep_ascents takes windows", "windows" in sig, True)
 check("...defaulting to None, i.e. the whole clip",
       sig["windows"].default, None)
+# THE REPORT THE REFUSAL READS. Without these the failure sentence
+# cannot say where it looked, and "0 chain(s)" is unreadable: an empty
+# video and a window two seconds off the swing write the same words.
+_src = Path("backend/app/services/debug3.py").read_text()
+check("the sweep reports whether it narrowed",
+      'out["windowed"]' in _src, True)
+check("...and the fps the spans are measured in",
+      'out["fps"] = round(float(fps' in _src, True)
+_adm = Path("backend/app/routers/admin.py").read_text()
+check("the refusal reports the span it searched",
+      '"searched ' in _adm or "(searched " in _adm, True)
+# AND THE TOAST IS DECIDED AFTER THE WINDOW IS. It read "the whole
+# clip" unconditionally, which is how a two-second search announced
+# itself as a ninety-second one.
+check("the window is chosen before the progress line is written",
+      _adm.index("_win = _ascent_windows(db, row, src_path, fps, rep)")
+      < _adm.index('"Sweeping the whole clip for balls leaving the tee"'),
+      True)
 
 print()
 print("and the gates it searches with are permissive on purpose:")
