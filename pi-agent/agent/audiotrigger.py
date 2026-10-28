@@ -359,13 +359,15 @@ def build(cfg: dict, work_dir, runner, video_span=None, on_cut=None):
     )
     log.info(
         "audio trigger: %s, gate x%.1f (min_ratio), zones %s, "
-        "window %.0f..+%.0fs, judge %s",
+        "window %.0f..+%.0fs, judge %s, %s",
         "SHADOW (deciding, not cutting)" if t.shadow else "LIVE",
         listener.min_peak_ratio,
         "any" if zones is None else zones, t.before_sec, t.after_sec,
         ("off" if not t.verify
          else ("asked, and may REFUSE an upload" if t.verify_drops
                else "asked, logged only")),
+        ("%.0fs quiet after a confirmed swing" % t.refractory_sec
+         if t.refractory_sec > 0 else "no quiet period"),
     )
     return t
 
