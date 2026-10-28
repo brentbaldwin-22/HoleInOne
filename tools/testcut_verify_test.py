@@ -45,22 +45,61 @@ check("half a second either side",
       params["verify_window_sec"].default.default, 0.5)
 
 print()
-print("every helper it names exists at module level:")
-# EVERY _name( CALLED IN THE VERIFIER BLOCK. A nested helper from
-# another endpoint resolves at import time to nothing, and the failure
-# arrives as a swallowed NameError at the one moment someone is
-# watching for a picture.
-called = set(re.findall(r"\b(_[a-z][a-z0-9_]*)\(", src))
-for name in sorted(called):
-    if name in params or name in ("_j", "_chk"):
-        continue
-    have = hasattr(admin, name) or name in src.split("def ")[0]
-    # Locally defined inside the endpoint counts too.
+print("every name the endpoint uses resolves to something:")
+# THE CHECK THAT MATTERS, and the first version was too narrow: it
+# looked only at _underscore_ CALLS, so it caught `_clip_url` and sailed
+# past `tee_path` -- an ordinary variable, misremembered, in the same
+# swallowed try/except, reported as "verify failed: name 'tee_path' is
+# not defined" after the operator had gone looking for a picture.
+#
+# So: every bare name the function loads must be a parameter, something
+# it assigns, a module global, or a builtin. Anything else is a
+# NameError waiting for the one code path that reaches it.
+import builtins  # noqa: E402
+import ast  # noqa: E402
+
+tree = ast.parse(inspect.getsource(admin.test_cut_long_upload).lstrip())
+fn = tree.body[0]
+assigned = set()
+for node in ast.walk(fn):
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+        assigned.add(node.id)
+    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        assigned.add(node.name)
+    elif isinstance(node, ast.alias):
+        assigned.add((node.asname or node.name).split(".")[0])
+    elif isinstance(node, ast.ExceptHandler) and node.name:
+        assigned.add(node.name)
+    elif isinstance(node, (ast.comprehension,)):
+        for t in ast.walk(node.target):
+            if isinstance(t, ast.Name):
+                assigned.add(t.id)
+known = (assigned | set(params) | set(dir(admin))
+         | set(dir(builtins)) | {"self"})
+unresolved = sorted({
+    n.id for n in ast.walk(fn)
+    if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+    and n.id not in known
+})
+print("  %-56s %s" % ("no name is loaded that was never bound",
+                      "ok" if not unresolved else "FAIL: %s" % unresolved))
+if unresolved:
+    FAILED.append("unresolved names")
+
+print()
+print("the row carries what the table columns read:")
+# cut_entry copies NAMED KEYS, not the window, so a measurement added
+# upstream reaches the UI only if it is named here too. attack_ms was
+# printed in the debug line and dashed in the swing's own row for
+# exactly this reason.
+esrc = inspect.getsource(admin.test_cut_long_upload)
+for key in ("attack_ms", "attack_measured", "max_attack_ms",
+            "peak_time_sec", "ratio", "confidence"):
+    have = '"%s": w.get("%s")' % (key, key) in esrc or '"%s":' % key in esrc
+    print("  %-56s %s" % ("cut_entry carries %s" % key,
+                          "ok" if have else "FAIL: dropped"))
     if not have:
-        have = re.search(r"\n\s+def %s\(" % re.escape(name), src) is not None
-    print("  %-56s %s" % (name, "ok" if have else "FAIL: not in reach"))
-    if not have:
-        FAILED.append(name)
+        FAILED.append(key)
 
 print()
 print("the heat window is a parameter, and produce keeps its old one:")

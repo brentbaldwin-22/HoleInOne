@@ -13626,6 +13626,9 @@ def test_cut_long_upload(
             "ratio": w.get("ratio"),
             "confidence": w.get("confidence"),
             "burst_duration_sec": w.get("burst_duration_sec"),
+            "attack_ms": w.get("attack_ms"),
+            "attack_measured": w.get("attack_measured"),
+            "max_attack_ms": w.get("max_attack_ms"),
         }
         if verify_swings and peak_time_sec is not None:
             # Never fatal: this is a second opinion, and a detector run
@@ -13634,7 +13637,7 @@ def test_cut_long_upload(
             try:
                 from ..services.tracer import swing_heat_check
                 _chk = swing_heat_check(
-                    tee_path, peak_time_sec, tee_fps,
+                    src_path, peak_time_sec, tee_fps,
                     debug_dir=CLIPS_DIR,
                     debug_prefix=f"verify-{upload_id}-{idx:02d}-"
                                  f"{secrets.token_hex(3)}",
