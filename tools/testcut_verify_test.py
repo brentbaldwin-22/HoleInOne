@@ -119,6 +119,26 @@ check("...and the pass starts earlier than the window",
       "_lead" in hsrc and "start_f = max(0, int(" in hsrc, True)
 
 print()
+print("the judge is shown a crop, and the evidence image is not:")
+# THE FAN IS A FEW PIXELS WIDE. A tee camera looks down the hole, the
+# golfer is a small part of a frame that is mostly sky and treeline,
+# and the API resizes the long edge to 1568 before the model sees
+# anything -- so the club's streaks vanish and what is left reads as
+# people standing about, which the prompt says to answer "no" to.
+# Measured on upload 1041: a plain swing judged "not a swing".
+check("swing_heat_check takes a crop", "crop" in hp, True)
+check("...and it is off unless asked", hp["crop"].default, None)
+check("the endpoint builds one from the trigger zones",
+      "_tee_trigger_zones(db, row)" in src and "crop=_crop" in src, True)
+# ONLY the judge's copy. An operator checking a verdict needs to see
+# what the model was NOT shown as much as what it was.
+_clean = hsrc[hsrc.index("judged = img"):hsrc.index('out["image_clean"]')]
+check("the cropped copy is the one written for the judge",
+      "imwrite" in _clean and "judged" in _clean, True)
+check("a crop too small to hold a swing is refused",
+      ">= 160" in hsrc, True)
+
+print()
 if FAILED:
     print("FAILED: %s" % ", ".join(FAILED))
     sys.exit(1)

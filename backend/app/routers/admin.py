@@ -13635,9 +13635,22 @@ def test_cut_long_upload(
             # that dies because the opinion could not be had is worse
             # than one that reports without it.
             try:
+                _crop = None
+                try:
+                    _zs = _tee_trigger_zones(db, row) or []
+                    if _zs:
+                        _x0 = min(int(z["x"]) for z in _zs)
+                        _y0 = min(int(z["y"]) for z in _zs)
+                        _x1 = max(int(z["x"]) + int(z["w"]) for z in _zs)
+                        _y1 = max(int(z["y"]) + int(z["h"]) for z in _zs)
+                        _w, _h = _x1 - _x0, _y1 - _y0
+                        _crop = (_x0 - _w, _y0 - 3 * _h, 3 * _w, 4 * _h)
+                except Exception:  # noqa: BLE001
+                    _crop = None
                 from ..services.tracer import swing_heat_check
                 _chk = swing_heat_check(
                     src_path, peak_time_sec, tee_fps,
+                    crop=_crop,
                     debug_dir=CLIPS_DIR,
                     debug_prefix=f"verify-{upload_id}-{idx:02d}-"
                                  f"{secrets.token_hex(3)}",

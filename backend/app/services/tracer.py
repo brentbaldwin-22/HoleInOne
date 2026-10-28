@@ -3029,6 +3029,7 @@ def swing_heat_check(
     debug_prefix: str = "heatchk",
     before_sec: float = 2.0,
     after_sec: float = 2.5,
+    crop=None,
 ) -> dict:
     """Confirm a suspected swing with MOG2 physics.
 
@@ -3205,9 +3206,25 @@ def swing_heat_check(
                 img[on] = blend[on]
                 # CLEAN copy (no chain, no verdict label) for the AI swing
                 # judge — the printed verdict would bias it.
+                judged = img
+                if crop:
+                    try:
+                        cx, cy, cw, ch = (int(crop[0]), int(crop[1]),
+                                          int(crop[2]), int(crop[3]))
+                        x0 = max(0, min(width - 1, cx))
+                        y0 = max(0, min(height - 1, cy))
+                        x1 = max(x0 + 1, min(width, cx + cw))
+                        y1 = max(y0 + 1, min(height, cy + ch))
+                        # A crop so small the swing would not fit is
+                        # worse than none: zones are drawn round FEET.
+                        if (x1 - x0) >= 160 and (y1 - y0) >= 160:
+                            judged = img[y0:y1, x0:x1].copy()
+                            out["crop"] = [x0, y0, x1 - x0, y1 - y0]
+                    except Exception:  # noqa: BLE001
+                        judged = img
                 clean_name = f"{debug_prefix}-clean.jpg"
                 cv2.imwrite(
-                    str(Path(debug_dir) / clean_name), img,
+                    str(Path(debug_dir) / clean_name), judged,
                     [int(cv2.IMWRITE_JPEG_QUALITY), 80],
                 )
                 out["image_clean"] = clean_name
