@@ -1960,6 +1960,33 @@ function ClickToPlotModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cam]);
 
+  // THE DETECTED DOT UNDER A CLICK, if there is one close enough.
+  //
+  // Plotting by hand and taking MOG2's dots were separate modes: with
+  // hand-plot on, a click on a dot placed a free point a few pixels
+  // from it instead of taking the dot, so a chain could be built from
+  // one source or the other but not both. The detector finds most of a
+  // flight and misses the frames that matter (through a tree, against
+  // the sky), which is exactly when a hand point is wanted IN the
+  // chain -- so the two have to mix.
+  //
+  // Frame-scoped, because dots carry their own frame and only the ones
+  // on the frame being looked at can be what was clicked. The radius
+  // is in frame pixels and generous: a dot is drawn far larger than
+  // one pixel and an operator aims at the blob, not its centre.
+  function dotNear(dots, frame, pt, radius = 14) {
+    let best = null;
+    let bestD = radius * radius;
+    for (const d of dots || []) {
+      if (d.frame !== frame) continue;
+      const dx = d.x - pt.x;
+      const dy = d.y - pt.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= bestD) { bestD = d2; best = d; }
+    }
+    return best;
+  }
+
   // A click adds a point; clicking it again takes it away. Nothing is
   // replaced — that was the bug.
   function toggleGreenDot(p, clear = false) {
@@ -2904,6 +2931,15 @@ function ClickToPlotModal({
                   if (placeOnGreen === "pin") { setPinFromGreen(pt); }
                   else {
                     const f = greenViewFrame ?? green.frame ?? 0;
+                    // A dot under the click is the dot the operator
+                    // meant, not a free point beside it.
+                    const hit = dotNear(greenDots, f, pt);
+                    if (hit) {
+                      toggleGreenDot(hit);
+                      if (landingFrame == null) setLandingFrameState(f);
+                      setCometReason(`took the detected point on f${f}`);
+                      return;
+                    }
                     // ONE POINT PER FRAME, SO SAY SO WHEN ONE REPLACES
                     // ANOTHER. Marks are keyed by frame, so clicking
                     // twice without stepping overwrites rather than
@@ -3025,8 +3061,15 @@ function ClickToPlotModal({
               ballXY={ballAtRest}
               placingBall={placeOnTee != null}
               onPlaceBall={(pt) => {
-                if (placeOnTee === "pin") setPinFromTee(pt);
-                else setBallAtRest(pt);
+                if (placeOnTee === "pin") { setPinFromTee(pt); setPlaceOnTee(null); return; }
+                if (placeOnTee === "plot") {
+                  const f = teeViewFrame ?? impactF ?? 0;
+                  const hit = dotNear(dots, f, pt);
+                  if (hit) { toggleDot(hit); return; }
+                  setMarks((m) => ({ ...m, [f]: { x: pt.x, y: pt.y } }));
+                  return;
+                }
+                setBallAtRest(pt);
                 setPlaceOnTee(null);
               }}
               // THE LANDING, GRABBABLE IN THE TEE PICTURE. It is stored
@@ -3137,6 +3180,18 @@ function ClickToPlotModal({
                       : "Use the frame the tee view is showing. Step to the strike with the frame buttons on the picture, then press this."}>
               set to current{teeCurrent != null ? ` (f${teeCurrent})` : ""}
               {cam === "raw" && teeCurrent == null ? " — pause first" : ""}
+            </button>
+            <button type="button"
+                    className={placeOnTee === "plot" ? "small" : "ghost small"}
+                    style={{ width: "100%", marginTop: 3 }}
+                    onClick={() => {
+                      setCam("tee");
+                      setPlaceOnTee((v) => (v === "plot" ? null : "plot"));
+                    }}
+                    title="Click the tee view to add an ascent point on the frame it is showing. A detected dot under the click is taken instead, so hand points and the detector's mix freely. Stays on: step a frame, click, step, click.">
+              {placeOnTee === "plot"
+                ? "✎ plotting — click the tee view (press to stop)"
+                : "✎ plot ascent by hand"}
             </button>
             <button type="button" className="ghost small"
                     style={{ width: "100%", marginTop: 3,
