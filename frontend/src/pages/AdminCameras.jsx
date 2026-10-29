@@ -2584,6 +2584,26 @@ export default function AdminCameras() {
     }
   }
 
+  // WHICH MECHANISM MAY FIRE. One call per mechanism, and only the
+  // field being changed is sent, so flipping the dwell cannot carry a
+  // stale audio value back over the top of a change made from another
+  // browser.
+  async function toggleTriggerMech(cam, mech) {
+    const _key = mech === "audio"
+      ? "audioTriggerEnabled" : "dwellTriggerEnabled";
+    const _now = mech === "audio"
+      ? cam.audio_trigger_enabled : cam.dwell_trigger_enabled;
+    setBusy((b) => ({ ...b, [cam.id]: true }));
+    try {
+      await api.updateCamera(adminPassword, cam.id, { [_key]: _now === false });
+      await load();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy((b) => ({ ...b, [cam.id]: false }));
+    }
+  }
+
   function openMove(cam) {
     setMoveDraft({
       courseId: String(cam.course_id),
@@ -2875,6 +2895,38 @@ export default function AdminCameras() {
                   </span>{" "}
                   {cam.assigned_role === "tee" && cam.triggering_enabled === false && (
                     <span className="pill small warn">triggering paused</span>
+                  )}{" "}
+                  {/* WHICH EARS AND EYES ARE LIVE. Only said when it is
+                      not the default, because "both on" is every
+                      camera's normal state and a pill per camera saying
+                      so is noise. A camera with the dwell off looks
+                      identical to one nobody has walked in front of, so
+                      the one case that MUST be visible is this one. */}
+                  {cam.assigned_role === "tee"
+                    && cam.triggering_enabled !== false
+                    && (cam.audio_trigger_enabled === false
+                      || cam.dwell_trigger_enabled === false) && (
+                    <span
+                      className={`pill small ${
+                        cam.audio_trigger_enabled === false
+                        && cam.dwell_trigger_enabled === false
+                          ? "warn" : "ok"}`}
+                      title={
+                        cam.audio_trigger_enabled === false
+                        && cam.dwell_trigger_enabled === false
+                          ? "Both trigger mechanisms are off — this camera "
+                            + "will not record anything by itself. Capture "
+                            + "still works."
+                          : "Only one of the two trigger mechanisms is "
+                            + "switched on for this camera."}
+                    >
+                      {cam.audio_trigger_enabled === false
+                        && cam.dwell_trigger_enabled === false
+                        ? "no triggers"
+                        : cam.dwell_trigger_enabled === false
+                          ? "audio only"
+                          : "dwell only"}
+                    </span>
                   )}{" "}
                   {/* THE PI'S POWER VERDICT, shown whenever there is one —
                       including "clean". The battery pill beside it only
@@ -3662,6 +3714,38 @@ export default function AdminCameras() {
                         ? "Resume triggering"
                         : "Pause triggering"}
                     </button>
+                  )}
+                  {/* ONE SWITCH PER MECHANISM, next to the pause button
+                      because they answer the same kind of question:
+                      what is this camera allowed to do on its own.
+                      Hidden while triggering is paused outright, where
+                      neither of them means anything. */}
+                  {cam.assigned_role === "tee"
+                    && cam.triggering_enabled !== false && (
+                    <>
+                      <button
+                        type="button" className="secondary small"
+                        onClick={() => toggleTriggerMech(cam, "audio")}
+                        disabled={isBusy}
+                        title={"The microphone hearing the strike. Off = "
+                          + "swings are only cut when somebody dwells in a "
+                          + "trigger zone."}
+                      >
+                        {cam.audio_trigger_enabled === false
+                          ? "Audio trigger: off" : "Audio trigger: on"}
+                      </button>
+                      <button
+                        type="button" className="secondary small"
+                        onClick={() => toggleTriggerMech(cam, "dwell")}
+                        disabled={isBusy}
+                        title={"Somebody standing in a trigger zone. Off = "
+                          + "swings are only cut when the microphone hears "
+                          + "the strike."}
+                      >
+                        {cam.dwell_trigger_enabled === false
+                          ? "Dwell trigger: off" : "Dwell trigger: on"}
+                      </button>
+                    </>
                   )}
                   <button
                     type="button" className="secondary small"

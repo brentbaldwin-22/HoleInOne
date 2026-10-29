@@ -659,6 +659,17 @@ export const api = {
       fd.append("enabled", patch.enabled ? "true" : "false");
     if (patch.triggeringEnabled !== undefined)
       fd.append("triggering_enabled", patch.triggeringEnabled ? "true" : "false");
+    // WHICH mechanism may fire, where the line above is whether any
+    // may. Sent independently so turning the dwell off cannot disturb
+    // the audio setting on the same camera.
+    if (patch.audioTriggerEnabled !== undefined)
+      fd.append(
+        "audio_trigger_enabled",
+        patch.audioTriggerEnabled ? "true" : "false");
+    if (patch.dwellTriggerEnabled !== undefined)
+      fd.append(
+        "dwell_trigger_enabled",
+        patch.dwellTriggerEnabled ? "true" : "false");
     if (patch.note !== undefined) fd.append("note", patch.note || "");
     // NO teeBoxRoi HERE. The camera patch endpoint still accepts one
     // for manual use, but it takes a bare {x,y,w,h} — which would

@@ -884,14 +884,42 @@ class CopyEngine:
         # not fatal: the uploader's _recover_lost_event picks the
         # session up when the link returns, and the tee half survives
         # even though the green half cannot.
+        _ack = None
         try:
-            runner.client.event_trigger(
+            _ack = runner.client.event_trigger(
                 session_id, impact_at=float(impact_ts),
-                clock_offset_sec=clock_offset_sec, detail=detail)
+                clock_offset_sec=clock_offset_sec, detail=detail) or {}
         except Exception as exc:  # noqa: BLE001
             log.warning("copy: could not register the impact event (%s) — "
                         "the clip will be recovered later, but the green "
                         "half is lost", exc)
+
+        # A REFUSAL IS NOT A FAILURE, and this path could not tell them
+        # apart because it threw the answer away.
+        #
+        # An EXCEPTION above means the backend was not reached, and the
+        # clip goes up regardless: _recover_lost_event registers the
+        # session when the link returns, which is the whole reason the
+        # upload does not wait on registration. But an ANSWER saying
+        # `triggering_disabled` is the operator having switched this
+        # mechanism off, and spending a minute pushing 6 MB up a modem
+        # for an event the backend has already declined to create is
+        # exactly what they turned it off to stop.
+        #
+        # The dwell side has read this ack for a while -- "nothing is
+        # recorded and nothing is uploaded" -- and the audio side never
+        # did, so the two halves of the same switch behaved differently
+        # on the same rig.
+        if isinstance(_ack, dict) and _ack.get("triggering_disabled"):
+            log.info(
+                "copy: session=%s not uploaded — the backend declined the "
+                "trigger (%s). Nothing is recorded and nothing is sent.",
+                session_id,
+                _ack.get("trigger_mechanism_disabled")
+                or "triggering is paused for this camera",
+            )
+            clip_path.unlink(missing_ok=True)
+            return None
 
         up = getattr(runner, "uploader", None)
         if up is None:

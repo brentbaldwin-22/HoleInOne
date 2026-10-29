@@ -1059,6 +1059,17 @@ def heartbeat(
         # while paused. Older agents that ignore it are still covered:
         # /event-trigger refuses to create events when this is False.
         "triggering_enabled": cam.triggering_enabled,
+        # WHICH mechanism may fire, where the line above is whether any
+        # may. Sent here as well as on watch-status so an agent coming
+        # up has the answer before its first status poll. None means the
+        # column has not been backfilled yet and is NOT "off" -- see
+        # /event-trigger, which is where the refusal actually happens.
+        "audio_trigger_enabled": (
+            True if cam.audio_trigger_enabled is None
+            else bool(cam.audio_trigger_enabled)),
+        "dwell_trigger_enabled": (
+            True if cam.dwell_trigger_enabled is None
+            else bool(cam.dwell_trigger_enabled)),
         "assigned_role": cam.assigned_role,
         "course_id": cam.course_id,
         "assigned_hole": cam.assigned_hole,
@@ -1246,6 +1257,17 @@ def watch_status(token: str, db: Session = Depends(get_db)):
         # something at most a second stale instead of against nothing.
         # See TriggerGate in the agent.
         "triggering_enabled": bool(cam.triggering_enabled),
+        # See the heartbeat: which of the two mechanisms is switched on.
+        # An agent that reads these can stop listening or stop watching
+        # entirely; one that ignores them still gets the refusal at
+        # /event-trigger, which is what makes this work on rigs that
+        # have not been updated.
+        "audio_trigger_enabled": (
+            True if cam.audio_trigger_enabled is None
+            else bool(cam.audio_trigger_enabled)),
+        "dwell_trigger_enabled": (
+            True if cam.dwell_trigger_enabled is None
+            else bool(cam.dwell_trigger_enabled)),
         # THE SNAPSHOT ASK. True when the picture the Cameras page would
         # show is missing or stale; the agent answers with one frame to
         # /still and goes back to sleep. Not consumed on read — it stays
@@ -1544,6 +1566,39 @@ async def event_trigger(
     if not cam.triggering_enabled:
         db.commit()  # persist the last_seen_at bump
         return {"ok": True, "triggering_disabled": True, "event_id": None}
+
+    # WHICH MECHANISM FIRED THIS, and is it switched on for this camera?
+    #
+    # `impact_at` IS the discriminator, and it is not a new one: an
+    # audio trigger carries the instant the club met the ball, and a
+    # dwell has no instant to carry because nothing has happened yet
+    # beyond somebody standing there. The production page's own trigger
+    # filter reads it the same way.
+    #
+    # ANSWERED WITH `triggering_disabled`, deliberately, rather than a
+    # new key of its own. Every agent in the field already reads that
+    # one and does the right thing with it -- "nothing is recorded and
+    # nothing is uploaded" -- so an operator turning the dwell off gets
+    # a rig that stops recording dwells today, with no update.sh and no
+    # firmware skew to reason about. `trigger_mechanism_disabled` rides
+    # along beside it for the log and for an agent that wants to stop
+    # doing the work rather than stop at the answer.
+    _mech = "audio" if impact_at is not None else "dwell"
+    _mech_on = (cam.audio_trigger_enabled if _mech == "audio"
+                else cam.dwell_trigger_enabled)
+    # ABSENT IS NOT OFF. A camera row written before these columns
+    # existed reads None until the backfill runs, and None must mean
+    # "nobody has turned this off" -- the alternative is a deploy that
+    # silently stops every trigger on every rig.
+    if _mech_on is not None and not _mech_on:
+        log.info(
+            "cameras: camera %s refused a %s trigger — the %s trigger is "
+            "switched off for this camera (session=%s)",
+            cam.id, _mech, _mech, (session_id or "")[:80],
+        )
+        db.commit()  # persist the last_seen_at bump
+        return {"ok": True, "triggering_disabled": True,
+                "trigger_mechanism_disabled": _mech, "event_id": None}
 
     sid = (session_id or "").strip()[:80]
     if not sid:

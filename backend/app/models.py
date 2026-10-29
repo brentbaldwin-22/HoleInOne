@@ -593,6 +593,28 @@ class Camera(Base):
     # Lets the operator silence a camera that's powered on indoors
     # (testing, storage) without it spamming the production queue.
     triggering_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # WHICH MECHANISM MAY FIRE, where `triggering_enabled` is whether
+    # ANY may. A tee camera has two independent ways to decide a swing
+    # is happening -- a person dwelling in a trigger zone, and the
+    # microphone hearing the strike -- and they are not equally good on
+    # every rig. The ears are exact about the instant and need the
+    # course to be audible; the dwell always works and costs a clip per
+    # golfer who stands there. Running both on a rig where the audio
+    # is doing its job means two events for one swing, and running
+    # audio alone on a rig the mic cannot hear means recording nothing.
+    #
+    # `replaces_dwell` in the agent's own config already automates the
+    # first case PER ZONE, and it only stands the dwell down while the
+    # trigger is live and demonstrably hearing something. These are the
+    # operator's blunt override for when they want one mechanism and
+    # not the other, now, without an SSH session -- so a manual OFF
+    # here wins over anything the agent would have worked out.
+    #
+    # Both default TRUE, so nothing changes until somebody flips one.
+    audio_trigger_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True)
+    dwell_trigger_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True)
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

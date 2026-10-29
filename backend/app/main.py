@@ -266,6 +266,18 @@ def _migrate() -> None:
             statements.append(
                 "UPDATE cameras SET triggering_enabled = TRUE WHERE triggering_enabled IS NULL"
             )
+        # WHICH of the two trigger mechanisms may fire, where the switch
+        # above is whether any may. Both default TRUE and are backfilled
+        # TRUE, so every camera already in the field behaves exactly as
+        # it did until an operator turns one off on the Cameras page.
+        for _tc in ("audio_trigger_enabled", "dwell_trigger_enabled"):
+            if _tc not in cam_cols:
+                statements.append(
+                    f"ALTER TABLE cameras ADD COLUMN {_tc} BOOLEAN DEFAULT TRUE"
+                )
+                statements.append(
+                    f"UPDATE cameras SET {_tc} = TRUE WHERE {_tc} IS NULL"
+                )
         if "green_homography" not in cam_cols:
             statements.append(
                 "ALTER TABLE cameras ADD COLUMN green_homography JSON"

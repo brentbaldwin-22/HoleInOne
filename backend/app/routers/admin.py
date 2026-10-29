@@ -17501,6 +17501,14 @@ def _camera_to_dict(
         "zoom": lens_zoom.describe(c.lens_zoom, c.stream_model),
         "enabled": bool(c.enabled),
         "triggering_enabled": bool(c.triggering_enabled),
+        # None means the column predates the backfill, and that reads as
+        # ON everywhere else, so it reads as ON here too.
+        "audio_trigger_enabled": (
+            True if c.audio_trigger_enabled is None
+            else bool(c.audio_trigger_enabled)),
+        "dwell_trigger_enabled": (
+            True if c.dwell_trigger_enabled is None
+            else bool(c.dwell_trigger_enabled)),
         "note": c.note,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "last_event_at": (
@@ -19232,6 +19240,11 @@ def update_camera(
     name: str | None = Form(None),
     enabled: bool | None = Form(None),
     triggering_enabled: bool | None = Form(None),
+    # WHICH mechanism may fire, where `triggering_enabled` is whether
+    # any may. Independent of each other and of the switch above; both
+    # off is a legal, if quiet, state and the card says so.
+    audio_trigger_enabled: bool | None = Form(None),
+    dwell_trigger_enabled: bool | None = Form(None),
     tee_box_roi: str | None = Form(None),  # JSON string {"x":N,"y":N,"w":N,"h":N}
     note: str | None = Form(None),
     course_id: int | None = Form(None),
@@ -19266,6 +19279,25 @@ def update_camera(
         cam.enabled = bool(enabled)
     if triggering_enabled is not None:
         cam.triggering_enabled = bool(triggering_enabled)
+    # SAID IN THE LOG, because this one is invisible from the outside.
+    # A camera with the dwell off looks exactly like a camera nobody has
+    # walked in front of, and a camera with the audio off looks exactly
+    # like a dead microphone -- which is a day of debugging either way
+    # if there is no record of somebody having asked for it.
+    if audio_trigger_enabled is not None:
+        if bool(audio_trigger_enabled) != bool(cam.audio_trigger_enabled):
+            log.info(
+                "cameras: camera %s audio trigger -> %s", camera_id,
+                "ON" if audio_trigger_enabled else "OFF",
+            )
+        cam.audio_trigger_enabled = bool(audio_trigger_enabled)
+    if dwell_trigger_enabled is not None:
+        if bool(dwell_trigger_enabled) != bool(cam.dwell_trigger_enabled):
+            log.info(
+                "cameras: camera %s dwell trigger -> %s", camera_id,
+                "ON" if dwell_trigger_enabled else "OFF",
+            )
+        cam.dwell_trigger_enabled = bool(dwell_trigger_enabled)
     if note is not None:
         cam.note = note.strip() or None
     if ball_side is not None:
