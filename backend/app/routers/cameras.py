@@ -1599,9 +1599,24 @@ async def event_trigger(
     # firmware skew to reason about. `trigger_mechanism_disabled` rides
     # along beside it for the log and for an agent that wants to stop
     # doing the work rather than stop at the answer.
+    # A RECOVERY IS NOT A TRIGGER, AND MUST NOT BE JUDGED AS ONE.
+    #
+    # `recover_event` re-registers a session whose trigger was lost --
+    # the backend mid-deploy, the modem between lives -- for a clip that
+    # is ALREADY on the card. It sends no `impact_at`, because it has no
+    # decision to describe, so the discriminator below would read every
+    # recovery as a dwell and a camera running audio-only would refuse
+    # to rescue its own footage. The switch governs whether a mechanism
+    # may FIRE, not whether work already done may be saved.
+    #
+    # `triggering_enabled` above deliberately still applies: a camera
+    # the operator paused outright is paused, recovery included. That is
+    # existing behaviour and not this switch's business.
     _mech = "audio" if impact_at is not None else "dwell"
     _mech_on = (cam.audio_trigger_enabled if _mech == "audio"
                 else cam.dwell_trigger_enabled)
+    if recover:
+        _mech_on = True
     # ABSENT IS NOT OFF. A camera row written before these columns
     # existed reads None until the backfill runs, and None must mean
     # "nobody has turned this off" -- the alternative is a deploy that

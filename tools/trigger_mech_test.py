@@ -37,7 +37,8 @@ def check(label, got, want):
         FAILED.append(label)
 
 
-def verdict(triggering_enabled, audio_on, dwell_on, impact_at):
+def verdict(triggering_enabled, audio_on, dwell_on, impact_at,
+            recover=False):
     """The gate, exactly as /event-trigger applies it.
 
     Returns None to admit the trigger, or the mechanism that refused
@@ -47,6 +48,13 @@ def verdict(triggering_enabled, audio_on, dwell_on, impact_at):
         return "paused"
     mech = "audio" if impact_at is not None else "dwell"
     on = audio_on if mech == "audio" else dwell_on
+    # A RECOVERY IS NOT A TRIGGER. It re-registers a session whose
+    # trigger was lost, for a clip already on the card, and it sends no
+    # `impact_at` because it has no decision to describe -- so the
+    # discriminator reads it as a dwell. The switch governs whether a
+    # mechanism may FIRE, not whether work already done may be saved.
+    if recover:
+        on = True
     # ABSENT IS NOT OFF. A row written before the columns existed reads
     # None until the backfill runs, and None has to mean "nobody turned
     # this off" -- the alternative is a deploy that silently stops every
@@ -97,6 +105,24 @@ check("an un-backfilled dwell column is not off",
       verdict(True, None, None, None), None)
 
 print()
+print("rescuing a clip whose trigger was lost:")
+# `recover_event` posts session_id + recover=true and NOTHING ELSE, so
+# every recovery looks like a dwell. Without the exemption, a camera
+# running audio-only refuses to rescue its own footage -- the clip is
+# on the card, the swing really happened, and the switch throws it
+# away.
+check("a recovery is admitted with the dwell switched off",
+      verdict(True, True, False, impact_at=None, recover=True), None)
+check("...and with BOTH switched off",
+      verdict(True, False, False, impact_at=None, recover=True), None)
+check("...and one carrying an instant, with audio off",
+      verdict(True, False, True, impact_at=1.0, recover=True), None)
+# But a PAUSED camera is paused, recovery included. That is existing
+# behaviour and not this switch's business.
+check("a paused camera still refuses a recovery",
+      verdict(False, True, True, impact_at=None, recover=True), "paused")
+
+print()
 print("the wiring that makes it work on rigs nobody has updated:")
 
 _cams = (ROOT / "backend" / "app" / "routers" / "cameras.py").read_text(
@@ -108,6 +134,8 @@ _block = re.search(
     r'if _mech_on is not None and not _mech_on:.*?\n\n',
     _cams, re.S)
 check("the mechanism refusal exists", _block is not None, True)
+check("a recovery is exempted before it is applied",
+      bool(re.search(r'if recover:\s*\n\s*_mech_on = True', _cams)), True)
 _txt = _block.group(0) if _block else ""
 check("...and answers with triggering_disabled",
       '"triggering_disabled": True' in _txt, True)
