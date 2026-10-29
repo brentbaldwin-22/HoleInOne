@@ -150,6 +150,7 @@ from ..services.video import (
     transcode_for_web,
 )
 from ..services.intro_overlay import (
+    clean_copy_path,
     apply_distance_plate, apply_distance_plate_inplace,
     apply_intro_overlay_inplace, placeholder_player_name,
 )
@@ -1395,7 +1396,7 @@ def make_clip_vertical(
     if _seg_stem.endswith("_composite"):
         _seg_stem = _seg_stem[: -len("_composite")]
     for _cand in (
-        f"{src_path.stem}_clean{src_path.suffix}",
+        clean_copy_path(src_path).name,
         # Old clips (pre clean-copy): the intermediate tracer render has
         # the tracer line but NO intro graphics baked in.
         f"{_seg_stem}_ai_mog2_tracer.mp4",
@@ -3959,7 +3960,7 @@ def _process_long_upload_segments(
         try:
             import shutil as _sh
 
-            _clean = fpath.with_name(f"{fpath.stem}_clean{fpath.suffix}")
+            _clean = clean_copy_path(fpath)
             if not _clean.exists():
                 _sh.copy2(fpath, _clean)
         except Exception as exc:  # noqa: BLE001
@@ -28962,6 +28963,37 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                 rep.setdefault("warnings", [])
                 if _note not in rep["warnings"]:
                     rep["warnings"].append(_note)
+            # A CLEAN PRE-OVERLAY COPY, BEFORE THE GRAPHICS GO ON.
+            #
+            # The overlay stamps `final` IN PLACE, so once it has run the
+            # unstamped pixels are gone for good. The 9:16 render crops
+            # and pans a window out of this frame, which means it must
+            # start from footage without the landscape panels baked in --
+            # and with nothing unstamped left it falls back to painting
+            # the logo out with ffmpeg's delogo, off a rectangle measured
+            # from the picture. That measurement is a guess, and both
+            # ways it can be wrong are visible: too small leaves the logo
+            # standing (magnified, because the crop is a zoom), too large
+            # smears a block of interpolated picture across the sky.
+            #
+            # The other produce path has kept this copy since verticals
+            # existed (see _intro_overlay_for_clip). This one never did,
+            # and this one produces everything now, so in practice no
+            # clip had a clean source and every vertical went the delogo
+            # route. The copy costs about as much disk as the clip and
+            # retention treats it as a deliverable, so it is permanent;
+            # that is the price of a crop with no logo in it.
+            try:
+                import shutil as _sh
+
+                _clean_copy = clean_copy_path(final)
+                if not _clean_copy.exists():
+                    _sh.copy2(final, _clean_copy)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "d3 produce: clean-copy failed for %s: %s",
+                    final.name, exc,
+                )
             _intro_ok = apply_intro_overlay_inplace(
                 final,
                 player_name=(

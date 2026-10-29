@@ -100,6 +100,25 @@ _PLACEHOLDER_LAST = (
 )
 
 
+def clean_copy_path(path: Path) -> Path:
+    """Where the unstamped copy of `path` lives.
+
+    apply_intro_overlay_inplace() is destructive: once it has run, the
+    pre-overlay pixels are gone. Anything that reframes the picture --
+    the 9:16 crop today, whatever comes next -- has to start from a copy
+    taken BEFORE the graphics went on, so every produce path saves one
+    here and the vertical render looks for it here.
+
+    ONE FUNCTION BECAUSE TWO SPELLINGS IS THE BUG. The writer and the
+    reader used to format this name independently. They agreed, until a
+    second produce path appeared that did not write the copy at all, and
+    nothing connected the missing file to the delogo fallback that
+    quietly took over. A name both sides import cannot drift; a name
+    both sides retype can.
+    """
+    return path.with_name(f"{path.stem}_clean{path.suffix}")
+
+
 def placeholder_player_name(seed=None) -> str:
     """A stand-in name for a clip that matched no registered participant.
 
