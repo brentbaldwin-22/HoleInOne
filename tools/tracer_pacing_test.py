@@ -97,10 +97,15 @@ _worst = max(_roll[i + 1] / _roll[i] if _roll[i] > 0.05 else 1.0
              for i in range(len(_roll) - 1))
 check("the trend never jumps by a quarter", _worst < 1.25, True)
 # AND THE QUANTISATION IS ONLY EVER SUB-PIXEL-ISH. A step of 6px
-# rounding to 5 or 7 would be the pacing, not the grid.
+# rounding to 5 or 7 would be the pacing, not the grid. The default of
+# 0 is not a dodge: no ragged step at all is the better outcome, and
+# max() of an empty sequence raises -- which it did, on a pass.
+_ragged = [ST[i] for i in range(len(ST) - 1)
+           if ST[i] > 0.05 and ST[i + 1] / ST[i] > 1.5]
+print("  (%d ragged step(s), largest %.1fpx)" % (
+    len(_ragged), max(_ragged) if _ragged else 0.0))
 check("the ragged steps are all small ones",
-      max(ST[i] for i in range(len(ST) - 1)
-          if ST[i] > 0.05 and ST[i + 1] / ST[i] > 1.5) < 3.0, True)
+      max(_ragged, default=0.0) < 3.0, True)
 
 print()
 print("the arc itself is untouched -- it still goes over the top:")

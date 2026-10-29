@@ -3578,7 +3578,17 @@ def _vertical_time(cy, y_a, ty):
 # goes UP with a longer arc (66 degrees a frame at 0.35, 73 at 0.60)
 # because the head is moving faster through it. What it buys is the
 # hand-off and the height.
-ARC_REACH_FRAC = 0.60
+#
+# 0.85, BECAUSE 0.60 STILL CRESTED INSIDE THE PICTURE. At y=62 the
+# turn was at the top of the frame but still in it, and a turn you
+# can see on a ball struck straight away from the camera is a
+# hairpin whatever its radius -- the two legs overlap because the
+# flight really does come back down beside itself. At 0.85 the crest
+# is off the top: the line leaves the picture and returns, which is
+# what the eye reads as a ball going up. The points above the frame
+# are kept and OpenCV clips the segments, so nothing is drawn along
+# the edge -- see the note in the loop below.
+ARC_REACH_FRAC = 0.85
 # Caps, as shares of the frame's longer side. The reach above is
 # allowed to want more than the picture can hold; these are what
 # actually bound the drawing. At 0.9/0.5 the old factor saturated at
