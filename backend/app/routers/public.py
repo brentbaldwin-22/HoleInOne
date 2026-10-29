@@ -503,7 +503,6 @@ async def register(
     name: str = Form(...),
     mobile: str = Form(""),
     email: str = Form(""),
-    selfie: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: User | None = Depends(optional_user),
 ):
@@ -530,20 +529,9 @@ async def register(
     else:
         raise HTTPException(400, "a tee time is required")
 
-    if not (selfie.content_type or "").startswith("image/"):
-        raise HTTPException(400, "selfie must be an image")
-
-    selfie_bytes = await selfie.read()
-    if len(selfie_bytes) > 8 * 1024 * 1024:
-        raise HTTPException(413, "selfie too large (max 8MB)")
-    if not selfie_bytes:
-        raise HTTPException(400, "empty selfie upload")
-
     spots_taken = db.query(Participant).filter(Participant.tee_time_id == tt.id).count()
     if spots_taken >= tt.max_players:
         raise HTTPException(409, "this tee time is full")
-
-    embedding = appearance.embed_image_bytes(selfie_bytes)
 
     # Auto-claim by email even without a token (case-insensitive)
     auto_user_id = user.id if user else None
@@ -559,19 +547,9 @@ async def register(
         mobile=mobile.strip() or None,
         email=email.strip() or None,
         group_size=1,
-        appearance_embedding=embedding,
     )
     db.add(participant)
     db.flush()
-
-    # Save selfie to disk now that we have the participant id
-    ext = (selfie.filename or "").rsplit(".", 1)[-1].lower() if "." in (selfie.filename or "") else "jpg"
-    if ext not in ("jpg", "jpeg", "png", "webp", "heic"):
-        ext = "jpg"
-    fname = f"{participant.id}-{secrets.token_hex(4)}.{ext}"
-    fpath = SELFIE_DIR / fname
-    fpath.write_bytes(selfie_bytes)
-    participant.selfie_path = f"selfies/{fname}"
 
     # ONE GOLFER, ONE ENTRY. Registration used to let a lead sign up to
     # three playing partners and pay for all of them, which meant the

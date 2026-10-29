@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
-import SelfieField from "../components/SelfieField.jsx";
 import useAuth from "../hooks/useAuth.js";
 
 // Today, and a sensible first guess at "now", both on the GOLFER's clock
@@ -27,15 +26,22 @@ export default function Register() {
   const nav = useNavigate();
   const { user } = useAuth();
   const [course, setCourse] = useState(null);
-  const [teeDate, setTeeDate] = useState(todayLocal);
-  const [teeClock, setTeeClock] = useState(nowLocalRounded);
+  // THE DATE AND TIME FIELDS ARE UNCONTROLLED, ON PURPOSE.
+  //
+  // Held in React state they could not be typed into. A native date or
+  // time input is a row of segments, and the moment you type the first
+  // digit of the hour the value is incomplete, so the browser fires
+  // onChange with "" -- state became "", React re-rendered, and the
+  // segment you were halfway through was wiped. Every keystroke reset
+  // the one before it. Only the arrow keys worked, which nobody would
+  // ever guess, and that is exactly what "you can not adjust the time"
+  // was. Uncontrolled, the segments keep their own state and behave the
+  // way the platform intends -- including the wheel on a phone.
+  const dateRef = useRef(null);
+  const clockRef = useRef(null);
   const [name, setName] = useState(user?.name || "");
   const [mobile, setMobile] = useState("");
   const [email, setEmail] = useState(user?.email || "");
-  const [selfieFile, setSelfieFile] = useState(null);
-  const [selfiePreview, setSelfiePreview] = useState(null);
-  // Single openCameraId across the whole form so only one device camera is mounted at a time.
-  const [openCameraId, setOpenCameraId] = useState(null);
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -49,26 +55,14 @@ export default function Register() {
     })();
   }, [courseToken]);
 
-  function readPreview(file, set) {
-    const reader = new FileReader();
-    reader.onload = () => set(reader.result);
-    reader.readAsDataURL(file);
-  }
-
-  function onLeadSelfie(file) {
-    if (!file?.type?.startsWith("image/")) { setError("That doesn't look like a photo."); return; }
-    setError(null);
-    setSelfieFile(file);
-    readPreview(file, setSelfiePreview);
-  }
-
   async function submit(e) {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
     try {
       if (!mobile && !email) throw new Error("Enter a mobile number or an email so we can text you your clips.");
-      if (!selfieFile) throw new Error("Take your outfit photo so we can match your shots.");
+      const teeDate = dateRef.current?.value || "";
+      const teeClock = clockRef.current?.value || "";
       if (!teeDate || !teeClock) throw new Error("Pick the day and time you're teeing off.");
 
       // The pickers hand back wall-clock strings. Parsed WITHOUT a
@@ -85,7 +79,6 @@ export default function Register() {
       fd.append("name", name);
       fd.append("mobile", mobile);
       fd.append("email", email);
-      fd.append("selfie", selfieFile, selfieFile.name || "selfie.jpg");
 
       const res = await api.register(fd);
       if (res.client_secret && !res.paid) {
@@ -182,9 +175,9 @@ export default function Register() {
             <input
               type="date"
               required
-              value={teeDate}
+              ref={dateRef}
+              defaultValue={todayLocal()}
               min={todayLocal()}
-              onChange={(e) => setTeeDate(e.target.value)}
             />
           </div>
           <div className="field">
@@ -192,30 +185,13 @@ export default function Register() {
             <input
               type="time"
               required
-              value={teeClock}
-              onChange={(e) => setTeeClock(e.target.value)}
+              ref={clockRef}
+              defaultValue={nowLocalRounded()}
             />
           </div>
         </div>
         <div className="hint small muted" style={{ margin: "-8px 0 14px" }}>
           Roughly when you're teeing off — it doesn't have to be exact.
-        </div>
-
-        <div className="field">
-          <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <Icon name="camera" size={16} /> Your outfit photo
-          </label>
-          <p className="hint">
-            Hand your phone to a friend or use a mirror — head to toe, full
-            outfit visible. We use this to pick your shots out of the footage.
-          </p>
-          <SelfieField
-            id="lead"
-            openCameraId={openCameraId}
-            setOpenCameraId={setOpenCameraId}
-            preview={selfiePreview}
-            onPicked={onLeadSelfie}
-          />
         </div>
 
         <div className="divider" />
@@ -225,9 +201,7 @@ export default function Register() {
         </div>
 
         {error && <p className="err-text small">{error}</p>}
-        <button
-          disabled={submitting || !teeDate || !teeClock || !name || !selfieFile}
-        >
+        <button disabled={submitting || !name}>
           {submitting ? "Processing…" : "Pay $20 and register"}
         </button>
       </form>

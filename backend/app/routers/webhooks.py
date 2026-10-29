@@ -91,14 +91,12 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                     # resolved here too rather than left blank on the one
                     # path that does not already have it in hand.
                     course_name=notifications.course_name_for(p),
-                    # This fires on Stripe's confirmation of the lead's
-                    # own payment, and the lead's selfie was required at
-                    # registration -- but a member who somehow has no
-                    # photo should still be asked for one.
-                    invite_url=(
-                        None if p.selfie_path
-                        else f"{settings.app_base_url}/invite/{p.gallery_token}"
-                    ),
+                    # NEVER AN INVITE LINK NOW. Registration does not
+                    # take a photo any more -- golfers pick their own
+                    # shots instead -- so `selfie_path` is null on every
+                    # row, and this branch would have asked every single
+                    # golfer to go and upload one.
+                    invite_url=None,
                 )
                 db.commit()
     return {"ok": True}
