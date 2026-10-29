@@ -932,6 +932,110 @@ class TeeAgent:
             if streamer is not None:
                 streamer.update_frame(frame)
 
+    def _note_trigger_mechanisms(self, audio_on, dwell_on) -> None:
+        """watch-status says which mechanisms are switched on.
+
+        STOP DOING THE WORK, not just stop at the answer. The backend
+        already refuses an event from a switched-off mechanism, and the
+        agent already declines to upload the clip -- so correctness does
+        not depend on this. What depends on it is a rig that has been
+        told it is not listening and is still holding a second RTSP
+        session open to the camera, decoding audio and running a
+        detector over it for a trigger whose every answer will be
+        thrown away.
+
+        ABSENT IS NOT OFF. An older backend omits the key, and a missing
+        key teaches this nothing -- the same rule the triggering gate
+        uses, for the same reason: a Pi running ahead of its backend
+        must not go deaf because of it.
+
+        NOT REMEMBERED ANYWHERE, unlike the triggering gate. That one is
+        a veto that has to survive a reboot during an outage, because
+        the cost of forgetting it is recording a round the operator
+        paused. This is only an economy, and the cost of forgetting it
+        is one wasted RTSP session until the next poll a second later.
+        A rig that reboots deaf because it cannot reach the backend
+        would be strictly worse.
+
+        `dwell_on` is accepted and deliberately not acted on. The person
+        detector is not only the dwell trigger: the live view, the zone
+        overlay and the swing verification all read the same frames, so
+        switching the dwell off must not stop the camera being watched.
+        The backend's refusal is what makes a dwell not become a clip.
+        """
+        if audio_on is None:
+            return
+        want = bool(audio_on)
+        if want == self._audio_wanted:
+            return
+        # NOT LATCHED UNTIL IT HAS BEEN APPLIED.
+        #
+        # The live watcher starts polling before the run loop builds the
+        # trigger, so the backend's answer can arrive while there is
+        # nothing yet to start or stop. Recording the answer at that
+        # moment would make the NEXT poll a no-op -- same value, early
+        # return -- and the switch would never be applied at all. So the
+        # answer is only remembered once something has been done about
+        # it, and until then every poll retries.
+        if self._audio_build is None:
+            return
+        if not self._audio_capable:
+            self._audio_wanted = want
+            log.info(
+                "audio trigger is %s for this camera per the backend, but "
+                "this rig has no audio trigger to %s (not asked for in "
+                "config.yaml, the camera is not on rtsp, or the ring would "
+                "not start)",
+                "on" if want else "off", "start" if want else "stop",
+            )
+            return
+        with self._audio_lock:
+            if not want and self._audio_trigger is not None:
+                # SHIP WHAT IS ALREADY HELD BEFORE GOING QUIET. A
+                # candidate waiting out its contest window was heard
+                # before the switch was flipped, and nothing else will
+                # ever flush it -- `flush_pick_best` is only called on a
+                # tick, and there are about to be no more ticks. The
+                # backend decides whether it still wants it.
+                try:
+                    if self._copy is not None:
+                        self._copy.flush_pick_best(self)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("copy: could not flush the held swing "
+                                "before switching the ears off (%s)", exc)
+                audiotrigger.stop(self._audio_trigger)
+                self._audio_trigger = None
+                self._audio_wanted = want
+                log.info(
+                    "audio trigger SWITCHED OFF for this camera — the ring "
+                    "and its second RTSP session to the camera are stopped. "
+                    "Swings are cut by the dwell from here.",
+                )
+            elif want and self._audio_trigger is None:
+                self._audio_trigger = self._audio_build()
+                if self._audio_trigger is None:
+                    # It built at startup and will not now: the camera
+                    # is unreachable, or its session limit is reached.
+                    # A transient, so the answer is NOT remembered and
+                    # the next poll tries again -- rather than marking
+                    # the rig incapable for the rest of the round.
+                    log.warning(
+                        "audio trigger was switched on for this camera but "
+                        "the ring would not start — retrying on the next "
+                        "poll",
+                    )
+                else:
+                    self._audio_wanted = want
+                    log.info(
+                        "audio trigger SWITCHED ON for this camera — "
+                        "listening again",
+                    )
+                    self._check_dwell_yield_zones()
+            else:
+                # Already in the wanted state -- a restart, or the very
+                # first answer agreeing with how the rig came up.
+                self._audio_wanted = want
+
     def _check_dwell_yield_zones(self) -> None:
         """Say which zone is which, then shout if one stands its dwell
         down for ears that are barred from it.
@@ -1189,6 +1293,15 @@ class TeeAgent:
         # the zone is kept and seen_times() for the readers that only
         # want the clock.
         self._audio_trigger = None
+        # SET HERE AS WELL AS AT BUILD TIME, because the live watcher is
+        # constructed -- and starts polling watch-status -- before the
+        # audio trigger is built, so the backend's answer can arrive
+        # first. Without these the handler raises AttributeError into a
+        # debug log and the first answer is silently lost.
+        self._audio_build = None
+        self._audio_capable = False
+        self._audio_wanted = None
+        self._audio_lock = threading.Lock()
         # WHERE a live audio trigger may suppress the dwell: None,
         # True for anywhere, or a set of zone indices. Off by default:
         # the dwell is the thing that has always produced clips, and
@@ -1326,6 +1439,7 @@ class TeeAgent:
             on_lens_command=self._on_lens_command,
             on_tee_zones=self.apply_tee_zones,
             on_triggering_state=self._gate.note_backend_state,
+            on_trigger_mechanisms=self._note_trigger_mechanisms,
         )
         streamer.start()
         self.streamer = streamer
@@ -1363,12 +1477,33 @@ class TeeAgent:
         # default: it writes the cut it WOULD have made and nothing
         # else, so a day of it can be compared against what the dwell
         # actually recorded before any clip depends on it.
-        self._audio_trigger = audiotrigger.build(
-            self.cfg, self.work_dir, self,
-            video_span=(self._copy.ring.span if self._copy is not None
-                        else None),
-            on_cut=self._cut_at_impact,
-        )
+        # KEPT AS A THUNK so the ears can be started again after being
+        # switched off, without a second copy of this argument list
+        # somewhere else to drift out of step with it.
+        def _build_audio():
+            return audiotrigger.build(
+                self.cfg, self.work_dir, self,
+                video_span=(self._copy.ring.span if self._copy is not None
+                            else None),
+                on_cut=self._cut_at_impact,
+            )
+
+        self._audio_build = _build_audio
+        self._audio_trigger = _build_audio()
+        # WHETHER THIS RIG CAN LISTEN AT ALL, which is a different
+        # question from whether it is switched on. `build` returns None
+        # when config.yaml never asked for an audio trigger, or when the
+        # camera is not on rtsp, or when the ring would not start -- and
+        # on such a rig there is nothing for the backend's switch to
+        # start, so it must not try on every poll for the rest of the
+        # round.
+        self._audio_capable = self._audio_trigger is not None
+        self._audio_wanted = None
+        # The ring is an ffmpeg process and a second RTSP session to the
+        # camera. Starting and stopping it happens on the watch-status
+        # thread while the detect loop reads the trigger, and the
+        # shutdown path stops it too, so the transitions are serialised.
+        self._audio_lock = threading.Lock()
         self._check_dwell_yield_zones()
 
         # Start draining the camera into the buffer before we begin
@@ -1418,9 +1553,16 @@ class TeeAgent:
                 # second of wall clock, and a tick with nothing new is
                 # a directory listing. Wrapped because a detector that
                 # throws must not take the recorder down with it.
-                if self._audio_trigger is not None:
+                # BOUND ONCE. The watch-status thread can switch the
+                # ears off between a check and a call now that they stop
+                # at runtime, and `self._audio_trigger.tick()` on a
+                # field that just became None is an AttributeError
+                # swallowed as "tick failed" -- a real bug wearing the
+                # same log line as a detector fault.
+                _at = self._audio_trigger
+                if _at is not None:
                     try:
-                        self._audio_trigger.tick()
+                        _at.tick()
                     except Exception as exc:  # noqa: BLE001
                         log.warning("audio trigger: tick failed (%s)", exc)
                     # AND SHIP A SWING WHOSE WINDOW HAS CLOSED. Nothing
@@ -1472,11 +1614,16 @@ class TeeAgent:
                 # names zones, because a forward tee in the same frame
                 # is out of earshot -- see _dwell_yield_zones.
                 _yield_zone = None
+                # AND BOUND ONCE HERE TOO, where it is read three
+                # times in one condition: a switch-off part-way through
+                # would have the dwell stand aside for ears that are no
+                # longer listening, which records nothing at all.
+                _at = self._audio_trigger
                 if (dwell_met and not forced
-                        and self._audio_trigger is not None
-                        and not self._audio_trigger.shadow
+                        and _at is not None
+                        and not _at.shadow
                         and self._dwell_yields is not None
-                        and self._audio_trigger.healthy()):
+                        and _at.healthy()):
                     _yield_zone = self._yield_zone_for(stance, _roi_now)
                 if _yield_zone is not None:
                     if not self._yielded_logged:

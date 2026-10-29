@@ -63,6 +63,7 @@ class LiveStreamer:
         on_lens_command=None,
         on_tee_zones=None,
         on_triggering_state=None,
+        on_trigger_mechanisms=None,
         still_quality: int = 85,
         still_min_interval: float = 15.0,
     ) -> None:
@@ -92,6 +93,13 @@ class LiveStreamer:
         # paused?" has to be answered from the last thing we were told.
         # See TriggerGate.
         self.on_triggering_state = on_triggering_state
+        # WHICH of the two trigger mechanisms the backend has switched
+        # on, as (audio, dwell). Separate from `on_triggering_state`,
+        # which is whether ANY may fire: that one is a veto the agent
+        # remembers on disk for when the backend is unreachable, and
+        # this one is "stop doing the work" -- cheap to re-learn on the
+        # next poll, so it is not remembered anywhere.
+        self.on_trigger_mechanisms = on_trigger_mechanisms
         self.frame_interval = 1.0 / max(1, fps)
         self.jpeg_quality = max(20, min(95, jpeg_quality))
         # The still is looked AT rather than through, one frame every
@@ -248,6 +256,14 @@ class LiveStreamer:
                     self.on_triggering_state(payload.get("triggering_enabled"))
                 except Exception as exc:  # noqa: BLE001
                     log.debug("triggering-state handler failed: %s", exc)
+            if self.on_trigger_mechanisms:
+                try:
+                    self.on_trigger_mechanisms(
+                        payload.get("audio_trigger_enabled"),
+                        payload.get("dwell_trigger_enabled"),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("trigger-mechanism handler failed: %s", exc)
             secs = payload.get("capture_seconds")
             if secs and self.on_capture_request:
                 log.info("capture requested by operator: %ss", secs)
