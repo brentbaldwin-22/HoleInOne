@@ -4148,9 +4148,47 @@ def _extend_to_target(pts, target_xy, fps, width, height,
                 f"line stops rather than hooking across. Either the landing "
                 f"is mapped to the wrong place or the flight points at the "
                 f"end are not the ball")
-    tail = _ballistic_tail(pts, target_xy, fps, width, height,
-                           land_frame=land_frame)
-    kind = "ballistic"
+    # THE CHAIN'S OWN CURVATURE FIRST.
+    #
+    # THIS ORDER IS THE POINT, and putting it second was a mistake that
+    # cost a day of re-renders changing nothing. `_ballistic_tail`
+    # succeeds on a steep shot seen from behind -- it is written to,
+    # "it is allowed to turn over" -- so every fix made to the models
+    # BEHIND it was unreachable on exactly the clips that needed them.
+    # Three commits of pacing, reach and curvature produced byte-for-
+    # byte identical output because this line won every time.
+    #
+    # And what it draws is the complaint. It takes the fitted position
+    # and velocity at the hand-off and throws the fitted ACCELERATION
+    # away, solving for its own curvature from the landing instead --
+    # so a chain that is visibly slicing hands over to a line that
+    # stops slicing. Then its ALONG component turns over, which puts
+    # the ball back down its own launch ray: the narrow hairpin, with
+    # all the sideways motion acquired late because ACROSS starts at
+    # zero speed by construction.
+    #
+    # `_curved_tail` matches position, velocity AND curvature and still
+    # lands on the mark at the right time -- strictly more of the
+    # measurement than the model below uses. It declines when its cubic
+    # correction would dominate the early flight, and the apex and loop
+    # guards sit behind both, so a shot it cannot do falls through to
+    # exactly what drew it before.
+    tail = _curved_tail(pts, target_xy, fps, width, height,
+                        land_frame=land_frame)
+    kind = "curved"
+    if tail and _apex_above_frame_px(tail) > (
+            _APEX_MAX_ABOVE_FRAC * float(height or 1)):
+        log.info("tracer tail: the curvature-matched apex runs off the "
+                 "top — trying the ballistic fit instead")
+        tail = None
+    if tail and _turns_back_on_itself(tail):
+        log.info("tracer tail: the curvature-matched arc curls back on "
+                 "itself — trying the ballistic fit instead")
+        tail = None
+    if not tail:
+        tail = _ballistic_tail(pts, target_xy, fps, width, height,
+                               land_frame=land_frame)
+        kind = "ballistic"
     # AN ARC THE CAMERA CANNOT SEE IS NOT A DRAWING. A fit that throws
     # its apex a frame and a half above the picture spends the whole
     # flight off-screen and reads as a line going straight up and never
@@ -4159,38 +4197,17 @@ def _extend_to_target(pts, target_xy, fps, width, height,
         _above = _apex_above_frame_px(tail)
         if _above > _APEX_MAX_ABOVE_FRAC * float(height or 1):
             log.info(
-                "tracer tail: the ballistic apex sits %.0fpx above a "
+                "tracer tail: the %s apex sits %.0fpx above a "
                 "%.0fpx frame (limit %.0fpx) — the fit has run away from "
                 "what the camera sees, so trying the arc instead",
-                _above, float(height or 0),
+                kind, _above, float(height or 0),
                 _APEX_MAX_ABOVE_FRAC * float(height or 1),
             )
             tail = None
     if tail and _turns_back_on_itself(tail):
-        log.info("tracer tail: the ballistic arc curls back on itself — "
-                 "trying the arc through the chord instead")
+        log.info("tracer tail: the %s arc curls back on itself — "
+                 "trying the arc through the chord instead", kind)
         tail = None
-    # THE CHAIN'S OWN CURVATURE, BEFORE FALLING BACK TO A CHORD.
-    #
-    # Tried here rather than first: `_ballistic_tail` is exact on an
-    # ordinary shot and changing which model wins those would change
-    # every clip that already looks right. This is for the ones
-    # ballistic declines -- where the arc used to take over with a
-    # straight launch tangent, so the line stopped slicing at the
-    # hand-off and started again at the turn.
-    if not tail:
-        tail = _curved_tail(pts, target_xy, fps, width, height,
-                            land_frame=land_frame)
-        kind = "curved"
-        if tail and _apex_above_frame_px(tail) > (
-                _APEX_MAX_ABOVE_FRAC * float(height or 1)):
-            log.info("tracer tail: the curvature-matched apex runs off "
-                     "the top — trying the arc instead")
-            tail = None
-        if tail and _turns_back_on_itself(tail):
-            log.info("tracer tail: the curvature-matched arc curls back "
-                     "on itself — trying the arc instead")
-            tail = None
     if not tail:
         tail = _arc_tail(pts, target_xy, fps, width, height,
                          land_frame=land_frame)

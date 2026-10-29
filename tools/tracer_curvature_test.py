@@ -160,16 +160,26 @@ check("the last point is the target",
 check("one point per frame of the flight", len(_c), S)
 
 print()
-print("and it is tried BEFORE the arc and AFTER the ballistic model:")
+print("AND IT IS TRIED FIRST, which is the whole point:")
 import inspect  # noqa: E402
+import re  # noqa: E402
 
 from backend.app.services import ai_tracer as _T  # noqa: E402
 
 _src = inspect.getsource(_T._extend_to_target)
-check("ballistic first", _src.index("_ballistic_tail(")
-      < _src.index("_curved_tail("), True)
-check("...then curved, then the arc",
-      _src.index("_curved_tail(") < _src.index("_arc_tail("), True)
+# PUTTING IT SECOND COST A DAY OF RE-RENDERS CHANGING NOTHING.
+# _ballistic_tail succeeds on a steep shot seen from behind -- it is
+# written to, "it is allowed to turn over" -- so every fix made to the
+# models behind it was unreachable on exactly the clips that needed
+# them. Three commits of pacing, reach and curvature produced
+# byte-for-byte identical output because that line won every time.
+check("the order is curved, then ballistic, then the arc",
+      re.findall(r"_(curved|ballistic|arc)_tail\(", _src),
+      ["curved", "ballistic", "arc"])
+# AND IT IS TRIED ONCE. A second attempt after ballistic is dead code:
+# it declined the first time and the inputs have not changed.
+check("curved is attempted exactly once",
+      _src.count("_curved_tail("), 1)
 # WHICH MODEL DREW IT. Three can, they disagree about the shape, and
 # the question is unanswerable without the name.
 check("and the model that won is logged",
