@@ -150,6 +150,7 @@ from ..services.video import (
     transcode_for_web,
 )
 from ..services.intro_overlay import (
+    DIST_TAIL_SEC,
     clean_copy_path,
     apply_distance_plate, apply_distance_plate_inplace,
     apply_intro_overlay_inplace, placeholder_player_name,
@@ -1833,21 +1834,46 @@ def make_clip_vertical(
     # in _delogo_src; this draws it again at x=(W-w)/2 of the vertical,
     # which is where the closing pan has parked the flag.
     #
-    # tail_sec=0 because the source already carries the held tail the
-    # plate is meant to be read against; a second one would end the clip
-    # on five seconds of frozen picture.
+    # WHICH FILE WE CROPPED DECIDES WHETHER THE TAIL IS ALREADY THERE.
+    #
+    # The landscape deliverable ends on DIST_TAIL_SEC of held frame so
+    # the number can be read; that tail is added by the SAME plate pass,
+    # downstream of the clean copy. So the stamped file carries it and
+    # the clean copy does not, and the vertical has to supply what its
+    # source is missing or the two deliverables are different lengths.
+    #
+    # This used to be a flat tail_sec=0, which was right while the only
+    # source was the stamped file. The clean copy made it wrong: the
+    # 9:16 came out exactly DIST_TAIL_SEC short of the landscape -- 9s
+    # against 11s -- for no reason visible in either picture.
+    _dist_tail = DIST_TAIL_SEC if _src_kind == "clean" else 0.0
     _dist_ft = clip.distance_from_pin_feet
     _diag.update(dist_plate=None)
     if _dist_ft:
         try:
             _ok_dist = apply_distance_plate_inplace(
-                out_path, f"{int(_dist_ft)} FT", tail_sec=0.0,
+                out_path, f"{int(_dist_ft)} FT", tail_sec=_dist_tail,
             )
             _diag.update(dist_plate=f"{int(_dist_ft)} FT" if _ok_dist else "failed")
         except Exception as exc:  # noqa: BLE001
             log.warning("clip %s: vertical distance plate failed: %s",
                         clip_id, exc)
             _diag.update(dist_plate="failed")
+    # THE TWO DURATIONS, SIDE BY SIDE. "Same length as the original" is
+    # an invariant that was quietly broken for a whole deploy because
+    # nothing reported it -- the clip looked fine and was 2.5s short.
+    # Measured on the files themselves, not inferred from the filters
+    # that were supposed to produce them.
+    try:
+        _dv = (probe_video_info(out_path) or {}).get("duration")
+        _ds = (probe_video_info(src_path) or {}).get("duration")
+        if _dv and _ds:
+            _diag.update(dur=round(float(_dv), 2), dur_src=round(float(_ds), 2))
+        else:
+            _diag.update(dur=None, dur_src=None)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("clip %s: could not compare durations: %s", clip_id, exc)
+        _diag.update(dur=None, dur_src=None)
     clip.vertical_url = (
         f"{settings.app_base_url}/uploads/clips/{out_path.name}"
         f"?v={int(out_path.stat().st_mtime)}"
@@ -1870,6 +1896,8 @@ def make_clip_vertical(
             "gball_why": _diag.get("green_ball_why"),
             "pin": _diag.get("pin_x"),
             "pin_src": _diag.get("pin_src"),
+            "dur": _diag.get("dur"),
+            "dur_src": _diag.get("dur_src"),
             "swing_match": _diag.get("swing_match"),
             "clean_src": _diag.get("clean_src"),
             "src_kind": _diag.get("src_kind"),

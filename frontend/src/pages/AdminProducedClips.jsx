@@ -303,6 +303,20 @@ export default function AdminProducedClips() {
                 const clean = pick(live && live.clean_src, d && d.clean_src);
                 const srcKind = pick(live && live.src_kind, d && d.src_kind);
                 const dist = pick(live && live.dist_plate, d && d.dist_plate);
+                const dur = pick(live && live.dur, d && d.dur);
+                const durSrc = pick(live && live.dur_src, d && d.dur_src);
+                // Same length as the landscape, or say so. A 9:16 that
+                // is 2.5s short looks perfectly fine on its own and is
+                // only wrong next to the clip it came from, so the
+                // comparison has to be on the card rather than in
+                // somebody's memory. A frame of slack at 30fps is not a
+                // mismatch.
+                const durStr =
+                  dur == null
+                    ? null
+                    : durSrc != null && Math.abs(dur - durSrc) > 0.05
+                      ? `${dur}s \u2260 ${durSrc}s`
+                      : `${dur}s`;
                 const num = (v, why) =>
                   v != null ? String(v) : why ? String(why) : "none";
                 const cutStr =
@@ -330,6 +344,7 @@ export default function AdminProducedClips() {
                     {` · gball ${num(gball, gballWhy)}`}
                     {` · pin ${num(pin)}${pin != null && pinSrc ? `(${pinSrc})` : ""}`}
                     {dist ? ` · dist ${dist}` : ""}
+                    {durStr ? ` · dur ${durStr}` : ""}
                   </div>
                 );
               })()}
