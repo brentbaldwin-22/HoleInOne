@@ -58,6 +58,19 @@ DEFAULT_CONFIRM_TOLERANCE_SEC = 6.0
 # course. Measured ambient on this course sits around 0.0008-0.004 of
 # full scale after the high-pass; a dead microphone reads 0.
 _SILENCE_FLOOR = 1e-5
+# HOW LONG A HEARD STRIKE MAY WAIT for the video it needs.
+#
+# A strike at T wants footage out to T + after_sec, and at the moment
+# it is heard that footage DOES NOT EXIST YET -- the camera has not
+# recorded it. So the hit waits, and `after_sec` (9s by default) is how
+# long it normally waits. This is the give-up point: past it the video
+# ring has stalled rather than simply not caught up, and holding the
+# hit any longer only delays saying so.
+_VIDEO_WAIT_MAX_SEC = 30.0
+# Belt. One hit per min_separation_sec at worst, so a 30s wait is about
+# five -- this is three orders of magnitude of headroom against a ring
+# that has stopped advancing entirely.
+_VIDEO_WAIT_MAX_HELD = 200
 
 
 class AudioTrigger:
@@ -138,6 +151,11 @@ class AudioTrigger:
         self.on_cut = on_cut
         self._fed: Optional[str] = None
         self._fed_at = 0.0
+        # STRIKES WAITING FOR THE CAMERA TO CATCH UP. See _video_wait:
+        # a sound is heard in real time and the clip it wants runs nine
+        # seconds past it, so at the instant of the strike the back half
+        # has not been recorded. These are held until it has.
+        self._pending: list = []
         self.heard = 0
         self.confirmed = 0
         self.cut_count = 0
@@ -164,7 +182,9 @@ class AudioTrigger:
         except Exception as exc:  # noqa: BLE001
             # Housekeeping must not cost the listening it serves.
             log.warning("audio ring: tick failed (%s)", exc)
-        out = []
+        # THE HELD STRIKES FIRST, so everything is judged in the order
+        # it was heard -- see _judge_pending.
+        out = self._judge_pending()
         for seg in self._new_segments():
             from .audiocap import _seg_start
             ts = _seg_start(seg)
@@ -179,6 +199,17 @@ class AudioTrigger:
             self._fed = seg.name
             self._fed_at = __import__("time").monotonic()
             for hit in self.listener.feed(pcm, ts):
+                # THE CLIP IT WANTS MAY NOT BE RECORDED YET. Hold it
+                # rather than refuse it; _judge_pending picks it up once
+                # the camera has caught up. See _video_wait.
+                if self._video_wait(float(hit["at"])) == "wait":
+                    self._pending.append(hit)
+                    log.debug(
+                        "audio trigger: holding the strike at %.3f until "
+                        "the video reaches %.1f",
+                        float(hit["at"]),
+                        float(hit["at"]) + self.after_sec)
+                    continue
                 out.append(self._judge(hit))
         return out
 
@@ -227,6 +258,84 @@ class AudioTrigger:
         return [p for p in segs if p.name > self._fed]
 
     # ---- the decision ---------------------------------------------------
+
+    def _video_wait(self, at: float) -> str | None:
+        """Is the footage for a strike at `at` there yet?
+
+        None to judge it now, "wait" for footage still to come, "gone"
+        for footage that has aged out.
+
+        THESE TWO WERE ONE TEST AND ARE NOT THE SAME THING, and that
+        was the bug. A clip runs from at-before_sec to at+after_sec, so
+        a strike heard in real time wants nine seconds of video that the
+        camera HAS NOT RECORDED YET. Testing the whole window against
+        the ring in one `or` refused every one of them -- for ninety
+        minutes straight on the tee rig, every line reading "the video
+        ring holds X..now, this needs X..now+9".
+
+        It only ever cut by accident: when the audio pipeline fell far
+        enough behind real time that the "future" it wanted was already
+        on disk. Measured on that rig -- the ten cuts it did make came
+        while the audio was running 152 seconds behind the video, and
+        they stopped the moment a restart put it back in real time. The
+        CPU load of the dwell recording clips is most likely what used
+        to supply that lag, which is why switching the dwell off looked
+        like it had silenced the ears.
+
+        Aged out really is a refusal: that footage is gone and no
+        amount of waiting brings it back. Not yet recorded is a WAIT.
+        """
+        if self.video_span is None:
+            return None
+        try:
+            first, last = self.video_span()
+        except Exception:  # noqa: BLE001 - never cost a cut
+            return None
+        if first is None or last is None:
+            return None             # let _judge say "the ring is empty"
+        if at + self.after_sec > last:
+            return "wait"
+        if at - self.before_sec < first:
+            return "gone"
+        return None
+
+    def _judge_pending(self) -> list:
+        """Judge the held strikes whose video has arrived, in order.
+
+        IN ORDER MATTERS: the refractory period is sequential, so
+        judging a later strike before an earlier one would let the
+        later one silence the swing that came first.
+        """
+        if not self._pending:
+            return []
+        import time as _t
+        _now = _t.time()
+        out, keep = [], []
+        for hit in self._pending:
+            at = float(hit["at"])
+            if self._video_wait(at) == "wait":
+                if _now - at > _VIDEO_WAIT_MAX_SEC:
+                    # The ring has stalled, not lagged. Counted as heard
+                    # because it was, and said out loud because a camera
+                    # that has stopped recording is the actual problem.
+                    self.heard += 1
+                    log.warning(
+                        "audio trigger: giving up on the strike at %.3f — "
+                        "waited %.0fs for the video ring to reach %.1f and "
+                        "it has not. The camera is not recording.",
+                        at, _now - at, at + self.after_sec,
+                    )
+                    continue
+                keep.append(hit)
+                continue
+            out.append(self._judge(hit))
+        if len(keep) > _VIDEO_WAIT_MAX_HELD:
+            log.warning(
+                "audio trigger: %d strikes waiting on video — dropping the "
+                "oldest %d", len(keep), len(keep) - _VIDEO_WAIT_MAX_HELD)
+            keep = keep[-_VIDEO_WAIT_MAX_HELD:]
+        self._pending = keep
+        return out
 
     def _judge(self, hit: dict) -> dict:
         at = float(hit["at"])
@@ -279,9 +388,21 @@ class AudioTrigger:
                 # the footage is simply not all there. Said plainly,
                 # because "no swing found" and "the ring had aged out
                 # from under it" need different fixes.
+                #
+                # AND WHICH END IS MISSING IS THE WHOLE POINT. Footage
+                # still to come is a WAIT and never reaches here --
+                # _video_wait holds the strike until the camera has
+                # recorded it. So "not recorded yet" at this line means
+                # the ring went backwards between the two checks, which
+                # is worth saying differently from footage that aged
+                # out and is genuinely gone.
                 d["confirmed"] = False
-                d["why"] = ("the video ring holds %.1f..%.1f, this needs "
-                            "%.1f..%.1f" % (first, last, d["start"], d["end"]))
+                d["why"] = (
+                    "the video ring holds %.1f..%.1f, this needs "
+                    "%.1f..%.1f (%s)"
+                    % (first, last, d["start"], d["end"],
+                       "aged out" if d["start"] < first
+                       else "not recorded yet — the ring went backwards"))
 
         if not d["confirmed"]:
             log.info("audio trigger: heard x%.1f at %.3f — not cutting (%s)",

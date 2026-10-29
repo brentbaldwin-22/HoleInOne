@@ -138,10 +138,27 @@ check("sightings is None -> not gated", d[0]["confirmed"], True)
 
 print()
 print("footage that has aged out is reported as THAT:")
+# AGED OUT AND NOT YET RECORDED ARE DIFFERENT, and this block used to
+# conflate them because the code did. The strike is at 1000.0 and the
+# clip runs 996.0..1009.0 (4s before, 9s after).
+#
+# Aged out: the ring starts AFTER 996, so the beginning of the clip is
+# gone for good and no amount of waiting brings it back.
 d = build([(1, HIT)], zones=[0], sightings=[(999.6, 0)],
-          span=(998.0, 1002.0))[1]
-check("ring too short", d[0]["confirmed"], False)
+          span=(998.0, 1020.0))[1]
+check("the start has rolled off", d[0]["confirmed"], False)
 check("...and says so", "video ring holds" in (d[0]["why"] or ""), True)
+check("...naming which end", "aged out" in (d[0]["why"] or ""), True)
+
+# NOT YET RECORDED: the ring ends before 1009, which is every strike
+# heard in real time. It is HELD, not refused -- so nothing is judged
+# on this tick at all. See tools/audio_video_wait_test.py.
+t, d, cuts = build([(1, HIT)], zones=[0], sightings=[(999.6, 0)],
+                   span=(990.0, 1002.0))
+check("the end has not happened yet: nothing judged", len(d), 0)
+check("...the strike is held instead", len(t._pending), 1)
+check("...and nothing was cut", len(cuts), 0)
+
 d = build([(1, HIT)], zones=[0], sightings=[(999.6, 0)],
           span=(900.0, 1100.0))[1]
 check("ring covers it", d[0]["confirmed"], True)
