@@ -204,11 +204,20 @@ class AudioTrigger:
                 # the camera has caught up. See _video_wait.
                 if self._video_wait(float(hit["at"])) == "wait":
                     self._pending.append(hit)
-                    log.debug(
-                        "audio trigger: holding the strike at %.3f until "
-                        "the video reaches %.1f",
+                    # AT INFO, NOT DEBUG. This replaces the refusal line
+                    # that used to be printed for the same strike, so the
+                    # volume is unchanged -- and without it a rig that is
+                    # waiting correctly looks exactly like a rig that is
+                    # hearing nothing, which is the state somebody is
+                    # staring at the journal trying to tell apart.
+                    log.info(
+                        "audio trigger: heard x%.1f at %.3f — holding it "
+                        "until the camera has recorded out to %.1f "
+                        "(%.1fs away)",
+                        round(float(hit.get("ratio") or 0.0), 1),
                         float(hit["at"]),
-                        float(hit["at"]) + self.after_sec)
+                        float(hit["at"]) + self.after_sec,
+                        self.after_sec)
                     continue
                 out.append(self._judge(hit))
         return out
