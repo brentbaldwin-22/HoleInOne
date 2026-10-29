@@ -8720,17 +8720,59 @@ function DescentWindow({ view, colors }) {
 
 function WhyLegend({ sweep, texts, acceptedText }) {
   if (!sweep?.why_order?.length) return null;
-  const row = (sw, name, text, n) => (
-    <tr key={name}>
-      <td style={{ paddingRight: 8 }}>
-        <span style={{ display: "inline-block", width: 22, height: 4,
-                       borderRadius: 2, background: sw }} />
-      </td>
-      <td style={{ paddingRight: 8 }}><b>{name}</b></td>
-      <td className="muted">{text}</td>
-      <td style={{ paddingLeft: 8 }}>{n}</td>
-    </tr>
-  );
+  // WHAT THE BAR IS, AND WHICH KNOBS SET IT. Published by the sweep
+  // from the values it actually ran with -- never retyped here, or the
+  // page drifts from the detector and starts quietly lying.
+  const spec = {};
+  for (const g of sweep.gates || []) spec[g.key] = g;
+
+  const row = (sw, name, text, n) => {
+    const g = spec[name];
+    return (
+      <tr key={name}>
+        <td style={{ paddingRight: 8, verticalAlign: "top", paddingTop: 4 }}>
+          <span style={{ display: "inline-block", width: 22, height: 4,
+                         borderRadius: 2, background: sw }} />
+        </td>
+        <td style={{ paddingRight: 8, verticalAlign: "top" }}>
+          <b>{name}</b>
+          {g?.limit && (
+            <div className="tiny muted" style={{ fontWeight: 400 }}>
+              {g.limit}
+            </div>
+          )}
+        </td>
+        <td className="muted" style={{ verticalAlign: "top" }}>
+          {text}
+          {g && (
+            <details style={{ marginTop: 2 }}>
+              <summary className="tiny" style={{ cursor: "pointer" }}>
+                {g.knobs?.length
+                  ? `what moves it — ${g.knobs.length} knob(s)`
+                  : "what moves it"}
+              </summary>
+              <div className="tiny" style={{ marginTop: 3 }}>
+                {g.what}
+                <div style={{ marginTop: 4 }}>
+                  {g.knobs?.length ? (
+                    <>
+                      <b>Knobs:</b>{" "}
+                      {g.knobs.map((k) => (
+                        <code key={k} style={{ marginRight: 6 }}>{k}</code>
+                      ))}
+                    </>
+                  ) : (
+                    <b>No knob — see above.</b>
+                  )}
+                </div>
+              </div>
+            </details>
+          )}
+        </td>
+        <td style={{ paddingLeft: 8, verticalAlign: "top" }}>{n}</td>
+      </tr>
+    );
+  };
   return (
     <>
       <table className="tiny" style={{ marginTop: 6 }}>
@@ -8744,7 +8786,9 @@ function WhyLegend({ sweep, texts, acceptedText }) {
       </table>
       <div className="tiny muted" style={{ marginTop: 4 }}>
         A chain that failed several gates is drawn in the colour of the
-        first one it failed, reading down this list.
+        first one it failed, reading down this list. The number under
+        each name is the bar THIS run used, overrides included — open
+        “what moves it” for the knobs that set it.
       </div>
     </>
   );

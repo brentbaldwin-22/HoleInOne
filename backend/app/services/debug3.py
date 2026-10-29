@@ -3421,13 +3421,16 @@ def find_descents(
     _px = int(round(float(min_drop_frac) * frame_h))
     out["gates"] = [
         {"key": "points", "limit": f"{MIN_DESCENT_POINTS}+",
+         "knobs": ['descent_min_points'],
          "what": "how many linked points the chain has. Fewer than this "
                  "and the shape gates below mean nothing — three points "
                  "sit on a line by construction."},
         {"key": "drop", "limit": f"{_px}px",
+         "knobs": [],
          "what": f"how far it moved down the frame, end to end "
                  f"({min_drop_frac:g} of the frame height)."},
         {"key": "rate", "limit": f"{rate_lo}–{rate_hi}",
+         "knobs": ['descent_rate_lo', 'descent_rate_hi'],
          "what": "frame-heights per second. Deliberately wide at the top: "
                  "these are ANGULAR units, so a ball close to the lens "
                  "sweeps far faster than the same ball far from it, and a "
@@ -3435,6 +3438,7 @@ def find_descents(
         {"key": "bend", "limit": f"{max_bend_px}px "
                                  f"({DESCENT_SHORT_BEND_PX}px under "
                                  f"{DESCENT_SHORT_POINTS} points)",
+         "knobs": ['descent_max_bend_px'],
          "what": "rms of x against y. A falling ball is very nearly a "
                  "straight line; a chain of unrelated speckle is not. "
                  "Measured: real descents 0.1–5.3px, false ones 17.6 and "
@@ -3442,10 +3446,12 @@ def find_descents(
         {"key": "tilt", "limit": f"{DESCENT_MAX_TILT_DEG}° "
                                  f"({DESCENT_SHORT_MAX_TILT_DEG}° under "
                                  f"{DESCENT_SHORT_POINTS} points)",
+         "knobs": ['descent_max_tilt_deg'],
          "what": "how far off vertical it leans. A branch swaying across "
                  "the frame collects net drop the same way a fall does; "
                  "this is what tells them apart."},
         {"key": "uneven", "limit": f"{DESCENT_MAX_STEP_BACK}",
+         "knobs": ['descent_max_step_back'],
          "what": "worst backward move in the fall rate, as a fraction of "
                  "the chain's own median. A fall only ever speeds up -- "
                  "in flight. Measured over "
@@ -3458,13 +3464,16 @@ def find_descents(
         {"key": "sparse", "limit": f"{DESCENT_MIN_DENSITY} "
                                    f"({DESCENT_SHORT_MIN_DENSITY} under "
                                    f"{DESCENT_SHORT_POINTS} points)",
+         "knobs": ['descent_min_density'],
          "what": "points divided by the frames they span. A real descent "
                  "is seen on most of the frames it crosses."},
         {"key": "edge", "limit": f"{DESCENT_EDGE_MARGIN_FRAC:g} of the frame",
+         "knobs": [],
          "what": "how close to the frame edge it ran. A chain hugging the "
                  "border is the picture moving, not a ball."},
         {"key": "sky", "limit": f"{DESCENT_MIN_LAND_Y_FRAC:g} of the frame "
                                 f"from the top",
+         "knobs": ['descent_min_land_y_frac'],
          "what": "how high in the picture it came down. A green camera "
                  "is aimed at a green, so the ground is the lower part "
                  "of the picture and the upper part is treeline and "
@@ -6279,6 +6288,98 @@ def sweep_ascents(
             for w in (z["why"] or ["accepted"]):
                 _tally[w] = _tally.get(w, 0) + 1
         out["why_counts"] = _tally
+        # WHAT EACH GATE MEASURES, THE BAR IT IS HELD TO, AND WHICH
+        # KNOBS SET THAT BAR.
+        #
+        # The descent sweep has published this for a while; the ascent
+        # never did, so its legend named ten verdicts and nothing said
+        # which of thirty tunables moved any of them. "Rise is 120" is
+        # not a setting anybody typed: it is `ascent_min_rise_frac`
+        # times this camera's frame height, and until you know that the
+        # knob and the number on screen look unrelated.
+        #
+        # COMPUTED FROM THE LIVE VALUES, like its descent counterpart
+        # and for the same reason given there: a number typed into a UI
+        # drifts from the constant it describes and then quietly lies.
+        # These are the gate values this run actually used, overrides
+        # and all.
+        _bend_eg = min(
+            ASCENT_MAX_BEND_PX,
+            ASCENT_BEND_BASE_PX + ASCENT_BEND_PER_POINT_PX
+            * (10 - ASCENT_MIN_POINTS))
+        out["gates"] = [
+            {"key": "points", "limit": f"{ASCENT_MIN_POINTS}+",
+             "knobs": ["ascent_min_points"],
+             "what": "how many linked points the chain has. Below this "
+                     "the shape gates mean nothing, and it also feeds "
+                     "the bend bar below."},
+            {"key": "rise",
+             "limit": f"{int(ASCENT_MIN_RISE_FRAC * frame_h)}px",
+             "knobs": ["ascent_min_rise_frac"],
+             "what": "how far it climbed, first point to last. The bar "
+                     f"is ascent_min_rise_frac ({ASCENT_MIN_RISE_FRAC:g}) "
+                     f"times this camera's frame height ({int(frame_h)}px) "
+                     "— so it moves with the camera, not just the knob."},
+            {"key": "rate", "limit": f"{ASCENT_RATE_LO}–{ASCENT_RATE_HI}",
+             "knobs": ["ascent_rate_lo", "ascent_rate_hi"],
+             "what": "frame-heights per second: the climb divided by the "
+                     "frames it spans, times fps, over the frame height. "
+                     "A struck ball leaves; a club loiters."},
+            {"key": "bend",
+             "limit": f"{_bend_eg:g}px for a 10-point chain",
+             "knobs": ["ascent_bend_base_px", "ascent_bend_per_point_px",
+                       "ascent_max_bend_px", "ascent_min_points"],
+             "what": "furthest a point sits off the straight line through "
+                     "the chain. THE BAR IS NOT ONE NUMBER: it is "
+                     f"min({ASCENT_MAX_BEND_PX:g}, "
+                     f"{ASCENT_BEND_BASE_PX:g} + "
+                     f"{ASCENT_BEND_PER_POINT_PX:g} × (points − "
+                     f"{ASCENT_MIN_POINTS})), so it grows with the "
+                     "evidence. The ceiling only bites on a very long "
+                     "chain — base and per-point are the two that move "
+                     "an ordinary one."},
+            {"key": "wander", "limit": f"{ASCENT_MIN_STRAIGHT:g}",
+             "knobs": ["ascent_min_straight"],
+             "what": "straightness, 0 to 1: how much of the path's length "
+                     "goes in one direction. A chain that doubles back "
+                     "scores low however short its bend."},
+            {"key": "tilt", "limit": f"{ASCENT_MAX_TILT_DEG:g}°",
+             "knobs": ["ascent_max_tilt_deg"],
+             "what": "degrees off vertical, measured on the first few "
+                     "points. A struck ball climbs away steeply; "
+                     "something crossing the picture does not."},
+            {"key": "backrun",
+             "limit": f"{ASCENT_MAX_BACKRUN_SEC:g}s "
+                      f"({int(ASCENT_MAX_BACKRUN_SEC * float(fps or 30.0))}"
+                      " frames)",
+             "knobs": ["ascent_max_backrun_sec"],
+             "what": "how long before its first point the chain's own "
+                     "heading says it left the tee line. The bar is the "
+                     "seconds knob times this clip's fps."},
+            {"key": "outside", "limit": "the hole's tee box",
+             "knobs": [],
+             "what": "where that same run-back crosses the tee line. NOT "
+                     "a knob: it is the trigger zones drawn for this "
+                     "hole, widened by a fixed margin. A chain refused "
+                     "here is pointing somewhere nobody tees off from — "
+                     "redraw the box, do not tune a gate."},
+            {"key": "sparse", "limit": f"{ASCENT_MIN_DENSITY:g}",
+             "knobs": ["ascent_min_density"],
+             "what": "points divided by the frames they span. A real "
+                     "ascent is seen on most of the frames it crosses."},
+            {"key": "gap", "limit": f"{ASCENT_MAX_STEP_FRAMES} frames",
+             "knobs": ["ascent_max_step_frames"],
+             "what": "the biggest step between consecutive points, which "
+                     "density cannot see: points bunched at one end and "
+                     "points spread evenly score the same ratio."},
+            {"key": "trimmed", "limit": f"under {ASCENT_MIN_POINTS}",
+             "knobs": ["ascent_min_points", "ascent_corridor_px",
+                       "ascent_merge_px", "ascent_stitch_px"],
+             "what": "cut below the minimum by the trims before any gate "
+                     "ran. Nothing above applies — the chain never got "
+                     "that far, and what to change is how chains are "
+                     "BUILT rather than how they are judged."},
+        ]
         _n_raw = len(out["ascents"])
         out["ascents"] = _dedupe_ascents(out["ascents"])
         out["n_merged"] = _n_raw - len(out["ascents"])

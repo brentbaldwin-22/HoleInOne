@@ -1501,10 +1501,37 @@ async def verify_swing(
     except OSError as exc:
         log.warning("verify-swing: could not keep the composite (%s)", exc)
         _dest = None
+    # KEEPING THE PICTURE IS DIAGNOSTICS. JUDGING IS THE JOB.
+    #
+    # This passed None to the judge when the keep failed, and the judge
+    # takes a path: Path(None) raises, the answer comes back null, and
+    # the rig is required to upload on null. So a clips directory with
+    # no room left silently stopped every swing being judged -- which
+    # is exactly what it did, reported as "could not read image:
+    # argument should be a str ... not 'NoneType'".
+    #
+    # The bytes are in hand either way. A temp file costs nothing, is
+    # cleaned up below, and lives somewhere a full CLIPS_DIR does not
+    # reach -- so the verdict survives the thing that was never more
+    # than a convenience.
+    _tmp = None
+    if _dest is None:
+        try:
+            _fd, _tp = tempfile.mkstemp(suffix=".jpg")
+            with open(_fd, "wb") as _fh:
+                _fh.write(data)
+            _tmp = _dest = Path(_tp)
+            log.info("verify-swing: composite not kept, judging from %s",
+                     _tp)
+        except OSError as exc:
+            log.warning("verify-swing: no temp file either (%s)", exc)
     try:
         from ..services.ai_tracer import judge_swing_heat_image
 
-        j = judge_swing_heat_image(_dest if _dest is not None else None)
+        if _dest is None:
+            out["reason"] = "could not write the composite anywhere"
+            return out
+        j = judge_swing_heat_image(_dest)
         out["is_swing"] = j.get("is_swing")
         out["confidence"] = j.get("confidence")
         out["reason"] = j.get("reason")
@@ -1512,6 +1539,10 @@ async def verify_swing(
         log.warning("verify-swing: judge failed for camera %s: %s",
                     cam.id, exc)
         out["reason"] = f"judge failed: {exc}"
+    finally:
+        # The fallback copy only ever existed to be judged.
+        if _tmp is not None:
+            _tmp.unlink(missing_ok=True)
     _sweep_rig_heat()
     log.info("verify-swing: camera=%s -> %s (%s)",
              cam.id, out["is_swing"], out["reason"])
