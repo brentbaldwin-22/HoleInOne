@@ -8562,6 +8562,27 @@ def judge_swing_heat_image(image_path, model: str | None = None) -> dict:
         resp = client.messages.create(
             model=_resolve_frame_picker_model(model),
             max_tokens=150,
+            # THE SAME PICTURE MUST GET THE SAME ANSWER.
+            #
+            # Two paths reach this judge: the rig, through
+            # /verify-swing, deciding whether to spend ~7 MB of a
+            # cellular link; and Test Cut, re-running it from the admin
+            # page. Same function, same prompt, same model, and on
+            # upload 1203 they returned opposite verdicts for the same
+            # instant -- the rig SWING, Test Cut not-a-swing at MEDIUM
+            # confidence. The two composites were put side by side and
+            # are the same picture.
+            #
+            # Nothing was left to differ but the sampling. Unset, this
+            # defaults to 1.0, so a borderline composite is a coin
+            # weighted by its own ambiguity -- which reads from the
+            # outside as "the rig judges easier" and is really "the
+            # judge was asked twice".
+            #
+            # Pinned, the rig's verdict IS the verdict Test Cut will
+            # show for the same image, which is the only basis on which
+            # a disagreement means anything at all.
+            temperature=0,
             system=[{
                 "type": "text",
                 "text": _JUDGE_SWING_HEAT_PROMPT,
