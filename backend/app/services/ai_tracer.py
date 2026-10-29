@@ -3597,6 +3597,121 @@ ARC_SPAN_CAP_FRAC = 1.40
 ARC_HANDLE_CAP_FRAC = 0.70
 
 
+def _curved_tail(pts, target_xy, fps, width, height, land_frame=None):
+    """Continue the chain's own CURVATURE, not just its direction.
+
+    THE CHAIN IS ALREADY TURNING WHEN THE TRACK ENDS. A shot that
+    slices is bending throughout, and the measured points show it --
+    on upload 1082 the chain reports 4.34px of bend over 34 points.
+    Both other models throw that away. `_arc_tail` takes a linear
+    regression of the tail, which is a straight tangent by
+    construction, so the drawn line leaves straight and only turns at
+    the end; `_ballistic_tail` does fit a quadratic, but then solves
+    for its own curvature from the landing and discards the measured
+    one. Either way the continuation stops slicing at the hand-off and
+    starts again later, which is the kink an operator sees as "the
+    tracer looks straighter until the turn".
+
+    A chain measures three things, not two: where the ball is, where
+    it is going, and how it is turning. Match all three and the join
+    is invisible -- the drawn line carries on bending exactly as the
+    measured one was.
+
+        x(s) = x0 + vx·s + ½·ax·s² + kx·s³
+
+    x0, vx and ax come from a quadratic fit of the track. kx is the
+    only free term and it is set by the landing:
+
+        kx = (tx - x0 - vx·S - ½·ax·S²) / S³
+
+    A CUBIC CORRECTION IS THE RIGHT SHAPE for this because s³ is
+    negligible early and dominant late: the first part of the tail
+    follows the measurement almost exactly, and the pull toward the
+    landing arrives gradually over the rest. A quadratic correction
+    would bend it from the first frame, which is the thing being
+    fixed.
+
+    No easing. One point per frame of real time, so the pacing is
+    whatever the model gives -- slowing into the apex and picking up
+    after it, because that is what the physics does.
+
+    Returns [(frame, x, y), ...] after the starting point, or None.
+    """
+    import numpy as np
+
+    if not target_xy or len(pts) < 6:
+        return None
+    tx, ty = float(target_xy[0]), float(target_xy[1])
+    f_a = pts[-1][0]
+
+    # THE WHOLE TRACKED FLIGHT, for the same reason _ballistic_tail
+    # uses it: curvature is a second derivative and a short lever arm
+    # is what ruins one. Over a track with ~1px of jitter, fitting a
+    # dozen points misses the curvature by about half.
+    win = list(pts[-60:])
+    if len(win) < 8:
+        return None
+    t = np.array([p[0] - f_a for p in win], dtype=float)
+    if t[-1] - t[0] < 10.0:
+        return None
+    try:
+        cx = np.polyfit(t, [float(p[1]) for p in win], 2)
+        cy = np.polyfit(t, [float(p[2]) for p in win], 2)
+    except Exception:  # noqa: BLE001
+        return None
+    x0, y0 = float(cx[2]), float(cy[2])
+    vx, vy = float(cx[1]), float(cy[1])
+    ax, ay = 2.0 * float(cx[0]), 2.0 * float(cy[0])
+    if math.hypot(vx, vy) < 0.4:
+        return None
+
+    _fps = float(fps or 30.0)
+    S = None
+    if land_frame is not None:
+        _s = float(land_frame) - float(f_a)
+        if 4.0 <= _s <= 20.0 * _fps:
+            S = _s
+    if S is None:
+        _L = math.hypot(tx - x0, ty - y0)
+        _v = math.hypot(vx, vy)
+        if _v > 0.05:
+            _s = _L / _v
+            if 4.0 <= _s <= 20.0 * _fps:
+                S = _s
+    if S is None:
+        return None
+
+    kx = (tx - x0 - vx * S - 0.5 * ax * S * S) / (S ** 3)
+    ky = (ty - y0 - vy * S - 0.5 * ay * S * S) / (S ** 3)
+
+    # THE CORRECTION MUST NOT RUN THE EARLY FLIGHT. The whole claim of
+    # this model is that the first part of the tail is the measurement
+    # carried on; if the cubic term already dominates a quarter of the
+    # way in, the landing disagrees with what was measured and this is
+    # not the model to reconcile them -- the arc is.
+    _q = S / 4.0
+    _meas = math.hypot(vx * _q + 0.5 * ax * _q * _q,
+                       vy * _q + 0.5 * ay * _q * _q)
+    _corr = math.hypot(kx * _q ** 3, ky * _q ** 3)
+    if _meas < 1.0 or _corr > 0.6 * _meas:
+        return None
+
+    n = int(round(S))
+    if n < 2:
+        return None
+    out = []
+    for i in range(1, n + 1):
+        s = float(i)
+        bx = x0 + vx * s + 0.5 * ax * s * s + kx * s ** 3
+        by = y0 + vy * s + 0.5 * ay * s * s + ky * s ** 3
+        # Kept when out of view, for the reason _ballistic_tail gives:
+        # dropping the middle of a flight replaces it with a chord.
+        out.append((f_a + i, int(round(bx)), int(round(by))))
+    if len(out) < 2:
+        return None
+    return out
+
+
 def _arc_tail(pts, target_xy, fps, width, height, land_frame=None):
     """A smooth arc from the last tracked point to the landing.
 
@@ -4055,6 +4170,27 @@ def _extend_to_target(pts, target_xy, fps, width, height,
         log.info("tracer tail: the ballistic arc curls back on itself — "
                  "trying the arc through the chord instead")
         tail = None
+    # THE CHAIN'S OWN CURVATURE, BEFORE FALLING BACK TO A CHORD.
+    #
+    # Tried here rather than first: `_ballistic_tail` is exact on an
+    # ordinary shot and changing which model wins those would change
+    # every clip that already looks right. This is for the ones
+    # ballistic declines -- where the arc used to take over with a
+    # straight launch tangent, so the line stopped slicing at the
+    # hand-off and started again at the turn.
+    if not tail:
+        tail = _curved_tail(pts, target_xy, fps, width, height,
+                            land_frame=land_frame)
+        kind = "curved"
+        if tail and _apex_above_frame_px(tail) > (
+                _APEX_MAX_ABOVE_FRAC * float(height or 1)):
+            log.info("tracer tail: the curvature-matched apex runs off "
+                     "the top — trying the arc instead")
+            tail = None
+        if tail and _turns_back_on_itself(tail):
+            log.info("tracer tail: the curvature-matched arc curls back "
+                     "on itself — trying the arc instead")
+            tail = None
     if not tail:
         tail = _arc_tail(pts, target_xy, fps, width, height,
                          land_frame=land_frame)
@@ -4069,7 +4205,7 @@ def _extend_to_target(pts, target_xy, fps, width, height,
                     float(height or 0))
                 tail = None
         if tail and _turns_back_on_itself(tail):
-            log.warning("tracer tail: both models curl back on themselves "
+            log.warning("tracer tail: every model curls back on itself "
                         "— drawing no continuation rather than a loop")
             tail = None
     if not tail:
@@ -4802,6 +4938,11 @@ def render_tracer_video(
             }
             log.info("tracer tail: none drawn — %s", _twhy)
         if _tail:
+            # WHICH MODEL DREW IT. Three can, they disagree about the
+            # shape, and "why does this one slice and that one not"
+            # is unanswerable without the name.
+            log.info("tracer tail: %s model drew %d frame(s), apex y=%d",
+                     _bt, len(_tail), min(q[2] for q in _tail))
             smoothed_points.extend(_tail)
             # THE SAME NUMBERS THE OTHER BRANCH RECORDS. This one is
             # what the wizard's own render goes through, and leaving it
