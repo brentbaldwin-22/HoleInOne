@@ -4981,6 +4981,10 @@ def fit_ascent_chains(dets: list, min_points: int,
                     # velocity for long enough to matter here.
                     if refine:
                         pts = _refine_fit(by_frame, pts, tol_px)
+                        # ...AND THEN OFF THE END. See _extend_tip: the
+                        # refit above aims with the whole chain, which
+                        # is the wrong thing to aim a bend with.
+                        pts = _extend_tip(by_frame, pts, tol_px)
                     if len(pts) >= min_points:
                         found.append(pts)
                         for q in pts:
@@ -5095,6 +5099,78 @@ def _refine_fit(by_frame: dict, pts: list, tol_px: float) -> list:
             return pts
         pts = grown
     return pts
+
+
+# GROWING A CHAIN PAST ITS OWN END, aiming with the end alone.
+#
+# `_refine_fit` fits ONE quadratic over the whole chain, and a tee
+# shot's chain is mostly the straight part low down -- so the curve
+# that has to predict where the ball goes next is dominated by the
+# twenty frames where it was not yet going anywhere. Extrapolate that
+# and it carries on straight while the ball is already bending away,
+# and every detection on the bend falls outside the 7px tolerance.
+#
+# Seen on a sweep whose chain kept f314-335 and left five detections at
+# f337, f339, f341, f344 and f347 lying along the continuation. f347 is
+# not even reachable: REFINE_REACH is 10 frames past the end, and the
+# pass that would have carried the chain there adds nothing and stops.
+#
+# This is the same lesson the tracer's own continuation learned: a fit
+# over a long straight run cannot predict the bend, and the fix is to
+# aim with the tip and to go a SHORT way at a time. One point is taken
+# per step and the fit is redone with it included, so nothing is ever
+# extrapolated more than a few frames past something measured.
+TIP_FIT_POINTS = 8
+TIP_STEP_FRAMES = 4
+# A chain cannot walk off across the sky: past this many added points
+# it has stopped being an extension and become a second search.
+TIP_MAX_EXTRA = 24
+
+
+def _extend_tip(by_frame: dict, pts: list, tol_px: float) -> list:
+    """Take detections off the end of a chain, one step at a time."""
+    import numpy as np
+
+    if len(pts) < 5:
+        return pts
+    out = list(pts)
+    added = 0
+    while added < TIP_MAX_EXTRA:
+        tip = out[-TIP_FIT_POINTS:]
+        fs = [float(p["frame"]) for p in tip]
+        if len(set(fs)) < 3:
+            break
+        # A quadratic needs room; with a short tip a line is the honest
+        # shape and still beats a curve fitted to the whole chain.
+        deg = 2 if len(tip) >= 5 else 1
+        try:
+            cx = np.polyfit(fs, [float(p["x"]) for p in tip], deg)
+            cy = np.polyfit(fs, [float(p["y"]) for p in tip], deg)
+        except Exception:  # noqa: BLE001 - degenerate tip, stop here
+            break
+        f_end = int(out[-1]["frame"])
+        best = None
+        # NEAREST FRAME FIRST, and stop at the first frame that offers
+        # anything. Taking the best of a four-frame reach would let a
+        # detection three frames out beat the one on the very next
+        # frame, which is how a chain starts skipping.
+        for g in range(f_end + 1, f_end + TIP_STEP_FRAMES + 1):
+            cands = by_frame.get(g)
+            if not cands:
+                continue
+            px = float(np.polyval(cx, g))
+            py = float(np.polyval(cy, g))
+            for c in cands:
+                d = math.hypot(c["x"] - px, c["y"] - py)
+                if d <= tol_px and (best is None or d < best[0]):
+                    best = (d, c)
+            if best is not None:
+                break
+        if best is None:
+            break
+        out.append(best[1])
+        added += 1
+    return out
 
 
 # How near a kept chain a point has to pass to count as the same
