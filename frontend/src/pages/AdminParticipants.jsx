@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
 import ClipPlayer from "../components/ClipPlayer.jsx";
+import { fmtDateTime } from "../time.js";
 
 const ADMIN_PW_STORAGE = "golfreelz.adminPassword";
 const LEGACY_ADMIN_PW_STORAGE = "parone.adminPassword";
@@ -326,7 +327,7 @@ export default function AdminParticipants() {
                   </td>
                   <td className="small">{p.course.name}<div className="muted tiny upper">{p.course.location}</div></td>
                   <td className="small">
-                    {new Date(p.tee_time.starts_at).toLocaleString([], {
+                    {fmtDateTime(p.tee_time.starts_at, [], {
                       month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
                     })}
                   </td>

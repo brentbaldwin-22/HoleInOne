@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -21,7 +21,7 @@ from ..schemas import (
     RegistrationResult,
     TeeTimeOut,
 )
-from ..services import appearance, notifications
+from ..services import appearance, notifications, tee_times
 from ..services import site_theme
 from ..services.qr import generate_qr_png
 from ..services.stripe_service import create_registration_payment_intent
@@ -494,16 +494,16 @@ def available_tee_times(
 @router.post("/register", response_model=RegistrationResult)
 async def register(
     course_token: str = Form(...),
-    tee_time_id: int = Form(...),
+    # The golfer's own tee time, ISO 8601, sent by the form as UTC with a
+    # trailing Z. `tee_time_id` is the older path -- a pick from a list of
+    # tee times the course published -- kept because the mock tee sheet and
+    # the admin still produce those rows.
+    tee_time_at: str | None = Form(None),
+    tee_time_id: int | None = Form(None),
     name: str = Form(...),
     mobile: str = Form(""),
     email: str = Form(""),
-    group_size: int = Form(4),
-    group_members: str = Form("[]"),  # JSON string: [{name, email, mobile}, ...]
     selfie: UploadFile = File(...),
-    member_2_selfie: UploadFile | None = File(None),
-    member_3_selfie: UploadFile | None = File(None),
-    member_4_selfie: UploadFile | None = File(None),
     db: Session = Depends(get_db),
     user: User | None = Depends(optional_user),
 ):
@@ -518,9 +518,17 @@ async def register(
         raise HTTPException(400, "mobile or email required")
 
     course = _get_course_by_token(db, course_token)
-    tt = db.get(TeeTime, tee_time_id)
-    if not tt or tt.course_id != course.id:
-        raise HTTPException(400, "tee time does not belong to course")
+    if tee_time_at:
+        try:
+            tt = tee_times.tee_time_for(db, course, tee_time_at)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    elif tee_time_id is not None:
+        tt = db.get(TeeTime, tee_time_id)
+        if not tt or tt.course_id != course.id:
+            raise HTTPException(400, "tee time does not belong to course")
+    else:
+        raise HTTPException(400, "a tee time is required")
 
     if not (selfie.content_type or "").startswith("image/"):
         raise HTTPException(400, "selfie must be an image")
@@ -550,7 +558,7 @@ async def register(
         name=name.strip(),
         mobile=mobile.strip() or None,
         email=email.strip() or None,
-        group_size=group_size,
+        group_size=1,
         appearance_embedding=embedding,
     )
     db.add(participant)
@@ -565,24 +573,14 @@ async def register(
     fpath.write_bytes(selfie_bytes)
     participant.selfie_path = f"selfies/{fname}"
 
-    # Lead pays for the whole group: $20 per registered player.
-    # Cap members count up-front so the charge matches the participants we'll
-    # actually create below.
-    try:
-        _members_preview = json.loads(group_members or "[]")
-    except json.JSONDecodeError:
-        _members_preview = []
-    spots_remaining = tt.max_players - 1  # lead already takes one
-    member_count = min(
-        len([m for m in _members_preview[:3]
-             if (m.get("name") or "").strip()
-             and ((m.get("email") or "").strip() or (m.get("mobile") or "").strip())]),
-        spots_remaining,
-    )
-    total_players = 1 + member_count
+    # ONE GOLFER, ONE ENTRY. Registration used to let a lead sign up to
+    # three playing partners and pay for all of them, which meant the
+    # lead photographing strangers at the first tee and the price on the
+    # button changing under them. Everyone signs themselves up now, so
+    # the charge is always for one.
     intent = create_registration_payment_intent(
         participant.id,
-        amount_cents=settings.registration_price_cents * total_players,
+        amount_cents=settings.registration_price_cents,
     )
     participant.stripe_payment_intent_id = intent.id
     participant.paid = intent.status == "succeeded"
@@ -596,84 +594,6 @@ async def register(
         notifications.notify_registration_confirmed(
             participant.name, participant.mobile, participant.email,
             gallery_url, course_name=course.name,
-        )
-
-    # Group members: lead pays for everyone AND captures every player's
-    # outfit photo at registration so each gets a personal gallery from
-    # the moment the round starts. The /invite/<token> path is kept around
-    # as a fallback for back-fills, but the canonical flow requires a
-    # selfie up-front for each member.
-    member_selfie_files = [member_2_selfie, member_3_selfie, member_4_selfie]
-    try:
-        members = json.loads(group_members or "[]")
-    except json.JSONDecodeError:
-        members = []
-    for idx, m in enumerate(members[:3]):
-        m_name = (m.get("name") or "").strip()
-        m_email = (m.get("email") or "").strip()
-        m_mobile = (m.get("mobile") or "").strip()
-        if not m_name or (not m_email and not m_mobile):
-            continue
-        spots = db.query(Participant).filter(Participant.tee_time_id == tt.id).count()
-        if spots >= tt.max_players:
-            break
-
-        m_selfie = member_selfie_files[idx]
-        m_selfie_bytes = None
-        if m_selfie is not None:
-            if not (m_selfie.content_type or "").startswith("image/"):
-                raise HTTPException(400, f"player {idx + 2} selfie must be an image")
-            m_selfie_bytes = await m_selfie.read()
-            if len(m_selfie_bytes) > 8 * 1024 * 1024:
-                raise HTTPException(413, f"player {idx + 2} selfie too large (max 8MB)")
-
-        m_embedding = appearance.embed_image_bytes(m_selfie_bytes) if m_selfie_bytes else None
-
-        member = Participant(
-            tee_time_id=tt.id,
-            user_id=None,
-            name=m_name,
-            mobile=m_mobile or None,
-            email=m_email or None,
-            group_size=group_size,
-            appearance_embedding=m_embedding,
-            paid=True,  # lead's payment covers them
-            stripe_payment_intent_id=f"group_via_{participant.id}",
-        )
-        db.add(member)
-        db.flush()
-
-        if m_selfie_bytes:
-            ext = (m_selfie.filename or "").rsplit(".", 1)[-1].lower() if "." in (m_selfie.filename or "") else "jpg"
-            if ext not in ("jpg", "jpeg", "png", "webp", "heic"):
-                ext = "jpg"
-            m_fname = f"{member.id}-{secrets.token_hex(4)}.{ext}"
-            m_fpath = SELFIE_DIR / m_fname
-            m_fpath.write_bytes(m_selfie_bytes)
-            member.selfie_path = f"selfies/{m_fname}"
-
-        # ONE REGISTRATION EMAIL, WHOEVER YOU ARE AND HOWEVER YOU GOT
-        # HERE. The two branches here used to send two different emails
-        # that both meant "you're registered", and a third lived in
-        # notifications for golfers who signed themselves up.
-        #
-        # The photo is the only real difference. A golfer registering
-        # themselves cannot get past the form without one, and the lead
-        # photographs whoever is standing with them -- so the only way
-        # to arrive without a photo is to be signed up while you are
-        # somewhere else. Those are the people who get the invite link,
-        # because without a photo the matcher cannot pick them out and
-        # their clips would never reach them.
-        notifications.notify_registration_confirmed(
-            (m_name or "").strip(),
-            m_mobile,
-            m_email,
-            f"{settings.app_base_url}/g/{member.gallery_token}",
-            course_name=course.name,
-            invite_url=(
-                None if m_selfie_bytes
-                else f"{settings.app_base_url}/invite/{member.gallery_token}"
-            ),
         )
 
     db.commit()

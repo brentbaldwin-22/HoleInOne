@@ -5,22 +5,33 @@ import { Brand, Icon } from "../components/Brand.jsx";
 import SelfieField from "../components/SelfieField.jsx";
 import useAuth from "../hooks/useAuth.js";
 
-const EMPTY_MEMBER = { name: "", email: "", mobile: "", selfieFile: null, selfiePreview: null };
+// Today, and a sensible first guess at "now", both on the GOLFER's clock
+// -- they are standing at the course when they fill this in. Local
+// strings, not UTC: these feed <input type="date"/"time">, whose values
+// are wall-clock, and the conversion to UTC happens once on submit.
+function todayLocal() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function nowLocalRounded() {
+  const d = new Date();
+  d.setMinutes(Math.ceil(d.getMinutes() / 5) * 5, 0, 0);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 
 export default function Register() {
   const { courseToken } = useParams();
   const nav = useNavigate();
   const { user } = useAuth();
   const [course, setCourse] = useState(null);
-  const [teeTimes, setTeeTimes] = useState([]);
-  const [teeTimeId, setTeeTimeId] = useState("");
+  const [teeDate, setTeeDate] = useState(todayLocal);
+  const [teeClock, setTeeClock] = useState(nowLocalRounded);
   const [name, setName] = useState(user?.name || "");
   const [mobile, setMobile] = useState("");
   const [email, setEmail] = useState(user?.email || "");
-  const [groupSize, setGroupSize] = useState(1);
-  const [groupMembers, setGroupMembers] = useState([
-    { ...EMPTY_MEMBER }, { ...EMPTY_MEMBER }, { ...EMPTY_MEMBER },
-  ]);
   const [selfieFile, setSelfieFile] = useState(null);
   const [selfiePreview, setSelfiePreview] = useState(null);
   // Single openCameraId across the whole form so only one device camera is mounted at a time.
@@ -31,12 +42,7 @@ export default function Register() {
   useEffect(() => {
     (async () => {
       try {
-        const [c, tt] = await Promise.all([
-          api.courseByToken(courseToken),
-          api.teeTimes(courseToken),
-        ]);
-        setCourse(c);
-        setTeeTimes(tt);
+        setCourse(await api.courseByToken(courseToken));
       } catch (e) {
         setError(e.message);
       }
@@ -56,25 +62,6 @@ export default function Register() {
     readPreview(file, setSelfiePreview);
   }
 
-  function onMemberSelfie(idx, file) {
-    if (!file?.type?.startsWith("image/")) { setError("That doesn't look like a photo."); return; }
-    setError(null);
-    const next = [...groupMembers];
-    next[idx] = { ...next[idx], selfieFile: file };
-    setGroupMembers(next);
-    readPreview(file, (preview) => {
-      const after = [...next];
-      after[idx] = { ...after[idx], selfiePreview: preview };
-      setGroupMembers(after);
-    });
-  }
-
-  const memberCount = Math.max(0, Number(groupSize) - 1);
-  const activeMembers = groupMembers.slice(0, memberCount);
-  const allMembersComplete = activeMembers.every(
-    (m) => m.name.trim() && (m.email.trim() || m.mobile.trim()) && m.selfieFile,
-  );
-
   async function submit(e) {
     e.preventDefault();
     setSubmitting(true);
@@ -82,31 +69,23 @@ export default function Register() {
     try {
       if (!mobile && !email) throw new Error("Enter a mobile number or an email so we can text you your clips.");
       if (!selfieFile) throw new Error("Take your outfit photo so we can match your shots.");
-      if (memberCount > 0 && !allMembersComplete) {
-        throw new Error("Each player needs a name, contact, and an outfit photo.");
-      }
+      if (!teeDate || !teeClock) throw new Error("Pick the day and time you're teeing off.");
 
-      const cleanMembers = activeMembers.map((m) => ({
-        name: m.name.trim(),
-        email: m.email.trim(),
-        mobile: m.mobile.trim(),
-      }));
+      // The pickers hand back wall-clock strings. Parsed WITHOUT a
+      // timezone this is the golfer's own local time, which is what they
+      // read off the wheel; toISOString is the one conversion to UTC,
+      // and the backend stores that clock naive like every other
+      // datetime in the app.
+      const when = new Date(`${teeDate}T${teeClock}`);
+      if (isNaN(when.getTime())) throw new Error("That tee time didn't look like a real date and time.");
 
       const fd = new FormData();
       fd.append("course_token", courseToken);
-      fd.append("tee_time_id", String(teeTimeId));
+      fd.append("tee_time_at", when.toISOString());
       fd.append("name", name);
       fd.append("mobile", mobile);
       fd.append("email", email);
-      fd.append("group_size", String(groupSize));
-      fd.append("group_members", JSON.stringify(cleanMembers));
       fd.append("selfie", selfieFile, selfieFile.name || "selfie.jpg");
-      activeMembers.forEach((m, i) => {
-        if (m.selfieFile) {
-          // member_2_selfie, member_3_selfie, member_4_selfie
-          fd.append(`member_${i + 2}_selfie`, m.selfieFile, m.selfieFile.name || `member_${i + 2}.jpg`);
-        }
-      });
 
       const res = await api.register(fd);
       if (res.client_secret && !res.paid) {
@@ -114,7 +93,7 @@ export default function Register() {
           state: {
             client_secret: res.client_secret,
             gallery_url: res.gallery_url,
-            total: 20 * Number(groupSize),
+            total: 20,
           },
         });
       } else {
@@ -193,34 +172,33 @@ export default function Register() {
           We'll text or email when your gallery's ready. At least one required.
         </div>
 
-        <div className="field">
-          <label>Tee time</label>
-          <select required value={teeTimeId} onChange={(e) => setTeeTimeId(e.target.value)}>
-            <option value="">Pick your tee time…</option>
-            {teeTimes.map((tt) => {
-              const full = tt.spots_taken >= tt.max_players;
-              const label = new Date(tt.starts_at).toLocaleString([], {
-                month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-              });
-              return (
-                <option key={tt.id} value={tt.id} disabled={full}>
-                  {label} {full ? "(full)" : `· ${tt.spots_taken}/${tt.max_players}`}
-                </option>
-              );
-            })}
-          </select>
+        {/* Date and time rather than a pick from a published list: the
+            course does not hand us its tee sheet, so the old dropdown
+            was offering slots generated on the spot that nobody had
+            actually booked. On a phone these are the native wheels. */}
+        <div className="row">
+          <div className="field">
+            <label>Date</label>
+            <input
+              type="date"
+              required
+              value={teeDate}
+              min={todayLocal()}
+              onChange={(e) => setTeeDate(e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label>Tee time</label>
+            <input
+              type="time"
+              required
+              value={teeClock}
+              onChange={(e) => setTeeClock(e.target.value)}
+            />
+          </div>
         </div>
-
-        <div className="field">
-          <label>Group size</label>
-          <select value={groupSize} onChange={(e) => setGroupSize(e.target.value)}>
-            {[1, 2, 3, 4].map((n) => (<option key={n} value={n}>{n}</option>))}
-          </select>
-          {Number(groupSize) > 1 && (
-            <div className="hint small muted">
-              You'll pay <b>${20 * Number(groupSize)}</b> total ($20 × {groupSize}). Each player needs their own outfit photo for personal clips.
-            </div>
-          )}
+        <div className="hint small muted" style={{ margin: "-8px 0 14px" }}>
+          Roughly when you're teeing off — it doesn't have to be exact.
         </div>
 
         <div className="field">
@@ -240,89 +218,17 @@ export default function Register() {
           />
         </div>
 
-        {memberCount > 0 && (
-          <div className="card" style={{ background: "var(--primary-soft)", border: "1px solid var(--emerald-200)", margin: "0 0 16px" }}>
-            <h4 style={{ marginBottom: 6 }}>Add your group</h4>
-            <p className="hint">
-              Each player needs an outfit photo so we can build them their own
-              personal gallery. Hand the phone around — capture each one before
-              you tee off.
-            </p>
-            {activeMembers.map((m, i) => (
-              <div
-                key={i}
-                style={{
-                  marginTop: 12, paddingTop: 12,
-                  borderTop: i === 0 ? "none" : "1px solid var(--emerald-200)",
-                }}
-              >
-                <div className="tiny upper muted" style={{ marginBottom: 6 }}>
-                  Player {i + 2}
-                  {m.selfieFile && <span className="ok-text" style={{ marginLeft: 8 }}>· photo captured</span>}
-                </div>
-                <div className="field" style={{ marginBottom: 8 }}>
-                  <input
-                    placeholder="Name"
-                    value={m.name}
-                    onChange={(e) => {
-                      const next = [...groupMembers];
-                      next[i] = { ...next[i], name: e.target.value };
-                      setGroupMembers(next);
-                    }}
-                  />
-                </div>
-                <div className="row" style={{ marginBottom: 10 }}>
-                  <div className="field" style={{ marginBottom: 0 }}>
-                    <input
-                      type="tel"
-                      placeholder="Mobile"
-                      value={m.mobile}
-                      onChange={(e) => {
-                        const next = [...groupMembers];
-                        next[i] = { ...next[i], mobile: e.target.value };
-                        setGroupMembers(next);
-                      }}
-                    />
-                  </div>
-                  <div className="field" style={{ marginBottom: 0 }}>
-                    <input
-                      type="email"
-                      placeholder="Email"
-                      value={m.email}
-                      onChange={(e) => {
-                        const next = [...groupMembers];
-                        next[i] = { ...next[i], email: e.target.value };
-                        setGroupMembers(next);
-                      }}
-                    />
-                  </div>
-                </div>
-                <SelfieField
-                  id={`m${i}`}
-                  openCameraId={openCameraId}
-                  setOpenCameraId={setOpenCameraId}
-                  preview={m.selfiePreview}
-                  onPicked={(file) => onMemberSelfie(i, file)}
-                />
-              </div>
-            ))}
-          </div>
-        )}
-
         <div className="divider" />
         <div className="inline" style={{ justifyContent: "space-between", marginBottom: 14, width: "100%" }}>
           <span className="small muted"><Icon name="lock" size={14} /> Secure Stripe checkout</span>
-          <span className="inline" style={{ fontWeight: 600 }}>${20 * Number(groupSize)}</span>
+          <span className="inline" style={{ fontWeight: 600 }}>$20</span>
         </div>
 
         {error && <p className="err-text small">{error}</p>}
         <button
-          disabled={
-            submitting || !teeTimeId || !name || !selfieFile ||
-            (memberCount > 0 && !allMembersComplete)
-          }
+          disabled={submitting || !teeDate || !teeClock || !name || !selfieFile}
         >
-          {submitting ? "Processing…" : `Pay $${20 * Number(groupSize)} and register`}
+          {submitting ? "Processing…" : "Pay $20 and register"}
         </button>
       </form>
     </div>

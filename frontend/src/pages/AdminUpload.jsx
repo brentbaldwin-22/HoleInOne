@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, API_BASE } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
+import { fmtDateTime } from "../time.js";
 
 const ADMIN_PW_STORAGE = "golfreelz.adminPassword";
 const LEGACY_ADMIN_PW_STORAGE = "parone.adminPassword";
@@ -476,7 +477,7 @@ export default function AdminUpload() {
                     )}
                     {cand.name}
                     <span className="small muted" style={{ marginLeft: 6 }}>
-                      · {new Date(cand.tee_time.starts_at).toLocaleString([], {
+                      · {fmtDateTime(cand.tee_time.starts_at, [], {
                         month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
                       })}
                     </span>
