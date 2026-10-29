@@ -240,6 +240,7 @@ export default function Admin() {
         </div>
       )}
 
+      <StorageCard adminPassword={adminPassword} onToast={showToast} />
       <RevenueCard adminPassword={adminPassword} courses={courses} onToast={showToast} />
 
       <TestEmailCard adminPassword={adminPassword} onToast={showToast} />
@@ -321,6 +322,207 @@ const money = (cents) =>
  * many refunds there have been — that is the tile being loose, not this
  * being wrong.
  */
+/** THE DISK, WHERE SOMEBODY WILL SEE IT.
+ *
+ * This deployment has run out of disk three times -- 24 Oct, 27 Oct
+ * and 29 Oct -- and every time the first anybody knew of it was an
+ * unrelated 500: ffmpeg refusing to write, or a skyline modal that
+ * could not save a frame. The numbers were always there; there was
+ * simply nothing that showed them, so the only way to look was curl
+ * with an admin header.
+ *
+ * On the dashboard rather than behind a link, because a full disk is
+ * not something you go looking for. It is something that should be
+ * on screen before you need it.
+ *
+ * EVERY SWEEP IS A DRY RUN FIRST. Nothing deleted here comes back,
+ * so each button shows what it would take and what that frees, and
+ * only a second, explicit click actually removes it.
+ */
+function StorageCard({ adminPassword, onToast }) {
+  const [rep, setRep] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [plan, setPlan] = useState(null);   // {kind, result}
+
+  async function load() {
+    if (!adminPassword) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setRep(await api.storage(adminPassword));
+    } catch (e) {
+      setError(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => { if (adminPassword) load(); /* eslint-disable-next-line */ }, [adminPassword]);
+
+  const SWEEPS = {
+    images: {
+      label: "Clear cached images",
+      // The safe one, and the one that should be reached for first:
+      // every file it takes is rebuilt on demand from a clip that is
+      // still here, so the worst it costs is the second it takes to
+      // make again.
+      note: "Wizard frames and swing-judge composites over 48h old. "
+          + "All of them rebuild on demand — nothing is lost.",
+      run: (dryRun) => api.sweepImages(adminPassword, { dryRun }),
+      tone: "",
+    },
+    headroom: {
+      label: "Free space (deletes footage)",
+      note: "The OLDEST raw camera clips, until the disk is back above "
+          + "its floor. This is real footage and it does not come back.",
+      run: (dryRun) => api.sweepHeadroom(adminPassword, { dryRun }),
+      tone: "err-text",
+    },
+  };
+
+  async function preview(kind) {
+    setBusy(true);
+    setError(null);
+    setPlan(null);
+    try {
+      setPlan({ kind, result: await SWEEPS[kind].run(true) });
+    } catch (e) {
+      setError(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function commit(kind) {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await SWEEPS[kind].run(false);
+      onToast?.(
+        `${SWEEPS[kind].label}: removed ${r.deleted ?? 0} file(s), `
+        + `${((r.bytes || 0) / 1e9).toFixed(2)} GB freed`);
+      setPlan(null);
+      await load();
+    } catch (e) {
+      setError(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const pct = rep?.disk_used_pct ?? 0;
+  // Amber before it bites, red once a write can fail. The point of
+  // the bar is to be noticed on the way up, not at 100%.
+  const tone = pct >= 95 ? "#c0392b" : pct >= 85 ? "#f59e0b" : "#3ee37a";
+  const cats = Object.entries(rep?.by_category || {});
+
+  return (
+    <div className="card">
+      <h3 style={{ marginBottom: 4 }}>Storage</h3>
+      <p className="small muted" style={{ marginBottom: 14 }}>
+        {rep
+          ? `${rep.disk_free_gb} GB free of ${rep.disk_total_gb} GB · `
+            + `raw footage ages out after ${rep.retention_days} days`
+          : "Disk headroom and what is sitting on it."}
+      </p>
+
+      {rep && (
+        <>
+          <div style={{ height: 10, borderRadius: 5, overflow: "hidden",
+                        background: "rgba(127,127,127,0.25)",
+                        marginBottom: 6 }}>
+            <div style={{ width: `${Math.min(100, pct)}%`, height: "100%",
+                          background: tone, transition: "width .3s" }} />
+          </div>
+          <div className="small" style={{ marginBottom: 14 }}>
+            <b style={{ color: tone }}>{pct}% used</b>
+            {pct >= 95 && (
+              <span className="err-text">
+                {" "}— writes are failing or about to. Clear cached images
+                first.
+              </span>
+            )}
+          </div>
+
+          <div className="small" style={{ marginBottom: 14 }}>
+            {cats.length === 0 && <span className="muted">nothing here yet</span>}
+            {cats.map(([k, v]) => (
+              <div key={k} style={{ display: "flex", gap: 10,
+                                    justifyContent: "space-between",
+                                    maxWidth: 420 }}>
+                <span className="muted">
+                  {k === "raw_video" ? "raw camera footage"
+                    : k === "other" ? "images and everything else" : k}
+                </span>
+                <span><b>{v.gb} GB</b> · {v.files} file(s)</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <div className="chip-row" style={{ gap: 8 }}>
+        <button className="secondary small" onClick={load} disabled={busy}>
+          Refresh
+        </button>
+        {Object.entries(SWEEPS).map(([kind, s]) => (
+          <button key={kind} className="secondary small"
+                  onClick={() => preview(kind)} disabled={busy || !rep}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {plan && (
+        <div className="card" style={{ marginTop: 12, padding: 12 }}>
+          <b>{SWEEPS[plan.kind].label}</b>
+          <div className="small muted" style={{ margin: "4px 0 8px" }}>
+            {SWEEPS[plan.kind].note}
+          </div>
+          {plan.result.skipped ? (
+            <div className="small">{plan.result.skipped}</div>
+          ) : plan.result.candidates ? (
+            <>
+              <div className="small" style={{ marginBottom: 6 }}>
+                Would remove <b>{plan.result.candidates}</b> file(s) and free{" "}
+                <b>{((plan.result.bytes || 0) / 1e9).toFixed(2)} GB</b>.
+              </div>
+              <div className="tiny muted" style={{ marginBottom: 10 }}>
+                {(plan.result.sample || []).join(", ")}
+                {plan.result.candidates > (plan.result.sample || []).length
+                  ? ` … and ${plan.result.candidates
+                      - plan.result.sample.length} more` : ""}
+              </div>
+              <button className={`small ${SWEEPS[plan.kind].tone}`}
+                      onClick={() => commit(plan.kind)} disabled={busy}>
+                Delete them
+              </button>{" "}
+              <button className="ghost small" onClick={() => setPlan(null)}
+                      disabled={busy}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <div className="small">
+              Nothing old enough to remove.
+              {" "}
+              <button className="ghost small" onClick={() => setPlan(null)}>
+                Close
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div className="small err-text" style={{ marginTop: 10 }}>{error}</div>
+      )}
+    </div>
+  );
+}
+
+
 function RevenueCard({ adminPassword, courses, onToast }) {
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");

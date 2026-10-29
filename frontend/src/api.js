@@ -359,6 +359,28 @@ export const api = {
   // stops previews rendering, frames extracting and video streaming,
   // none of which say "disk" when they fail.
   storage: (key) => request(`/api/admin/storage`, { adminPassword: key }),
+  // THE THREE SWEEPS, ALL DRY BY DEFAULT. Nothing any of them deletes
+  // can be recovered, so the caller asks for a dry run first, reads
+  // the sample, and only then passes dryRun: false. The server
+  // defaults to a dry run too, so a missing flag cannot delete.
+  sweepImages: (key, { dryRun = true, hours } = {}) =>
+    request(
+      `/api/admin/storage/images?dry_run=${dryRun ? "true" : "false"}`
+      + (hours != null ? `&hours=${hours}` : ""),
+      { method: "POST", adminPassword: key },
+    ),
+  sweepHeadroom: (key, { dryRun = true, minFreeGb } = {}) =>
+    request(
+      `/api/admin/storage/headroom?dry_run=${dryRun ? "true" : "false"}`
+      + (minFreeGb != null ? `&min_free_gb=${minFreeGb}` : ""),
+      { method: "POST", adminPassword: key },
+    ),
+  sweepRetention: (key, { dryRun = true, days } = {}) =>
+    request(
+      `/api/admin/storage/retention?dry_run=${dryRun ? "true" : "false"}`
+      + (days != null ? `&days=${days}` : ""),
+      { method: "POST", adminPassword: key },
+    ),
   revenueReport: (key, { start, end, courseId } = {}) =>
     request(`/api/admin/revenue${revenueQuery({ start, end, courseId })}`, {
       adminPassword: key,
