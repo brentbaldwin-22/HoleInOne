@@ -17663,6 +17663,31 @@ def run_headroom_sweep(
         db, min_free_gb=min_free_gb, dry_run=dry_run)
 
 
+@router.post("/storage/images")
+def run_image_sweep(
+    dry_run: bool = True,
+    hours: float | None = None,
+):
+    """Delete derived images older than `hours` (default 48).
+
+    THE CATEGORY NOTHING SWEPT. Every frame the wizard pages to, every
+    Test Cut composite and every composite the rig's swing judge was
+    shown is a full-frame jpeg that lands here and stays. They arrive at
+    the rate swings do, and `sweep_clips` only ever looked at video --
+    so a disk that fills with pictures cannot be rescued by either of
+    the sweeps beside this one, which is how a skyline modal came to
+    answer "could not write detect-1251-frame-0.jpg".
+
+    Safe to run live: by prefix, never by suffix, so thumbnails and
+    gallery stills are untouched, and everything it does take is
+    rebuilt on demand from a clip that is still here. Dry run by
+    default anyway, like its siblings.
+    """
+    from ..services import retention
+
+    return retention.sweep_derived_images(hours=hours, dry_run=dry_run)
+
+
 @router.get("/storage")
 def storage_usage():
     """Disk headroom and what is sitting on it, by category.

@@ -59,6 +59,116 @@ _VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".ts", ".m4v", ".webm", ".avi"}
 
 SWEEP_INTERVAL_SEC = 6 * 3600
 
+# DERIVED IMAGES, WHICH NOTHING SWEPT AT ALL.
+#
+# "Only video is swept. Thumbnails average 0.13 MB" was true when the
+# only images here were thumbnails. It is not any more: every frame the
+# wizard pages to, every Test Cut composite and every composite the rig
+# sends to the swing judge lands in this directory as a full-frame jpeg
+# and stays for ever. They arrive at the rate swings do, and the rate
+# of swings went UP sharply when the audio trigger started cutting.
+#
+# The disk hit 100% on 2026-10-24 and 2026-10-27 with the age sweeper
+# running and correctly finding no video old enough; it hit it again on
+# 2026-10-29, and the first thing anybody saw was a skyline modal
+# answering "could not write detect-1251-frame-0.jpg".
+#
+# BY EXPLICIT PREFIX, never by suffix. A thumbnail and a gallery still
+# are also jpegs in this directory, the gallery shows them for clips
+# whose footage is long gone, and nothing regenerates them. Everything
+# named below is DERIVED: it is rebuilt on demand from a clip that is
+# still here, so the worst a delete costs is the second it takes to
+# make again.
+_DERIVED_IMAGE_PREFIXES = (
+    "detect-",      # frames the wizard and the skyline modal page to
+    "verify-",      # Test Cut's swing-judge composites
+    "righeat-",     # the composites the rig's own judge was shown
+    "heatchk",      # swing_heat_check's evidence images
+    "d3prod-",      # produce's working files
+)
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+# Hours. Long enough that a report somebody is reading still has its
+# pictures, short enough that a day of golf cannot fill the disk.
+IMAGE_RETENTION_HOURS = 48
+
+
+def _is_sweepable_image(path: Path) -> bool:
+    """A derived image old enough to be worth nothing to anybody."""
+    try:
+        if not path.is_file():
+            return False
+    except OSError:
+        return False
+    if path.suffix.lower() not in _IMAGE_SUFFIXES:
+        return False
+    if any(marker in path.name for marker in _KEEP_MARKERS):
+        return False
+    return any(path.name.startswith(p) for p in _DERIVED_IMAGE_PREFIXES)
+
+
+def sweep_derived_images(
+    *,
+    hours: float | None = None,
+    dry_run: bool = True,
+    clips_dir: Path | None = None,
+) -> dict:
+    """Delete derived images older than `hours`. Never raises.
+
+    No database at all, unlike its siblings: nothing in the schema
+    points at one of these for longer than the page that made it is
+    open, and the two that ARE linked from a record -- the rig's judge
+    composite and Test Cut's -- are evidence rather than content. A
+    card that loses its thumbnail after two days says the picture has
+    aged out; a disk at 100% stops the rig recording.
+    """
+    import time as _time
+
+    horizon = IMAGE_RETENTION_HOURS if hours is None else float(hours)
+    directory = clips_dir or CLIPS_DIR
+    report: dict = {
+        "dry_run": dry_run, "hours": horizon,
+        "clips_dir": str(directory),
+        "candidates": 0, "deleted": 0, "bytes": 0, "errors": 0,
+        "sample": [],
+    }
+    if horizon <= 0:
+        report["skipped"] = "image sweep disabled (hours=0)"
+        return report
+    if not directory.is_dir():
+        report["skipped"] = f"no such directory: {directory}"
+        return report
+
+    cutoff = _time.time() - horizon * 3600.0
+    for path in directory.iterdir():
+        if not _is_sweepable_image(path):
+            continue
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        if st.st_mtime > cutoff:
+            continue
+        report["candidates"] += 1
+        report["bytes"] += st.st_size
+        if len(report["sample"]) < 10:
+            report["sample"].append(path.name)
+        if dry_run:
+            continue
+        try:
+            path.unlink()
+            report["deleted"] += 1
+        except OSError as exc:
+            report["errors"] += 1
+            log.warning("retention: could not delete %s: %s", path.name, exc)
+    log.info(
+        "retention: derived images older than %.0fh -- %d candidate(s), "
+        "%.2f GB, %d deleted, %d error(s)%s",
+        horizon, report["candidates"], report["bytes"] / 1e9,
+        report["deleted"], report["errors"],
+        " (dry run)" if dry_run else "",
+    )
+    return report
+
 
 def _basename(url: str | None) -> str | None:
     """Filename out of a stored URL. The columns hold a mix of absolute
@@ -397,6 +507,13 @@ def start_retention_sweeper(interval_sec: float = SWEEP_INTERVAL_SEC) -> None:
             time.sleep(interval_sec)
             db = SessionLocal()
             try:
+                # DERIVED IMAGES FIRST, because they are the only
+                # thing here that costs nothing to lose -- every one is
+                # rebuilt on demand from a clip that is still present.
+                # Taking them before any footage means the two sweeps
+                # below usually find the disk already fine, and a round
+                # of golf is never deleted to make room for a cache.
+                sweep_derived_images(dry_run=False)
                 sweep_clips(db, dry_run=False)
                 # AGE FIRST, THEN SIZE. The horizon expresses what is
                 # worth keeping; the floor expresses what is
