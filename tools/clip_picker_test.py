@@ -98,9 +98,15 @@ def main():
           len(clip_picker.candidates(db, late, offset=99)["clips"]) == 4)
 
     print("\nconstraints that cost nothing")
-    before = clip(DAY - timedelta(hours=2))
-    check("a clip shot before they registered is never offered",
-          before.id not in {c.id for c in clip_picker.available_clips(db, p)})
+    # THE SIGN IS AT THE TEE. A golfer who plays No. 8 and scans on the
+    # way to the green registered AFTER their shot was recorded, so a
+    # hard floor at created_at would hide the only clip they paid for.
+    just_before = clip(DAY - timedelta(hours=2))
+    check("a shot hit shortly before they signed up is still offered",
+          just_before.id in {c.id for c in clip_picker.available_clips(db, p)})
+    long_before = clip(DAY - timedelta(hours=9))
+    check("but not one from before they could plausibly have been there",
+          long_before.id not in {c.id for c in clip_picker.available_clips(db, p)})
     far = clip(DAY + timedelta(hours=20))
     check("nor one outside the match horizon",
           far.id not in {c.id for c in clip_picker.available_clips(db, p)})

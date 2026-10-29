@@ -46,12 +46,33 @@ def _horizon() -> timedelta:
     return timedelta(minutes=settings.match_window_minutes)
 
 
+# HOW FAR BACK BEFORE SIGN-UP A SHOT CAN STILL BE YOURS.
+#
+# The matcher refuses any clip captured before `created_at` -- "you
+# cannot appear in a clip shot before you registered". That was a guard
+# against misassigning a stranger's swing, and it made sense while a
+# model was doing the assigning.
+#
+# It does not survive the camera being ON the hole. The sign is at the
+# tee: a golfer plays No. 8, likes what the sign says, and scans it on
+# the way to the green -- their shot is already recorded, and the floor
+# would hide the one clip they just paid for. Under self-pick the guard
+# is not guarding anything either, because the golfer is the one saying
+# which swing is theirs.
+#
+# So the window opens before registration as well as after. Four hours
+# covers signing up at the turn, or at the end of a round, without
+# reaching into the previous day's play.
+PRE_REGISTRATION_BACKSTOP = timedelta(hours=4)
+
+
 def available_clips(db: Session, participant: Participant) -> list[VideoClip]:
     """Every unclaimed clip this golfer could plausibly be in.
 
-    Unclaimed, at their course, after they registered, and inside the
-    match horizon. `captured_at >= created_at` is a real constraint, not
-    a nicety: you cannot appear in a clip shot before you signed up.
+    Unclaimed, at their course, and inside the round window -- which
+    opens PRE_REGISTRATION_BACKSTOP before they signed up, because the
+    sign is at the tee and plenty of golfers will scan it after they
+    have already hit.
     """
     course_id = participant.tee_time.course_id if participant.tee_time else None
     if course_id is None:
@@ -62,7 +83,7 @@ def available_clips(db: Session, participant: Participant) -> list[VideoClip]:
         .filter(
             VideoClip.course_id == course_id,
             VideoClip.participant_id.is_(None),
-            VideoClip.captured_at >= start,
+            VideoClip.captured_at >= start - PRE_REGISTRATION_BACKSTOP,
             VideoClip.captured_at <= start + _horizon(),
             VideoClip.processing_status != ClipProcessingStatus.flagged.value,
         )
