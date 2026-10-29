@@ -8436,14 +8436,46 @@ def long_upload_frame(
         clamped = max(0, min(total - 1 if total else 0, int(frame)))
         _tag = "green-frame" if _green else "frame"
         out_path = CLIPS_DIR / f"detect-{upload_id}-{_tag}-{clamped}.jpg"
-        if not out_path.exists():
+        # A CACHED FRAME OF ZERO BYTES IS NOT A CACHED FRAME. A write
+        # that ran out of disk leaves the file behind, and `exists()`
+        # then serves it for ever -- a modal that opens on a blank
+        # picture with no error anywhere.
+        _cached = False
+        try:
+            _cached = out_path.exists() and out_path.stat().st_size > 0
+        except OSError:
+            _cached = False
+        if not _cached:
             cap.set(cv2.CAP_PROP_POS_FRAMES, clamped)
             ok, img = cap.read()
             if not ok or img is None:
                 raise HTTPException(500, f"frame {clamped} unreadable")
-            cv2.imwrite(str(out_path), img, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+            # IMWRITE RETURNS FALSE, IT DOES NOT RAISE. Unchecked, the
+            # failure surfaced two lines below as `out_path.stat()`
+            # throwing FileNotFoundError -- an unhandled exception, so
+            # FastAPI answered a bare "500: Internal Server Error" with
+            # no detail at all, on a modal whose whole job is to show a
+            # picture. Said properly here, where what went wrong is
+            # still known.
+            if not cv2.imwrite(str(out_path), img,
+                               [int(cv2.IMWRITE_JPEG_QUALITY), 88]):
+                raise HTTPException(
+                    500,
+                    f"could not write {out_path.name} to the clips "
+                    "directory — it is most likely full or not writable",
+                )
     finally:
         cap.release()
+
+    # THE CACHE-BUSTER, AND THE LAST CHANCE TO NOTICE THE FILE IS NOT
+    # THERE. This was inline in the URL below, so a frame that never
+    # got written ended the request as an unhandled FileNotFoundError
+    # rather than as anything anybody could act on.
+    try:
+        _stamp = int(out_path.stat().st_mtime)
+    except OSError as exc:
+        raise HTTPException(
+            500, f"the frame was not written to {out_path.name}: {exc}")
 
     _fps = float(probe_fps(src_path) or 0.0)
     return {
@@ -8475,7 +8507,7 @@ def long_upload_frame(
         "height": height,
         "image_url": (
             f"{settings.app_base_url}/uploads/clips/{out_path.name}"
-            f"?v={int(out_path.stat().st_mtime)}"
+            f"?v={_stamp}"
         ),
     }
 
