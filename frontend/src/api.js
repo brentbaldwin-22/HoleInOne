@@ -321,6 +321,19 @@ export const api = {
   selfieUrl: (path) => `${API_BASE}/uploads/${path}`,
 
   gallery: (token) => request(`/api/gallery/${token}`),
+  // Picking your own shots. The candidate list is one group, cut on the
+  // gaps between groups rather than a window around the tee time -- see
+  // backend/app/services/clip_picker.py.
+  galleryCandidates: (token, offset = 0) =>
+    request(`/api/gallery/${token}/candidates?offset=${offset}`, { auth: false }),
+  claimClips: (token, clipIds) =>
+    request(`/api/gallery/${token}/claim`, {
+      method: "POST", auth: false, body: { clip_ids: clipIds },
+    }),
+  unclaimClip: (token, clipId) =>
+    request(`/api/gallery/${token}/unclaim`, {
+      method: "POST", auth: false, body: { clip_id: clipId },
+    }),
   flagClip: (token, clipId, note) =>
     request(`/api/gallery/${token}/clips/${clipId}/flag`, {
       method: "POST",

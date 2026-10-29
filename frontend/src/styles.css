@@ -1040,3 +1040,77 @@ tr:last-child td { border-bottom: 0; }
   .hero, .home-hero { padding: 30px 0 26px; }
   table { display: block; overflow-x: auto; white-space: nowrap; }
 }
+
+/* ── Pick your shots ──────────────────────────────────────────────────
+   The grid is the whole idea: four clips looping at once, so the golfer
+   recognises their own swing at a glance instead of playing each one in
+   turn. 9:16 tiles because that is the cut they get, and because a
+   phone holds two of them side by side without scrolling. */
+.pick-card { border: 1px solid var(--gold-line, var(--rule)); }
+.pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 10px;
+}
+.pick-tile {
+  position: relative;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0f1d16;
+  aspect-ratio: 9 / 16;
+  cursor: pointer;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+.pick-tile video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+.pick-tile:hover { transform: translateY(-2px); }
+.pick-tile.on { border-color: var(--primary, #1ca85c); }
+.pick-tile.on::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(28, 168, 92, 0.18);
+}
+.pick-time {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  z-index: 2;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+.pick-check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--primary, #1ca85c);
+}
+.pick-actions { margin-top: 14px; }
+.pick-actions > button { width: 100%; }
+.pick-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}

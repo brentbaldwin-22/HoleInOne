@@ -3,12 +3,17 @@ import { useParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
 import ClipPlayer from "../components/ClipPlayer.jsx";
+import PickYourShots from "../components/PickYourShots.jsx";
 
 export default function Gallery() {
   const { galleryToken } = useParams();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [toast, setToast] = useState(null);
+  // How many shots are still going begging on this hole. Kept here so the
+  // "Still processing" empty state cannot sit under a grid of clips
+  // waiting to be claimed.
+  const [unclaimed, setUnclaimed] = useState(null);
 
   async function load() {
     try {
@@ -103,7 +108,16 @@ export default function Gallery() {
         </a>
       )}
 
-      {holes.length === 0 && (
+      <PickYourShots
+        galleryToken={galleryToken}
+        onAvailable={setUnclaimed}
+        onClaimed={(n) => {
+          if (n) showToast(`Added ${n} clip${n === 1 ? "" : "s"} to your gallery`);
+          load();
+        }}
+      />
+
+      {holes.length === 0 && unclaimed === 0 && (
         <div className="card center" style={{ padding: 28 }}>
           <div className="muted inline" style={{ margin: "0 auto 8px" }}>
             <Icon name="clock" size={18} /> Still processing
