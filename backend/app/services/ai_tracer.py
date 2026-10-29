@@ -3597,6 +3597,20 @@ ARC_SPAN_CAP_FRAC = 1.40
 ARC_HANDLE_CAP_FRAC = 0.70
 
 
+# HOW LONG A FLIGHT THE MEASURED CURVATURE MAY BE CARRIED ACROSS, in
+# frames. A fitted second derivative enters the answer as 0.5·a·S², so
+# the error in `a` is magnified by half the square of the flight: over
+# 212 frames that is 22,472x, and a chain of 34 points with a pixel of
+# jitter cannot support it. 90 frames is 1.5s at 60fps -- long enough
+# to cover the join and the first part of the climb, which is what
+# this model is for, and short enough that the magnification is 4,050
+# rather than 22,472.
+#
+# NOT A MEASURED NUMBER. It is a floor under a known failure. The
+# input dump in `_extend_to_target` exists to replace it with one.
+_CURVED_MAX_FRAMES = 90
+
+
 def _curved_tail(pts, target_xy, fps, width, height, land_frame=None):
     """Continue the chain's own CURVATURE, not just its direction.
 
@@ -4109,6 +4123,30 @@ def _extend_to_target(pts, target_xy, fps, width, height,
     # curve upward for its whole flight and refuses an arc that doubles
     # back horizontally, and `_turns_back_on_itself` catches a loop
     # whichever model drew it.
+    # THE EXACT INPUTS, ONCE, SO THIS CAN BE REPRODUCED OFF THE CLIP.
+    #
+    # Three changes to the tail models shipped against a guess at what
+    # these were, and the guess was wrong about which model even ran.
+    # A tail is a pure function of the chain, the target, the duration
+    # and the frame size: with these four in the log it can be rebuilt
+    # exactly on a laptop, and a shape can be argued about before a
+    # render rather than after one.
+    try:
+        _dump = ";".join("%d,%d,%d" % (int(q[0]), round(float(q[1])),
+                                       round(float(q[2])))
+                         for q in pts[-40:])
+        log.info(
+            "tracer tail inputs: fps=%.3f frame=%dx%d target=%s "
+            "land_frame=%s chain(last %d of %d)=%s",
+            float(fps or 0.0), int(width or 0), int(height or 0),
+            ("%.1f,%.1f" % (float(target_xy[0]), float(target_xy[1])))
+            if target_xy else None,
+            (int(land_frame) if land_frame is not None else None),
+            min(40, len(pts)), len(pts), _dump,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
     _pw = list(pts[-12:])
     if len(_pw) >= 2:
         _vx = float(_pw[-1][1]) - float(_pw[0][1])
@@ -4173,18 +4211,42 @@ def _extend_to_target(pts, target_xy, fps, width, height,
     # correction would dominate the early flight, and the apex and loop
     # guards sit behind both, so a shot it cannot do falls through to
     # exactly what drew it before.
-    tail = _curved_tail(pts, target_xy, fps, width, height,
-                        land_frame=land_frame)
-    kind = "curved"
-    if tail and _apex_above_frame_px(tail) > (
-            _APEX_MAX_ABOVE_FRAC * float(height or 1)):
-        log.info("tracer tail: the curvature-matched apex runs off the "
-                 "top — trying the ballistic fit instead")
-        tail = None
-    if tail and _turns_back_on_itself(tail):
-        log.info("tracer tail: the curvature-matched arc curls back on "
-                 "itself — trying the ballistic fit instead")
-        tail = None
+    # ONLY WHILE THE MEASURED CURVATURE IS WORTH EXTRAPOLATING.
+    #
+    # Tried first and unconditionally, this made upload 1082 WORSE: a
+    # 212-frame tail at a fitted second derivative is 0.5·a·S² with S²
+    # of 44,944, so an `a` measured off a 34-point chain with a pixel
+    # of jitter moves the far end of the flight by hundreds of pixels.
+    # The model is right about the JOIN and wrong about the rest, and
+    # at that length the rest is almost all of it.
+    #
+    # So it gets the flights short enough for the extrapolation to
+    # mean something, and the ballistic fit -- which solves curvature
+    # from the landing and is bounded by construction -- keeps the
+    # long ones. This is a floor under a known failure, not a measured
+    # threshold; see the dump below, which is there to replace it with
+    # one.
+    _S_hint = (float(land_frame) - float(pts[-1][0])
+               if land_frame is not None else None)
+    tail = None
+    kind = "ballistic"
+    if _S_hint is not None and 4.0 <= _S_hint <= _CURVED_MAX_FRAMES:
+        tail = _curved_tail(pts, target_xy, fps, width, height,
+                            land_frame=land_frame)
+        kind = "curved"
+        if tail and _apex_above_frame_px(tail) > (
+                _APEX_MAX_ABOVE_FRAC * float(height or 1)):
+            log.info("tracer tail: the curvature-matched apex runs off "
+                     "the top — trying the ballistic fit instead")
+            tail = None
+        if tail and _turns_back_on_itself(tail):
+            log.info("tracer tail: the curvature-matched arc curls back "
+                     "on itself — trying the ballistic fit instead")
+            tail = None
+    elif _S_hint is not None:
+        log.info("tracer tail: %.0f-frame flight is too long to carry "
+                 "the measured curvature (limit %d) — ballistic fit",
+                 _S_hint, _CURVED_MAX_FRAMES)
     if not tail:
         tail = _ballistic_tail(pts, target_xy, fps, width, height,
                                land_frame=land_frame)

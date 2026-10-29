@@ -176,6 +176,20 @@ _src = inspect.getsource(_T._extend_to_target)
 check("the order is curved, then ballistic, then the arc",
       re.findall(r"_(curved|ballistic|arc)_tail\(", _src),
       ["curved", "ballistic", "arc"])
+# AND ONLY ON FLIGHTS SHORT ENOUGH TO CARRY A SECOND DERIVATIVE. A
+# fitted acceleration enters as 0.5·a·S²: over 212 frames that is a
+# 22,472x magnification of whatever error is in `a`, and a 34-point
+# chain cannot support it. Tried unconditionally, this model made
+# upload 1082 worse than the one it replaced.
+check("long flights fall through to the ballistic fit",
+      "_CURVED_MAX_FRAMES" in _src, True)
+check("...at 90 frames", _T._CURVED_MAX_FRAMES, 90)
+check("a 212-frame flight is refused",
+      212 > _T._CURVED_MAX_FRAMES, True)
+# THE INPUTS GO IN THE LOG. Three changes shipped against a guess at
+# what they were, and the guess was wrong about which model even ran.
+check("and the inputs are dumped for reproduction",
+      "tracer tail inputs:" in _src, True)
 # AND IT IS TRIED ONCE. A second attempt after ballistic is dead code:
 # it declined the first time and the inputs have not changed.
 check("curved is attempted exactly once",
