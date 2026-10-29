@@ -23179,6 +23179,9 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                 # from a real landing, so there is nothing to fabricate.
                 landing_frame=c.get("landing_frame"),
                 landing_spot=c.get("landing_spot"),
+                # The tracer times to THIS; the green cut still needs
+                # the landing itself to know how long to hold.
+                descent_first_frame=c.get("descent_first_frame"),
                 # See above: the sweep's own chain IS the flight. Two
                 # points is the floor find_flight itself works to, and
                 # below it there is nothing to hand over, so the job
@@ -23681,6 +23684,18 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                              int(_e["landing_xy"][1])]
         c["landing_sec"] = _e.get("last_descent_sec")
         c["landing_points"] = _e.get("n_points_drawn")
+        # WHEN THE GREEN FIRST SAW IT COMING DOWN.
+        #
+        # The tracer's duration used to run to the LANDING, which is
+        # the end of this chain -- and the end of a descent chain is
+        # the softest number in the whole pipeline. It is wherever the
+        # fall flattened out, so it moves with the bounce, the roll,
+        # and wherever the walk back happened to stop. The FIRST frame
+        # is a detection: the moment the ball entered the green
+        # camera's view falling. That is the instant the tee's
+        # predictive half is bridging to, and it is the one worth
+        # timing against.
+        c["descent_first_frame"] = _e.get("first_frame")
         # HOW LONG AFTER THE BALL LEFT THE TEE FRAME IT CAME DOWN.
         # The window's width is currently set from ONE measured flight;
         # this records the real number on every match so it can be set
@@ -26848,6 +26863,10 @@ def run_wizard_produce_job(
     hole_number: int | None = None,
     landing_frame: int | None = None,
     landing_spot=None,
+    # THE FIRST FRAME OF THE DESCENT CHAIN, in green frames. The
+    # tracer's flight time is measured to this rather than to the
+    # landing: see `descent_first_frame` where it is set.
+    descent_first_frame: int | None = None,
     # The wizard was opened on ONE clip (✎ Edit) or on a new one
     # (＋ Add). Produce then means "this clip", not "this upload".
     solo: bool = False,
@@ -27050,7 +27069,10 @@ def run_wizard_produce_job(
                 saved_track_as_landing=saved_track_as_landing,
                 end_green_sec=_end_sec,
                 landing=(
-                    {"sec": _land_sec, "xy": list(landing_spot)}
+                    {"sec": _land_sec, "xy": list(landing_spot),
+                     "first_sec": (float(descent_first_frame) / _gfps
+                                   if (descent_first_frame is not None
+                                       and _gfps > 0) else None)}
                     if (_land_sec is not None and landing_spot) else None
                 ),
             )
@@ -28332,11 +28354,34 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
             # forces it there in too few frames and the "flight" comes
             # out a hairpin. Measured, it is a parabola.
             _target_frame = None
-            if landing and landing.get("sec") is not None and fps:
+            # LAST FRAME OF THE ASCENT TO FIRST FRAME OF THE DESCENT.
+            #
+            # That span is what the predictive half is actually
+            # bridging, and both ends of it are detections. The
+            # landing is not: it is wherever the fall was judged to
+            # have flattened, which moves with the bounce, the roll
+            # and wherever the walk back stopped. Timing a three-
+            # second arc against the softest number available is how
+            # the tee half and the green half end up disagreeing.
+            #
+            # The landing second is still the fallback, and still what
+            # the green cut is held open to -- that one really does
+            # need to know when the ball came down.
+            _t_sec = (landing or {}).get("first_sec")
+            _t_src = "the descent's first frame"
+            if _t_sec is None:
+                _t_sec = (landing or {}).get("sec")
+                _t_src = "the landing (no descent chain start recorded)"
+            if _t_sec is not None and fps:
                 try:
-                    _tf = (float(landing["sec"]) + float(delta)) * float(fps)
+                    _tf = (float(_t_sec) + float(delta)) * float(fps)
                     if _tf > 0:
                         _target_frame = int(round(_tf))
+                        log.info(
+                            "d3 produce: swing %s timing the tracer to %s "
+                            "(%.2fs green-clock + %.2fs delta -> tee f%d)",
+                            i, _t_src, float(_t_sec), float(delta),
+                            _target_frame)
                 except (TypeError, ValueError):
                     _target_frame = None
             # A GOLF SHOT IS NOT IN THE AIR FOR FOURTEEN SECONDS.

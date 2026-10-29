@@ -4508,7 +4508,78 @@ def _tip_reveal_schedule(
     # From the last knot's frame on, the whole curve is visible (any
     # tail past the final anchor's projection appears with it).
     counts.append(len(samples))
-    return first_f, last_f, counts
+    return first_f, last_f, _ease_reveal(counts, samples)
+
+
+# HOW MUCH OF THE BALL'S OWN PACE THE TIP KEEPS, as an exponent on its
+# per-frame advance. 1.0 is the ball exactly; 0 would be a constant
+# crawl with no sense of a struck ball at all.
+#
+# WHY IT CANNOT BE 1.0. Measured on upload 1082's produced clip, the
+# drawn line grows 100px a frame off the tee, then 0 for 0.8 SECONDS,
+# then 35. The dead stretch is the screen apex: a ball flying away
+# from the lens genuinely lingers there, its real motion falls to
+# about a pixel a frame, and at a 4px line width that reads as the
+# tracer stopping. It is true and it looks broken.
+#
+# 0.5 roughly doubles the advance through the apex -- 1.17px a frame
+# to 2.17 -- by taking it from the stretches that have pixels to
+# spare. The launch is untouched: it is already one sample per frame
+# and the tip cannot land between samples.
+#
+# IT IS A PRESENTATION CHOICE AND NOT A MEASUREMENT. The ball's
+# timing is still what shapes the curve and still what the clocks
+# say; this is only how fast the line is uncovered along it.
+TIP_PACE_GAMMA = 0.5
+
+
+def _ease_reveal(counts: list, samples: list) -> list:
+    """Redistribute the reveal so the apex does not stand still.
+
+    Zero-sum by construction: same frames, same total length, same
+    first and last count. Only the share each frame gets changes, and
+    only by the gamma above -- a frame already advancing 20px gives
+    some of that up so a frame advancing one pixel advances two.
+    """
+    if TIP_PACE_GAMMA >= 0.999 or len(counts) < 4 or len(samples) < 4:
+        return counts
+    try:
+        cum = [0.0]
+        for j in range(1, len(samples)):
+            cum.append(cum[-1] + math.hypot(
+                float(samples[j][1]) - float(samples[j - 1][1]),
+                float(samples[j][2]) - float(samples[j - 1][2])))
+        total = cum[-1]
+        if total <= 1.0:
+            return counts
+
+        def _len_at(c):
+            return cum[min(max(int(c) - 1, 0), len(cum) - 1)]
+
+        w = []
+        for i in range(len(counts)):
+            _d = _len_at(counts[i]) - (_len_at(counts[i - 1]) if i else 0.0)
+            w.append(max(_d, 0.05) ** TIP_PACE_GAMMA)
+        _sw = sum(w) or 1.0
+        out, acc = [], 0.0
+        for i in range(len(counts)):
+            acc += w[i]
+            _want = total * acc / _sw
+            lo, hi = 0, len(cum) - 1
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if cum[mid] < _want:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            out.append(max(1, min(lo + 1, len(samples))))
+        # Monotone, and the last frame still shows the whole curve.
+        for i in range(1, len(out)):
+            out[i] = max(out[i], out[i - 1])
+        out[-1] = len(samples)
+        return out
+    except Exception:  # noqa: BLE001
+        return counts
 
 
 def render_tracer_video(
