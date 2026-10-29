@@ -3669,19 +3669,75 @@ def _arc_tail(pts, target_xy, fps, width, height, land_frame=None):
     _span = max(L, min(_reach, 0.9 * max(width, height)))
     d1 = max(12.0, min(0.45 * _span, 0.5 * max(width, height)))
     d2 = max(12.0, min(0.30 * L + 0.55 * d1, 0.45 * max(width, height)))
-    p1x, p1y = x_a + vux * d1, y_a + vuy * d1
-    p2x, p2y = tx - _ax * d2, ty - _ay * d2
+
+    def _ctrl(_d1, _d2):
+        return ((x_a + vux * _d1, y_a + vuy * _d1),
+                (tx - _ax * _d2, ty - _ay * _d2))
+
+    def _at(t, p1, p2):
+        mt = 1.0 - t
+        return ((mt ** 3) * x_a + 3 * (mt ** 2) * t * p1[0]
+                + 3 * mt * (t ** 2) * p2[0] + (t ** 3) * tx,
+                (mt ** 3) * y_a + 3 * (mt ** 2) * t * p1[1]
+                + 3 * mt * (t ** 2) * p2[1] + (t ** 3) * ty)
+
+    # THE HORIZONTAL REVERSAL IS NOT THE FAULT, and clamping it out
+    # was tried here and is wrong. _ballistic_tail refuses to reverse
+    # -- "that is the hairpin, and it is a horizontal thing" -- and
+    # that is right for a quadratic absorbing perspective decay. But a
+    # ball struck nearly straight away from this camera genuinely does
+    # climb away and come back down beside its own line, and forbidding
+    # it here collapses the arc: shortening the launch handle until x
+    # was monotone turned a 500px arc over the top into a 115px stub
+    # along the chord. The shape was the one thing about this curve
+    # that was already right.
+    p1, p2 = _ctrl(d1, d2)
+    p1x, p1y = p1
+    p2x, p2y = p2
+
+    # PACED LIKE A BALL, NOT EASED DOWN TO A STOP.
+    #
+    # This advanced the curve parameter by 1-(1-u)^1.35, which is
+    # monotonically decelerating: the head left at 8.9px a frame,
+    # collapsed to 1.1, and arrived at 1.0. A ball flying away from
+    # the camera does slow -- but it slows INTO the apex and picks up
+    # again on the way down, and an ease that only ever slows cannot
+    # do the second half.
+    #
+    # So: walk the curve by ARC LENGTH, at a rate that dips in the
+    # middle and recovers. s(u) = u + a·sin(2πu)/2π has speed
+    # 1 + a·cos(2πu) -- fastest at both ends, slowest at the crest,
+    # smooth throughout and exactly 1 on average, so the flight still
+    # takes the n frames the clocks gave it.
+    _N = 240
+    _fine = [_at(j / float(_N), p1, p2) for j in range(_N + 1)]
+    _cum = [0.0]
+    for j in range(_N):
+        _cum.append(_cum[-1] + math.hypot(_fine[j + 1][0] - _fine[j][0],
+                                          _fine[j + 1][1] - _fine[j][1]))
+    _total = _cum[-1] or 1.0
+    _a = 0.55
+
+    def _t_at_length(target_len):
+        lo, hi = 0, _N
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if _cum[mid] < target_len:
+                lo = mid + 1
+            else:
+                hi = mid
+        if lo == 0:
+            return 0.0
+        _span_l = _cum[lo] - _cum[lo - 1]
+        _f = 0.0 if _span_l <= 0 else (target_len - _cum[lo - 1]) / _span_l
+        return (lo - 1 + _f) / float(_N)
 
     out = []
     for i in range(1, n + 1):
-        # Eased so the ball slows as it goes away from the camera,
-        # rather than sliding along at a constant rate.
-        t = 1.0 - (1.0 - i / float(n)) ** 1.35
-        mt = 1.0 - t
-        bx = (mt ** 3) * x_a + 3 * (mt ** 2) * t * p1x \
-            + 3 * mt * (t ** 2) * p2x + (t ** 3) * tx
-        by = (mt ** 3) * y_a + 3 * (mt ** 2) * t * p1y \
-            + 3 * mt * (t ** 2) * p2y + (t ** 3) * ty
+        u = i / float(n)
+        frac = u + _a * math.sin(2.0 * math.pi * u) / (2.0 * math.pi)
+        t = _t_at_length(max(0.0, min(1.0, frac)) * _total)
+        bx, by = _at(t, p1, p2)
         # KEPT EVEN WHEN OUT OF VIEW -- see _ballistic_tail. Dropping
         # the part of the arc above the frame does not remove it, it
         # replaces it with a straight chord along the top edge between
