@@ -4511,37 +4511,43 @@ def _tip_reveal_schedule(
     return first_f, last_f, _ease_reveal(counts, samples)
 
 
-# HOW MUCH OF THE BALL'S OWN PACE THE TIP KEEPS, as an exponent on its
-# per-frame advance. 1.0 is the ball exactly; 0 would be a constant
-# crawl with no sense of a struck ball at all.
+# THE SLOWEST THE DRAWN TIP MAY CRAWL, in pixels per source frame.
 #
-# WHY IT CANNOT BE 1.0. Measured on upload 1082's produced clip, the
-# drawn line grows 100px a frame off the tee, then 0 for 0.8 SECONDS,
-# then 35. The dead stretch is the screen apex: a ball flying away
-# from the lens genuinely lingers there, its real motion falls to
-# about a pixel a frame, and at a 4px line width that reads as the
-# tracer stopping. It is true and it looks broken.
+# WHY IT IS NEEDED. Measured on upload 1082's produced clip, counting
+# lit tracer pixels per output frame: the line grows 100px a frame off
+# the tee, then ZERO for 0.8 SECONDS, then 35. The dead stretch is the
+# screen apex. A ball flying away from the lens genuinely lingers
+# there -- its real motion falls to about a pixel a frame -- and at a
+# 4px line width that reads as the tracer stopping. True, and it looks
+# broken.
 #
-# 0.5 roughly doubles the advance through the apex -- 1.17px a frame
-# to 2.17 -- by taking it from the stretches that have pixels to
-# spare. The launch is untouched: it is already one sample per frame
-# and the tip cannot land between samples.
+# A FLOOR, NOT A POWER, and the difference is the whole lesson. The
+# first version raised every frame's share to 0.5, which lifted the
+# apex from 1.00px a frame to 1.97 -- but it took 42% off the LAUNCH
+# (13.7 to 7.9) and added 34% to the descent (2.68 to 3.58). The
+# ascent came out slower than the descent, which is backwards for a
+# golf shot and exactly what the operator saw.
+#
+# Lifting only the frames below the floor costs a third as much: at
+# 2.5 the apex reaches 2.13, the launch gives up 13% (13.7 to 11.9)
+# and the descent is left alone (2.68 to 2.75).
 #
 # IT IS A PRESENTATION CHOICE AND NOT A MEASUREMENT. The ball's
-# timing is still what shapes the curve and still what the clocks
-# say; this is only how fast the line is uncovered along it.
-TIP_PACE_GAMMA = 0.5
+# timing still shapes the curve and still comes from the clocks; this
+# is only how fast the line is uncovered along it. 0 disables.
+TIP_MIN_ADVANCE_PX = 2.5
 
 
 def _ease_reveal(counts: list, samples: list) -> list:
     """Redistribute the reveal so the apex does not stand still.
 
-    Zero-sum by construction: same frames, same total length, same
-    first and last count. Only the share each frame gets changes, and
-    only by the gamma above -- a frame already advancing 20px gives
-    some of that up so a frame advancing one pixel advances two.
+    Zero-sum by construction: same frames, same curve, same first and
+    last count. Only the share each frame gets changes -- a frame
+    crawling at a pixel is lifted to the floor, and the renormalising
+    takes that back from every frame in proportion, which is a few
+    percent each rather than a third off the strike.
     """
-    if TIP_PACE_GAMMA >= 0.999 or len(counts) < 4 or len(samples) < 4:
+    if TIP_MIN_ADVANCE_PX <= 0 or len(counts) < 4 or len(samples) < 4:
         return counts
     try:
         cum = [0.0]
@@ -4559,7 +4565,11 @@ def _ease_reveal(counts: list, samples: list) -> list:
         w = []
         for i in range(len(counts)):
             _d = _len_at(counts[i]) - (_len_at(counts[i - 1]) if i else 0.0)
-            w.append(max(_d, 0.05) ** TIP_PACE_GAMMA)
+            # ONLY THE CRAWLING FRAMES ARE LIFTED. Everything already
+            # moving keeps its own share, so the strike off the tee
+            # stays a strike and the descent is not inflated to pay
+            # for the apex.
+            w.append(max(_d, TIP_MIN_ADVANCE_PX))
         _sw = sum(w) or 1.0
         out, acc = [], 0.0
         for i in range(len(counts)):

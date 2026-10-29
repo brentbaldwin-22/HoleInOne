@@ -27044,12 +27044,22 @@ def run_wizard_produce_job(
             # LANDING_TAIL_SEC after the ball touches down.
             _end_sec = None
             _land_sec = None
-            if landing_frame is not None:
-                _gp = _local_green(row)
-                _gfps = float(probe_fps(_gp) or 0.0) if _gp else 0.0
+            _first_sec = None
+            # THE GREEN'S FPS IS NEEDED FOR EITHER NUMBER, so it is read
+            # once and unconditionally. Reading it only when a landing
+            # frame existed is what stopped the descent's first frame
+            # from ever reaching the tracer on a swing that had one and
+            # no landing -- upload 1084, whose tee arc then timed itself
+            # off a hand-off speed of about a pixel a frame.
+            _gp = _local_green(row)
+            _gfps = float(probe_fps(_gp) or 0.0) if _gp else 0.0
+            if landing_frame is not None or descent_first_frame is not None:
                 if _gfps > 0:
-                    _land_sec = float(landing_frame) / _gfps
-                    _end_sec = _land_sec + LANDING_TAIL_SEC
+                    if landing_frame is not None:
+                        _land_sec = float(landing_frame) / _gfps
+                        _end_sec = _land_sec + LANDING_TAIL_SEC
+                    if descent_first_frame is not None:
+                        _first_sec = float(descent_first_frame) / _gfps
                 else:
                     log.warning(
                         "wizard produce: upload=%s has a landing frame but "
@@ -27068,12 +27078,16 @@ def run_wizard_produce_job(
                 replace=not solo,
                 saved_track_as_landing=saved_track_as_landing,
                 end_green_sec=_end_sec,
+                # EITHER CLOCK WILL DO. The tracer times to the
+                # descent's first frame and the green cut holds to the
+                # landing; requiring both meant a swing with only one
+                # of them got neither.
                 landing=(
                     {"sec": _land_sec, "xy": list(landing_spot),
-                     "first_sec": (float(descent_first_frame) / _gfps
-                                   if (descent_first_frame is not None
-                                       and _gfps > 0) else None)}
-                    if (_land_sec is not None and landing_spot) else None
+                     "first_sec": _first_sec}
+                    if (landing_spot
+                        and (_land_sec is not None
+                             or _first_sec is not None)) else None
                 ),
             )
             log.info(
@@ -28074,10 +28088,23 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     "operator's plotted comet — f%d, %.2fs green-clock",
                     i, int(_last["frame"]), landing["sec"],
                 )
+            # HOW LONG TO HOLD THE TEE SHOT ON SCREEN.
+            #
+            # The landing second when there is one; the descent's first
+            # frame when there is not. Without the fallback a swing
+            # whose landing frame never arrived cut away from the tee
+            # at the default length -- the arc finished early and the
+            # clip jumped to the green with the ball still in the air,
+            # which is upload 1084 exactly. The first descent frame is
+            # the moment the other camera picked it up, so holding to
+            # it is the least that can be right.
             _land_tee = None
-            if landing and landing.get("sec") is not None:
+            _hold_sec = (landing or {}).get("sec")
+            if _hold_sec is None:
+                _hold_sec = (landing or {}).get("first_sec")
+            if _hold_sec is not None:
                 try:
-                    _land_tee = float(landing["sec"]) + float(delta)
+                    _land_tee = float(_hold_sec) + float(delta)
                 except (TypeError, ValueError):
                     _land_tee = None
             if _land_tee is not None and _land_tee > t1:

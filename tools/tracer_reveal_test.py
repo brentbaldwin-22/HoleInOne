@@ -62,16 +62,16 @@ def speeds(counts):
             for i in range(1, len(seq))]
 
 
-def sched(gamma):
-    _o = T.TIP_PACE_GAMMA
-    T.TIP_PACE_GAMMA = gamma
+def sched(floor):
+    _o = T.TIP_MIN_ADVANCE_PX
+    T.TIP_MIN_ADVANCE_PX = floor
     try:
         return T._tip_reveal_schedule(SAMPLES, CHAIN)[2]
     finally:
-        T.TIP_PACE_GAMMA = _o
+        T.TIP_MIN_ADVANCE_PX = _o
 
 
-RAW, EASED = sched(1.0), sched(T.TIP_PACE_GAMMA)
+RAW, EASED = sched(0.0), sched(T.TIP_MIN_ADVANCE_PX)
 S_RAW, S_EASED = speeds(RAW), speeds(EASED)
 _ap = slice(30, 100)          # the apex window on this flight
 print("apex advance: %.2f px/frame raw -> %.2f eased"
@@ -101,18 +101,29 @@ check("...and it cuts no more than a corner getting there",
       0.95 < sum(S_EASED) / sum(S_RAW) <= 1.0, True)
 
 print()
-print("the launch is untouched, because it cannot be:")
-# One sample per frame already, and the tip cannot land between
-# samples -- so the pixels the apex gains come from the stretches
-# that have them to spare, not from the strike.
-check("still leaves at the ball's own speed",
-      round(max(S_EASED[:20])), round(max(S_RAW[:20])))
+print("AND THE STRIKE IS STILL A STRIKE:")
+# THE POWER LAW FAILED HERE, and max() hid it. Raising every frame's
+# share to 0.5 lifted the apex but took 42% off the launch and added
+# 34% to the descent -- the ascent came out slower than the descent,
+# which is backwards for a golf shot. The single fastest frame barely
+# moved, so a max() check passed it. Measure the stretch.
+_n = len(S_RAW)
+_seg = lambda sp, a, b: sum(sp[int(a * _n):int(b * _n)]) / max(
+    1, int(b * _n) - int(a * _n))
+print("  launch %.1f -> %.1f   mid-descent %.2f -> %.2f"
+      % (_seg(S_RAW, 0, .08), _seg(S_EASED, 0, .08),
+         _seg(S_RAW, .40, .70), _seg(S_EASED, .40, .70)))
+check("the launch gives up less than a fifth",
+      _seg(S_EASED, 0, .08) > 0.8 * _seg(S_RAW, 0, .08), True)
+check("the descent is not inflated to pay for the apex",
+      _seg(S_EASED, .40, .70) < 1.15 * _seg(S_RAW, .40, .70), True)
+check("and the ascent still outruns the descent",
+      _seg(S_EASED, .08, .16) > _seg(S_EASED, .40, .70), True)
 
 print()
-print("gamma 1.0 is exactly the old behaviour:")
-check("byte for byte", sched(1.0), RAW)
-check("...and that is the documented default meaning",
-      0.0 < T.TIP_PACE_GAMMA < 1.0, True)
+print("a floor of 0 is exactly the old behaviour:")
+check("byte for byte", sched(0.0), RAW)
+check("...and the default is a real floor", T.TIP_MIN_ADVANCE_PX > 0, True)
 
 print()
 print("it cannot break a schedule it does not understand:")
