@@ -3304,6 +3304,66 @@ def predicted_landing(pts, fps, width, height, max_sec=12.0,
     return (round(x, 1), round(y, 1))
 
 
+# HOW SMALL A STEP IS NOISE RATHER THAN MOTION, per axis, in pixels.
+# A MOG2 centroid on a fading ball jitters about a pixel, so a chain
+# whose last points move one or two is carrying no direction at all.
+_STALL_STEP_PX = 2.0
+
+
+def _join_tail(drawn: list, tail: list) -> list:
+    """Hand over cleanly where the continuation begins.
+
+    THE TAIL NOW STARTS EARLIER THAN THE CHAIN ENDS. `_drop_stalled_tail`
+    throws away the trailing points that were not moving, so the
+    continuation is measured from before them and its first frame
+    lands inside the drawn chain. Appending it would put two points on
+    the same frames -- the stalled ones the models just rejected AND
+    the model's own -- and the renderer would draw a line out to each.
+
+    The model's are the ones that were judged worth drawing, so the
+    chain gives way to them.
+    """
+    if not tail:
+        return list(drawn or [])
+    _f0 = tail[0][0]
+    return [q for q in (drawn or []) if q[0] < _f0] + list(tail)
+
+
+def _drop_stalled_tail(pts: list) -> list:
+    """The chain minus the trailing points that are not moving.
+
+    THE LAST RELIABLE POINT IS NOT THE LAST POINT, and the tail models
+    were the only ones that did not know it -- `bezier_continuation`
+    has done this since it was written, for a flight whose blob was
+    clipped by the frame edge and stopped moving while the ball went
+    on.
+
+    IT IS WORSE THAN A STALLED POSITION: it is a stalled DIRECTION.
+    Measured on uploads 1082 and 1084, both ends of the chain sit at
+    the noise floor for four or five frames and the x wobbles three
+    pixels across them -- 1230,1230,1231,1231,1232,1233 on one,
+    1373,1374,1374,1374,1375,1376 on the other. Fitting those in
+    turns the hand-off heading from +90 degrees (still climbing) to
+    -8 (already going right and down) on 1082, and from +83 to +3 on
+    1084. A quarter turn, out of five points of jitter, and the
+    continuation then leaves along it. That is the sharp turn at the
+    top of every one of these clips.
+
+    Never drops below two points, and never drops so much that there
+    is no flight left to measure.
+    """
+    out = list(pts or [])
+    n = 0
+    while len(out) - n > max(2, len(out) // 2):
+        a, b = out[-2 - n], out[-1 - n]
+        if (abs(float(b[1]) - float(a[1])) <= _STALL_STEP_PX
+                and abs(float(b[2]) - float(a[2])) <= _STALL_STEP_PX):
+            n += 1
+            continue
+        break
+    return out[:len(out) - n] if n else out
+
+
 def _ballistic_tail(pts, target_xy, fps, width, height, max_sec=12.0,
                     land_frame=None):
     """Extend the tracked flight's own parabola to the landing.
@@ -3352,6 +3412,11 @@ def _ballistic_tail(pts, target_xy, fps, width, height, max_sec=12.0,
     import numpy as np
 
     if not target_xy or len(pts) < 4:
+        return None
+    # SEE _drop_stalled_tail. Five points of centroid jitter at the top
+    # of the climb were setting the hand-off heading.
+    pts = _drop_stalled_tail(pts)
+    if len(pts) < 4:
         return None
     tx, ty = float(target_xy[0]), float(target_xy[1])
     f_a = pts[-1][0]
@@ -3655,6 +3720,9 @@ def _curved_tail(pts, target_xy, fps, width, height, land_frame=None):
 
     if not target_xy or len(pts) < 6:
         return None
+    pts = _drop_stalled_tail(pts)          # see _ballistic_tail
+    if len(pts) < 6:
+        return None
     tx, ty = float(target_xy[0]), float(target_xy[1])
     f_a = pts[-1][0]
 
@@ -3756,6 +3824,9 @@ def _arc_tail(pts, target_xy, fps, width, height, land_frame=None):
     Returns [(frame, x, y), ...] after the starting point, or None.
     """
     if not target_xy or len(pts) < 2:
+        return None
+    pts = _drop_stalled_tail(pts)          # see _ballistic_tail
+    if len(pts) < 2:
         return None
     tx, ty = float(target_xy[0]), float(target_xy[1])
     f_a, x_a, y_a = pts[-1][0], float(pts[-1][1]), float(pts[-1][2])
@@ -5022,7 +5093,7 @@ def render_tracer_video(
             # is unanswerable without the name.
             log.info("tracer tail: %s model drew %d frame(s), apex y=%d",
                      _bt, len(_tail), min(q[2] for q in _tail))
-            smoothed_points.extend(_tail)
+            smoothed_points = _join_tail(smoothed_points, _tail)
             # THE SAME NUMBERS THE OTHER BRANCH RECORDS. This one is
             # what the wizard's own render goes through, and leaving it
             # blank meant a swing rendered here had no aim point and no
@@ -5296,7 +5367,7 @@ def render_tracer_video(
                 apex_at=apex_at,
             )
             if _tail:
-                smoothed_points.extend(_tail)
+                smoothed_points = _join_tail(smoothed_points, _tail)
                 # RECORDED, NOT JUST LOGGED. Every round of "the tracer
                 # still looks wrong" cost a produce, a screenshot and a
                 # guess, because the numbers that decided the shape --
