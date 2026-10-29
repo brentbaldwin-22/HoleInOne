@@ -932,6 +932,50 @@ class TeeAgent:
             if streamer is not None:
                 streamer.update_frame(frame)
 
+    def _audio_info_field(self) -> dict:
+        """The ears' own state, for the heartbeat. Never fatal.
+
+        FOUR DIFFERENT SILENCES LOOK IDENTICAL from the Cameras page,
+        and an operator who has just switched the dwell off needs to
+        tell them apart:
+
+          not configured  this rig was never asked to listen
+          switched off    the backend's own switch, so expected
+          SHADOW          deciding and deliberately not cutting
+          unhealthy       segments stalled, or a noise floor at zero,
+                          which is a camera whose Audio in got
+                          unchecked streaming perfect digital silence
+
+        `heard` / `confirmed` / `cuts` are the running counts, and they
+        are what says the thing is alive: a rig hearing strikes and
+        confirming none is a gate set too high, which is a different
+        problem from not hearing anything at all.
+        """
+        try:
+            t = self._audio_trigger
+            info = {
+                "configured": bool(self._audio_capable),
+                # None means the backend has not said yet.
+                "wanted": self._audio_wanted,
+                "running": t is not None,
+            }
+            if t is not None:
+                info.update({
+                    "shadow": bool(t.shadow),
+                    "healthy": bool(t.healthy()),
+                    "floor": round(
+                        float(getattr(t.listener, "median", 0.0) or 0.0), 6),
+                    "gate": round(
+                        float(getattr(t.listener, "min_peak_ratio", 0.0)), 1),
+                    "heard": int(t.heard),
+                    "confirmed": int(t.confirmed),
+                    "cuts": int(t.cut_count),
+                })
+            return {"audio_info": json.dumps(info)[:1000]}
+        except Exception as exc:  # noqa: BLE001 - telemetry is never fatal
+            log.debug("audio info for the heartbeat failed: %s", exc)
+            return {}
+
     def _note_trigger_mechanisms(self, audio_on, dwell_on) -> None:
         """watch-status says which mechanisms are switched on.
 
@@ -1424,6 +1468,17 @@ class TeeAgent:
             # even when that link is too starved to hold an SSH session
             # -- which is the only time anyone wants it.
             out.update(link_info_fields())
+            # WHAT THE EARS ARE DOING, on every heartbeat.
+            #
+            # Until now the only record of this was the agent's own log,
+            # which means an SSH session -- and the one question an
+            # operator has after switching the dwell off is "are the ears
+            # actually cutting anything". Shadow mode in particular is
+            # invisible and silent BY DESIGN: it decides and does not
+            # cut, so a rig in shadow with the dwell switched off records
+            # nothing whatever and looks exactly like a rig with a dead
+            # microphone.
+            out.update(self._audio_info_field())
             return out or None
 
         hb = HeartbeatThread(

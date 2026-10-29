@@ -245,6 +245,70 @@ const TONE_CLASS = {
  * and a failing power chain all present as "uploads are slow". The
  * sentence says which one this is and what to do about it.
  */
+// WHAT THE EARS ARE DOING, in words, from what the rig last reported.
+//
+// FOUR DIFFERENT SILENCES LOOK IDENTICAL on this page, and the one
+// question an operator has after switching the dwell off is which of
+// them they are looking at:
+//
+//   not set up   this rig was never asked to listen
+//   off          the backend's own switch, so expected
+//   SHADOW       deciding and deliberately NOT cutting -- the DEFAULT
+//                in config.yaml, and the reason a rig can go
+//                completely quiet the moment the dwell is switched off
+//   deaf         segments stalled, or a noise floor of zero, which is
+//                a camera whose Audio in got unchecked streaming
+//                perfectly healthy digital silence
+//
+// `cutting` is the only state in which switching the dwell off leaves
+// anything recording, so it is the only one that reads green.
+function earsState(cam) {
+  const a = cam?.audio_info;
+  if (!a || typeof a !== "object") return null;
+  // A rig that has gone offline keeps its last answer, and a stale
+  // answer must not read as the current state.
+  const stale = cam.audio_info_at
+    && (Date.now() - new Date(cam.audio_info_at).getTime()) > 15 * 60 * 1000;
+  if (stale) {
+    return { tone: "", label: "ears: last known", why:
+      "This is the last thing the rig reported, over 15 minutes ago." };
+  }
+  if (!a.configured) {
+    return { tone: "warn", label: "ears: not set up", why:
+      "This rig has no audio trigger \u2014 audio_trigger.enabled is not "
+      + "set in its config.yaml, or its camera is not on rtsp. Switching "
+      + "the dwell off would leave nothing recording." };
+  }
+  if (!a.running) {
+    return { tone: "", label: "ears: off", why:
+      a.wanted === false
+        ? "The audio trigger is switched off for this camera."
+        : "Configured but not running \u2014 the ring would not start. The "
+          + "camera may be unreachable or at its RTSP session limit." };
+  }
+  if (!a.healthy) {
+    return { tone: "warn", label: "ears: deaf", why:
+      "The ring is running but hearing nothing \u2014 a noise floor of "
+      + `${a.floor ?? 0} means the camera's Audio in is probably `
+      + "unchecked. It streams perfect digital silence, which passes "
+      + "every liveness check that only counts files." };
+  }
+  if (a.shadow) {
+    return { tone: "warn", label: "ears: SHADOW", why:
+      "Deciding and deliberately NOT cutting \u2014 this is the default. "
+      + `It has heard ${a.heard ?? 0} strike(s), confirmed `
+      + `${a.confirmed ?? 0}, and cut none. Set audio_trigger.shadow: `
+      + "false in this rig's config.yaml to let it cut. With the dwell "
+      + "off, this camera records nothing at all." };
+  }
+  return { tone: "ok",
+    label: `ears: cutting (${a.cuts ?? 0})`,
+    why: `Live and hearing the course. Heard ${a.heard ?? 0}, confirmed `
+      + `${a.confirmed ?? 0}, cut ${a.cuts ?? 0}. Gate x${a.gate ?? "?"}, `
+      + `noise floor ${a.floor ?? 0}.` };
+}
+
+
 function LinkReadout({ link }) {
   const l = link || {};
   const dbm = (v, unit) => (v == null ? null : `${v} ${unit}`);
@@ -2593,6 +2657,35 @@ export default function AdminCameras() {
       ? "audioTriggerEnabled" : "dwellTriggerEnabled";
     const _now = mech === "audio"
       ? cam.audio_trigger_enabled : cam.dwell_trigger_enabled;
+    const _turningOff = _now !== false;
+    // DO NOT LET THE DWELL OFF ONTO EARS THAT ARE NOT CUTTING.
+    //
+    // `replaces_dwell` -- the automatic version of this -- only ever
+    // stands the dwell down for a trigger that is LIVE and
+    // demonstrably hearing the course, and refuses outright for one in
+    // shadow. The manual switch had no such check, so switching the
+    // dwell off on a rig whose audio trigger is in SHADOW (the default
+    // in config.yaml) silences the camera completely: the ears decide
+    // and never cut, the dwell no longer fires, and nothing records.
+    //
+    // Not blocked, because an operator may be mid-setup and know
+    // exactly what they are doing. But said plainly first, with the
+    // reason the rig itself reported.
+    if (mech === "dwell" && _turningOff) {
+      const _ears = earsState(cam);
+      if (!_ears || _ears.tone !== "ok") {
+        const _what = _ears
+          ? `${_ears.label} \u2014 ${_ears.why}`
+          : "This rig has not reported what its audio trigger is doing "
+            + "yet, so there is no way to tell whether it would cut "
+            + "anything.";
+        if (!window.confirm(
+          "Switch the dwell trigger OFF?\n\n" + _what
+          + "\n\nThe audio trigger is not known to be cutting swings, so "
+          + "this camera may record nothing at all. Capture still works.",
+        )) return;
+      }
+    }
     setBusy((b) => ({ ...b, [cam.id]: true }));
     try {
       await api.updateCamera(adminPassword, cam.id, { [_key]: _now === false });
@@ -2926,6 +3019,20 @@ export default function AdminCameras() {
                         : cam.dwell_trigger_enabled === false
                           ? "audio only"
                           : "dwell only"}
+                    </span>
+                  )}{" "}
+                  {/* AND WHETHER THE EARS ARE ACTUALLY CUTTING. Shown
+                      whenever the rig has reported, not only when
+                      something is switched off: "audio only" beside
+                      "ears: SHADOW" is the whole answer to why a camera
+                      went quiet, and it is no use only appearing after
+                      somebody has already been caught by it. */}
+                  {cam.assigned_role === "tee" && earsState(cam) && (
+                    <span
+                      className={`pill small ${earsState(cam).tone}`}
+                      title={earsState(cam).why}
+                    >
+                      {earsState(cam).label}
                     </span>
                   )}{" "}
                   {/* THE PI'S POWER VERDICT, shown whenever there is one —

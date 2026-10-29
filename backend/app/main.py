@@ -270,6 +270,11 @@ def _migrate() -> None:
         # above is whether any may. Both default TRUE and are backfilled
         # TRUE, so every camera already in the field behaves exactly as
         # it did until an operator turns one off on the Cameras page.
+        if "audio_info" not in cam_cols:
+            statements.append("ALTER TABLE cameras ADD COLUMN audio_info JSON")
+        if "audio_info_at" not in cam_cols:
+            statements.append(
+                "ALTER TABLE cameras ADD COLUMN audio_info_at TIMESTAMP")
         for _tc in ("audio_trigger_enabled", "dwell_trigger_enabled"):
             if _tc not in cam_cols:
                 statements.append(

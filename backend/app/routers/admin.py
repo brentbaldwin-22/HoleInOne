@@ -17509,6 +17509,12 @@ def _camera_to_dict(
         "dwell_trigger_enabled": (
             True if c.dwell_trigger_enabled is None
             else bool(c.dwell_trigger_enabled)),
+        # WHAT THE EARS ARE DOING, as the rig last reported. Carries its
+        # own timestamp because a stale answer from a rig that has since
+        # gone offline must not read as the current state.
+        "audio_info": c.audio_info,
+        "audio_info_at": (
+            c.audio_info_at.isoformat() if c.audio_info_at else None),
         "note": c.note,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "last_event_at": (

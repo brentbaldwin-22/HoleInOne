@@ -894,6 +894,11 @@ def heartbeat(
     lens_info: str | None = Form(None),
     throttled: str | None = Form(None),
     link_info: str | None = Form(None),
+    # WHAT THE AUDIO TRIGGER IS DOING -- configured, switched on,
+    # running, in SHADOW, and whether it can hear anything. See
+    # `_audio_info_field` in the tee agent for why the Cameras page
+    # needs it: four different silences look identical without it.
+    audio_info: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Cheap keepalive the Pi calls every ~60 s. Touches last_seen_at
@@ -1001,6 +1006,17 @@ def heartbeat(
         except (ValueError, TypeError) as exc:
             log.warning(
                 "cameras: camera %s sent unparseable link_info: %s",
+                cam.id, exc,
+            )
+    if audio_info:
+        try:
+            parsed = json.loads(audio_info)
+            if isinstance(parsed, dict):
+                cam.audio_info = parsed
+                cam.audio_info_at = _utcnow_naive()
+        except (ValueError, TypeError) as exc:
+            log.warning(
+                "cameras: camera %s sent unparseable audio_info: %s",
                 cam.id, exc,
             )
     # WHAT THE LENS SAID WHEN ASKED WHERE IT IS — which on this model is

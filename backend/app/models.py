@@ -586,6 +586,15 @@ class Camera(Base):
     link_info: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     link_info_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True)
+    # WHAT THE AUDIO TRIGGER IS DOING, as the tee agent last reported it.
+    # Whether it is configured, switched on, running, in SHADOW, and
+    # whether it can actually hear anything -- plus the running counts.
+    # Four different silences look identical from the Cameras page and
+    # this is what tells them apart; see `_audio_info_field` in the
+    # agent. Diagnostics, so nothing branches on it.
+    audio_info: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    audio_info_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # Soft toggle distinct from `enabled`: when False the camera stays
     # online (heartbeats + live-watch still work) but the backend
