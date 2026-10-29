@@ -9117,10 +9117,53 @@ function SwingCard({ n, ascent, view, clip, colors, findOnly }) {
               {" "}· but no continuation was drawn: {clip.tracer_aim.why}
             </span>
           )}
+          {/* HOW LONG THE ARC WAS GIVEN, AND WHO SAID SO. Aim and
+              duration are two different questions and only the first
+              was answered here. A tracer aimed correctly and timed in
+              two seconds flies to the right place far too fast, then
+              the clip cuts to the green with the ball still falling --
+              which reads as "the timing is off" with nothing on screen
+              to say why. These are the numbers that decide it. */}
+          {clip.tracer_aim.timing && (
+            <div className="tiny" style={{ marginTop: 2 }}>
+              {clip.tracer_aim.timing.target_frame != null ? (
+                <span className="muted">
+                  bridging f{clip.tracer_aim.timing.last_ascent_frame} →
+                  {" "}f{clip.tracer_aim.timing.target_frame} ·
+                  {" "}{clip.tracer_aim.timing.bridge_sec}s of arc · timed
+                  to {clip.tracer_aim.timing.timed_to} · offset
+                  {" "}{clip.tracer_aim.timing.delta_sec}s (
+                  <b style={{
+                    color: clip.tracer_aim.timing.delta_source
+                      === "assumed_zero" ? "#f59e0b" : "inherit",
+                  }}>
+                    {deltaSourceLabel(clip.tracer_aim.timing.delta_source)}
+                  </b>)
+                </span>
+              ) : (
+                <span style={{ color: "#f59e0b" }}>
+                  the arc timed ITSELF — {clip.tracer_aim.timing.why}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
+}
+
+
+// WHERE THE TEE→GREEN OFFSET CAME FROM, in words. An assumed zero is
+// not a number like the others -- it is "nobody knows", and it lands on
+// every green boundary in the clip and on the tracer's flight time. It
+// was spelled out in one place and shown as a raw enum in another.
+function deltaSourceLabel(src) {
+  if (src === "camera_event") return "measured from camera clocks";
+  if (src === "mirrored_stamps") return "measured from camera clocks (mirrored)";
+  if (src === "edit_metrics") return "saved offset";
+  if (src === "assumed_zero") return "ASSUMED 0 — no camera clocks";
+  return src || "unknown";
 }
 
 

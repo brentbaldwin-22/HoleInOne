@@ -13384,11 +13384,30 @@ def wizard_produce(
 
     _debugx_set("produce", upload_id, stage="Queued", done=0, total=0,
                 running=True, error=None)
+    # BY NAME, NOT BY POSITION. This was a ten-item tuple lined up
+    # against the job's signature, and the signature then gained
+    # `descent_first_frame` in the middle of it -- so `solo` became the
+    # descent's first frame, `swing_idx` became `solo`, the plotted
+    # `points` list became `swing_idx`, and `launch_frame` was dropped
+    # on the floor. Every Produce from the edit wizard and from
+    # click-to-plot was mis-wired from that commit until this one.
+    #
+    # Keywords cannot do that. A new parameter anywhere in the
+    # signature is then a default, which is what a default is for.
     _heavy_thread(
         run_wizard_produce_job,
-        args=(upload_id, (bx, by), impact_frame, hole_number,
-              landing_frame, landing_spot, solo, swing_idx,
-              points, launch_frame),
+        kwargs={
+            "upload_id": upload_id,
+            "ball_xy": (bx, by),
+            "impact_frame": impact_frame,
+            "hole_number": hole_number,
+            "landing_frame": landing_frame,
+            "landing_spot": landing_spot,
+            "solo": solo,
+            "swing_idx": swing_idx,
+            "points": points,
+            "launch_frame": launch_frame,
+        },
         name=f"wizard-produce-{upload_id}",
     )
     log.info(
@@ -27399,6 +27418,28 @@ D3_LANDING_LEAD_SEC = 0.75   # green starts this far before the touchdown
 # a mis-converted landing frame from being drawn as a flight.
 D3_MIN_FLIGHT_SEC = 1.5
 D3_MAX_FLIGHT_SEC = 11.0
+# THE SHORTEST PREDICTIVE HALF WORTH DRAWING, in seconds.
+#
+# This exists because the band above was calibrated against the
+# LANDING and the tracer no longer aims at one: it is timed to the
+# first frame of the descent, which is earlier by however much of the
+# fall the green camera watched -- a second or two on a shot that
+# comes down inside the frame. A flight that read 2.6s to the landing
+# reads 1.1s to the descent's start, and 1.5s then refused a timing
+# that was perfectly good. The tail fell back to deriving its own
+# duration from the hand-off's horizontal speed, which on a shot going
+# nearly straight up the frame comes out around two seconds -- the
+# "arc finishes in a couple of seconds and then cuts to the green"
+# that upload 1084 has shown all along.
+#
+# What actually has to hold is that there is a span left to draw. The
+# predictive half starts at the last frame of the ascent, so below
+# about a third of a second there are fewer than a dozen frames
+# between the hand-off and the target, and forcing a curve through
+# them is the hairpin the band was put there to prevent. Measured
+# against the whole flight, the ceiling above still catches a clock
+# that is wrong the other way.
+D3_MIN_BRIDGE_SEC = 0.35
 D3_GREEN_TAIL_SEC = 1.5
 D3_GREEN_SEC = 6.0
 # Floor for an operator-trimmed green side. Below about a second the cut
@@ -28088,6 +28129,37 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     "operator's plotted comet — f%d, %.2fs green-clock",
                     i, int(_last["frame"]), landing["sec"],
                 )
+            # THE FIRST FRAME OF THE DESCENT, OFF THE CHAIN ITSELF.
+            #
+            # The tracer's predictive half bridges the LAST frame of the
+            # ascent to the FIRST frame of the descent -- two
+            # detections. Only one caller (`_ascent_run`) hands that
+            # first frame over as an argument; the ball scan, Debug3 and
+            # the edit wizard all pass a landing and nothing else, so in
+            # three of the four paths the tracer went on timing itself
+            # to the landing -- which is where the fall was judged to
+            # have flattened out, and moves with the bounce, the roll
+            # and wherever the walk back stopped.
+            #
+            # Every one of those paths saves the descent it found as
+            # `green_track` before this runs, and the first point of
+            # that chain IS the frame the green camera picked the ball
+            # up falling. So it is read back here, once, rather than
+            # threaded through four call sites -- and a hand-plotted
+            # comet gets the same treatment as a found one.
+            if (landing and landing.get("first_sec") is None
+                    and _gfps_l > 0):
+                _gt_first = _saved_green_track(row, _slot, _gfps_l) or []
+                if _gt_first:
+                    _f_first = min(int(q["frame"]) for q in _gt_first)
+                    landing = dict(landing)
+                    landing["first_sec"] = float(_f_first) / _gfps_l
+                    log.info(
+                        "d3 produce: swing %s taking the descent's first "
+                        "frame from the saved chain — green f%d, %.2fs "
+                        "green-clock", i, _f_first, landing["first_sec"],
+                    )
+
             # HOW LONG TO HOLD THE TEE SHOT ON SCREEN.
             #
             # The landing second when there is one; the descent's first
@@ -28138,8 +28210,16 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                 # tracer was cut off mid-flight. The landing is the
                 # moment the green half exists to show; it starts a
                 # lead-in before THAT and not before anything else.
-                _g_start = max(
-                    0.0, float(landing["sec"]) - D3_LANDING_LEAD_SEC)
+                # THE SAME CLOCK THE TEE WAS HELD TO, which is the
+                # landing when there is one and the descent's first
+                # frame when there is not. This read `landing["sec"]`
+                # while `_land_tee` above was already willing to come
+                # from either, so a swing with a descent start and no
+                # landing second got here with _land_tee set and
+                # float(None) on the next line -- and the swing died
+                # inside the try with "unsupported operand" against a
+                # clip that had rendered perfectly.
+                _g_start = max(0.0, float(_hold_sec) - D3_LANDING_LEAD_SEC)
             # BRACKET THE COMET. Where the descent is drawn is known
             # exactly when the operator plotted it, so the green half
             # has no excuse for cutting across it. Measured on a real
@@ -28399,6 +28479,47 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
             if _t_sec is None:
                 _t_sec = (landing or {}).get("sec")
                 _t_src = "the landing (no descent chain start recorded)"
+
+            # EVERY NUMBER THE TIMING RESTS ON, IN ONE PLACE, and on the
+            # produce report rather than only in a server log.
+            #
+            # "The arc finishes in two seconds and then cuts to the
+            # green" has four possible causes: no descent was matched to
+            # the swing, a descent was matched but its first frame never
+            # reached here, the tee->green offset was ASSUMED ZERO rather
+            # than measured, or the flight it worked out was refused by
+            # the band below. All four end the same way -- the tail
+            # derives its own duration from the hand-off's horizontal
+            # speed, which on a shot that is nearly straight up the
+            # frame comes out around a couple of seconds -- and they are
+            # indistinguishable on screen. Three rounds of "the timing
+            # is still off" were spent not knowing which of them it was.
+            _last_asc_f = max(int(p["frame"]) for p in pts)
+            _timing = {
+                "launch_frame": int(launch_f),
+                "last_ascent_frame": _last_asc_f,
+                "descent_first_sec": (
+                    round(float((landing or {})["first_sec"]), 3)
+                    if (landing or {}).get("first_sec") is not None
+                    else None),
+                "landing_sec": (
+                    round(float((landing or {})["sec"]), 3)
+                    if (landing or {}).get("sec") is not None else None),
+                "delta_sec": (round(float(delta), 3)
+                              if delta is not None else None),
+                "delta_source": delta_src,
+                "timed_to": _t_src if _t_sec is not None else None,
+                "target_frame": None,
+                "flight_sec": None,
+                "bridge_sec": None,
+                "why": None,
+            }
+            if _t_sec is None:
+                _timing["why"] = (
+                    "no descent frame reached the renderer for this swing, "
+                    "so there is nothing to time the arc to — the tail "
+                    "derives its own duration from the hand-off's "
+                    "horizontal speed, which is why it can finish early")
             if _t_sec is not None and fps:
                 try:
                     _tf = (float(_t_sec) + float(delta)) * float(fps)
@@ -28409,6 +28530,24 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                             "(%.2fs green-clock + %.2fs delta -> tee f%d)",
                             i, _t_src, float(_t_sec), float(delta),
                             _target_frame)
+                    else:
+                        # BEFORE THE VIDEO STARTED. Only one thing does
+                        # this: an offset that is wrong, and the only
+                        # offset that is wrong by tens of seconds is one
+                        # that was never measured. Said here, with the
+                        # source named, because the alternative is an
+                        # arc that quietly times itself instead.
+                        _timing["why"] = (
+                            f"{_t_src} works out to tee frame {_tf:.0f}, "
+                            "which is before this video starts — the "
+                            f"tee→green offset ({delta_src}) cannot be "
+                            "right, so the two cameras' clocks could not "
+                            "be joined")
+                        log.warning(
+                            "d3 produce: swing %s timing to %s gives tee "
+                            "f%.0f, before the start — delta %.2fs from %s "
+                            "is wrong", i, _t_src, _tf, float(delta or 0.0),
+                            delta_src)
                 except (TypeError, ValueError):
                     _target_frame = None
             # A GOLF SHOT IS NOT IN THE AIR FOR FOURTEEN SECONDS.
@@ -28426,31 +28565,69 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
             # 14s, and a tracer that hooks over and comes back down.
             #
             # So the duration is checked before it is used, against what
-            # a golf ball actually does. Outside the band the number is
-            # not believed and no landing frame is passed on -- the tail
+            # a golf ball actually does. Refused, the number is not
+            # believed and no landing frame is passed on -- the tail
             # then derives its own duration from the flight it can
-            # measure, which is the honest fallback, and the log says
-            # the timing was refused rather than leaving a loop to be
-            # explained.
+            # measure, which is the honest fallback, and both the log
+            # and the produce report say the timing was refused rather
+            # than leaving a two-second arc to be explained.
             if _target_frame is not None and fps:
                 _flight = (int(_target_frame) - int(launch_f)) / float(fps)
-                if not (D3_MIN_FLIGHT_SEC <= _flight <= D3_MAX_FLIGHT_SEC):
+                _bridge = (int(_target_frame) - _last_asc_f) / float(fps)
+                _timing["flight_sec"] = round(_flight, 2)
+                _timing["bridge_sec"] = round(_bridge, 2)
+                # TWO QUESTIONS, ASKED SEPARATELY, because they are
+                # about different spans. "Is this a golf shot's airtime"
+                # is about the whole flight from launch; "is there
+                # anything to draw" is about the part the tail has to
+                # fill, from the last frame of the ascent. One band on
+                # the first could only answer both while the target WAS
+                # the landing.
+                _why_refuse = None
+                if _bridge < D3_MIN_BRIDGE_SEC:
+                    _why_refuse = (
+                        f"only {_bridge:.2f}s between the last frame of the "
+                        f"ascent (f{_last_asc_f}) and the target "
+                        f"(f{_target_frame}) — there is nothing for the "
+                        "predictive half to draw, so forcing a curve "
+                        "through it would hairpin")
+                elif _flight > D3_MAX_FLIGHT_SEC:
+                    _why_refuse = (
+                        f"the two clocks make this a {_flight:.1f}s flight "
+                        f"(launch f{int(launch_f)} → tee f{_target_frame}), "
+                        f"and a tee shot is in the air at most "
+                        f"{D3_MAX_FLIGHT_SEC:.1f}s — the tee→green offset "
+                        f"({delta_src}) is what is wrong, so the arc had "
+                        "to time itself")
+                if _why_refuse:
+                    # THE GREEN SECOND, WHICHEVER ONE WAS USED. This
+                    # printed `landing["sec"]` unconditionally, and the
+                    # whole point of timing to the descent's first frame
+                    # is that a swing can have that and no landing
+                    # second at all -- so on exactly the swing this
+                    # warning exists for, the warning itself raised
+                    # TypeError on float(None) and took the clip with
+                    # it.
                     log.warning(
-                        "d3 produce: swing %s REFUSING a %.1fs flight "
-                        "(impact f%d -> landing f%d at %.0ffps, green "
-                        "%.2fs + delta %.2fs from %s). A tee shot is in "
-                        "the air %.1f-%.1fs; this timing is wrong and "
-                        "drawing to it would loop the tracer.",
-                        i, _flight, int(launch_f), int(_target_frame), fps,
-                        float(landing["sec"]), float(delta), delta_src,
-                        D3_MIN_FLIGHT_SEC, D3_MAX_FLIGHT_SEC,
+                        "d3 produce: swing %s REFUSING the timing — %s "
+                        "(launch f%d, last ascent f%d, target f%d at "
+                        "%.0ffps; %s at %.2fs green-clock + delta %.2fs "
+                        "from %s). The tail will derive its own duration.",
+                        i, _why_refuse, int(launch_f), _last_asc_f,
+                        int(_target_frame), fps, _t_src, float(_t_sec),
+                        float(delta or 0.0), delta_src,
                     )
+                    _timing["why"] = _why_refuse
                     _target_frame = None
             if _target_frame is not None:
+                _timing["target_frame"] = int(_target_frame)
                 log.info(
-                    "d3 produce: swing %s lands at tee frame %d "
-                    "(green %.2fs + delta %.2fs)",
-                    i, _target_frame, float(landing["sec"]), float(delta),
+                    "d3 produce: swing %s bridges the last ascent frame "
+                    "f%d to tee f%d — %.2fs of predictive arc (%s at "
+                    "%.2fs green-clock + delta %.2fs from %s)",
+                    i, _last_asc_f, _target_frame,
+                    (int(_target_frame) - _last_asc_f) / float(fps or 30.0),
+                    _t_src, float(_t_sec), float(delta or 0.0), delta_src,
                 )
 
             # THE ARC THE OPERATOR SHAPED, AND WHERE THEY AIMED IT.
@@ -28487,6 +28664,19 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                             "d3 produce: swing %s timing its tail from the "
                             "operator's %.1fs flight -> tee frame %d",
                             i, float(_fs), _target_frame)
+                        # THE REPORT SAYS WHAT WAS ACTUALLY USED. Set
+                        # above from the cameras or left None; a typed
+                        # flight time overrides both, and a timing
+                        # record that still showed "no frame to time
+                        # to" would be reporting the wrong reason for a
+                        # tracer that is now timed fine.
+                        _timing["timed_to"] = "the operator's flight time"
+                        _timing["target_frame"] = int(_target_frame)
+                        _timing["flight_sec"] = round(float(_fs), 2)
+                        _timing["bridge_sec"] = round(
+                            (int(_target_frame) - _last_asc_f)
+                            / float(fps or 30.0), 2)
+                        _timing["why"] = None
                     _end = _em_s.get("tracer_end")
                     if _end:
                         _target_xy = (float(_end[0]), float(_end[1]))
@@ -28735,10 +28925,18 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
             # down. The plate has to be timed against the composite, not
             # against either source.
             _rest_at = None
-            if landing and landing.get("sec") is not None and green_seg:
+            # READ ONCE, CHECKED ONCE. The landing second is the only
+            # clock in this function that can legitimately be absent --
+            # the tracer times to the descent's first frame instead --
+            # so it is never dereferenced inline. `tools/
+            # descent_first_frame_test.py` enforces that, because the
+            # two places that did it crashed on exactly the swing the
+            # change was for.
+            _land_sec_g = (landing or {}).get("sec")
+            if _land_sec_g is not None and green_seg:
                 try:
                     _rest_at = (float(tee_video_dur)
-                                + max(0.0, float(landing["sec"]) - _g_start))
+                                + max(0.0, float(_land_sec_g) - _g_start))
                 except (TypeError, ValueError):
                     _rest_at = None
             _dist_why = _apply_distance_plate(db, row, clip, final, _slot,
@@ -28802,6 +29000,10 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                                if _target_xy is not None else None),
                     "why": (_aim_why
                             or ((_rv or {}).get("tail") or {}).get("why")),
+                    # WHERE the tracer was aimed is half the question;
+                    # HOW LONG it was given to get there is the other
+                    # half, and it was nowhere on the record.
+                    "timing": _timing,
                 },
                 # The ball's own path on the green camera, when one was
                 # found. Kept so the wizard can draw it without
@@ -28859,6 +29061,9 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                             or ((_rv or {}).get("tail") or {}).get("why")),
                     "kind": ((_rv or {}).get("tail") or {}).get("kind"),
                     "frames": ((_rv or {}).get("tail") or {}).get("frames"),
+                    # See the swing record above: the duration the arc
+                    # was given, and where that number came from.
+                    "timing": _timing,
                 },
             })
             log.info(
