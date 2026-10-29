@@ -3559,6 +3559,34 @@ def _vertical_time(cy, y_a, ty):
     return (-b + math.sqrt(disc)) / (2.0 * a)
 
 
+# HOW BIG THE CONTINUATION'S ARC IS, as a share of how far the ball
+# would travel if it kept its measured speed for the whole flight.
+#
+# IT SETS THE HAND-OFF, which is what the eye reads as the tracer
+# "taking over". Measured on d3prod-1082: a tail with 140 frames to
+# cover a 464px arc averages 3.3px a frame against a hand-off of
+# 15.5, so the drawn ball decelerated fivefold the instant the model
+# took over. 0.35 was that. 0.60 makes the same flight a 671px arc at
+# 4.8px a frame, with the crest at y=99 instead of y=195 -- the ball
+# climbs most of the way out of the picture, which is where a struck
+# ball goes, and the turn happens near the top edge rather than in
+# open sky in the middle of the frame.
+#
+# IT DOES NOT BROADEN THE TURN ITSELF, and raising it hoping for that
+# is chasing the wrong number: the heading swing at the crest comes
+# from the launch and arrival directions being nearly opposite, and
+# goes UP with a longer arc (66 degrees a frame at 0.35, 73 at 0.60)
+# because the head is moving faster through it. What it buys is the
+# hand-off and the height.
+ARC_REACH_FRAC = 0.60
+# Caps, as shares of the frame's longer side. The reach above is
+# allowed to want more than the picture can hold; these are what
+# actually bound the drawing. At 0.9/0.5 the old factor saturated at
+# 0.53, so raising it past that did nothing at all.
+ARC_SPAN_CAP_FRAC = 1.40
+ARC_HANDLE_CAP_FRAC = 0.70
+
+
 def _arc_tail(pts, target_xy, fps, width, height, land_frame=None):
     """A smooth arc from the last tracked point to the landing.
 
@@ -3665,9 +3693,9 @@ def _arc_tail(pts, target_xy, fps, width, height, land_frame=None):
     # the ball would actually travel -- that is what lets the arc go
     # up and come back when the landing sits close to where the ball
     # was last seen.
-    _reach = 0.35 * _v * S
-    _span = max(L, min(_reach, 0.9 * max(width, height)))
-    d1 = max(12.0, min(0.45 * _span, 0.5 * max(width, height)))
+    _reach = ARC_REACH_FRAC * _v * S
+    _span = max(L, min(_reach, ARC_SPAN_CAP_FRAC * max(width, height)))
+    d1 = max(12.0, min(0.45 * _span, ARC_HANDLE_CAP_FRAC * max(width, height)))
     d2 = max(12.0, min(0.30 * L + 0.55 * d1, 0.45 * max(width, height)))
 
     def _ctrl(_d1, _d2):

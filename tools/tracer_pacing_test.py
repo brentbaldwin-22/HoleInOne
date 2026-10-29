@@ -115,6 +115,39 @@ check("...and it reaches out past the launch point",
       min(p[1] for p in T) < A[0] - 40, True)
 
 print()
+print("THE REACH FACTOR SETS THE HAND-OFF, and is a named number:")
+import backend.app.services.ai_tracer as _T  # noqa: E402
+check("reach is named", hasattr(_T, "ARC_REACH_FRAC"), True)
+check("...and the caps that bound it",
+      (hasattr(_T, "ARC_SPAN_CAP_FRAC"), hasattr(_T, "ARC_HANDLE_CAP_FRAC")),
+      (True, True))
+# THE OLD CAPS SATURATED THE FACTOR AT ABOUT 0.53, so raising the
+# reach past that did nothing at all -- which is the kind of knob that
+# gets turned, observed to do nothing, and turned further.
+_o = (_T.ARC_REACH_FRAC, _T.ARC_SPAN_CAP_FRAC, _T.ARC_HANDLE_CAP_FRAC)
+
+
+def _arc_len(reach, spancap, hcap):
+    _T.ARC_REACH_FRAC, _T.ARC_SPAN_CAP_FRAC, _T.ARC_HANDLE_CAP_FRAC = (
+        reach, spancap, hcap)
+    try:
+        _t = tail()
+        return sum(steps(_t))
+    finally:
+        (_T.ARC_REACH_FRAC, _T.ARC_SPAN_CAP_FRAC,
+         _T.ARC_HANDLE_CAP_FRAC) = _o
+
+
+check("the old caps saturated past ~0.53",
+      round(_arc_len(0.7, 0.9, 0.5)) == round(_arc_len(1.2, 0.9, 0.5)), True)
+check("...and the new ones do not",
+      _arc_len(0.9, 1.4, 0.7) > _arc_len(0.6, 1.4, 0.7) + 20, True)
+# A BIGGER ARC IS A FASTER HAND-OFF. That is what the factor buys,
+# and the only thing it buys -- see the note on the constant.
+check("a bigger reach leaves faster",
+      _arc_len(0.6, 1.4, 0.7) > _arc_len(0.35, 0.9, 0.5) * 1.4, True)
+
+print()
 print("a shot with no clock still draws:")
 check("no land_frame", _arc_tail(PTS, TARGET, FPS, W, H) is not None, True)
 print("and the refusals still refuse:")
