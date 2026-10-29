@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The same composite must get the same verdict, on both paths.
+"""What the swing judge is asked, and what must not become a refusal.
 
 TWO PATHS REACH THE SWING JUDGE. The rig asks through
 /verify-swing, deciding whether to spend ~7 MB of a cellular link on a
@@ -12,16 +12,22 @@ the rig SWING at 4.83s, Test Cut not-a-swing at MEDIUM confidence at
 4.83s. The two composites were put side by side and are the same
 picture -- same framing, same heat, same crop.
 
-So nothing was left to differ but the sampling, which was unset and
-therefore 1.0. A borderline composite was a coin weighted by its own
+So nothing was left to differ but the sampling, which is unset and
+therefore 1.0. A borderline composite is a coin weighted by its own
 ambiguity. From the outside that reads as "the rig judges easier"; it
 is really "the judge was asked twice".
 
-This pins it and keeps it pinned. The verdict the rig acts on has to
-be the verdict Test Cut will show for the same image, or a
-disagreement between them means nothing and cannot be investigated.
+PINNING IT WAS TRIED AND IS NOT AVAILABLE. `temperature=0` is
+rejected by this model -- 400, "`temperature` is deprecated for this
+model" -- and because a judge that 400s answers null, and the rig is
+required to upload on null, it did not steady the verdict: it stopped
+there being one. Every clip went up unjudged until it was reverted.
 
-    python3 tools/judge_determinism_test.py
+So this guards the two things that are actually true of the call: no
+sampling parameter is sent, and a judge that cannot answer stays
+"could not tell" rather than hardening into a refusal.
+
+    python3 tools/judge_call_test.py
 """
 import sys
 import types
@@ -91,8 +97,18 @@ with tempfile.TemporaryDirectory() as _td:
     print("the call the judge actually makes:")
     out, kw = ask('{"is_swing": true, "confidence": "high", '
                   '"reason": "club plume above the head"}', TMP)
-    check("it is pinned to deterministic sampling",
-          kw.get("temperature"), 0)
+    # NO SAMPLING PARAMETERS. `temperature=0` was added here to make
+    # the rig and Test Cut agree and the model rejected it outright:
+    # 400 invalid_request_error, "`temperature` is deprecated for this
+    # model". A judge that 400s returns is_swing null, the rig is
+    # required to upload on null, and so EVERY clip went up unjudged --
+    # strictly worse than the disagreement it was meant to fix.
+    #
+    # Asserted so it cannot come back by reflex. If a future model
+    # takes a determinism control again it will not be called this.
+    for _dead in ("temperature", "top_p", "top_k"):
+        check("no %s is sent — the model rejects it" % _dead,
+              _dead in kw, False)
     check("...and still asks the swing-heat prompt",
           kw["system"][0]["text"] is ai_tracer._JUDGE_SWING_HEAT_PROMPT, True)
     check("...with the image attached",

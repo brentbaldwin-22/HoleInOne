@@ -8562,27 +8562,28 @@ def judge_swing_heat_image(image_path, model: str | None = None) -> dict:
         resp = client.messages.create(
             model=_resolve_frame_picker_model(model),
             max_tokens=150,
-            # THE SAME PICTURE MUST GET THE SAME ANSWER.
+            # NO SAMPLING CONTROL HERE, AND IT IS NOT AN OVERSIGHT.
             #
-            # Two paths reach this judge: the rig, through
-            # /verify-swing, deciding whether to spend ~7 MB of a
-            # cellular link; and Test Cut, re-running it from the admin
-            # page. Same function, same prompt, same model, and on
-            # upload 1203 they returned opposite verdicts for the same
-            # instant -- the rig SWING, Test Cut not-a-swing at MEDIUM
-            # confidence. The two composites were put side by side and
-            # are the same picture.
+            # The rig and Test Cut reach this same function with the
+            # same prompt, the same model and -- verified on upload
+            # 1203, composites side by side -- the same picture, and
+            # still returned opposite verdicts. The only thing left
+            # that could differ was the sampling, so this call was
+            # pinned with `temperature=0`.
             #
-            # Nothing was left to differ but the sampling. Unset, this
-            # defaults to 1.0, so a borderline composite is a coin
-            # weighted by its own ambiguity -- which reads from the
-            # outside as "the rig judges easier" and is really "the
-            # judge was asked twice".
+            # The model rejects it: 400 invalid_request_error,
+            # "`temperature` is deprecated for this model". And a
+            # judge that 400s answers `is_swing: null`, which the rig
+            # is required to treat as "could not tell" and upload on --
+            # so the pin did not make the verdict steady, it stopped
+            # there being a verdict at all. Every clip went up
+            # unjudged.
             #
-            # Pinned, the rig's verdict IS the verdict Test Cut will
-            # show for the same image, which is the only basis on which
-            # a disagreement means anything at all.
-            temperature=0,
+            # Leave it out. The judge samples, two calls on a borderline
+            # composite can disagree, and that is a fact about this
+            # judge rather than a bug in either caller. The lever for
+            # a composite the judge keeps getting wrong is the prompt
+            # or the composite, not the sampling.
             system=[{
                 "type": "text",
                 "text": _JUDGE_SWING_HEAT_PROMPT,
