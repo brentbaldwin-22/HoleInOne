@@ -9131,7 +9131,10 @@ function SwingCard({ n, ascent, view, clip, colors, findOnly }) {
                   bridging f{clip.tracer_aim.timing.last_ascent_frame} →
                   {" "}f{clip.tracer_aim.timing.target_frame} ·
                   {" "}{clip.tracer_aim.timing.bridge_sec}s of arc · timed
-                  to {clip.tracer_aim.timing.timed_to} · offset
+                  to {clip.tracer_aim.timing.timed_to}
+                  {clip.tracer_aim.timing.descent_first_sec != null
+                    ? ` at ${clip.tracer_aim.timing.descent_first_sec}s`
+                    : ""} · offset
                   {" "}{clip.tracer_aim.timing.delta_sec}s (
                   <b style={{
                     color: clip.tracer_aim.timing.delta_source

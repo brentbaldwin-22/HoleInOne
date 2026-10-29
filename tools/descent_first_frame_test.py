@@ -138,6 +138,65 @@ check("neither: nothing to time to", timed_to({}), (None, None))
 check("no landing at all: nothing to time to", timed_to(None), (None, None))
 
 print()
+print("a hand-plotted descent with no landing matched to it (1084):")
+
+
+def anchor(landing, chain_first_sec):
+    """What the arc is timed to, as the renderer picks it.
+
+    The descent's first frame, from the caller when it passed one and
+    off the saved chain when it did not -- and it is NOT reached
+    through `landing`, because on this swing there is no landing at
+    all. That is the whole of 1084: the descent is hand-plotted, the
+    ascent produce declines a saved chain AS A LANDING, and so the
+    swing arrived at the tracer with nothing to time the arc to.
+    """
+    _d = (landing or {}).get("first_sec")
+    if _d is None:
+        _d = chain_first_sec
+    if _d is not None:
+        return "the descent's first frame", _d
+    _l = (landing or {}).get("sec")
+    return ("the landing" if _l is not None else None), _l
+
+
+# 1084's own numbers, off the produce log: green at 59.94fps, the
+# operator's comet plotted f330..f436, no landing matched, offset
+# +2.9785s measured from the camera clocks.
+_G_FPS = 59.94
+_C_FIRST, _C_LAST = 330, 436
+_first_sec = round(_C_FIRST / _G_FPS, 2)
+_last_sec = round(_C_LAST / _G_FPS, 2)
+
+check("the comet's first frame is when the ball arrives", _first_sec, 5.51)
+check("its last frame is where the roll-out stopped", _last_sec, 7.27)
+check("no landing, but the chain still times the arc",
+      anchor(None, _first_sec), ("the descent's first frame", 5.51))
+
+# WHY A LANDING IS NOT SYNTHESISED FROM THAT CHAIN. Its last point is
+# where the ball came to REST -- the operator followed the roll-out --
+# and the green half is anchored a lead-in before the landing. Taking
+# one from the chain's end would start the green AFTER the arrival it
+# exists to show, which is the half that is currently correct.
+D3_LANDING_LEAD_SEC = 0.75
+check("a landing taken from the chain's END starts the green too late",
+      round(_last_sec - D3_LANDING_LEAD_SEC, 2) > _first_sec, True)
+check("...by about a second", round(
+    (_last_sec - D3_LANDING_LEAD_SEC) - _first_sec, 2), 1.01)
+check("anchored on the first frame it is a lead-in early",
+      round(_first_sec - D3_LANDING_LEAD_SEC, 2), 4.76)
+
+# A REAL MATCHED DESCENT IS UNTOUCHED. 1082 has one, so the caller
+# passes the first frame and nothing below it is consulted.
+check("a caller's own first frame wins over the chain",
+      anchor({"first_sec": 4.0, "sec": 6.2}, 5.51),
+      ("the descent's first frame", 4.0))
+check("with neither, the landing is still the fallback",
+      anchor({"sec": 6.2}, None), ("the landing", 6.2))
+check("with nothing at all, there is nothing to time to",
+      anchor(None, None), (None, None))
+
+print()
 print("what the timing is refused for:")
 
 

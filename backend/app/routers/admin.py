@@ -28129,36 +28129,76 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     "operator's plotted comet — f%d, %.2fs green-clock",
                     i, int(_last["frame"]), landing["sec"],
                 )
-            # THE FIRST FRAME OF THE DESCENT, OFF THE CHAIN ITSELF.
+            # THE FIRST FRAME OF THE DESCENT, ON ITS OWN, WITHOUT A
+            # LANDING.
             #
             # The tracer's predictive half bridges the LAST frame of the
             # ascent to the FIRST frame of the descent -- two
-            # detections. Only one caller (`_ascent_run`) hands that
-            # first frame over as an argument; the ball scan, Debug3 and
-            # the edit wizard all pass a landing and nothing else, so in
-            # three of the four paths the tracer went on timing itself
-            # to the landing -- which is where the fall was judged to
-            # have flattened out, and moves with the bounce, the roll
-            # and wherever the walk back stopped.
+            # detections, neither of which is the landing. Only one
+            # caller (`_ascent_run`) hands that first frame over as an
+            # argument; the ball scan, Debug3 and the edit wizard pass a
+            # landing and nothing else, so in three of the four paths
+            # the tracer went on timing itself to the landing -- which
+            # is where the fall was judged to have flattened out, and
+            # moves with the bounce, the roll and wherever the walk back
+            # stopped.
             #
-            # Every one of those paths saves the descent it found as
-            # `green_track` before this runs, and the first point of
-            # that chain IS the frame the green camera picked the ball
-            # up falling. So it is read back here, once, rather than
-            # threaded through four call sites -- and a hand-plotted
-            # comet gets the same treatment as a found one.
-            if (landing and landing.get("first_sec") is None
-                    and _gfps_l > 0):
+            # IT IS KEPT SEPARATE FROM `landing` ON PURPOSE, and that is
+            # the whole of upload 1084. Its descent is HAND-PLOTTED, the
+            # ascent produce declines a saved chain as a landing (right:
+            # on an automatic run a saved chain is usually a previous
+            # run's output), and so the swing reached the tracer with no
+            # landing, no landing frame, and nothing at all to time the
+            # arc to. The tail then derived its own duration from the
+            # hand-off's horizontal speed -- about two seconds on a
+            # shot going nearly straight up the frame.
+            #
+            # Synthesising a landing from that chain instead would have
+            # fixed the timing and broken the cut: `landing["sec"]`
+            # would be the LAST plotted point, which on a comet followed
+            # through the roll-out is where the ball came to REST, and
+            # the green half is anchored a lead-in before it. Measured
+            # on 1084: the ball appears on the green at 5.51s and rolls
+            # to 7.28s, so a landing taken from the chain's end would
+            # have started the green half 1.0s after the arrival it
+            # exists to show.
+            #
+            # So this supplies the one thing that was missing. The tee
+            # hold, the cutover, the aim point and the comet are all
+            # left exactly as they were.
+            #
+            # THE STALE-CHAIN OBJECTION DOES NOT APPLY HERE. It is why
+            # `saved_track_as_landing` exists, and what it protects is
+            # the tee hold -- a resurrected landing holds the tee open
+            # for up to D3_MAX_EXTRA_TEE_SEC for a ball that is not
+            # coming. Nothing below extends the hold from this. And the
+            # comet is drawn from this same chain whatever happens, so a
+            # tracer timed to it can never be more wrong than the
+            # picture it is drawn beside already is.
+            _descent_first_sec = (landing or {}).get("first_sec")
+            _descent_first_from = "the caller"
+            if _descent_first_sec is None and _gfps_l > 0:
                 _gt_first = _saved_green_track(row, _slot, _gfps_l) or []
                 if _gt_first:
                     _f_first = min(int(q["frame"]) for q in _gt_first)
-                    landing = dict(landing)
-                    landing["first_sec"] = float(_f_first) / _gfps_l
+                    _descent_first_sec = float(_f_first) / _gfps_l
+                    _descent_first_from = "the saved chain"
                     log.info(
                         "d3 produce: swing %s taking the descent's first "
                         "frame from the saved chain — green f%d, %.2fs "
-                        "green-clock", i, _f_first, landing["first_sec"],
+                        "green-clock (no landing was matched to this "
+                        "swing, so this is the only instant the two "
+                        "cameras can be joined on)",
+                        i, _f_first, _descent_first_sec,
                     )
+            # The landing dict keeps its own copy when it has one to
+            # keep, because `_hold_sec` below reads it as the fallback
+            # for a swing whose landing frame never arrived. That is
+            # unchanged behaviour; the line above is what is new.
+            if landing and landing.get("first_sec") is None \
+                    and _descent_first_sec is not None:
+                landing = dict(landing)
+                landing["first_sec"] = _descent_first_sec
 
             # HOW LONG TO HOLD THE TEE SHOT ON SCREEN.
             #
@@ -28474,8 +28514,8 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
             # The landing second is still the fallback, and still what
             # the green cut is held open to -- that one really does
             # need to know when the ball came down.
-            _t_sec = (landing or {}).get("first_sec")
-            _t_src = "the descent's first frame"
+            _t_sec = _descent_first_sec
+            _t_src = f"the descent's first frame (from {_descent_first_from})"
             if _t_sec is None:
                 _t_sec = (landing or {}).get("sec")
                 _t_src = "the landing (no descent chain start recorded)"
@@ -28499,9 +28539,11 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                 "launch_frame": int(launch_f),
                 "last_ascent_frame": _last_asc_f,
                 "descent_first_sec": (
-                    round(float((landing or {})["first_sec"]), 3)
-                    if (landing or {}).get("first_sec") is not None
-                    else None),
+                    round(float(_descent_first_sec), 3)
+                    if _descent_first_sec is not None else None),
+                "descent_first_from": (_descent_first_from
+                                       if _descent_first_sec is not None
+                                       else None),
                 "landing_sec": (
                     round(float((landing or {})["sec"]), 3)
                     if (landing or {}).get("sec") is not None else None),
