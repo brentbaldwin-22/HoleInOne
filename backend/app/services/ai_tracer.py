@@ -4101,7 +4101,42 @@ _TAIL_BACK_SLACK_PX = 60.0
 #
 # The arc model does not have this failure: it is a cubic between two
 # known points, so its apex is bounded by the chord it spans.
-_APEX_MAX_ABOVE_FRAC = 0.6
+# ...BUT HEIGHT IS NOT WHAT WENT WRONG ON 826, AND IT WAS REFUSING
+# REAL SHOTS FOR IT.
+#
+# A ball hit off a tee at a 145-yard par 3 goes UP, out of the top of
+# the picture, and comes back down. The camera cannot see the middle
+# of that and does not need to: an apex above the frame is what a real
+# tee shot looks like from behind. At 0.6 of a frame this refused
+# every one of them, fell through to `_arc_tail` -- a cubic bounded by
+# the chord it spans, which is to say an arc bent to stay in shot --
+# and drew a line visibly averted from the chain it was continuing.
+# Reported as exactly that: "we don't need to avert the tracer away
+# from the actual chain so we can see the arc."
+#
+# What actually failed on 826 was that almost NONE of the tail was in
+# shot: 363 frames drawn, nearly all of them off-screen, so the line
+# went up and the clip ended before it came back. That is a visibility
+# problem, and it is measured directly below. The ceiling stays only
+# as a runaway bound -- an apex several frames up is a fit that has
+# stopped describing a golf ball.
+_APEX_MAX_ABOVE_FRAC = 2.5
+# AND THE TEST THAT ACTUALLY SEPARATES THEM: DOES IT COME BACK?
+#
+# "The tracer appeared to go straight up and never come back" is what
+# 826 was, in the words of the comment above, and coming back is a
+# thing that can be checked directly. A tee shot that leaves the top
+# of the picture and falls to the target ENDS in shot. One that does
+# not end in shot has not been drawn, whatever its apex was.
+#
+# Measured on fixtures built from both: a real 145-yard tee shot whose
+# apex sits a frame above the picture has about 16% of its tail in
+# view, and 826 has 2%. So a fraction alone separates them only by a
+# hair, and a quarter -- the first number tried here -- refuses the
+# real one. The floor is kept as a backstop for a tail that happens to
+# land its last point in frame after spending the whole flight
+# outside, and set well below what a tall shot costs.
+_TAIL_MIN_VISIBLE_FRAC = 0.05
 
 
 def _apex_above_frame_px(tail) -> float:
@@ -4109,6 +4144,60 @@ def _apex_above_frame_px(tail) -> float:
     if not tail:
         return 0.0
     return max(0.0, -min(float(p[2]) for p in tail))
+
+
+def _tail_visible_frac(tail, width, height) -> float:
+    """What share of the drawn tail lands inside the picture."""
+    if not tail:
+        return 0.0
+    _w, _h = float(width or 0), float(height or 0)
+    if _w <= 0 or _h <= 0:
+        return 1.0
+    _in = sum(1 for p in tail
+              if 0.0 <= float(p[1]) <= _w and 0.0 <= float(p[2]) <= _h)
+    return _in / float(len(tail))
+
+
+def _tail_refused(tail, width, height, kind: str) -> bool:
+    """Is this tail unusable as a drawing? Says why when it is.
+
+    TWO QUESTIONS, AND ONLY ONE OF THEM IS ABOUT HEIGHT. A tee shot
+    goes out of the top of the picture and comes back; that is what
+    the shot looks like and refusing it drew an arc bent to stay in
+    shot instead. What cannot be drawn is a tail the camera never
+    sees -- 826's 363 frames with nearly none of them in the picture
+    -- and a tail whose apex is several frames up, which has stopped
+    describing a golf ball at all.
+    """
+    _above = _apex_above_frame_px(tail)
+    _vis = _tail_visible_frac(tail, width, height)
+    _cap = _APEX_MAX_ABOVE_FRAC * float(height or 1)
+    _w, _h = float(width or 0), float(height or 0)
+    _ends_in = (_w <= 0 or _h <= 0
+                or (0.0 <= float(tail[-1][1]) <= _w
+                    and 0.0 <= float(tail[-1][2]) <= _h))
+    if _above > _cap:
+        log.info(
+            "tracer tail: the %s apex sits %.0fpx above a %.0fpx frame "
+            "(limit %.0fpx) — that is not a golf ball any more",
+            kind, _above, float(height or 0), _cap)
+        return True
+    if not _ends_in:
+        log.info(
+            "tracer tail: the %s tail ends at (%.0f, %.0f), outside a "
+            "%.0fx%.0f frame — it goes up and never comes back",
+            kind, float(tail[-1][1]), float(tail[-1][2]), _w, _h)
+        return True
+    if _vis < _TAIL_MIN_VISIBLE_FRAC:
+        log.info(
+            "tracer tail: only %.0f%% of the %s tail is in shot (needs "
+            "%.0f%%) — the camera never sees this flight",
+            _vis * 100.0, kind, _TAIL_MIN_VISIBLE_FRAC * 100.0)
+        return True
+    log.info(
+        "tracer tail: %s accepted — apex %.0fpx above the frame, %.0f%% "
+        "of it in shot", kind, _above, _vis * 100.0)
+    return False
 
 
 def _extend_to_target(pts, target_xy, fps, width, height,
@@ -4305,10 +4394,7 @@ def _extend_to_target(pts, target_xy, fps, width, height,
         tail = _curved_tail(pts, target_xy, fps, width, height,
                             land_frame=land_frame)
         kind = "curved"
-        if tail and _apex_above_frame_px(tail) > (
-                _APEX_MAX_ABOVE_FRAC * float(height or 1)):
-            log.info("tracer tail: the curvature-matched apex runs off "
-                     "the top — trying the ballistic fit instead")
+        if tail and _tail_refused(tail, width, height, "curvature-matched"):
             tail = None
         if tail and _turns_back_on_itself(tail):
             log.info("tracer tail: the curvature-matched arc curls back "
@@ -4326,17 +4412,8 @@ def _extend_to_target(pts, target_xy, fps, width, height,
     # its apex a frame and a half above the picture spends the whole
     # flight off-screen and reads as a line going straight up and never
     # coming back.
-    if tail:
-        _above = _apex_above_frame_px(tail)
-        if _above > _APEX_MAX_ABOVE_FRAC * float(height or 1):
-            log.info(
-                "tracer tail: the %s apex sits %.0fpx above a "
-                "%.0fpx frame (limit %.0fpx) — the fit has run away from "
-                "what the camera sees, so trying the arc instead",
-                kind, _above, float(height or 0),
-                _APEX_MAX_ABOVE_FRAC * float(height or 1),
-            )
-            tail = None
+    if tail and _tail_refused(tail, width, height, kind):
+        tail = None
     if tail and _turns_back_on_itself(tail):
         log.info("tracer tail: the %s arc curls back on itself — "
                  "trying the arc through the chord instead", kind)
@@ -4345,15 +4422,8 @@ def _extend_to_target(pts, target_xy, fps, width, height,
         tail = _arc_tail(pts, target_xy, fps, width, height,
                          land_frame=land_frame)
         kind = "arc"
-        if tail:
-            _above_a = _apex_above_frame_px(tail)
-            if _above_a > _APEX_MAX_ABOVE_FRAC * float(height or 1):
-                log.info(
-                    "tracer tail: the arc apex sits %.0fpx above a %.0fpx "
-                    "frame too — drawing no continuation rather than a "
-                    "line that is never in shot", _above_a,
-                    float(height or 0))
-                tail = None
+        if tail and _tail_refused(tail, width, height, "arc"):
+            tail = None
         if tail and _turns_back_on_itself(tail):
             log.warning("tracer tail: every model curls back on itself "
                         "— drawing no continuation rather than a loop")
