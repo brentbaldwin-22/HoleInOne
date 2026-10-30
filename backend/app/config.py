@@ -347,5 +347,27 @@ class Settings(BaseSettings):
     ascent_audio_min_separation_sec: float = 2.0
     ascent_audio_max_attack_ms: float = 25.0
 
+    # HOW LATE THE RIG'S AUDIO IMPACT LANDS, in seconds, and therefore
+    # how far back to move it.
+    #
+    # An audio-triggered clip carries the instant the microphone heard
+    # the strike, and produce uses it instead of detecting one. It
+    # arrives consistently LATE against the picture: measured on this
+    # course at about 15 frames, which on these 60fps cameras is a
+    # quarter of a second.
+    #
+    # IN SECONDS, NOT FRAMES, because what causes it is time rather
+    # than frames. The audio comes down a second RTSP session and is
+    # written in one-second segments, so its timestamps carry that
+    # pipeline's own latency; the video ring does not. A camera on a
+    # different stream profile, or a course at a different frame rate,
+    # has the same delay in seconds and a different count in frames.
+    #
+    # Set to 0 to use the instant exactly as the rig reported it. Tune
+    # with AUDIO_IMPACT_LEAD_SEC rather than in code: the
+    # number is a property of the rig, and nobody should need a deploy
+    # to move it.
+    audio_impact_lead_sec: float = 0.25
+
 
 settings = Settings()

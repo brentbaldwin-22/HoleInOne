@@ -15990,10 +15990,27 @@ function ProduceDebugModal({ data, adminPassword, onRerun, onClose }) {
 
 // Debug and Debug2 are retired: Debug3's pipeline now runs inside produce
 // (settings.debug3_tracer). The code and endpoints are left in place so a
-// swing can still be compared against the old methods by flipping this,
-// but the buttons are off by default -- three diagnostic buttons on every
-// row is noise once one of them is the thing that actually ships.
-const SHOW_LEGACY_DEBUG = false;
+// swing can still be compared against the old methods, but the buttons
+// are off by default -- three diagnostic buttons on every row is noise
+// once one of them is the thing that actually ships.
+//
+// A CONSTANT MEANT A DEPLOY EACH WAY, which is the wrong price for
+// "let me look at these on the new clips and then put it back". It is
+// a switch now, remembered in this browser only, so turning it on
+// costs a click and turning it off costs another — and nobody else's
+// production page grows three buttons because one person was
+// comparing methods on a Tuesday.
+const LEGACY_DEBUG_STORAGE = "golfreelz.showLegacyDebug";
+
+function readLegacyDebug() {
+  try {
+    return localStorage.getItem(LEGACY_DEBUG_STORAGE) === "1";
+  } catch {
+    // Private windows and blocked site data both throw here, and a
+    // diagnostic switch is not worth a blank page.
+    return false;
+  }
+}
 
 export default function AdminProduction() {
   const adminPassword =
@@ -16150,6 +16167,18 @@ export default function AdminProduction() {
   // diagnostic comparing the classical-CV and AI tracers. Hidden unless the
   // backend enables it (PRODUCE_DEBUG_ENABLED on this deployment).
   const [produceDebug, setProduceDebug] = useState({ enabled: false });
+  const [showLegacyDebug, setShowLegacyDebug] = useState(readLegacyDebug);
+
+  function toggleLegacyDebug() {
+    const next = !showLegacyDebug;
+    setShowLegacyDebug(next);
+    try {
+      if (next) localStorage.setItem(LEGACY_DEBUG_STORAGE, "1");
+      else localStorage.removeItem(LEGACY_DEBUG_STORAGE);
+    } catch {
+      // See readLegacyDebug: the switch still works for this session.
+    }
+  }
   // Debug2 report — kept in memory only; the run writes images but
   // changes no swing data, so there is nothing to persist.
   const [d2, setD2] = useState(null);
@@ -17018,6 +17047,24 @@ export default function AdminProduction() {
             <option value="manual">Manual trigger</option>
           </select>
         </label>
+        {/* THE OLD DIAGNOSTIC BUTTONS, ON DEMAND. Debug and Debug2 were
+            retired when Debug3's pipeline became the thing that ships,
+            and the code and endpoints were left in place so a swing
+            could still be compared against them. Reaching them meant
+            editing a constant and deploying, twice. This is the same
+            switch with a click instead, remembered in this browser
+            only — nobody else's page grows three buttons because one
+            person is comparing methods today. */}
+        {produceDebug.enabled ? (
+          <label className="tiny"
+                 style={{ display: "inline-flex", alignItems: "center",
+                          gap: 5, cursor: "pointer" }}
+                 title="Show the retired Debug and Debug2 buttons on each row, for comparing the old methods against what produce does now.">
+            <input type="checkbox" checked={showLegacyDebug}
+                   onChange={toggleLegacyDebug} />
+            <span className="muted">legacy debug buttons</span>
+          </label>
+        ) : null}
         {courseQuery ? (
           <span className="tiny muted">filtering “{courseQuery}”</span>
         ) : null}
@@ -17487,7 +17534,7 @@ export default function AdminProduction() {
                     </button>
                   )
                 )}
-                {SHOW_LEGACY_DEBUG && produceDebug.enabled && (
+                {showLegacyDebug && produceDebug.enabled && (
                   <button
                     className="small ghost"
                     onClick={() => handleProduceDebug(row)}
@@ -17496,7 +17543,7 @@ export default function AdminProduction() {
                     🐞 Debug
                   </button>
                 )}
-                {SHOW_LEGACY_DEBUG && produceDebug.enabled && (
+                {showLegacyDebug && produceDebug.enabled && (
                   <button
                     className="small ghost"
                     onClick={() => handleDebug2(row)}

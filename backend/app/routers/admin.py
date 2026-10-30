@@ -3900,9 +3900,24 @@ def _audio_impact_segment(db, row, upload_id):
             log.warning("long-upload %s: audio impact is %.1fs into the clip "
                         "— implausible, detecting instead", upload_id, offset)
             return None
-        log.info("long-upload %s: impact taken from the rig — %.2fs into the "
-                 "tee clip (event %s), skipping detection",
-                 upload_id, offset, ev_id)
+        # THE EARS ARE LATE, CONSISTENTLY. See audio_impact_lead_sec: the
+        # audio comes down its own RTSP session in one-second segments
+        # and carries that pipeline's latency, while the video ring does
+        # not — so the instant the rig reports lands after the strike it
+        # describes. Measured on this course at about 15 frames, which
+        # on a 60fps camera is a quarter of a second.
+        #
+        # Moved back here, in the one place the rig's instant becomes a
+        # time in the clip, rather than in each of the things that read
+        # it afterwards.
+        _lead = float(getattr(settings, "audio_impact_lead_sec", 0.0) or 0.0)
+        _raw = offset
+        if _lead:
+            offset = max(0.0, offset - _lead)
+        log.info("long-upload %s: impact taken from the rig — heard at "
+                 "%.2fs, using %.2fs (%.2fs lead) into the tee clip "
+                 "(event %s), skipping detection",
+                 upload_id, _raw, offset, _lead, ev_id)
         return {
             "hole_number": ev.hole_number,
             "peak_time_sec": float(offset),
@@ -22968,9 +22983,18 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
         if (ev is not None and ev.impact_at is not None
                 and ev.tee_recording_started_at is not None):
             off = (ev.impact_at - ev.tee_recording_started_at).total_seconds()
+            # THE SAME CORRECTION THE PRODUCE SIDE MAKES. Two readers of
+            # one instant that disagree about when it was would place
+            # the search window and the impact frame a quarter of a
+            # second apart, which is most of the ascent.
+            _lead = float(getattr(settings, "audio_impact_lead_sec", 0.0)
+                          or 0.0)
+            if _lead and off >= 0.0:
+                off = max(0.0, off - _lead)
             if 0.0 <= off <= 24 * 3600:
                 w = _around([off])
-                _note("the rig's impact at %.2fs" % off, w)
+                _note("the rig's impact at %.2fs (%.2fs lead applied)"
+                      % (off, _lead), w)
                 return w
     except Exception as exc:  # noqa: BLE001
         log.warning("ascent window: could not read the rig's impact (%s)", exc)
