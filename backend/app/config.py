@@ -1,3 +1,4 @@
+import logging
 import os
 
 from pydantic import model_validator
@@ -223,6 +224,37 @@ class Settings(BaseSettings):
     # The AI half needs ANTHROPIC_API_KEY set (else it reports unavailable).
     # Set env PRODUCE_DEBUG_ENABLED=1 on the DEV deployment to show the button.
     produce_debug_enabled: bool = False
+    # ...AND A WAY TO MEAN IT IN PRODUCTION.
+    #
+    # The validator below forces `produce_debug_enabled` off whenever
+    # RENDER or REPLIT_DEPLOYMENT is set, so that no env var can switch
+    # the dev tools on there. That is right, and the reason is stated
+    # below: the flags go off "regardless of any secret/env-var that
+    # may be leaking in from the global secrets store."
+    #
+    # But the footage only exists on the production deployment, so the
+    # diagnostic buttons could not be reached where anybody needs them,
+    # and comparing a method against the new clips cost a code change
+    # and a deploy each way.
+    #
+    # A SECOND, DIFFERENTLY NAMED SWITCH keeps both properties. A
+    # leaked PRODUCE_DEBUG_ENABLED still cannot do anything in
+    # production; PRODUCE_DEBUG_FORCE is not a name any shared secret
+    # store sets, so setting it is a decision somebody made on purpose
+    # for this service.
+    #
+    # It is the ONLY dev-only flag this reprieves. The mirror settings
+    # below stay stripped unconditionally: a production box pointed at
+    # another deployment is a different order of mistake from one
+    # showing extra buttons.
+    #
+    # WHAT IT COSTS, so it is turned off again rather than forgotten:
+    # the debug runs do extra passes and write artifacts into the clips
+    # directory, which is what filled the disk on 24, 27 and 29
+    # October. Logged at WARNING on every boot for that reason — a
+    # production box running dev tools should say so each time it
+    # starts rather than be discovered later.
+    produce_debug_force: bool = False
 
     @model_validator(mode="after")
     def _strip_dev_only_in_production(self) -> "Settings":
@@ -234,7 +266,19 @@ class Settings(BaseSettings):
         # dev-only flags keep their defaults there — including a
         # `mirror_source_url` pointing the new production box at the old one.
         if os.environ.get("REPLIT_DEPLOYMENT") or os.environ.get("RENDER"):
-            self.produce_debug_enabled = False
+            # See produce_debug_force. Deliberately a different name
+            # from the flag it reprieves, so a leaked
+            # PRODUCE_DEBUG_ENABLED still cannot reach this branch.
+            if self.produce_debug_force:
+                self.produce_debug_enabled = True
+                logging.getLogger("golfreelz.config").warning(
+                    "PRODUCE_DEBUG_FORCE is set: the diagnostic produce "
+                    "buttons are ON in a production deployment. They run "
+                    "extra passes and write artifacts into the clips "
+                    "directory — unset it when you are done.",
+                )
+            else:
+                self.produce_debug_enabled = False
             self.mirror_course_id = 0
             self.mirror_source_url = ""
             self.mirror_source_password = ""
