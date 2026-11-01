@@ -182,6 +182,91 @@ check("no matched swing means nothing to attach it to",
       admin._ascent_apply_ai_launch(r6, None)["applied"], False)
 
 # ── 3. the stage itself ──────────────────────────────────────────────
+# ── 2b. the box comes from the golfer, not the hole ──────────────────
+print()
+print("two boxes overlapped:")
+check("the overlap of two boxes is the part in both",
+      admin._rect_overlap_px((0, 0, 100, 100), (50, 50, 100, 100)),
+      (50, 50, 50, 50))
+check("boxes that miss have no overlap",
+      admin._rect_overlap_px((0, 0, 40, 40), (200, 200, 40, 40)), None)
+# A SLIVER IS NOT AN OVERLAP. Clipping a search box down to four
+# pixels of agreement would hand the model a crop with no ball and no
+# context in it; the caller wants to hear "these two disagree".
+check("a sliver is not an overlap",
+      admin._rect_overlap_px((0, 0, 100, 100), (97, 0, 100, 100)), None)
+
+print()
+print("the golfer's feet, from the motion heat:")
+# THE GEOMETRY, MEASURED. A mask with a body-shaped blob in it: 24px
+# wide, 90 tall, feet at y=190, on a detector frame half the size of
+# the video -- which is the case that goes wrong silently if the
+# scaling is dropped.
+import numpy as _np  # noqa: E402
+
+from app.services import tracer as _tr  # noqa: E402
+
+_mask = _np.zeros((240, 320), _np.uint8)
+_mask[100:190, 148:172] = 1          # the body
+_mask[60:64, 20:300] = 1             # a wire across the sky: wider than tall
+_mask[200:203, 40:43] = 1            # a speckle in the grass
+_g, _bb = _tr.golfer_and_ball_box(_mask, 0.5, 640, 480)
+print("      golfer %s, ball box %s" % (_g, _bb))
+check("the body is the golfer, in the VIDEO's pixels, not the detector's",
+      _g, [296, 200, 48, 180])
+check("...so a wire across the sky is not one", _g[1] > 100, True)
+check("the ball box is at the feet",
+      _bb[1] <= 380 <= _bb[1] + _bb[3], True)
+# A ball at address sits beside the feet, not under the hands, and the
+# club is up there -- a box that reaches the hands invites the model
+# to pick the clubhead.
+check("...and does not reach the hands",
+      _bb[1] > _g[1] + _g[3] // 2, True)
+check("the box is three body-widths across", _bb[2], 144)
+check("...centred on the body",
+      abs((_bb[0] + _bb[2] / 2) - (_g[0] + _g[2] / 2)) <= 1, True)
+check("an empty mask has no golfer in it",
+      _tr.golfer_and_ball_box(_np.zeros((240, 320), _np.uint8), 0.5,
+                              640, 480), (None, None))
+_shake = _np.zeros((240, 320), _np.uint8)
+_shake[20:220, 20:300] = 1
+check("a component the size of the picture is the camera, not a golfer",
+      _tr.golfer_and_ball_box(_shake, 0.5, 640, 480), (None, None))
+
+_src_t = (ROOT / "backend" / "app" / "services"
+          / "tracer.py").read_text(encoding="utf-8")
+_hc = _src_t[_src_t.index("def swing_heat_check("):]
+_hc = _hc[:_hc.index("\nSWING_HEAT") if "\nSWING_HEAT" in _hc else len(_hc)]
+# THE BODY IS THE CONSTANT MOTION, which is the mask the fan band
+# already subtracts itself from: the club is a different pixel every
+# frame, the grass does not move, and a cart crossing the back of the
+# shot is somewhere else each frame.
+check("the swing check asks for the boxes",
+      "golfer_and_ball_box(constant, det_scale, width, height)" in _hc, True)
+check("...from the constant motion, which is the body",
+      "const_thr = max(5, int(0.15 * counted))" in _hc, True)
+check("a failure there is a missing box, not a failed check",
+      "DIAGNOSTIC, NOT LOAD-BEARING" in _hc, True)
+
+_run_src = (ROOT / "backend" / "app" / "routers"
+            / "admin.py").read_text(encoding="utf-8")
+_al = _run_src[_run_src.index("def _ascent_ai_launch("):]
+_al = _al[:_al.index("\ndef ", 10)]
+check("the launch plot asks the swing check first",
+      "_heat = _ascent_swing_heat(" in _al, True)
+check("...and zooms on the box it gives back",
+      '_rect = tuple(int(v) for v in _heat["ball_box"])' in _al, True)
+check("...kept inside the hole's tee box when there is one",
+      "_rect_overlap_px(" in _al, True)
+check("the tee box is the fallback, not the first choice",
+      _al.index("_heat.get(\"ball_box\")") < _al.index("elif _box:"), True)
+check("a clip with neither says so rather than guessing",
+      "nowhere to zoom in on" in _al, True)
+check("the modal shows the heat the box came from",
+      "rep.ai_launch.swing_check?.ran" in (
+          ROOT / "frontend" / "src" / "pages"
+          / "AdminProduction.jsx").read_text(encoding="utf-8"), True)
+
 print()
 print("the stage declines cleanly when it cannot run:")
 _was = admin.settings.ascent_ai_launch
@@ -202,11 +287,39 @@ check("a dwell clip has no frame to zoom in on", _o2["ran"], False)
 check("...and the reason says what happens instead",
       "back to the tee line" in _o2["reason"], True)
 
-_o3 = admin._ascent_ai_launch(_Db(_Ev(4.88)), _Row(), Path("/nope.mp4"),
-                              60.0, {}, {"roi": None})
-check("no tee box, no zoom", _o3["ran"], False)
-check("...and it says where to draw one",
-      "cameras page" in _o3["reason"], True)
+# NO BOX FROM EITHER SOURCE, on a real clip with nobody in it: the
+# swing check runs and places no golfer, and the hole has no tee box
+# to fall back to. The one case with nowhere at all to look.
+import tempfile  # noqa: E402
+
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
+
+_td = tempfile.mkdtemp()
+_empty = Path(_td) / "empty.mp4"
+_vw = cv2.VideoWriter(str(_empty), cv2.VideoWriter_fourcc(*"mp4v"),
+                      60.0, (320, 240))
+_rng = np.random.default_rng(5)
+for _i in range(360):
+    _vw.write(_rng.integers(40, 46, (240, 320, 3), dtype=np.uint8))
+_vw.release()
+
+_o3 = admin._ascent_ai_launch(_Db(_Ev(4.88)), _Row(), _empty, 60.0, {},
+                              {"roi": None})
+check("nobody in the clip and no tee box, no zoom", _o3["ran"], False)
+check("...and it says both halves came up empty",
+      "nowhere to zoom in on" in (_o3["reason"] or ""), True)
+check("...having actually run the swing check",
+      bool(_o3.get("swing_check")), True)
+
+# WITH A TEE BOX IT FALLS BACK TO IT rather than giving up, and says
+# which of the two it is searching.
+_o4 = admin._ascent_ai_launch(_Db(_Ev(4.88)), _Row(), _empty, 60.0, {},
+                              {"roi": {"x": 0.3, "y": 0.5,
+                                       "w": 0.3, "h": 0.3}})
+check("a tee box is the fallback", _o4.get("rect"), [96, 120, 96, 72])
+check("...and the card says it is the fallback",
+      "could not place the golfer" in (_o4.get("rect_from") or ""), True)
 # IT NEVER RAISES. A diagnostic step that can take down a produce is
 # worse than one that does not run.
 check("a missing video is a reason, not a crash",
@@ -222,8 +335,8 @@ _run = _src[_src.index("def _ascent_run(row, src_path, db,"):]
 _run = _run[:_run.index("\ndef ", 10)]
 print()
 print("it runs before the sweep, as stage 1:")
-check("stage 1 is the launch plot", '_stage(1, "AI launch plot"' in _run,
-      True)
+check("stage 1 is the swing check and the launch plot",
+      '_stage(1, "Swing check and AI launch plot"' in _run, True)
 check("the sweep is stage 2 now",
       '_stage(2, "Balls leaving the tee"' in _run, True)
 check("...and the plot is called before it",

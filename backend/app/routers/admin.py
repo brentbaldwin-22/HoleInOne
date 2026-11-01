@@ -23345,15 +23345,21 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
         progress("Asking the model to find the ball and the first of "
                  "its climb", 0, 0)
     rep["ai_launch"] = _ascent_ai_launch(db, row, src_path, fps, rep, _roi)
-    _stage(1, "AI launch plot",
+    _stage(1, "Swing check and AI launch plot",
            "The band the sweep searches starts above the golfers, so the "
            "climb from the tee into it is never measured -- it is run "
            "backwards out of the chain afterwards, which is a fit. On a "
            "clip the rig heard, the impact frame is known without any of "
-           "that, so the model is shown the tee box on that frame to find "
-           "the ball at address, then every few frames after it to follow "
-           "the ball out. "
-           + str((rep["ai_launch"] or {}).get("reason") or ""),
+           "that, so two things can happen before anything else. One MOG2 "
+           "pass around the strike builds the motion heat that says "
+           "whether this was a swing, and the body standing in that heat "
+           "says where the golfer is -- so the ball is at its feet, which "
+           "is a far smaller and far better aimed box than the hole's tee "
+           "box. The model is then shown that box on the impact frame to "
+           "find the ball at address, and every few frames after it to "
+           "follow the ball out. "
+           + str((rep["ai_launch"] or {}).get("rect_from") or "")
+           + ". " + str((rep["ai_launch"] or {}).get("reason") or ""),
            (rep["ai_launch"] or {}).get("n_points"), "plotted",
            time.perf_counter() - _t)
 
@@ -24707,6 +24713,70 @@ def _ascent_spot_from_chain(out: dict, ascent: dict, seen,
     return out
 
 
+def _rect_overlap_px(a, b):
+    """The overlap of two (x, y, w, h) boxes, or None if they miss."""
+    _ax0, _ay0, _ax1, _ay1 = a[0], a[1], a[0] + a[2], a[1] + a[3]
+    _bx0, _by0, _bx1, _by1 = b[0], b[1], b[0] + b[2], b[1] + b[3]
+    _x0, _y0 = max(_ax0, _bx0), max(_ay0, _by0)
+    _x1, _y1 = min(_ax1, _bx1), min(_ay1, _by1)
+    if _x1 - _x0 < 8 or _y1 - _y0 < 8:
+        return None
+    return (int(_x0), int(_y0), int(_x1 - _x0), int(_y1 - _y0))
+
+
+def _ascent_swing_heat(row, src_path, fps, rig) -> dict:
+    """The swing check, run here for its COORDINATES.
+
+    THE RIG ALREADY ASKED WHETHER THIS WAS A SWING, and its answer is
+    on the card. What it cannot hand over is where anything was: the
+    composite it judged is a crop of its own choosing, shipped as a
+    picture with no frame of reference, so a pixel in it cannot be put
+    back on the tee video. The verdict travels; the geometry does not.
+
+    So the same pass is run here, over a few seconds around the
+    instant the microphone heard. It is MOG2 at reduced width over
+    about four seconds -- no API call, no model -- and it produces
+    both halves at once: the motion-heat composite that says whether
+    this was a swing, and, because the heat is in this video's own
+    pixels, where the golfer is standing in it.
+
+    Returns swing_heat_check's own dict plus `image_url`. Never
+    raises: the caller falls back to the hole's tee box, and a
+    diagnostic that can fail a produce is worse than one that does
+    not run.
+    """
+    out: dict = {"ran": False, "reason": None, "image_url": None}
+    try:
+        from ..services.tracer import swing_heat_check
+
+        _chk = swing_heat_check(
+            src_path, float(rig["sec"]), float(fps or 30.0),
+            debug_dir=CLIPS_DIR,
+            debug_prefix=f"ailaunch-heat-{row.id}-{secrets.token_hex(3)}",
+        ) or {}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ascent AI launch: the swing check failed on %s: %s",
+                    row.id, exc)
+        out["reason"] = f"the swing check failed: {exc}"
+        return out
+    out.update({k: _chk.get(k) for k in
+                ("available", "verdict", "fan", "n_rays", "n_angles",
+                 "n_timed", "chain_len", "golfer", "ball_box",
+                 "ball_box_from", "reason")})
+    out["ran"] = bool(_chk.get("available"))
+    _img = _chk.get("image") or _chk.get("image_clean")
+    if _img:
+        _p = CLIPS_DIR / str(_img)
+        if _p.exists():
+            out["image_url"] = (
+                f"{settings.app_base_url}/uploads/clips/{_p.name}"
+                f"?v={int(_p.stat().st_mtime)}")
+    log.info("ascent AI launch: swing check on %s — %s, golfer=%s, "
+             "ball box=%s (%s)", row.id, _chk.get("verdict"),
+             _chk.get("golfer"), _chk.get("ball_box"), _chk.get("reason"))
+    return out
+
+
 def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
     """Ask the model where the ball went, BEFORE looking for it.
 
@@ -24760,12 +24830,6 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
     # whole-frame search for a ball at address is the thing the tee
     # box was introduced to stop.
     _box = (roi or {}).get("roi") if isinstance(roi, dict) else None
-    if not _box:
-        out["reason"] = (
-            "no tee box is drawn for this hole, so there is nowhere to "
-            "zoom in on — draw one on the cameras page and this step "
-            "starts working")
-        return out
     try:
         _info = probe_video_info(src_path) or {}
         _w = int(_info.get("width") or 0)
@@ -24773,9 +24837,62 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
         if _w <= 0 or _h <= 0:
             out["reason"] = "the tee video reports no frame size"
             return out
-        _rect = (int(float(_box["x"]) * _w), int(float(_box["y"]) * _h),
-                 max(8, int(float(_box["w"]) * _w)),
-                 max(8, int(float(_box["h"]) * _h)))
+        # ── WHERE THE GOLFER IS ──────────────────────────────────────
+        #
+        # ASK THE SWING CHECK, WHICH IS ALREADY LOOKING. It runs a MOG2
+        # pass over a few seconds around the impact and builds the
+        # motion heat the swing judge is shown -- and the body standing
+        # there swinging is the brightest continuous thing in it. The
+        # ball is at that body's feet.
+        #
+        # A tee box is the fallback, not the first choice: it is drawn
+        # once for a hole, the markers are moved every morning, and it
+        # is far bigger than a golfer. This is measured on this swing,
+        # in this clip, around this golfer -- which is the whole reason
+        # the swing check is worth running here rather than only
+        # trusting the rig's verdict.
+        _heat = _ascent_swing_heat(row, src_path, _fps, _rig)
+        out["swing_check"] = _heat
+        _rect = None
+        if _heat.get("ball_box"):
+            _rect = tuple(int(v) for v in _heat["ball_box"])
+            out["rect_from"] = (_heat.get("ball_box_from")
+                                or "the swing check's motion heat")
+            # AND KEPT INSIDE THE HITTING AREA when the hole has one.
+            # The heat says where this golfer is; the tee box says
+            # where a ball on this hole can be. Disagreeing with both
+            # at once is not possible, so take the overlap -- unless
+            # there is none, in which case one of them is wrong and
+            # the measured one is the one measured today.
+            if _box:
+                _clip = _rect_overlap_px(
+                    _rect,
+                    (int(float(_box["x"]) * _w), int(float(_box["y"]) * _h),
+                     max(8, int(float(_box["w"]) * _w)),
+                     max(8, int(float(_box["h"]) * _h))))
+                if _clip is not None:
+                    _rect = _clip
+                    out["rect_from"] += ", inside the hole's tee box"
+                else:
+                    out["rect_from"] += (
+                        " — WHICH DOES NOT OVERLAP THE HOLE'S TEE BOX; "
+                        "one of the two is wrong, and the motion is the "
+                        "one measured today")
+        elif _box:
+            _rect = (int(float(_box["x"]) * _w), int(float(_box["y"]) * _h),
+                     max(8, int(float(_box["w"]) * _w)),
+                     max(8, int(float(_box["h"]) * _h)))
+            out["rect_from"] = (
+                "the hole's tee box — the swing check could not place the "
+                "golfer (" + str(_heat.get("reason") or "no reason given")
+                + ")")
+        if _rect is None:
+            out["reason"] = (
+                "the swing check could not find the golfer ("
+                + str(_heat.get("reason") or "no reason given")
+                + ") and no tee box is drawn for this hole, so there is "
+                "nowhere to zoom in on")
+            return out
         out["rect"] = list(_rect)
         # The SEED, not an answer: where to aim the second crop if the
         # first one finds nothing. The box's own centre is the best

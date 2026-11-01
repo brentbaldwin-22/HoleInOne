@@ -9358,7 +9358,7 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
         {rep?.ai_launch && (
           <div className="card" style={{ margin: "10px 0", padding: 10 }}>
             <div className="row" style={{ justifyContent: "space-between" }}>
-              <b>1 · AI launch plot</b>
+              <b>1 · Swing check and AI launch plot</b>
               <span className={rep.ai_launch.n_points > 0
                 ? "pill ok" : "pill warn"}>
                 {rep.ai_launch.ran
@@ -9379,6 +9379,45 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                 </>
               )}
             </div>
+            {/* THE SWING CHECK, WHICH IS WHERE THE BOX CAME FROM.
+                The rig judged this clip before it spent the link, but
+                it shipped a verdict and a cropped picture with no
+                frame of reference -- so the pass is run again here
+                for its COORDINATES: the body standing in the motion
+                heat is the golfer, and the ball is at its feet. */}
+            {rep.ai_launch.swing_check?.ran && (
+              <div style={{ marginTop: 8 }}>
+                <div className="tiny muted">
+                  <b>Swing check</b> — {rep.ai_launch.swing_check.verdict}
+                  {rep.ai_launch.swing_check.n_rays != null
+                    ? ` · ${rep.ai_launch.swing_check.n_rays} club rays at `
+                      + `${rep.ai_launch.swing_check.n_angles} angles`
+                    : ""}
+                  {rep.ai_launch.swing_check.golfer
+                    ? ` · golfer at ${rep.ai_launch.swing_check.golfer
+                      .slice(0, 2).join(",")}`
+                    : " · the golfer could not be placed"}
+                </div>
+                {rep.ai_launch.rect_from && (
+                  <div className="tiny muted">
+                    searched {rep.ai_launch.rect?.join(",")} — {}
+                    {rep.ai_launch.rect_from}
+                  </div>
+                )}
+                {rep.ai_launch.swing_check.image_url && (
+                  <figure style={{ margin: "6px 0 0" }}>
+                    <img src={rep.ai_launch.swing_check.image_url}
+                         alt="motion heat around the strike"
+                         style={{ width: "100%", borderRadius: 6 }} />
+                    <figcaption className="tiny muted">
+                      The motion heat the swing judge is shown. The body
+                      standing in it is the golfer; the box handed to the
+                      model is at its feet.
+                    </figcaption>
+                  </figure>
+                )}
+              </div>
+            )}
             {rep.ai_launch.image_url && (
               <figure style={{ margin: "8px 0 0" }}>
                 <img src={rep.ai_launch.image_url} alt="AI launch plot"

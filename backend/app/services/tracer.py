@@ -3020,6 +3020,85 @@ def _arc_track_from_heatmap(
     return work
 
 
+# A GOLFER, AS SEEN BY A COMPONENT COUNTER.
+#
+# Smaller than this is speckle in the grass; a component covering a
+# quarter of the frame is the camera shaking or the light changing, not
+# a person. And a standing golfer is taller than they are wide, which
+# is what separates them from a cart crossing behind.
+GOLFER_MIN_AREA_FRAC = 0.0004
+GOLFER_MAX_BBOX_FRAC = 0.25
+# THE BALL IS AT THE FEET, and the box says how much either side. Three
+# body-widths across covers the ball at address and the step the
+# golfer may have taken; from a third of the body up from the feet to a
+# little below them covers the ball on an uneven lie without reaching
+# up into the hands, where the club is.
+BALL_BOX_WIDTHS = 3.0
+BALL_BOX_ABOVE_FEET = 0.30
+BALL_BOX_BELOW_FEET = 0.12
+
+
+def golfer_and_ball_box(constant, det_scale: float, width: int, height: int):
+    """(golfer, ball_box) in the video's own pixels, from constant motion.
+
+    WHAT `constant` IS. The motion heat counts, per pixel, how many
+    frames of the window it was moving in. A golfer standing over the
+    ball and swinging is the one thing in a tee shot that moves
+    continuously in ONE PLACE: the grass does not move, the club is a
+    different pixel every frame (which is why the fan is a separate
+    band), and a cart crossing the back of the shot is somewhere else
+    each frame. So the hottest connected component is the body.
+
+    AND THE BALL IS AT ITS FEET. That is the whole geometric claim, and
+    it is the only one a tee shot allows you to make without finding
+    the ball first -- which is the thing being set up here.
+
+    Both boxes come back in the SOURCE video's pixels: the heat is
+    computed at a reduced width and a box in detector pixels handed to
+    something reading the real frames would be a box in the wrong
+    place, silently and by a constant factor.
+
+    (None, None) when nothing in the mask looks like a person. The
+    caller falls back to the hole's tee box.
+    """
+    if constant is None or not constant.any():
+        return None, None
+    _det_h, _det_w = constant.shape[:2]
+    _s = (1.0 / det_scale) if det_scale else 1.0
+    _nc, _lab, _st, _cen = cv2.connectedComponentsWithStats(constant, 8)
+    _best = None
+    for _i in range(1, _nc):
+        _x, _y, _w2, _h2, _a = (
+            int(_st[_i, cv2.CC_STAT_LEFT]), int(_st[_i, cv2.CC_STAT_TOP]),
+            int(_st[_i, cv2.CC_STAT_WIDTH]), int(_st[_i, cv2.CC_STAT_HEIGHT]),
+            int(_st[_i, cv2.CC_STAT_AREA]),
+        )
+        if _a < GOLFER_MIN_AREA_FRAC * _det_w * _det_h:
+            continue
+        if _w2 * _h2 > GOLFER_MAX_BBOX_FRAC * _det_w * _det_h:
+            continue
+        if _h2 < _w2:
+            continue
+        if _best is None or _a > _best[4]:
+            _best = (_x, _y, _w2, _h2, _a)
+    if _best is None:
+        return None, None
+    _x, _y, _w2, _h2, _a = _best
+    golfer = [int(_x * _s), int(_y * _s), int(_w2 * _s), int(_h2 * _s)]
+    _cx = (_x + _w2 / 2.0) * _s
+    _bot = (_y + _h2) * _s
+    _gw_n, _gh_n = _w2 * _s, _h2 * _s
+    _bw = max(BALL_BOX_WIDTHS * _gw_n, 0.06 * float(width))
+    _bx0 = max(0.0, _cx - _bw / 2.0)
+    _bx1 = min(float(width), _cx + _bw / 2.0)
+    _by0 = max(0.0, _bot - BALL_BOX_ABOVE_FEET * _gh_n)
+    _by1 = min(float(height), _bot + BALL_BOX_BELOW_FEET * _gh_n)
+    if _bx1 - _bx0 < 8 or _by1 - _by0 < 8:
+        return golfer, None
+    return golfer, [int(_bx0), int(_by0),
+                    int(_bx1 - _bx0), int(_by1 - _by0)]
+
+
 def swing_heat_check(
     input_path,
     peak_time_sec: float,
@@ -3174,6 +3253,40 @@ def swing_heat_check(
         club_fan = n_rays >= 6 and len(_bins) >= 5
         out["n_rays"] = int(n_rays)
         out["fan"] = bool(club_fan)
+
+        # ── WHERE THE GOLFER IS, AND THEREFORE WHERE THE BALL IS ──────
+        #
+        # `constant` is already the answer to the first half: pixels hot
+        # in a sixth or more of the window are the body standing there
+        # swinging, which is the one thing in the frame that moves
+        # continuously in one place. The fan is removed from it, the
+        # grass is not in it, and a cart crossing the back of the shot
+        # is not in it either -- it is somewhere different each frame.
+        #
+        # The second half is geometry. A golfer at address stands over
+        # the ball: it is at their feet, which is the bottom of that
+        # body, and within a step either side. So the search box is the
+        # bottom of the body, widened to about three body-widths and
+        # dropped a little below the feet for the lie of the ground.
+        #
+        # WHY THIS BEATS THE TEE BOX, which is the alternative. A tee
+        # box is drawn once for a hole and the markers are moved every
+        # morning; this is measured on THIS swing, in THIS clip, around
+        # THIS golfer. It is also far smaller, and the model is being
+        # asked to find a ball a few pixels across.
+        try:
+            _g, _bb = golfer_and_ball_box(constant, det_scale, width, height)
+            out["golfer"] = _g
+            out["ball_box"] = _bb
+            out["ball_box_from"] = (
+                "the feet of the body in the motion heat" if _bb else None)
+        except Exception as exc:  # noqa: BLE001
+            # DIAGNOSTIC, NOT LOAD-BEARING. Every caller has a fallback
+            # for a box this could not find, and a swing check that
+            # cannot verify a swing because it failed to guess where
+            # the ball was would be a worse trade than no box at all.
+            out["golfer"] = out["ball_box"] = out["ball_box_from"] = None
+            log.debug("swing heat: could not place the ball box: %s", exc)
 
         # Verdict: the AI judge on the heat composite is the decider
         # (callers run it on every swing and override this); the club-fan
