@@ -82,6 +82,24 @@ check("the detector fields are empty, not invented",
       '"pose_debug": {}' in _branch and '"used_pose": False' in _branch, True)
 
 print()
+print("and Debug takes the long way round, so there is work to show:")
+# The shortcut skips the ball-departure classifier, the AI anchor walk
+# and the AI launch plot -- all three live inside the detection block
+# it jumps over. Debug exists to look at exactly those, and already
+# accepts that it re-produces the clip, so it declines the shortcut.
+check("the shortcut is off for a debug run",
+      "if not segs and auto_detect_swings and not debug_artifacts:" in _src,
+      True)
+check("...and the plain produce path still takes it",
+      _src.count("pinned_from_rig = _audio_impact_segment(") , 1)
+# The three things that only exist down the long route.
+for _fn in ("classify_swing_shot", "verify_rest_and_impact_ai",
+            "plot_launch_frames_ai"):
+    _i = _src.index("if not segs and auto_detect_swings and not "
+                    "debug_artifacts:")
+    check("%s is past the shortcut" % _fn, _src.index(_fn, _i) > _i, True)
+
+print()
 if FAILED:
     print("FAILED: %s" % ", ".join(FAILED))
     sys.exit(1)

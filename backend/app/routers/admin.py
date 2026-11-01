@@ -2695,7 +2695,25 @@ def _run_long_upload_job(
             auto_used = False
             used_pose = False
             pinned_from_rig = None
-            if not segs and auto_detect_swings:
+            # ...UNLESS THIS IS A DEBUG RUN, WHICH EXISTS TO SEE THE
+            # WORK THE SHORTCUT SKIPS.
+            #
+            # `_audio_impact_segment` is "a shortcut past work already
+            # done": the rig heard the impact, so there is no need to
+            # detect one. Right for produce, and it takes the whole
+            # block below with it — the ball-departure classifier, the
+            # AI anchor walk and the AI launch plot all live in there.
+            #
+            # Which left Debug with nothing to show on an
+            # audio-triggered clip: "Real vs practice — unavailable,
+            # produce run classified nothing", no pose panel, and no
+            # launch plot, on every clip, because every clip is
+            # audio-triggered now that the dwell is off.
+            #
+            # Debug is the one caller that WANTS the long way round. It
+            # already accepts that it re-produces the clip; taking the
+            # detector's route as well is the point of pressing it.
+            if not segs and auto_detect_swings and not debug_artifacts:
                 pinned_from_rig = _audio_impact_segment(db, row, upload_id)
                 if pinned_from_rig is not None:
                     segs = [pinned_from_rig]
