@@ -100,6 +100,24 @@ for _fn in ("classify_swing_shot", "verify_rest_and_impact_ai",
     check("%s is past the shortcut" % _fn, _src.index(_fn, _i) > _i, True)
 
 print()
+print("and it says what it is waiting for, instead of waiting silently:")
+_rd2 = _src[_src.index("def _run_produce_debug_job("):]
+_rd2 = _rd2[:_rd2.index("\n@router") if "\n@router" in _rd2 else 20000]
+check("the wait names a stage",
+      'waiting for the produce run to publish' in _rd2, True)
+# A produce that FAILED publishes nothing and is not going to, so
+# waiting out the thirty-minute deadline shows the wrong thing for
+# half an hour. Its own error is the answer.
+check("a failed produce stops the wait",
+      'processing_status == "failed"' in _rd2, True)
+check("...and reports the upload's own error",
+      "_r.last_error or" in _rd2, True)
+_page = (ROOT / "frontend" / "src" / "pages"
+         / "AdminProduction.jsx").read_text(encoding="utf-8")
+check("the panel shows the stage when there is no count yet",
+      'data.stage || "Analyzing"' in _page, True)
+
+print()
 if FAILED:
     print("FAILED: %s" % ", ".join(FAILED))
     sys.exit(1)

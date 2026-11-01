@@ -16245,6 +16245,16 @@ def _run_produce_debug_job(
         # record (waiting briefly if a run is in flight).
         work = None
         _deadline = time.time() + 30 * 60
+        # SAY WHAT IS BEING WAITED FOR. "Analyzing... 0/? swings" is
+        # what this showed for the whole wait, which is the same words
+        # it shows while actually analysing — so a produce still
+        # running, a produce that crashed, and a produce that was never
+        # kicked all looked identical, for up to thirty minutes.
+        with _produce_debug_lock:
+            if upload_id in _produce_debug_state:
+                _produce_debug_state[upload_id]["stage"] = (
+                    "waiting for the produce run to publish its decisions"
+                )
         while time.time() < _deadline:
             with _produce_work_lock:
                 _w = _produce_work_state.get(upload_id)
@@ -16253,6 +16263,24 @@ def _run_produce_debug_job(
             ):
                 work = _w
                 break
+            # A FAILED PRODUCE IS NOT WORTH WAITING OUT. It publishes
+            # nothing and is not going to, so the thirty-minute
+            # deadline is thirty minutes of showing the wrong thing.
+            # Its own error is the answer, and it is already on the
+            # row.
+            if wait_after is not None:
+                try:
+                    db.expire_all()
+                    _r = db.get(LongVideoUpload, upload_id)
+                    if _r is not None and _r.processing_status == "failed":
+                        raise RuntimeError(
+                            "the produce run failed before it could record "
+                            "anything: " + (_r.last_error or "no error "
+                                            "was stored on the upload"))
+                except RuntimeError:
+                    raise
+                except Exception:  # noqa: BLE001 - a read that failed
+                    pass           #   says nothing either way
             if wait_after is None:
                 try:
                     db.expire_all()

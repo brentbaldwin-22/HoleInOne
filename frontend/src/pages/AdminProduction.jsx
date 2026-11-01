@@ -15181,8 +15181,16 @@ function ProduceDebugModal({ data, adminPassword, onRerun, onClose }) {
           tracer next to a fresh classical-CV comparison on the same window.
         </p>
         <div className="small" style={{ marginBottom: 12 }}>
+          {/* WHAT IT IS DOING, not just that it is doing something.
+              "Analyzing… 0/? swings" was shown for the whole wait as
+              well as for the analysis, so a produce still running, one
+              that crashed, and one never kicked all read the same —
+              for up to thirty minutes. The server names the stage
+              while there is no swing count yet. */}
           {data.running
-            ? `Analyzing… ${data.done}/${data.total || "?"} swings`
+            ? (data.total
+              ? `Analyzing… ${data.done}/${data.total} swings`
+              : `${data.stage || "Analyzing"}…`)
             : `Done — ${swings.length} swing(s) analyzed`}
           {" · "}
           {data.ai_available
