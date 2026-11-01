@@ -5977,14 +5977,32 @@ def sweep_ascents(
         out["max_hits_in_a_frame"] = int(_stats.get("max_hits") or 0)
         out["dropped_to_cap"] = int(_stats.get("dropped") or 0)
         _t_det = time.perf_counter() - _t0
+        # FOUR DIFFERENT KINDS OF WORK, ON ONE CLOCK EACH.
+        #
+        # This was two numbers, `detect` and `linking`, and `linking`
+        # covered everything after detection -- the walk, the fits, the
+        # stitch and the chain extension. Three of those four re-READ
+        # the video (the stitch's hole fill and the extension both seek
+        # and decode; the walk and the fits work off detections already
+        # in memory), so "linking 30s" could be a slow linker or forty
+        # seeks, and those want opposite fixes. Each gets its own lap.
+        _t_lap = time.perf_counter()
         tracks = build_tracks(dets, 14.0, min_len=int(min_points),
                               max_gap=DESCENT_MAX_GAP,
                               max_span=SWEEP_MAX_SPAN,
                               corridor_px=_corridor)
+        _t_walk = time.perf_counter() - _t_lap
+        # WHAT THE WALK ALONE PRODUCED. `n_tracks` is the count after
+        # the fits, the stitch and the extension have all had their
+        # turn, so reporting it beside the walk's seconds credits the
+        # walk with chains three other steps made.
+        out["n_walked"] = len(tracks)
         # AND THE FITS, judged by the same gates. A chain is a chain:
         # nothing downstream knows or cares which pass produced it.
+        _t_lap = time.perf_counter()
         _fits = (fit_ascent_chains(dets, int(min_points), refine=_curve)
                  if _fit else [])
+        _t_fits = time.perf_counter() - _t_lap
         out["n_fits"] = len(_fits)
         tracks = tracks + _fits
         # AND THEN ONE FLIGHT, ONCE. Both passes cut the same flight
@@ -5992,6 +6010,7 @@ def sweep_ascents(
         # between the two ends of one smear frame by frame. See
         # stitch_ascent_chains.
         _n_before = len(tracks)
+        _t_lap = time.perf_counter()
         _fill_stats: dict = {}
         # ONE BUDGET FOR THE WHOLE SWEEP, shared across every group it
         # re-reads: each hole is a seek into the clip and a run of
@@ -6005,6 +6024,7 @@ def sweep_ascents(
                 input_path, pts, int(ASCENT_STITCH_GAP_FRAMES),
                 sens=int(sens), budget=_fill_budget),
             stats=_fill_stats)
+        _t_stitch = time.perf_counter() - _t_lap
         out["stitch_px"] = _stitch
         out["n_stitched"] = _n_before - len(tracks)
         # WHAT THE RE-READ FOUND. "8 points in 2 holes" says the
@@ -6024,6 +6044,7 @@ def sweep_ascents(
         # and out of the same budget as the hole reads -- the rest are
         # junk and following them is a seek each.
         _ext = 0
+        _t_lap = time.perf_counter()
         for _c in sorted(tracks, key=lambda c: -len(c.get("points") or []))[
                 :ASCENT_EXTEND_MAX_CHAINS]:
             _p = _c.get("points") or []
@@ -6044,9 +6065,23 @@ def sweep_ascents(
         # going. Zero means every chain really did end where it ended.
         out["n_extended"] = _ext
         out["n_tracks"] = len(tracks)
+        _t_extend = time.perf_counter() - _t_lap
+        # `linking` IS KEPT, and still means the same thing: everything
+        # after detection. The three keys under it add up to it, so a
+        # reader that only knows the old two names is not broken by the
+        # breakdown arriving beside them.
         out["timing"] = {"detect": round(_t_det, 2),
                          "linking": round(time.perf_counter()
-                                          - _t0 - _t_det, 2)}
+                                          - _t0 - _t_det, 2),
+                         "walk": round(_t_walk, 2),
+                         "fits": round(_t_fits, 2),
+                         "stitch": round(_t_stitch, 2),
+                         "extend": round(_t_extend, 2)}
+        # AND THE GATES THEMSELVES, which used to be outside every lap
+        # on this clock -- the sweep's own `seconds` included them and
+        # nothing in the breakdown did, so the difference between the
+        # two was the one number with no name.
+        _t_judge = time.perf_counter()
         # EVERY CHAIN KEEPS ITS VERDICT.
         #
         # The gates used to be a run of `continue`s, so a chain that
@@ -6383,6 +6418,8 @@ def sweep_ascents(
         _n_raw = len(out["ascents"])
         out["ascents"] = _dedupe_ascents(out["ascents"])
         out["n_merged"] = _n_raw - len(out["ascents"])
+        if isinstance(out.get("timing"), dict):
+            out["timing"]["judge"] = round(time.perf_counter() - _t_judge, 2)
         out["ok"] = True
         out["reason"] = (
             (out.get("band_warning") or "")

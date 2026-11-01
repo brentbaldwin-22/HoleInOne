@@ -8897,9 +8897,21 @@ function ProduceStepSummary({ rep }) {
 
   const wall = t.wall_sec || t.total_sec || 0;
   const rows = [];
-  const push = (key, label, sec, count, overhead) => {
+  const push = (key, label, sec, count, overhead, subs) => {
     if (!(sec > 0.05)) return;
-    rows.push({ key, label, sec, count, overhead });
+    rows.push({ key, label, sec, count, overhead, subs: subs || null });
+  };
+
+  // WHAT EACH STAGE IS MADE OF, where the stage itself knows.
+  //
+  // Stages 1 and 3 are the two detection passes and between them are
+  // nearly all of a find-only run -- and "stage 1 took 94s" is the
+  // question restated, not an answer. Each now reports its own steps,
+  // and they are shown under it rather than in a separate panel: the
+  // row you want the breakdown of is the row you are already reading.
+  const subsByStage = {
+    1: rep?.scan_stages || [],
+    3: rep?.descent_stages || [],
   };
 
   push("queue", "Waiting for the produce queue", t.queued_sec, null, true);
@@ -8910,6 +8922,7 @@ function ProduceStepSummary({ rep }) {
     st.seconds,
     st.count != null ? `${st.count} ${st.counts || ""}`.trim() : null,
     false,
+    (subsByStage[st.n] || []).filter((x) => (x.seconds || 0) > 0.05),
   ));
   push("other", "Unattributed", t.unattributed_sec, null, true);
 
@@ -8973,6 +8986,53 @@ function ProduceStepSummary({ rep }) {
                 width: `${Math.min(100, pct(r.sec))}%`,
               }} />
             </div>
+            {/* The step's own steps. Shares are OF THE STEP, not of the
+                run: "the stitch was 70% of stage 1" is what points at
+                something to change, where "9% of the button" does not. */}
+            {r.subs?.length > 0 && (
+              <div style={{ marginTop: 4, marginLeft: 10,
+                            paddingLeft: 8,
+                            borderLeft: "2px solid var(--line)" }}>
+                {r.subs.map((sub) => (
+                  <div key={`${r.key}-${sub.n}`} style={{ marginTop: 4 }}>
+                    <div className="row tiny"
+                         style={{ justifyContent: "space-between", gap: 10 }}>
+                      <span className="muted">
+                        {sub.n} · {sub.title}
+                        {sub.count != null && (
+                          <span className="pill" style={{ marginLeft: 6 }}>
+                            {`${sub.count} ${sub.counts || ""}`.trim()}
+                          </span>
+                        )}
+                      </span>
+                      <span className="muted"
+                            style={{ whiteSpace: "nowrap",
+                                     fontVariantNumeric: "tabular-nums" }}>
+                        {fmt(sub.seconds)}
+                        {r.sec > 0
+                          ? ` · ${Math.round(100 * (sub.seconds || 0) / r.sec)}% of this step`
+                          : ""}
+                      </span>
+                    </div>
+                    <div style={{ height: 3, borderRadius: 2, marginTop: 2,
+                                  background: "var(--line)" }}>
+                      <div style={{
+                        height: 3, borderRadius: 2, opacity: 0.75,
+                        background: "var(--emerald-700)",
+                        width: `${r.sec > 0
+                          ? Math.min(100, (100 * (sub.seconds || 0)) / r.sec)
+                          : 0}%`,
+                      }} />
+                    </div>
+                    {sub.detail && (
+                      <div className="tiny muted" style={{ marginTop: 1 }}>
+                        {sub.detail}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ))}
       </div>

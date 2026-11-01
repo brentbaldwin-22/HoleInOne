@@ -23241,7 +23241,9 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     if progress:
         progress("Working out where to look for a ball leaving the tee",
                  0, 0)
+    _t_sub = time.perf_counter()
     _win = _ascent_windows(db, row, src_path, fps, rep)
+    _sec_win = time.perf_counter() - _t_sub
     if progress:
         if _win:
             _secs = sum(max(0, b - a) for a, b in _win) / max(fps, 1.0)
@@ -23251,10 +23253,13 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
         else:
             progress("Sweeping the whole clip for balls leaving the tee",
                      0, 0)
+    _t_sub = time.perf_counter()
     sweep = _d3.sweep_ascents(src_path, fps, roi=_roi.get("roi"),
                               windows=_win,
                               gates=_gt,
                               **_search_area_for(db, row)) or {}
+    _sec_sweep = time.perf_counter() - _t_sub
+    _t_sub = time.perf_counter()
     _ball_scan_sweep_image(row, src_path, sweep)
     _ball_scan_considered_image(row, src_path, sweep)
     # AND ONE PER SWING. The whole-clip pictures answer "did the sweep
@@ -23265,7 +23270,81 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # the trim is what takes those away.
     _ascent_detection_zoom_image(row, src_path, sweep)
     _ascent_trim_considered(sweep)
+    _sec_pics = time.perf_counter() - _t_sub
     rep["sweep"] = sweep
+    # ── INSIDE STAGE 1 ───────────────────────────────────────────────
+    #
+    # Stage 1 is most of a find-only run, and "most of the run is the
+    # sweep" is the question restated rather than an answer. These are
+    # the sweep's own steps, measured by the sweep itself and carried
+    # out here, plus the two things stage 1 does either side of it --
+    # working out where to look, and drawing the pictures the modal
+    # renders. They are reported under stage 1 and sum to it.
+    _sw_t = sweep.get("timing") or {}
+
+    def _sub(n, title, detail, count, units, secs):
+        return {"n": n, "title": title, "detail": detail, "count": count,
+                "counts": units, "seconds": round(float(secs or 0.0), 2)}
+
+    _scan_stages = [
+        _sub("1a", "Working out where to look",
+             "An audio-triggered clip names the second the strike was "
+             "heard, so the band is swept for a few seconds around it "
+             "rather than for the whole clip. "
+             + str(rep.get("window_detail") or "the whole clip"),
+             (len(_win) or None), "window(s)", _sec_win),
+        _sub("1b", "Detecting",
+             "One frame-difference pass over the band above the "
+             "golfers, every frame. This is decoding: it scales with "
+             "the seconds searched above, and with nothing else.",
+             sweep.get("n_dets"), "detections", _sw_t.get("detect")),
+        _sub("1c", "Walking the detections into chains",
+             "In memory, no video read: each detection joined to the "
+             "one it predicts in the next frame, inside a corridor "
+             "ascent_corridor_px wide.",
+             sweep.get("n_walked"), "chains", _sw_t.get("walk")),
+        _sub("1d", "Fitting chains to lines",
+             "A second pass that fits rather than walks, off by default "
+             "— ascent_fit_lines turns it on.",
+             sweep.get("n_fits"), "fits", _sw_t.get("fits")),
+        _sub("1e", "Joining the pieces, re-reading the gaps",
+             "One flight cut into pieces is stitched back together, and "
+             "each hole between two pieces is a seek into the clip and "
+             "a few decoded frames. This is where a bitty detection "
+             "pass gets expensive.",
+             sweep.get("n_holes_read"), "holes re-read",
+             _sw_t.get("stitch")),
+        _sub("1f", "Following the chains that just stopped",
+             "A chain that ends mid-flight is read further, frame by "
+             "frame, out of the same re-read budget as the holes.",
+             sweep.get("n_extended"), "points added", _sw_t.get("extend")),
+        _sub("1g", "Judging every chain against the gates",
+             "Rise, speed, straightness and where it points back to. "
+             "Arithmetic on points already in memory; if this is ever "
+             "slow, something is wrong.",
+             sweep.get("n_considered"), "judged", _sw_t.get("judge")),
+        _sub("1h", "Drawing the pictures",
+             "The sweep map, the considered-chains overlay, the "
+             "detection zoom and one picture per swing. Every one is a "
+             "re-read of the frames it draws on, so this grows with the "
+             "number of swings found rather than with the clip.",
+             None, None, _sec_pics),
+    ]
+    # THE SWEEP'S OWN CLOCK, NOT THE SUM OF ITS PARTS. `seconds` comes
+    # from inside `sweep_ascents`; the laps above are measured inside
+    # the same call. A gap between them is a step nobody is timing.
+    _inside_sweep = ("1b", "1c", "1d", "1e", "1f", "1g")
+    _sw_unattr = round(max(0.0, float(sweep.get("seconds") or _sec_sweep)
+                           - sum(float(x["seconds"]) for x in _scan_stages
+                                 if x["n"] in _inside_sweep)), 2)
+    if _sw_unattr > 0.05:
+        _scan_stages.append(_sub(
+            "1z", "Unattributed, inside the sweep",
+            "Time the sweep spent that none of its own steps claimed — "
+            "opening the clip, reading its header, building the report. "
+            "Small is bookkeeping; large means there is a step in there "
+            "nobody is measuring yet.", None, None, _sw_unattr))
+    rep["scan_stages"] = [x for x in _scan_stages if x["seconds"] > 0.004]
     _asc = list(sweep.get("ascents") or [])
     rep["ascents"] = _asc
     _stage(1, "Balls leaving the tee",
@@ -23325,6 +23404,12 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     _t = time.perf_counter()
     _desc = _ascent_descents(row, db, rep, fps, progress=progress)
     rep["descents"] = _desc
+    # ITS OWN STEPS, under stage 3 in the timing panel. Same reason
+    # stage 1 carries `scan_stages`: one number for "the green half"
+    # cannot say whether the cost was the segmentation pass, the plate
+    # comparison or the pictures, and those want different fixes.
+    rep["descent_stages"] = [x for x in (_desc.get("stages") or [])
+                             if float(x.get("seconds") or 0.0) > 0.004]
     _ascent_trim_considered(_desc.get("sweep") or {})
     _stage(3, "Balls coming down",
            "One pass over the green camera, which is the easy half: "
@@ -23603,7 +23688,30 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     _gates = _gate_tuning_for(db, row)[0]
 
     out: dict = {"ok": False, "n_matched": 0, "events": [], "reason": None,
-                 "delta_sec": None, "delta_source": None}
+                 "delta_sec": None, "delta_source": None, "stages": []}
+
+    # ── INSIDE STAGE 3 ───────────────────────────────────────────────
+    #
+    # The green half is four different costs wearing one number: a
+    # couple of probes, a window calculation that reads nothing, one
+    # segmentation pass per flight window, and a plate comparison per
+    # swing. Only two of those scale with anything, and which two is
+    # the whole question when this stage is slow. Each lap is recorded
+    # as it finishes, so a run that returns early still reports the
+    # steps it did reach.
+    _t_sub = time.perf_counter()
+
+    def _sub(n, title, detail, count=None, units=None, secs=None):
+        out["stages"].append(
+            {"n": n, "title": title, "detail": detail, "count": count,
+             "counts": units, "seconds": round(float(secs or 0.0), 2)})
+
+    def _lap() -> float:
+        nonlocal _t_sub
+        _was = _t_sub
+        _t_sub = time.perf_counter()
+        return _t_sub - _was
+
     _clips = rep.get("clips") or []
     if not _clips:
         out["reason"] = "no swings to match"
@@ -23657,7 +23765,13 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         log.warning("ascent descents: green setup failed on %s: %s",
                     row.id, exc)
         out["reason"] = f"the green pass failed: {exc}"
+        _sub("3a", "Opening the green clip", str(exc), None, None, _lap())
         return out
+    _sub("3a", "Opening the green clip and reading the two clocks",
+         "Its frame rate, and how far apart the two recordings started "
+         "— the number that decides which seconds of the green each "
+         "swing searches. Two header reads; it should be instant.",
+         None, None, _lap())
 
     # ONLY THE SECONDS A BALL COULD BE IN. This is the whole reason the
     # ascent half runs first, and getting it wrong the first time was
@@ -23816,9 +23930,18 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     out["windows"] = [[a, b] for a, b in _wins]
     out["n_frames_searched"] = sum(b - a + 1 for a, b in _wins)
     out["n_frames_green"] = _n_green
+    _sub("3b", "Placing each swing's flight window",
+         "A struck ball is in the air five to eight seconds, so each "
+         "swing names a few seconds of the green clip and nothing else "
+         "is looked at. Overlapping stretches are merged so shared "
+         "seconds are searched once. Arithmetic plus one frame count; "
+         "it reads no pixels.",
+         out["n_frames_searched"], "green frames to search", _lap())
     if not _wins:
         _ascent_window_views(row, _gp, out, _clips, _gfps, fps,
                              _tee_start, _green_start)
+        _sub("3e", "Drawing the windows", "One picture per swing.",
+             None, None, _lap())
         out["reason"] = "no swing had an impact frame to search from"
         return out
 
@@ -23867,6 +23990,15 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                   # reads, and dropping the key here meant the block
                   # explaining the gates never rendered at all.
                   "gates": _gd.get("gates")}
+    _sub("3c", "Looking for the ball coming down",
+         "One segmentation pass per window — mog2, the plate detector "
+         "and frame differencing over every frame of it, then the "
+         "detections walked into chains and judged. This is the "
+         "expensive half of the green, and it scales with the seconds "
+         "placed above, not with the clip."
+         + ("" if _do_descent else
+            " SKIPPED: the descent search is off for this hole."),
+         len(_wins) if _do_descent else 0, "window(s) searched", _lap())
     out["dets_all"] = _dets
     _sweep["considered"] = sorted(
         _considered, key=lambda z: (len(z.get("why") or []),
@@ -23911,6 +24043,11 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         # visible in the heat map and nowhere else.
         _ascent_window_views(row, _gp, out, _clips, _gfps, fps,
                              _tee_start, _green_start)
+        _sub("3e", "Drawing the windows",
+             "One picture per swing: its own few seconds of green, "
+             "every detection in them, and the chains that were "
+             "weighed. A re-read of the green clip per swing.",
+             len(_clips), "view(s)", _lap())
         out.pop("dets_all", None)
         out["reason"] = (
             f"no ball seen coming down in the {len(_wins)} flight "
@@ -24069,6 +24206,11 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     # ends where the ball stopped FALLING -- the pitch mark -- and a
     # ball bounces and rolls from there. Both are kept, because the
     # comet wants the arrival and the distance wants the finish.
+    _sub("3d", "Matching each swing to a landing",
+         "Every possible swing-to-landing pair ranked by how far the "
+         "chain actually fell, then assigned down the list so no "
+         "landing is drawn twice. In memory; the cost is nil.",
+         out["n_matched"], "matched", _lap())
     _t_id, _g_id = _camera_pair_for(db, row)
     out["n_rest"] = 0
     if _g_id:
@@ -24097,9 +24239,21 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                 out["n_rest"] += 1
     else:
         out["rest_reason"] = "no green camera on this pair"
+    _sub("3f", "Finding where it came to rest",
+         "Two plates of the green compared — before the shot, and once "
+         "the ball is down and still. No tracking and no chain, but a "
+         "handful of frames decoded per swing, so this grows with the "
+         "number of swings rather than with the clip.",
+         out.get("n_rest"), "found at rest", _lap())
 
     _ascent_window_views(row, _gp, out, _clips, _gfps, fps,
                          _tee_start, _green_start)
+    _sub("3e", "Drawing the windows",
+         "One picture per swing: its own few seconds of green, every "
+         "detection in them, and the chains that were weighed, with "
+         "the one the swing claimed marked. A re-read of the green "
+         "clip per swing.",
+         len(_clips), "view(s)", _lap())
     out.pop("dets_all", None)
     out["ok"] = out["n_matched"] > 0 or out.get("n_rest", 0) > 0
     if not _do_descent:
