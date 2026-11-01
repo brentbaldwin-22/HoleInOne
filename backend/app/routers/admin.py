@@ -3929,15 +3929,26 @@ def _build_tracer_diagnostics(
     }
 
 
-def _audio_impact_segment(db, row, upload_id):
-    """One segment pinned to the impact the RIG heard, or None.
+def _rig_impact_sec(db, row, upload_id=None) -> dict | None:
+    """When the rig heard the strike, as a position in THIS tee clip.
+
+    ONE PLACE, AND IT USED TO BE THREE. The produce pin, the ascent
+    search window and the tracer each turned the same `impact_at` into
+    the same offset with their own copy of the arithmetic, kept in step
+    by hand. Two readers that disagree by a quarter of a second place
+    the search window and the impact frame most of an ascent apart, and
+    nothing on screen would say which copy had drifted.
 
     Returns None whenever anything is missing or implausible -- no
     camera event, no audio impact (a dwell-triggered clip), no
     recording start to measure the offset against, or an offset that
-    falls outside the clip. In every one of those the caller runs its
-    own detectors exactly as before: this is a shortcut past work
-    already done, never a new way to fail.
+    falls outside the clip. Every caller treats None as "the rig has
+    nothing to say", and detects for itself exactly as before.
+
+    {"sec", "heard_sec", "lead_sec", "event_id", "hole_number"}, where
+    `sec` is the corrected instant and `heard_sec` is what the
+    microphone reported. Both, because a report that gives only the
+    corrected number cannot be checked against the rig's own log.
     """
     try:
         ev_id = getattr(row, "camera_event_id", None)
@@ -3955,10 +3966,10 @@ def _audio_impact_segment(db, row, upload_id):
                      "tee_recording_started_at — detecting instead",
                      upload_id, ev_id)
             return None
-        offset = (ev.impact_at - started).total_seconds()
-        if not (0.0 <= offset <= 24 * 3600):
+        heard = (ev.impact_at - started).total_seconds()
+        if not (0.0 <= heard <= 24 * 3600):
             log.warning("long-upload %s: audio impact is %.1fs into the clip "
-                        "— implausible, detecting instead", upload_id, offset)
+                        "— implausible, detecting instead", upload_id, heard)
             return None
         # THE EARS ARE LATE, CONSISTENTLY. See audio_impact_lead_sec: the
         # audio comes down its own RTSP session in one-second segments
@@ -3966,31 +3977,50 @@ def _audio_impact_segment(db, row, upload_id):
         # not — so the instant the rig reports lands after the strike it
         # describes. Measured on this course at about 15 frames, which
         # on a 60fps camera is a quarter of a second.
-        #
-        # Moved back here, in the one place the rig's instant becomes a
-        # time in the clip, rather than in each of the things that read
-        # it afterwards.
         _lead = float(getattr(settings, "audio_impact_lead_sec", 0.0) or 0.0)
-        _raw = offset
-        if _lead:
-            offset = max(0.0, offset - _lead)
-        log.info("long-upload %s: impact taken from the rig — heard at "
-                 "%.2fs, using %.2fs (%.2fs lead) into the tee clip "
-                 "(event %s), skipping detection",
-                 upload_id, _raw, offset, _lead, ev_id)
         return {
+            "sec": max(0.0, heard - _lead) if _lead else float(heard),
+            "heard_sec": float(heard),
+            "lead_sec": _lead,
+            "event_id": int(ev_id),
             "hole_number": ev.hole_number,
-            "peak_time_sec": float(offset),
-            "start_sec": max(0.0, offset - 3.5),
-            "end_sec": offset + 5.0,
-            "confidence": 1.0,
-            "impact_pinned": True,
-            "from_rig_audio": True,
         }
     except Exception as exc:  # noqa: BLE001
         log.warning("long-upload %s: could not read the rig's impact (%s) "
                     "— detecting instead", upload_id, exc)
         return None
+
+
+def _audio_impact_segment(db, row, upload_id):
+    """One segment pinned to the impact the RIG heard, or None.
+
+    A shortcut past work already done, never a new way to fail: when
+    the rig has nothing to say the caller runs its own detectors
+    exactly as before.
+    """
+    _rig = _rig_impact_sec(db, row, upload_id)
+    if _rig is None:
+        return None
+    offset = float(_rig["sec"])
+    log.info("long-upload %s: impact taken from the rig — heard at "
+             "%.2fs, using %.2fs (%.2fs lead) into the tee clip "
+             "(event %s), skipping detection",
+             upload_id, _rig["heard_sec"], offset, _rig["lead_sec"],
+             _rig["event_id"])
+    return {
+        "hole_number": _rig["hole_number"],
+        "peak_time_sec": offset,
+        "start_sec": max(0.0, offset - 3.5),
+        "end_sec": offset + 5.0,
+        "confidence": 1.0,
+        "impact_pinned": True,
+        "from_rig_audio": True,
+        # WHAT THE MICROPHONE ACTUALLY REPORTED, carried so the clip
+        # can say later where its impact frame came from and what it
+        # would have been without the correction.
+        "rig_heard_sec": _rig["heard_sec"],
+        "rig_lead_sec": _rig["lead_sec"],
+    }
 
 
 def _process_long_upload_segments(
@@ -4153,7 +4183,7 @@ def _process_long_upload_segments(
 
     def _persist_swing_track(
         swing_idx, tracer_info, tracer_url, cut_start_sec, cut_end_sec=None,
-        clip_id=None, seg_dims=None,
+        clip_id=None, seg_dims=None, rig_impact_sec=None,
     ):
         """Save everything this swing's production run figured out into
         edit_metrics.swings, so the Edit wizard opens fully pre-populated
@@ -4287,6 +4317,37 @@ def _process_long_upload_segments(
             _imp = tracer_info.get("impact_frame")
             if _imp is not None:
                 nsw["impact_frame"] = int(_imp) + offset
+                # AND WHERE IT CAME FROM, in the same frame base. The
+                # wizard reads this record; without these two it can
+                # only show a number.
+                nsw["impact_from"] = (tracer_info.get("impact_from")
+                                      or "the tracer")
+                _impfit = tracer_info.get("impact_frame_fit")
+                nsw["impact_frame_fit"] = (int(_impfit) + offset
+                                           if _impfit is not None else None)
+            # A HEARD INSTANT CONVERTS ONCE, NOT TWICE.
+            #
+            # Every frame above is cut-relative plus the cut's start
+            # frame, and each half of that is rounded on its own: on
+            # #1265 the strike at 4.63s became round(1.13s x 60) = f68
+            # plus round(3.5s x 60) = f210, which is f278. The frame
+            # the instant is actually IN is floor(4.63 x 60) = f277,
+            # and f277 is where the operator found the strike.
+            #
+            # So when the rig heard it, the full-clip frame is taken
+            # straight from the instant: one conversion, floored,
+            # because a frame covers the time from its own timestamp
+            # until the next one and the instant falls inside it.
+            if rig_impact_sec is not None and _src_fps > 0:
+                _rigf = max(0, int(float(rig_impact_sec) * _src_fps))
+                if _imp is not None and int(_imp) + offset != _rigf:
+                    log.info(
+                        "swing %s: impact f%d from the rig's own instant "
+                        "(%.3fs) — the cut-relative sum said f%d",
+                        swing_idx, _rigf, float(rig_impact_sec),
+                        int(_imp) + offset)
+                nsw["impact_frame"] = _rigf
+                nsw["impact_from"] = "the rig's audio impact"
             _addr = tracer_info.get("address_frame")
             if _addr is not None:
                 nsw["address_frame"] = int(_addr) + offset
@@ -4567,6 +4628,9 @@ def _process_long_upload_segments(
                     int(round(actual_before_sec * _seg_fps))
                     if seg.get("impact_pinned") else None
                 ),
+                # THE RIG HEARD THIS ONE. Its arithmetic is the impact
+                # frame and the flight fit may not move it.
+                impact_locked=bool(seg.get("from_rig_audio")),
                 launch_points=_lp_cut or None,
             )
             tracer_ok = bool(tracer_info and tracer_info.get("ok"))
@@ -4860,6 +4924,8 @@ def _process_long_upload_segments(
             _persist_swing_track(
                 idx, tracer_info, _tracer_url, tee_cut_start, tee_cut_end,
                 clip_id=clip.id, seg_dims=_seg_dims,
+                rig_impact_sec=(peak_time_sec
+                                if seg.get("from_rig_audio") else None),
             )
 
             results.append(
@@ -4925,6 +4991,9 @@ def _process_long_upload_segments(
                 int(round(actual_before_sec * _seg_fps))
                 if seg.get("impact_pinned") else None
             ),
+            # THE RIG HEARD THIS ONE. Its arithmetic is the impact
+            # frame and the flight fit may not move it.
+            impact_locked=bool(seg.get("from_rig_audio")),
             launch_points=_lp_cut or None,
         )
         # Now that nothing measures against it, shrink the segment for
@@ -4964,6 +5033,8 @@ def _process_long_upload_segments(
         _persist_swing_track(
             idx, tracer_info, tracer_url, tee_cut_start, tee_cut_end,
             clip_id=clip.id, seg_dims=_seg_dims,
+            rig_impact_sec=(peak_time_sec
+                            if seg.get("from_rig_audio") else None),
         )
 
         results.append(
@@ -15472,6 +15543,7 @@ def _trace_segment(
     verified_rest_xy=None,
     verified_impact_frame=None,
     launch_points=None,
+    impact_locked=False,
 ):
     """Draw the ball-flight tracer on a cut segment for PRODUCTION.
 
@@ -15490,7 +15562,13 @@ def _trace_segment(
     (the departure pin: the classifier found the ball, and MOG2 watched
     it leave). When set they become hard overrides in the AI pipeline —
     which then SKIPS its audio impact, vision impact, refine, address
-    and handedness calls entirely (frame indices are CUT-relative)."""
+    and handedness calls entirely (frame indices are CUT-relative).
+
+    impact_locked says the impact frame was not guessed: the rig HEARD
+    the strike, and `verified_impact_frame` is that instant run through
+    the arithmetic in `_rig_impact_sec`. Nothing below may move it.
+    Debug3's flight fit still supplies the ball and the points.
+    """
     # DEBUG3 IN PRODUCTION. The blob-and-track pipeline measures the same
     # three things the AI tracer does -- where the ball was, when it was
     # struck, and where it went -- and on the swings compared it did so more
@@ -15532,7 +15610,35 @@ def _trace_segment(
             if _d3.get("ok"):
                 _was = (verified_rest_xy, verified_impact_frame)
                 verified_rest_xy = tuple(_d3["ball"])
-                verified_impact_frame = int(_d3["launch_frame"])
+                # AN INSTANT THE RIG HEARD IS NOT A CANDIDATE.
+                #
+                # This replaced the impact frame unconditionally, and
+                # on an audio-triggered clip that threw away the one
+                # number in the pipeline that was MEASURED rather than
+                # fitted. Debug3's `launch_frame` is the fitted flight
+                # extrapolated back to a ground line, and on #1265 it
+                # landed at f289 -- one frame before the first
+                # detection, 4.82s, where the microphone heard the
+                # strike at 4.88s and the corrected instant was f278.
+                # The operator stepped the raw video and f277 was the
+                # strike.
+                #
+                # So the pin stays, and Debug3 supplies what it is good
+                # at: where the ball was and where it went. Everything
+                # downstream reads `launch_frame`, so it is moved here
+                # rather than at each of the three places that use it.
+                if impact_locked and verified_impact_frame is not None:
+                    _d3_f = int(_d3["launch_frame"])
+                    _d3["launch_frame"] = int(verified_impact_frame)
+                    _d3["launch_frame_fit"] = _d3_f
+                    _d3["launch_frame_from"] = "the rig's audio impact"
+                    log.info(
+                        "debug3 tracer: keeping the rig's impact f%d — the "
+                        "flight fit said f%d (%+d frames)",
+                        int(verified_impact_frame), _d3_f,
+                        _d3_f - int(verified_impact_frame))
+                else:
+                    verified_impact_frame = int(_d3["launch_frame"])
                 launch_points = [
                     {"frame": int(z["frame"]), "x": float(z["x"]),
                      "y": float(z["y"])}
@@ -15635,6 +15741,15 @@ def _trace_segment(
                     ],
                     "n_points": len(_pts3),
                     "impact_frame": int(_d3["launch_frame"]),
+                    # WHICH OF THE TWO ANSWERS THIS IS. The wizard shows
+                    # an impact frame and nothing said where it came
+                    # from, so a fitted frame and a heard one were
+                    # indistinguishable on screen -- which is how f289
+                    # looked like the audio lead failing when the audio
+                    # had not been consulted at all.
+                    "impact_from": (_d3.get("launch_frame_from")
+                                    or "the flight fit"),
+                    "impact_frame_fit": _d3.get("launch_frame_fit"),
                     "ball": {"x": float(_d3["ball"][0]),
                              "y": float(_d3["ball"][1]),
                              "source": _d3.get("ball_source")},
@@ -23116,25 +23231,19 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
         return out or None
 
     # 1. The rig heard it.
+    #
+    # THE SAME READER THE PRODUCE SIDE USES, not a second copy of the
+    # arithmetic. Two readers of one instant that disagree about when
+    # it was would place the search window and the impact frame a
+    # quarter of a second apart, which is most of the ascent.
     try:
-        ev_id = getattr(row, "camera_event_id", None)
-        ev = db.get(CameraEvent, ev_id) if ev_id else None
-        if (ev is not None and ev.impact_at is not None
-                and ev.tee_recording_started_at is not None):
-            off = (ev.impact_at - ev.tee_recording_started_at).total_seconds()
-            # THE SAME CORRECTION THE PRODUCE SIDE MAKES. Two readers of
-            # one instant that disagree about when it was would place
-            # the search window and the impact frame a quarter of a
-            # second apart, which is most of the ascent.
-            _lead = float(getattr(settings, "audio_impact_lead_sec", 0.0)
-                          or 0.0)
-            if _lead and off >= 0.0:
-                off = max(0.0, off - _lead)
-            if 0.0 <= off <= 24 * 3600:
-                w = _around([off])
-                _note("the rig's impact at %.2fs (%.2fs lead applied)"
-                      % (off, _lead), w)
-                return w
+        _rig = _rig_impact_sec(db, row, getattr(row, "id", None))
+        if _rig is not None:
+            w = _around([_rig["sec"]])
+            _note("the rig's impact at %.2fs (heard %.2fs, %.2fs lead "
+                  "applied)" % (_rig["sec"], _rig["heard_sec"],
+                                _rig["lead_sec"]), w)
+            return w
     except Exception as exc:  # noqa: BLE001
         log.warning("ascent window: could not read the rig's impact (%s)", exc)
 
@@ -23384,6 +23493,10 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
         _spot = _ascent_tee_spot(row, src_path, db, a, fps, _roi.get("roi"))
         _entry.update(_spot)
         rep["clips"].append(_entry)
+    # AND THE ONE THE RIG HEARD GETS THE INSTANT IT HEARD. Runs over
+    # the finished list rather than inside the loop: which chain the
+    # heard strike belongs to is a question about all of them.
+    _ascent_pin_rig_impact(db, row, rep, fps)
     _n_spot = sum(1 for c in rep["clips"] if c.get("ball"))
     _stage(2, "Tee spot and impact frame",
            "Each chain is run back along its own heading to the tee line. "
@@ -23529,6 +23642,13 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                     "ball_auto": True}
             if c.get("impact_frame") is not None:
                 _rec["impact_frame"] = int(c["impact_frame"])
+                # WHERE THAT FRAME CAME FROM, carried onto the record
+                # the wizard reads. A heard instant and a fitted one
+                # are different kinds of evidence and looked identical
+                # on screen.
+                if c.get("impact_from"):
+                    _rec["impact_from"] = c["impact_from"]
+                    _rec["impact_frame_fit"] = c.get("impact_frame_fit")
             # THE FLIGHT, AS BOTH LAYERS. `timed_points` is what the map
             # makes clickable; `ball_track_frames` is what it shows as
             # already plotted. The sweep's chain is both -- it is the
@@ -24556,6 +24676,84 @@ def _ascent_spot_from_chain(out: dict, ascent: dict, seen,
         + ". The spot comes from the heading alone; the frame is the "
           "estimate.")
     return out
+
+
+# HOW FAR FROM THE HEARD STRIKE A SWING MAY SIT AND STILL BE IT.
+#
+# An audio-triggered clip holds one swing, so in practice the nearest
+# chain is the only chain. The bound is for the other case: a dwell
+# clip that also carried an impact, or a re-produce of a long upload
+# where the sweep found three. A chain a second and a half from the
+# instant the microphone heard is a different shot, and giving it that
+# instant would move a good impact frame onto the wrong swing.
+ASCENT_RIG_IMPACT_MAX_SEC = 1.5
+
+
+def _ascent_pin_rig_impact(db, row, rep, fps) -> dict | None:
+    """Give the swing the rig HEARD the frame it heard it at.
+
+    THE MEASURED NUMBER BEATS THE FITTED ONE. Everything upstream of
+    this works the impact frame out from the ball: the chain is run
+    back along its own heading, through the deceleration fitted to it,
+    to where it crosses the tee line. That is a good estimate and it is
+    still an estimate -- it lands early or late by however much the fit
+    is wrong, and on #1265 the equivalent fit in the produce path
+    landed eleven frames after the strike.
+
+    When the rig HEARD the strike there is nothing to estimate. The
+    microphone has the instant, `_rig_impact_sec` turns it into a
+    position in this clip, and that is the impact frame.
+
+    The chain's own answer is kept beside it as `impact_frame_fit`:
+    the two disagreeing is the evidence for what the audio lead should
+    be, and throwing the fit away would destroy it.
+    """
+    _rig = _rig_impact_sec(db, row, getattr(row, "id", None))
+    if _rig is None:
+        return None
+    _fps = float(fps or 30.0)
+    # FLOOR, NOT NEAREST. A frame covers the time from its own
+    # timestamp until the next one, so the frame an instant falls IN is
+    # the floor -- 4.63s on a 60fps camera is f277, which spans 4.617s
+    # to 4.633s. Rounding picks the nearest boundary instead and lands
+    # on f278, one frame after the strike. Early is also the harmless
+    # direction: it is where the drawn line begins.
+    _f = max(0, int(float(_rig["sec"]) * _fps))
+    _cands = [c for c in (rep.get("clips") or [])
+              if c.get("impact_frame") is not None]
+    _note = {"heard_sec": _rig["heard_sec"], "lead_sec": _rig["lead_sec"],
+             "sec": round(float(_rig["sec"]), 3), "frame": _f,
+             "applied": False, "reason": None}
+    rep["rig_impact"] = _note
+    if not _cands:
+        _note["reason"] = "no swing had an impact frame to replace"
+        return _note
+    _best = min(_cands, key=lambda c: abs(int(c["impact_frame"]) - _f))
+    _was = int(_best["impact_frame"])
+    _off = abs(_was - _f)
+    _max = max(1, int(round(ASCENT_RIG_IMPACT_MAX_SEC * _fps)))
+    if _off > _max:
+        _note["reason"] = (
+            f"the nearest swing is f{_was}, {_off / _fps:.2f}s from the "
+            f"instant the rig heard — too far to be the same shot, so "
+            f"its own impact frame was left alone")
+        log.info("ascent impact: upload=%s rig heard f%d, nearest swing "
+                 "f%d (%.2fs away) — NOT applied", getattr(row, "id", None),
+                 _f, _was, _off / _fps)
+        return _note
+    _best["impact_frame"] = _f
+    _best["impact_sec"] = round(_f / _fps, 2)
+    _best["impact_from"] = "the rig's audio impact"
+    _best["impact_frame_fit"] = _was
+    _best["impact_heard_sec"] = _rig["heard_sec"]
+    _note.update({"applied": True, "was_frame": _was,
+                  "moved_frames": _f - _was})
+    log.info("ascent impact: upload=%s impact taken from the rig — heard "
+             "at %.2fs, using %.2fs (%.2fs lead) = f%d; the chain's own "
+             "fit said f%d (%+d frames)", getattr(row, "id", None),
+             _rig["heard_sec"], _rig["sec"], _rig["lead_sec"], _f, _was,
+             _was - _f)
+    return _note
 
 
 def _ascent_tee_spot(row, src_path, db, ascent, fps, roi):

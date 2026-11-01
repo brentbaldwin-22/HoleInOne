@@ -3227,6 +3227,25 @@ function ClickToPlotModal({
                     title="Remove every plotted tee point for this swing.">
               ✕ clear tee tracer ({Object.keys(marks).length})
             </button>
+            {/* WHERE THE NUMBER CAME FROM. A frame the microphone
+                heard and a frame a curve fit produced are different
+                kinds of evidence, and on screen they were the same
+                grey "f289" -- which is how a fitted frame read as the
+                audio correction failing on a clip whose audio had
+                never been consulted. The fit's own answer is kept
+                beside it: the two disagreeing is the measurement that
+                says what the lead should be. */}
+            {swing.impact_from && (
+              <div className="tiny muted" style={{ marginTop: 4 }}>
+                f{swing.impact_frame} from {swing.impact_from}
+                {swing.impact_frame_fit != null
+                  && swing.impact_frame_fit !== swing.impact_frame
+                  ? ` — the flight fit said f${swing.impact_frame_fit}`
+                  : ""}
+                {impactFrame !== swing.impact_frame
+                  ? " (you have changed it)" : ""}
+              </div>
+            )}
           </PlotField>
 
           <PlotField

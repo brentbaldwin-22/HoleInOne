@@ -60,22 +60,29 @@ check("a lead of 0 leaves it exactly as reported",
       corrected(4.80, 0.0), 4.80)
 
 print()
-print("both readers apply it:")
+print("every reader applies it, because there is only one:")
 _src = (ROOT / "backend" / "app" / "routers"
         / "admin.py").read_text(encoding="utf-8")
-# The produce side: _audio_impact_segment turns the instant into the
-# offset every later stage uses.
-_seg = _src[_src.index("def _audio_impact_segment("):]
-_seg = _seg[:_seg.index("\n@router") if "\n@router" in _seg else 4000]
-check("the produce reader subtracts the lead",
-      bool(re.search(r"offset = max\(0\.0, offset - _lead\)", _seg)), True)
+# THIS USED TO CHECK TWO COPIES AGREED. The produce pin and the ascent
+# search window each turned `impact_at` into an offset with their own
+# arithmetic, and this test existed because keeping them in step was
+# manual. They now share `_rig_impact_sec`, so the thing to check is
+# that the copies are gone.
+_h = _src[_src.index("def _rig_impact_sec("):]
+_h = _h[:_h.index("\ndef ", 10)]
+check("the helper subtracts the lead",
+      bool(re.search(r"max\(0\.0, heard - _lead\)", _h)), True)
+check("...and keeps what the microphone said as well",
+      '"heard_sec"' in _h, True)
+check("it is the only place the setting is read",
+      len(re.findall(r'getattr\(settings, "audio_impact_lead_sec"', _src)), 1)
+check("the produce pin goes through it",
+      "_rig = _rig_impact_sec(db, row, upload_id)" in _src, True)
+check("the ascent search window goes through it",
+      '_rig = _rig_impact_sec(db, row, getattr(row, "id", None))' in _src,
+      True)
 check("...and logs what it heard as well as what it used",
-      "heard at" in _seg and "using" in _seg, True)
-# The search-window side reads the same CameraEvent field.
-_win = _src[_src.index("the rig's impact at"):]
-_win = _win[max(0, _win.find("off = ") - 600):][:1200]
-check("the window reader subtracts it too",
-      bool(re.search(r"off = max\(0\.0, off - _lead\)", _src)), True)
+      bool(re.search(r"heard at .*using", _src, re.S)), True)
 
 print()
 print("it is tunable without a deploy:")
