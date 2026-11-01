@@ -16212,6 +16212,9 @@ def _run_produce_debug_job(
         _produce_debug_state[upload_id] = {
             "running": True, "total": 0, "done": 0, "swings": [],
             "finished_at": None, "ai_available": ai_available, "error": None,
+            # When this run began, so a later click can tell a run that
+            # is working from one that is stuck. See produce_debug.
+            "started_at": time.time(),
         }
 
     def _pub(name: str | None) -> str | None:
@@ -16250,11 +16253,41 @@ def _run_produce_debug_job(
         # it shows while actually analysing — so a produce still
         # running, a produce that crashed, and a produce that was never
         # kicked all looked identical, for up to thirty minutes.
-        with _produce_debug_lock:
-            if upload_id in _produce_debug_state:
-                _produce_debug_state[upload_id]["stage"] = (
-                    "waiting for the produce run to publish its decisions"
-                )
+        _t_wait0 = time.time()
+
+        def _waiting(note: str) -> None:
+            """Say what is being waited for, and for how long.
+
+            A FIXED STRING IS BARELY BETTER THAN A SPINNER. "Waiting
+            for the produce run" still does not separate a run doing
+            minutes of honest work from one that was never kicked, and
+            Debug now takes the long route so the first is normal. The
+            row's own status and the elapsed seconds do separate them,
+            and both are free to read.
+            """
+            # AND WHAT IS ACTUALLY HOLDING THE BOX UP. `heavy_gate` is
+            # a single exclusive lock: one CPU-heavy media job at a
+            # time, process-wide. So a Debug produce does not start
+            # until every produce ahead of it has finished — and with
+            # the dwell off and the audio trigger cutting, clips arrive
+            # all round. Thirty minutes of "waiting" with a perfectly
+            # healthy box behind it is the expected outcome, and
+            # indistinguishable from a hang unless the queue says so.
+            try:
+                _holder = workload.current_heavy()
+            except Exception:  # noqa: BLE001
+                _holder = None
+            with _produce_debug_lock:
+                if upload_id in _produce_debug_state:
+                    _produce_debug_state[upload_id]["stage"] = (
+                        "waiting %ds for the produce run (%s)%s"
+                        % (int(time.time() - _t_wait0), note,
+                           ("; the box is busy with: %s" % _holder)
+                           if _holder else "")
+                    )
+
+        _waiting("kicked by this Debug click" if wait_after is not None
+                 else "already in flight — this did not start one")
         while time.time() < _deadline:
             with _produce_work_lock:
                 _w = _produce_work_state.get(upload_id)
@@ -16281,17 +16314,20 @@ def _run_produce_debug_job(
                     raise
                 except Exception:  # noqa: BLE001 - a read that failed
                     pass           #   says nothing either way
+            # THE ROW'S OWN STATUS, every pass, so the stage line is a
+            # live reading rather than a label written once.
+            _st = None
+            try:
+                db.expire_all()
+                _r = db.get(LongVideoUpload, upload_id)
+                _st = _r.processing_status if _r is not None else None
+            except Exception:  # noqa: BLE001
+                _st = None
             if wait_after is None:
-                try:
-                    db.expire_all()
-                    _r = db.get(LongVideoUpload, upload_id)
-                    _busy = _r and _r.processing_status in (
-                        "pending", "processing",
-                    )
-                except Exception:  # noqa: BLE001
-                    _busy = False
+                _busy = _st in ("pending", "processing")
                 if not _busy:
                     break
+            _waiting("upload is '%s'" % (_st or "unreadable"))
             time.sleep(2.0)
         if work is None:
             raise RuntimeError(
@@ -16859,8 +16895,23 @@ def produce_debug(
     if not row:
         raise HTTPException(404, "long upload not found")
     with _produce_debug_lock:
-        if (_produce_debug_state.get(upload_id) or {}).get("running"):
+        _prev = _produce_debug_state.get(upload_id) or {}
+        # A RUN THAT IS STILL WAITING IS STILL A RUN — but one that has
+        # been waiting longer than a produce can credibly take is not,
+        # and refusing every retry on its account leaves the only way
+        # back a server restart. Same grace the rest of this router
+        # gives a row that claims to be producing.
+        _began = _prev.get("started_at")
+        _stale = (_began is None
+                  or (time.time() - float(_began)) >= PRODUCE_STALE_SEC)
+        if _prev.get("running") and not _stale:
             return {"ok": False, "error": "A debug run is already in progress."}
+        if _prev.get("running") and _stale:
+            log.warning(
+                "produce-debug: upload %s had a run still marked running "
+                "after %.0fs — starting a new one over it", upload_id,
+                time.time() - float(_began or 0.0),
+            )
     motion_only = bool(getattr(row, "camera_event_id", None))
 
     # 1) Normal produce — saves the clips exactly like the Produce button.
