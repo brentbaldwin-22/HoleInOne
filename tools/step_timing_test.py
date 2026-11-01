@@ -112,19 +112,19 @@ def _block(start_marker: str, end_marker: str) -> str:
     return _src[_i:_src.index(end_marker, _i)]
 
 
-# ── 2. stage 1 carries them out ──────────────────────────────────────
-print("stage 1 reports the sweep's steps under it:")
+# ── 2. stage 2 carries them out ──────────────────────────────────────
+print("stage 2 reports the sweep's steps under it:")
 _s1 = _block("    _ascent_trim_considered(sweep)",
              '    _asc = list(sweep.get("ascents") or [])')
 check("the run builds scan_stages", 'rep["scan_stages"]' in _s1, True)
-for _n, _what in (("1a", "the window calculation"),
-                  ("1b", "detection"),
-                  ("1c", "the walk"),
-                  ("1d", "the fits"),
-                  ("1e", "the stitch and its re-reads"),
-                  ("1f", "following stopped chains"),
-                  ("1g", "the gates"),
-                  ("1h", "drawing the pictures")):
+for _n, _what in (("2a", "the window calculation"),
+                  ("2b", "detection"),
+                  ("2c", "the walk"),
+                  ("2d", "the fits"),
+                  ("2e", "the stitch and its re-reads"),
+                  ("2f", "following stopped chains"),
+                  ("2g", "the gates"),
+                  ("2h", "drawing the pictures")):
     check("%s is %s" % (_n, _what), '"%s"' % _n in _s1, True)
 # MEASURED, NOT RETYPED. Every one of the sweep's own laps is read off
 # the sweep's report -- a number typed into the page by hand describes
@@ -141,21 +141,21 @@ check("the picture lap is measured around the four image helpers",
 # nobody is measuring -- which is the only way a timing table finds
 # something its author did not think of.
 check("a gap between the laps and the sweep's own total is shown",
-      '"1z"' in _s1 and "Unattributed, inside the sweep" in _s1, True)
+      '"2z"' in _s1 and "Unattributed, inside the sweep" in _s1, True)
 check("...and it is the sweep's clock it is measured against",
       'sweep.get("seconds")' in _s1, True)
 check("steps that took no time are left out",
       'if x["seconds"] > 0.004' in _s1, True)
 
-# ── 3. stage 3 does the same ─────────────────────────────────────────
-print("stage 3 reports the green pass's steps under it:")
+# ── 3. stage 4 does the same ─────────────────────────────────────────
+print("stage 4 reports the green pass's steps under it:")
 _s3 = _block("def _ascent_descents(", "\ndef _ascent_window_views(")
-for _n, _what in (("3a", "opening the green and reading the clocks"),
-                  ("3b", "placing the flight windows"),
-                  ("3c", "the descent search"),
-                  ("3d", "matching swings to landings"),
-                  ("3e", "drawing the window views"),
-                  ("3f", "the resting-ball plates")):
+for _n, _what in (("4a", "opening the green and reading the clocks"),
+                  ("4b", "placing the flight windows"),
+                  ("4c", "the descent search"),
+                  ("4d", "matching swings to landings"),
+                  ("4e", "drawing the window views"),
+                  ("4f", "the resting-ball plates")):
     check("%s is %s" % (_n, _what), '"%s"' % _n in _s3, True)
 # A RUN THAT GIVES UP STILL SAYS WHAT IT DID. Three of this function's
 # exits are early ones -- no green file, no impact frame, nothing found
@@ -164,7 +164,7 @@ check("the laps are recorded as they finish, not at the end",
       _s3.count("_lap()") >= 6, True)
 check("the no-window exit reports what it reached",
       bool(re.search(r'out\["reason"\] = "no swing had an impact frame',
-                     _s3)) and _s3.count('_sub("3e"') >= 2, True)
+                     _s3)) and _s3.count('_sub("4e"') >= 2, True)
 check("every early exit's rows survive on the report",
       '"stages": []' in _s3, True)
 check("the expensive step says it scales with the window, not the clip",
@@ -179,10 +179,10 @@ _jsx = (ROOT / "frontend" / "src" / "pages"
         / "AdminProduction.jsx").read_text(encoding="utf-8")
 _card = _jsx[_jsx.index("function ProduceStepSummary("):
              _jsx.index("function SwingCard(")]
-check("stage 1's steps come from scan_stages",
-      "1: rep?.scan_stages || []" in _card, True)
-check("stage 3's steps come from descent_stages",
-      "3: rep?.descent_stages || []" in _card, True)
+check("stage 2's steps come from scan_stages",
+      "2: rep?.scan_stages || []" in _card, True)
+check("stage 4's steps come from descent_stages",
+      "4: rep?.descent_stages || []" in _card, True)
 check("they are indented under their own stage row",
       "r.subs?.length > 0" in _card, True)
 # SHARE OF THE STEP, NOT OF THE RUN. "The stitch was 70% of stage 1"

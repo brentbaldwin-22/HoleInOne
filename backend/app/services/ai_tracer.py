@@ -7550,6 +7550,7 @@ def plot_launch_frames_ai(
     debug_prefix: str = "ailaunch",
     model: str | None = None,
     first_rect: tuple[int, int, int, int] | None = None,
+    step: int = 1,
 ) -> dict:
     """AI tracks the ball frame by frame for the first few frames after
     impact - the motion-blur zone where the pixel launch tracker
@@ -7560,12 +7561,25 @@ def plot_launch_frames_ai(
     miss, like the operator's adaptive-square tracker. MOG2 owns the
     flight after these frames.
 
+    `step` spaces the frames out: 1 is every frame, 3 is the impact
+    frame and then every third. A struck ball barely moves between two
+    consecutive frames at 60fps, so consecutive crops buy five pictures
+    of nearly the same instant; spacing them covers the same number of
+    API calls over four times as much of the climb. The velocity below
+    is per STEP, not per frame, which is what the next crop is placed
+    from -- so nothing else has to know.
+
     Returns {available, points: [{frame,x,y}], n_found, image, reason,
-    frame_log, api_error}. Never raises."""
+    frame_log, api_error, step}. Never raises."""
     out = {
         "available": False, "points": [], "n_found": 0,
         "image": None, "reason": None, "frame_log": [],
         "api_error": False,
+        # THE BALL AT ADDRESS, when `first_rect` asked for it. Kept
+        # apart from `points`: those are the flight, and the ball
+        # sitting on the tee is not a point of the flight -- it is
+        # where the flight starts from.
+        "rest": None,
     }
     if not HAS_CV or not HAS_NP:
         out["reason"] = "opencv/numpy not installed"
@@ -7583,17 +7597,30 @@ def plot_launch_frames_ai(
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         r = max(10, int(round(0.015 * h)))
         rx, ry = float(rest_xy[0]), float(rest_xy[1])
-        # Operator's spec: check the impact frame itself, then the next
-        # five — 6 frames total.
+        # Operator's spec: the impact frame itself, then every `step`th
+        # after it, `n_frames` pictures in all.
         f_first = int(impact_frame)
-        frames = list(range(f_first, f_first + int(n_frames)))
+        _step = max(1, int(step))
+        frames = list(range(f_first, f_first + _step * int(n_frames), _step))
+        out["step"] = _step
         fulls: dict[int, "np.ndarray"] = {}
+        # READ FORWARD, KEEP WHAT IS WANTED. Seeking to each wanted
+        # frame is a seek per picture into a long clip; decoding
+        # straight through a dozen frames and dropping the ones between
+        # is cheaper and, on a B-framed stream, is the only way the
+        # frame numbers are reliable. The old loop read CONSECUTIVE
+        # frames and filed them under stepped keys, which would have
+        # labelled f+1 as f+3.
         cap.set(cv2.CAP_PROP_POS_FRAMES, f_first)
-        for f in frames:
+        _want = set(frames)
+        _f = f_first
+        while _f <= frames[-1]:
             ok, fr = cap.read()
             if not ok or fr is None:
                 break
-            fulls[f] = fr
+            if _f in _want:
+                fulls[_f] = fr
+            _f += 1
         cap.release()
         if len(fulls) < 2:
             out["reason"] = "could not read post-impact frames"
@@ -7771,7 +7798,21 @@ def plot_launch_frames_ai(
                     d_prev_rest = (
                         ((prev[0] - rx) ** 2 + (prev[1] - ry) ** 2) ** 0.5
                     )
-                    if d_rest < 1.2 * r:
+                    if i == 0 and first_rect is not None:
+                        # THE ZOOM SQUARE IS LOOKING FOR THE BALL AT
+                        # REST, so the rest gates cannot apply to it:
+                        # "still on the tee" is the correct answer
+                        # here, and gating on it would throw away the
+                        # one find this frame exists to make. Measured
+                        # against WHAT, besides -- `rest_xy` is only
+                        # the caller's seed for where to look when it
+                        # does not know where the ball is.
+                        #
+                        # What is found becomes the rest, and every
+                        # frame after this one is gated against it.
+                        accepted = (nx, ny)
+                        status = "found (the ball at address)"
+                    elif d_rest < 1.2 * r:
                         status = "gated: still on the tee"
                     elif pts and d_rest <= d_prev_rest - 2 * r:
                         status = "gated: moving back toward the tee"
@@ -7782,17 +7823,35 @@ def plot_launch_frames_ai(
                         status = "found"
             if accepted is not None:
                 nx, ny = accepted
-                if pts:
+                if i == 0 and first_rect is not None:
+                    # The anchor, not a point of the flight. It
+                    # REPLACES the caller's seed, so every crop and
+                    # every gate after this is measured from where the
+                    # ball actually was.
+                    rx, ry = nx, ny
+                    out["rest"] = {"frame": f, "x": int(round(nx)),
+                                   "y": int(round(ny))}
+                elif pts:
                     vel = (nx - prev[0], ny - prev[1])
+                elif out.get("rest") is not None:
+                    # THE REST IS KNOWN AND IT IS EXACTLY ONE STEP
+                    # BACK, so the step is the velocity. The damping
+                    # below is for a caller-supplied rest, which may be
+                    # several frames of travel away from the first
+                    # find; halving a measured step would aim every
+                    # later crop short.
+                    vel = (nx - rx, ny - ry)
                 else:
                     # First find: velocity from the rest, damped (the
                     # find may be 2+ frames of travel from rest).
                     vel = ((nx - rx) / 2.0, (ny - ry) / 2.0)
                 prev = (nx, ny)
                 misses = 0
-                pts.append({
-                    "frame": f, "x": int(round(nx)), "y": int(round(ny)),
-                })
+                if not (i == 0 and first_rect is not None):
+                    pts.append({
+                        "frame": f, "x": int(round(nx)),
+                        "y": int(round(ny)),
+                    })
             else:
                 misses += 1
                 if vel is not None:
@@ -7822,9 +7881,21 @@ def plot_launch_frames_ai(
 
         out["points"] = pts
         out["n_found"] = len(pts)
+        # HOW MANY FRAMES WERE THE FLIGHT'S TO FIND. With a zoom
+        # square the first one is the ball at address, so "3 of 5"
+        # against a ceiling of 4 reads as a worse result than it is.
+        _n_flight = len(frames) - (1 if first_rect is not None else 0)
         if pts:
             out["reason"] = (
-                f"AI plotted {len(pts)}/{len(frames)} launch frames"
+                f"AI plotted {len(pts)}/{_n_flight} launch frames"
+                + (", and found the ball at address"
+                   if out.get("rest") else "")
+                + (f", every {_step} frames" if _step > 1 else "")
+            )
+        elif out.get("rest") is not None:
+            out["reason"] = (
+                "AI found the ball at address but saw it on none of the "
+                f"{_n_flight} frames after it"
             )
         elif api_fails >= len(frames):
             out["reason"] = "api_failed on every launch frame"

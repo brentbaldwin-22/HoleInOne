@@ -23334,7 +23334,30 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     rep["roi"] = _roi.get("roi")
     rep["roi_source"] = _roi.get("source")
 
-    # ── 1. every ball leaving ─────────────────────────────────────────
+    # ── 1. the model looks first ──────────────────────────────────────
+    #
+    # BEFORE THE SWEEP, because what it produces is an input to the
+    # rest of the run rather than a correction to it: where the ball
+    # was at address, and the first dozen frames of the climb -- the
+    # part below the band, which nothing else in this run observes.
+    _t = time.perf_counter()
+    if progress:
+        progress("Asking the model to find the ball and the first of "
+                 "its climb", 0, 0)
+    rep["ai_launch"] = _ascent_ai_launch(db, row, src_path, fps, rep, _roi)
+    _stage(1, "AI launch plot",
+           "The band the sweep searches starts above the golfers, so the "
+           "climb from the tee into it is never measured -- it is run "
+           "backwards out of the chain afterwards, which is a fit. On a "
+           "clip the rig heard, the impact frame is known without any of "
+           "that, so the model is shown the tee box on that frame to find "
+           "the ball at address, then every few frames after it to follow "
+           "the ball out. "
+           + str((rep["ai_launch"] or {}).get("reason") or ""),
+           (rep["ai_launch"] or {}).get("n_points"), "plotted",
+           time.perf_counter() - _t)
+
+    # ── 2. every ball leaving ─────────────────────────────────────────
     _t = time.perf_counter()
     # THIS HOLE'S GATES. Empty for a hole nobody has tuned, which is what
     # resolve_gates wants in order to hand back the module defaults --
@@ -23381,7 +23404,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     _ascent_trim_considered(sweep)
     _sec_pics = time.perf_counter() - _t_sub
     rep["sweep"] = sweep
-    # ── INSIDE STAGE 1 ───────────────────────────────────────────────
+    # ── INSIDE STAGE 2 ───────────────────────────────────────────────
     #
     # Stage 1 is most of a find-only run, and "most of the run is the
     # sweep" is the question restated rather than an answer. These are
@@ -23396,43 +23419,43 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                 "counts": units, "seconds": round(float(secs or 0.0), 2)}
 
     _scan_stages = [
-        _sub("1a", "Working out where to look",
+        _sub("2a", "Working out where to look",
              "An audio-triggered clip names the second the strike was "
              "heard, so the band is swept for a few seconds around it "
              "rather than for the whole clip. "
              + str(rep.get("window_detail") or "the whole clip"),
              (len(_win) or None), "window(s)", _sec_win),
-        _sub("1b", "Detecting",
+        _sub("2b", "Detecting",
              "One frame-difference pass over the band above the "
              "golfers, every frame. This is decoding: it scales with "
              "the seconds searched above, and with nothing else.",
              sweep.get("n_dets"), "detections", _sw_t.get("detect")),
-        _sub("1c", "Walking the detections into chains",
+        _sub("2c", "Walking the detections into chains",
              "In memory, no video read: each detection joined to the "
              "one it predicts in the next frame, inside a corridor "
              "ascent_corridor_px wide.",
              sweep.get("n_walked"), "chains", _sw_t.get("walk")),
-        _sub("1d", "Fitting chains to lines",
+        _sub("2d", "Fitting chains to lines",
              "A second pass that fits rather than walks, off by default "
              "— ascent_fit_lines turns it on.",
              sweep.get("n_fits"), "fits", _sw_t.get("fits")),
-        _sub("1e", "Joining the pieces, re-reading the gaps",
+        _sub("2e", "Joining the pieces, re-reading the gaps",
              "One flight cut into pieces is stitched back together, and "
              "each hole between two pieces is a seek into the clip and "
              "a few decoded frames. This is where a bitty detection "
              "pass gets expensive.",
              sweep.get("n_holes_read"), "holes re-read",
              _sw_t.get("stitch")),
-        _sub("1f", "Following the chains that just stopped",
+        _sub("2f", "Following the chains that just stopped",
              "A chain that ends mid-flight is read further, frame by "
              "frame, out of the same re-read budget as the holes.",
              sweep.get("n_extended"), "points added", _sw_t.get("extend")),
-        _sub("1g", "Judging every chain against the gates",
+        _sub("2g", "Judging every chain against the gates",
              "Rise, speed, straightness and where it points back to. "
              "Arithmetic on points already in memory; if this is ever "
              "slow, something is wrong.",
              sweep.get("n_considered"), "judged", _sw_t.get("judge")),
-        _sub("1h", "Drawing the pictures",
+        _sub("2h", "Drawing the pictures",
              "The sweep map, the considered-chains overlay, the "
              "detection zoom and one picture per swing. Every one is a "
              "re-read of the frames it draws on, so this grows with the "
@@ -23442,13 +23465,13 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # THE SWEEP'S OWN CLOCK, NOT THE SUM OF ITS PARTS. `seconds` comes
     # from inside `sweep_ascents`; the laps above are measured inside
     # the same call. A gap between them is a step nobody is timing.
-    _inside_sweep = ("1b", "1c", "1d", "1e", "1f", "1g")
+    _inside_sweep = ("2b", "2c", "2d", "2e", "2f", "2g")
     _sw_unattr = round(max(0.0, float(sweep.get("seconds") or _sec_sweep)
                            - sum(float(x["seconds"]) for x in _scan_stages
                                  if x["n"] in _inside_sweep)), 2)
     if _sw_unattr > 0.05:
         _scan_stages.append(_sub(
-            "1z", "Unattributed, inside the sweep",
+            "2z", "Unattributed, inside the sweep",
             "Time the sweep spent that none of its own steps claimed — "
             "opening the clip, reading its header, building the report. "
             "Small is bookkeeping; large means there is a step in there "
@@ -23456,7 +23479,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     rep["scan_stages"] = [x for x in _scan_stages if x["seconds"] > 0.004]
     _asc = list(sweep.get("ascents") or [])
     rep["ascents"] = _asc
-    _stage(1, "Balls leaving the tee",
+    _stage(2, "Balls leaving the tee",
            "One frame-difference pass over the band above the golfers, "
            "every frame, at scan level "
            + str(sweep.get("sens") or "?")
@@ -23473,7 +23496,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
         _ball_scan_finish_timing(rep, _t_run)
         return rep
 
-    # ── 2. where it was sitting, and when it went ─────────────────────
+    # ── 3. where it was sitting, and when it went ─────────────────────
     _t = time.perf_counter()
     for i, a in enumerate(_asc):
         if progress:
@@ -23496,9 +23519,15 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # AND THE ONE THE RIG HEARD GETS THE INSTANT IT HEARD. Runs over
     # the finished list rather than inside the loop: which chain the
     # heard strike belongs to is a question about all of them.
-    _ascent_pin_rig_impact(db, row, rep, fps)
+    _pin = _ascent_pin_rig_impact(db, row, rep, fps)
+    # THE MODEL'S PLOT JOINS THE SAME SWING. Stage 1 did the looking,
+    # before there was a chain to attach it to; this is where its two
+    # answers land -- the ball at address becomes the tee spot, and the
+    # climb below the band goes on the front of the chain.
+    rep["ai_launch_merge"] = _ascent_apply_ai_launch(
+        rep, (_pin or {}).get("clip_index"))
     _n_spot = sum(1 for c in rep["clips"] if c.get("ball"))
-    _stage(2, "Tee spot and impact frame",
+    _stage(3, "Tee spot and impact frame",
            "Each chain is run back along its own heading to the tee line. "
            "Where it crosses is the tee spot; WHEN it crosses is a "
            "separate question, and used to be answered with the same "
@@ -23513,18 +23542,18 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
            "expensive step in the run.",
            _n_spot, "located", time.perf_counter() - _t)
 
-    # ── 3. where each one came down ───────────────────────────────────
+    # ── 4. where each one came down ───────────────────────────────────
     _t = time.perf_counter()
     _desc = _ascent_descents(row, db, rep, fps, progress=progress)
     rep["descents"] = _desc
-    # ITS OWN STEPS, under stage 3 in the timing panel. Same reason
-    # stage 1 carries `scan_stages`: one number for "the green half"
+    # ITS OWN STEPS, under stage 4 in the timing panel. Same reason
+    # stage 2 carries `scan_stages`: one number for "the green half"
     # cannot say whether the cost was the segmentation pass, the plate
     # comparison or the pictures, and those want different fixes.
     rep["descent_stages"] = [x for x in (_desc.get("stages") or [])
                              if float(x.get("seconds") or 0.0) > 0.004]
     _ascent_trim_considered(_desc.get("sweep") or {})
-    _stage(3, "Balls coming down",
+    _stage(4, "Balls coming down",
            "One pass over the green camera, which is the easy half: "
            "nothing else on a green falls. Each swing then claims the "
            "landing that arrives five to eight seconds after its own "
@@ -23535,7 +23564,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
            + str(_desc.get("reason") or ""),
            _desc.get("n_matched"), "matched", time.perf_counter() - _t)
 
-    # ── 4. the edit dialog's own produce ──────────────────────────────
+    # ── 5. the edit dialog's own produce ──────────────────────────────
     if not produce:
         _ball_scan_finish_timing(rep, _t_run)
         rep["produced"] = False
@@ -23753,7 +23782,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
             c["reason"] = f"render failed: {exc}"
         _idx += 1
     _phase = _pt_snapshot()
-    _stage(4, "Tracer clip",
+    _stage(5, "Tracer clip",
            "run_wizard_produce_job -- the same call the edit dialog's "
            "Save & close makes, with the same renderer behind it. Nothing "
            "about the finished clip is new here; only how its two numbers "
@@ -23810,7 +23839,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     out: dict = {"ok": False, "n_matched": 0, "events": [], "reason": None,
                  "delta_sec": None, "delta_source": None, "stages": []}
 
-    # ── INSIDE STAGE 3 ───────────────────────────────────────────────
+    # ── INSIDE STAGE 4 ───────────────────────────────────────────────
     #
     # The green half is four different costs wearing one number: a
     # couple of probes, a window calculation that reads nothing, one
@@ -23885,9 +23914,9 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         log.warning("ascent descents: green setup failed on %s: %s",
                     row.id, exc)
         out["reason"] = f"the green pass failed: {exc}"
-        _sub("3a", "Opening the green clip", str(exc), None, None, _lap())
+        _sub("4a", "Opening the green clip", str(exc), None, None, _lap())
         return out
-    _sub("3a", "Opening the green clip and reading the two clocks",
+    _sub("4a", "Opening the green clip and reading the two clocks",
          "Its frame rate, and how far apart the two recordings started "
          "— the number that decides which seconds of the green each "
          "swing searches. Two header reads; it should be instant.",
@@ -24050,7 +24079,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     out["windows"] = [[a, b] for a, b in _wins]
     out["n_frames_searched"] = sum(b - a + 1 for a, b in _wins)
     out["n_frames_green"] = _n_green
-    _sub("3b", "Placing each swing's flight window",
+    _sub("4b", "Placing each swing's flight window",
          "A struck ball is in the air five to eight seconds, so each "
          "swing names a few seconds of the green clip and nothing else "
          "is looked at. Overlapping stretches are merged so shared "
@@ -24060,7 +24089,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     if not _wins:
         _ascent_window_views(row, _gp, out, _clips, _gfps, fps,
                              _tee_start, _green_start)
-        _sub("3e", "Drawing the windows", "One picture per swing.",
+        _sub("4e", "Drawing the windows", "One picture per swing.",
              None, None, _lap())
         out["reason"] = "no swing had an impact frame to search from"
         return out
@@ -24110,7 +24139,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                   # reads, and dropping the key here meant the block
                   # explaining the gates never rendered at all.
                   "gates": _gd.get("gates")}
-    _sub("3c", "Looking for the ball coming down",
+    _sub("4c", "Looking for the ball coming down",
          "One segmentation pass per window — mog2, the plate detector "
          "and frame differencing over every frame of it, then the "
          "detections walked into chains and judged. This is the "
@@ -24163,7 +24192,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         # visible in the heat map and nowhere else.
         _ascent_window_views(row, _gp, out, _clips, _gfps, fps,
                              _tee_start, _green_start)
-        _sub("3e", "Drawing the windows",
+        _sub("4e", "Drawing the windows",
              "One picture per swing: its own few seconds of green, "
              "every detection in them, and the chains that were "
              "weighed. A re-read of the green clip per swing.",
@@ -24326,7 +24355,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     # ends where the ball stopped FALLING -- the pitch mark -- and a
     # ball bounces and rolls from there. Both are kept, because the
     # comet wants the arrival and the distance wants the finish.
-    _sub("3d", "Matching each swing to a landing",
+    _sub("4d", "Matching each swing to a landing",
          "Every possible swing-to-landing pair ranked by how far the "
          "chain actually fell, then assigned down the list so no "
          "landing is drawn twice. In memory; the cost is nil.",
@@ -24359,7 +24388,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                 out["n_rest"] += 1
     else:
         out["rest_reason"] = "no green camera on this pair"
-    _sub("3f", "Finding where it came to rest",
+    _sub("4f", "Finding where it came to rest",
          "Two plates of the green compared — before the shot, and once "
          "the ball is down and still. No tracking and no chain, but a "
          "handful of frames decoded per swing, so this grows with the "
@@ -24368,7 +24397,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
 
     _ascent_window_views(row, _gp, out, _clips, _gfps, fps,
                          _tee_start, _green_start)
-    _sub("3e", "Drawing the windows",
+    _sub("4e", "Drawing the windows",
          "One picture per swing: its own few seconds of green, every "
          "detection in them, and the chains that were weighed, with "
          "the one the swing claimed marked. A re-read of the green "
@@ -24678,6 +24707,239 @@ def _ascent_spot_from_chain(out: dict, ascent: dict, seen,
     return out
 
 
+def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
+    """Ask the model where the ball went, BEFORE looking for it.
+
+    THE PART OF THE FLIGHT NOTHING MEASURES. The sweep searches a band
+    above the golfers, because that is the only place a ball can be
+    told apart from everything else that moves -- a tee full of people,
+    a divot, a shadow and a club are all in the frame below it. So the
+    climb from the tee INTO the band is never observed: it is recovered
+    afterwards by running the chain backwards down its own heading,
+    which is a fit. The first thing the tracer draws is the piece of
+    the flight nobody looked at.
+
+    This looks at it. On an audio-triggered clip the impact frame is
+    known without the chain, without the sweep and without any fit --
+    the microphone has it (see `_rig_impact_sec`). That is enough to
+    zoom into the tee box on the impact frame, find the ball sitting
+    there, and then follow it: every `ascent_ai_launch_step`th frame
+    after, `ascent_ai_launch_frames` pictures in all.
+
+    Runs FIRST, before the sweep, because everything it produces is an
+    input to the rest of the run rather than a correction to it: where
+    the ball was at address, and the first dozen frames of the climb.
+
+    Never raises, and the run is unchanged when it declines -- a clip
+    the rig did not hear, a hole with no tee box drawn, no API key, or
+    the switch off. The chain's back-run starts the line then, exactly
+    as before.
+    """
+    out: dict = {"ran": False, "n_points": 0, "points": [], "rest": None,
+                 "impact_frame": None, "image_url": None, "reason": None,
+                 "frame_log": [], "step": None, "frames": None}
+    if not bool(getattr(settings, "ascent_ai_launch", True)):
+        out["reason"] = ("the AI launch plot is switched off for this "
+                         "deployment (ASCENT_AI_LAUNCH=0)")
+        return out
+    _rig = _rig_impact_sec(db, row, getattr(row, "id", None))
+    if _rig is None:
+        out["reason"] = (
+            "this clip was not cut around an impact the rig heard, so "
+            "there is no frame to zoom in on — the chain's own run back "
+            "to the tee line starts the line instead")
+        return out
+    _fps = float(fps or 30.0)
+    _f = max(0, int(float(_rig["sec"]) * _fps))
+    out["impact_frame"] = _f
+    out["heard_sec"] = _rig["heard_sec"]
+    # WHERE THE BALL IS SITTING, as a box rather than a point. The
+    # whole reason this can run before anything else is that it does
+    # not need to know where the ball is -- only where to look, and
+    # the tee box is exactly that. Without one there is no box, and a
+    # whole-frame search for a ball at address is the thing the tee
+    # box was introduced to stop.
+    _box = (roi or {}).get("roi") if isinstance(roi, dict) else None
+    if not _box:
+        out["reason"] = (
+            "no tee box is drawn for this hole, so there is nowhere to "
+            "zoom in on — draw one on the cameras page and this step "
+            "starts working")
+        return out
+    try:
+        _info = probe_video_info(src_path) or {}
+        _w = int(_info.get("width") or 0)
+        _h = int(_info.get("height") or 0)
+        if _w <= 0 or _h <= 0:
+            out["reason"] = "the tee video reports no frame size"
+            return out
+        _rect = (int(float(_box["x"]) * _w), int(float(_box["y"]) * _h),
+                 max(8, int(float(_box["w"]) * _w)),
+                 max(8, int(float(_box["h"]) * _h)))
+        out["rect"] = list(_rect)
+        # The SEED, not an answer: where to aim the second crop if the
+        # first one finds nothing. The box's own centre is the best
+        # guess available before anything has been seen.
+        _seed = (_rect[0] + _rect[2] / 2.0, _rect[1] + _rect[3] / 2.0)
+        from ..services import ai_tracer as _ai
+
+        _n = max(1, int(getattr(settings, "ascent_ai_launch_frames", 5)))
+        _step = max(1, int(getattr(settings, "ascent_ai_launch_step", 3)))
+        out["frames"] = [_f + i * _step for i in range(_n)]
+        with _pt("launch_plot_ai"):
+            _res = _ai.plot_launch_frames_ai(
+                src_path, _seed, _f, _fps,
+                n_frames=_n, step=_step, first_rect=_rect,
+                debug_dir=CLIPS_DIR,
+                debug_prefix=f"ailaunch-{row.id}-{secrets.token_hex(3)}",
+            ) or {}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ascent AI launch: failed on %s: %s", row.id, exc)
+        out["reason"] = f"the AI launch plot failed: {exc}"
+        return out
+    out["ran"] = bool(_res.get("available"))
+    out["points"] = list(_res.get("points") or [])
+    out["n_points"] = len(out["points"])
+    out["rest"] = _res.get("rest")
+    out["reason"] = _res.get("reason")
+    out["frame_log"] = _res.get("frame_log") or []
+    out["step"] = _res.get("step") or _step
+    out["api_error"] = bool(_res.get("api_error"))
+    if _res.get("image"):
+        _p = CLIPS_DIR / str(_res["image"])
+        if _p.exists():
+            out["image_url"] = (
+                f"{settings.app_base_url}/uploads/clips/{_p.name}"
+                f"?v={int(_p.stat().st_mtime)}")
+    log.info("ascent AI launch: upload=%s impact f%d, %d flight point(s) "
+             "over %s, rest=%s (%s)", row.id, _f, out["n_points"],
+             out["frames"], out["rest"], out["reason"])
+    return out
+
+
+# HOW FAR OFF THE LAUNCH LINE AN AI POINT MAY SIT, in pixels.
+#
+# The first dozen frames of a struck ball are very nearly straight --
+# gravity has had a sixth of a second and the ball is at its fastest --
+# so the model's finds should lie on the line from the ball at address
+# to the foot of the swept chain. One that does not is not the ball:
+# it is a clubhead, a cap, a reflection off a cart. This is the same
+# idea as the tracker's own corridor, set wide because the two ends of
+# the line are themselves measurements.
+ASCENT_AI_LAUNCH_CORRIDOR_PX = 120.0
+
+
+def _point_to_segment_px(px, py, ax, ay, bx, by) -> float:
+    """Distance from (px,py) to the segment (ax,ay)-(bx,by)."""
+    _dx, _dy = bx - ax, by - ay
+    _len2 = _dx * _dx + _dy * _dy
+    if _len2 <= 1e-9:
+        return math.hypot(px - ax, py - ay)
+    _t = max(0.0, min(1.0, ((px - ax) * _dx + (py - ay) * _dy) / _len2))
+    return math.hypot(px - (ax + _t * _dx), py - (ay + _t * _dy))
+
+
+def _ascent_apply_ai_launch(rep, clip_index) -> dict:
+    """Put the model's launch plot on the swing it belongs to.
+
+    TWO DIFFERENT ANSWERS, AND THEY ARE USED DIFFERENTLY.
+
+    The ball at address is an OBSERVATION of the thing the chain's run
+    back only estimates, so it becomes the tee spot and the estimate is
+    kept beside it. The flight points are the part of the climb the
+    band never sees, so they are merged into the front of the chain --
+    which is what makes the tracer start where the ball started
+    instead of at a back-extrapolation.
+
+    MERGED THROUGH A CORRIDOR, not on trust. A find that is not on the
+    line from the ball to the foot of the chain is not the ball, and
+    one bad point at the bottom of a chain drags the whole fitted
+    curve through it. Every refusal is recorded with its distance, so
+    a corridor that is too tight shows up as a column of near misses
+    rather than as a line that quietly did not change.
+    """
+    out: dict = {"applied": False, "n_merged": 0, "n_refused": 0,
+                 "refused": [], "reason": None, "ball_moved_px": None}
+    _ai = rep.get("ai_launch") or {}
+    if not _ai.get("ran"):
+        out["reason"] = _ai.get("reason") or "the AI launch plot did not run"
+        return out
+    _clips = rep.get("clips") or []
+    if clip_index is None or not (0 <= clip_index < len(_clips)):
+        out["reason"] = ("no swing was matched to the heard strike, so "
+                         "there is nothing to attach the plot to")
+        return out
+    c = _clips[clip_index]
+    _rest = _ai.get("rest")
+    if _rest:
+        _rx, _ry = float(_rest["x"]), float(_rest["y"])
+        if c.get("ball"):
+            out["ball_moved_px"] = round(
+                math.hypot(_rx - float(c["ball"][0]),
+                           _ry - float(c["ball"][1])), 1)
+            c["ball_fit"] = [int(c["ball"][0]), int(c["ball"][1])]
+        c["ball"] = [int(round(_rx)), int(round(_ry))]
+        c["ball_source"] = "the AI launch plot"
+        out["applied"] = True
+    # ── the climb the band never saw ─────────────────────────────────
+    _asc = rep.get("ascents") or []
+    _pts = (_asc[clip_index].get("points") or []
+            if clip_index < len(_asc) else [])
+    _aipts = list(_ai.get("points") or [])
+    if not _aipts:
+        out["reason"] = out["reason"] or _ai.get("reason")
+        return out
+    if not _pts:
+        out["reason"] = "the swing has no chain to merge into"
+        return out
+    _foot = min(_pts, key=lambda q: int(q["frame"]))
+    _ax = float(_rest["x"]) if _rest else float(_foot["x"])
+    _ay = float(_rest["y"]) if _rest else float(_foot["y"])
+    _have = {int(q["frame"]) for q in _pts}
+    _keep = []
+    for q in _aipts:
+        _f, _x, _y = int(q["frame"]), float(q["x"]), float(q["y"])
+        _why = None
+        if _f in _have:
+            _why = "the sweep already has this frame"
+        elif _f >= int(_foot["frame"]):
+            # NOT A HOLE IN THE CHAIN -- the chain owns everything from
+            # its foot upward, and it measured those frames in the band
+            # where a ball is distinguishable. This step exists for
+            # what is BELOW the band.
+            _why = f"at or above the chain's own foot (f{_foot['frame']})"
+        else:
+            _d = _point_to_segment_px(_x, _y, _ax, _ay,
+                                      float(_foot["x"]), float(_foot["y"]))
+            if _d > ASCENT_AI_LAUNCH_CORRIDOR_PX:
+                _why = (f"{_d:.0f}px off the launch line (limit "
+                        f"{ASCENT_AI_LAUNCH_CORRIDOR_PX:.0f}px)")
+        if _why:
+            out["refused"].append({"frame": _f, "x": int(_x), "y": int(_y),
+                                   "why": _why})
+        else:
+            _keep.append({"frame": _f, "x": int(round(_x)),
+                          "y": int(round(_y)), "from": "ai"})
+    out["n_refused"] = len(out["refused"])
+    if _keep:
+        _asc[clip_index]["points"] = sorted(
+            _pts + _keep, key=lambda q: int(q["frame"]))
+        _asc[clip_index]["ai_points"] = _keep
+        _asc[clip_index]["first_frame"] = min(
+            int(q["frame"]) for q in _asc[clip_index]["points"])
+        c["ai_launch_points"] = _keep
+        out["n_merged"] = len(_keep)
+        out["applied"] = True
+    out["reason"] = (
+        f"{out['n_merged']} of {len(_aipts)} AI point(s) merged into the "
+        f"front of the chain"
+        + (f", {out['n_refused']} refused" if out["n_refused"] else "")
+        + (f"; the ball at address moved {out['ball_moved_px']}px from "
+           f"the chain's estimate" if out["ball_moved_px"] is not None
+           else ""))
+    return out
+
+
 # HOW FAR FROM THE HEARD STRIKE A SWING MAY SIT AND STILL BE IT.
 #
 # An audio-triggered clip holds one swing, so in practice the nearest
@@ -24729,6 +24991,13 @@ def _ascent_pin_rig_impact(db, row, rep, fps) -> dict | None:
         _note["reason"] = "no swing had an impact frame to replace"
         return _note
     _best = min(_cands, key=lambda c: abs(int(c["impact_frame"]) - _f))
+    # WHICH SWING, BY INDEX. The AI launch plot was built from this
+    # same instant and has to land on this same swing; saying so here
+    # is cheaper and safer than matching on the frame twice.
+    try:
+        _note["clip_index"] = (rep.get("clips") or []).index(_best)
+    except ValueError:  # pragma: no cover - the list it came from
+        _note["clip_index"] = None
     _was = int(_best["impact_frame"])
     _off = abs(_was - _f)
     _max = max(1, int(round(ASCENT_RIG_IMPACT_MAX_SEC * _fps)))

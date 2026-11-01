@@ -413,5 +413,33 @@ class Settings(BaseSettings):
     # to move it.
     audio_impact_lead_sec: float = 0.25
 
+    # ASK THE MODEL WHERE THE BALL WENT, BEFORE LOOKING FOR IT.
+    #
+    # The ascent sweep searches a band ABOVE the golfers, because that
+    # is where a ball can be told apart from everything else that
+    # moves. The cost is that the first part of the climb -- the ball
+    # leaving the tee, through the golfer, the divot and the shadow --
+    # is below the band and never measured. That part is then
+    # recovered by running the chain BACKWARDS down its own heading,
+    # which is a fit, and the piece of the flight the tracer draws
+    # first is the piece nothing observed.
+    #
+    # So the model is asked first, on an audio-triggered clip where
+    # the impact frame is known without any of this: find the ball on
+    # the impact frame, then on every `step`th frame after it. Five
+    # pictures covering a dozen frames of the climb.
+    #
+    # WHY EVERY THIRD AND NOT EVERY ONE. At 60fps a struck ball barely
+    # moves between consecutive frames, so five consecutive crops are
+    # five pictures of nearly one instant. Stepping covers four times
+    # as much of the climb for the same five API calls.
+    #
+    # Five calls per swing is not free. Set ASCENT_AI_LAUNCH to 0 to
+    # turn the step off; the run then works exactly as it did, with
+    # the chain's own back-run supplying the start of the line.
+    ascent_ai_launch: bool = True
+    ascent_ai_launch_frames: int = 5
+    ascent_ai_launch_step: int = 3
+
 
 settings = Settings()

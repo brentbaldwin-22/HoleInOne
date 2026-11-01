@@ -8928,9 +8928,13 @@ function ProduceStepSummary({ rep }) {
   // question restated, not an answer. Each now reports its own steps,
   // and they are shown under it rather than in a separate panel: the
   // row you want the breakdown of is the row you are already reading.
+  // Keyed by stage NUMBER, and the ascent run gained a stage in front
+  // of them (the AI launch plot), so these moved from 1 and 3 to 2 and
+  // 4. The ball-scan report has its own numbering and no sub-steps
+  // under these, so a stale key here would simply show nothing.
   const subsByStage = {
-    1: rep?.scan_stages || [],
-    3: rep?.descent_stages || [],
+    2: rep?.scan_stages || [],
+    4: rep?.descent_stages || [],
   };
 
   push("queue", "Waiting for the produce queue", t.queued_sec, null, true);
@@ -9345,6 +9349,62 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
         )}
 
         <ProduceStepSummary rep={rep} />
+
+        {/* STAGE 1, AND IT IS A PICTURE OR IT IS NOTHING. The strip is
+            one tile per frame the model was shown, with the crop it
+            searched, what it picked and why a frame was refused --
+            which is the only way to tell "the ball was not there"
+            from "the box was pointed at the wrong grass". */}
+        {rep?.ai_launch && (
+          <div className="card" style={{ margin: "10px 0", padding: 10 }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <b>1 · AI launch plot</b>
+              <span className={rep.ai_launch.n_points > 0
+                ? "pill ok" : "pill warn"}>
+                {rep.ai_launch.ran
+                  ? `${rep.ai_launch.n_points || 0} point(s)`
+                  : "did not run"}
+                {rep.ai_launch.rest ? " · ball found at address" : ""}
+              </span>
+            </div>
+            <div className="tiny muted" style={{ marginTop: 3 }}>
+              {rep.ai_launch.reason}
+              {rep.ai_launch.impact_frame != null && (
+                <> — from f{rep.ai_launch.impact_frame}
+                  {rep.ai_launch.step ? `, every ${rep.ai_launch.step} frames`
+                    : ""}
+                  {rep.ai_launch.frames?.length
+                    ? ` (${rep.ai_launch.frames
+                      .map((f) => `f${f}`).join(", ")})` : ""}
+                </>
+              )}
+            </div>
+            {rep.ai_launch.image_url && (
+              <figure style={{ margin: "8px 0 0" }}>
+                <img src={rep.ai_launch.image_url} alt="AI launch plot"
+                     style={{ width: "100%", borderRadius: 6 }} />
+              </figure>
+            )}
+            {/* WHAT HAPPENED TO THEM. Points the model found and the
+                run then refused are the interesting ones: a column of
+                near misses means the corridor is too tight, where
+                silence means the model saw nothing. */}
+            {rep.ai_launch_merge && (
+              <div className="tiny muted" style={{ marginTop: 6 }}>
+                {rep.ai_launch_merge.reason}
+                {rep.ai_launch_merge.refused?.length > 0 && (
+                  <ul style={{ margin: "4px 0 0 16px" }}>
+                    {rep.ai_launch_merge.refused.map((q) => (
+                      <li key={q.frame}>
+                        f{q.frame} at {q.x},{q.y} — {q.why}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {state.running && (
           <div className="small" style={{ marginTop: 10 }}>
