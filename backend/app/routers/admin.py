@@ -2699,6 +2699,48 @@ def _run_long_upload_job(
                 pinned_from_rig = _audio_impact_segment(db, row, upload_id)
                 if pinned_from_rig is not None:
                     segs = [pinned_from_rig]
+                    # AND PUBLISH A WORK RECORD FOR IT, because taking
+                    # the rig's impact skips the whole detection block
+                    # below -- which is the only place that published
+                    # one.
+                    #
+                    # The Debug report renders from that record and
+                    # waits up to THIRTY MINUTES for it before giving
+                    # up, so on an audio-triggered clip the panel sat
+                    # on "Analyzing... 0/? swings" and never moved.
+                    # Every clip is audio-triggered now that the dwell
+                    # is off, so Debug had stopped working entirely.
+                    #
+                    # Nothing was detected here, so there is nothing to
+                    # report about detection: one decision, the rig's,
+                    # kept. `pose_debug` and `segments_all` stay empty
+                    # and the report renders the parts that do apply.
+                    _t_rig = float(pinned_from_rig.get("peak_time_sec") or 0.0)
+                    with _produce_work_lock:
+                        _produce_work_state[upload_id] = {
+                            "run_started": time.time(),
+                            "used_pose": False,
+                            "pose_debug": {},
+                            "segments_all": [dict(pinned_from_rig)],
+                            "heat": [],
+                            "practice": [],
+                            "decisions": [{
+                                "t": round(_t_rig, 2),
+                                "ratio": None,
+                                "bend": None,
+                                "kept": True,
+                                "why": "the rig heard the impact — no "
+                                       "detection was run",
+                            }],
+                            "kept": [dict(pinned_from_rig)],
+                            "fps": float(probe_fps(src_path) or 30.0),
+                            "published": time.time(),
+                        }
+                    log.info(
+                        "long-upload worker: upload=%s published a work "
+                        "record for the rig's impact at %.2fs, so Debug "
+                        "has something to render", upload_id, _t_rig,
+                    )
             if not segs and auto_detect_swings:
                 auto_used = True
                 tee_fps = probe_fps(src_path) or 30.0
