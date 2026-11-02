@@ -594,7 +594,34 @@ battery:
 
 curfew:
   enabled: false          # flip to true on battery-powered rigs
+  # BEDTIME. Either a fixed clock time...
   sleep: "21:00"
+  # ...or this many minutes after the sun goes down here, worked out
+  # fresh each day from the position below. A fixed bedtime is wrong
+  # for most of the year: on a South Carolina course the sun sets at
+  # 17:29 in early November and 20:31 in late June, so one clock time
+  # either burns an hour of battery filming the dark in December or
+  # stops recording while people are still playing in May.
+  #
+  # No network and no almanac — it is forty lines of arithmetic, good
+  # to about a minute, and it has to be, because the rig decides when
+  # to power itself off on an LTE link that is sometimes down for an
+  # afternoon.
+  #
+  # Comment this out to go back to the fixed `sleep` above.
+  # sleep_after_sunset_minutes: 60
+  # The COURSE's position, degrees, longitude EAST (so the Americas
+  # are negative) — the sign every map and phone gives you. Only read
+  # when sleep_after_sunset_minutes is set.
+  # latitude: 32.9500
+  # longitude: -79.7800
+  # Rails on the computed bedtime, because a mistyped coordinate is a
+  # silent one: a longitude with its sign the wrong way round moves
+  # sunset by ten hours and the rig would halt at breakfast with
+  # nothing to question it. These never bound a bedtime you typed
+  # yourself.
+  # sleep_not_before: "16:00"
+  # sleep_not_after: "22:30"
   wake: "06:00"
   boot_grace_seconds: 600
   # How long the rig may stay past its bedtime to finish uploading.

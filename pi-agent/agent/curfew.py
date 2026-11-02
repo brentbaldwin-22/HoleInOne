@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import math
 import subprocess
 import threading
 import time
@@ -36,10 +37,77 @@ log = logging.getLogger("golfreelz_agent.curfew")
 _WAKEALARM = Path("/sys/class/rtc/rtc0/wakealarm")
 _MIN_SANE_YEAR = 2025
 
+# THE SUN IS DOWN WHEN ITS CENTRE IS 0.833 DEGREES BELOW THE HORIZON:
+# half a degree of solar disc plus about a third of a degree of
+# atmospheric refraction, which lifts the image of a sun that has
+# geometrically already set. This is the standard definition every
+# almanac's "sunset" uses, and using plain 0 would put bedtime three
+# or four minutes early.
+_SUNSET_ALTITUDE_DEG = -0.833
+# The Earth's axial tilt, which is what makes any of this vary.
+_OBLIQUITY_DEG = 23.4397
+
 
 def _parse_hhmm(s: str) -> tuple[int, int]:
     h, m = str(s).strip().split(":")
     return int(h), int(m)
+
+
+def sunset_local(day: dt.date, lat: float, lon: float) -> dt.datetime | None:
+    """Local wall-clock sunset for a date and place. None above the
+    Arctic circle in summer, and anywhere else the sun does not set.
+
+    NO NETWORK AND NO LIBRARY. This rig is on an LTE link that is
+    sometimes down for an afternoon and it decides when to power
+    itself off; a bedtime that depends on an API is a bedtime that
+    does not happen. The NOAA sunrise equation is forty lines of
+    arithmetic and good to about a minute, which is far finer than the
+    hour of margin the curfew leaves anyway.
+
+    `lon` is degrees EAST (so the Americas are negative), matching
+    every map and GPS you will copy it from. The result is naive local
+    time, in whatever zone the Pi is set to -- the same clock
+    `datetime.now()` reads, which is what the window check compares
+    against.
+    """
+    _lat_r = math.radians(float(lat))
+    # The equation is written in degrees WEST.
+    _lw = -float(lon)
+    # Days since 2000-01-01 12:00 TT. `toordinal` counts from year 1,
+    # and 730120 is 2000-01-01 on that scale.
+    _n = (day.toordinal() - 730120) + 0.0008 + _lw / 360.0
+    # Mean solar anomaly, the Earth's position in its own orbit.
+    _M = (357.5291 + 0.98560028 * _n) % 360.0
+    _Mr = math.radians(_M)
+    # The orbit is an ellipse, so the sun runs fast in January and
+    # slow in July. This is that correction.
+    _C = (1.9148 * math.sin(_Mr) + 0.0200 * math.sin(2 * _Mr)
+          + 0.0003 * math.sin(3 * _Mr))
+    _lam = math.radians((_M + _C + 180.0 + 102.9372) % 360.0)
+    # Solar noon, as a count of days from the same epoch.
+    _transit = (2451545.0 + _n + 0.0053 * math.sin(_Mr)
+                - 0.0069 * math.sin(2 * _lam))
+    _dec = math.asin(math.sin(_lam) * math.sin(math.radians(_OBLIQUITY_DEG)))
+    _cos_w = (
+        (math.sin(math.radians(_SUNSET_ALTITUDE_DEG))
+         - math.sin(_lat_r) * math.sin(_dec))
+        / (math.cos(_lat_r) * math.cos(_dec))
+    )
+    # OUTSIDE [-1, 1] THE SUN NEVER CROSSES THE HORIZON THAT DAY --
+    # midnight sun above, polar night below. Not a case any golf course
+    # this runs on will meet, and not a reason to crash or to invent a
+    # bedtime either.
+    if not -1.0 <= _cos_w <= 1.0:
+        return None
+    _jset = _transit + math.degrees(math.acos(_cos_w)) / 360.0
+    # Julian date -> UTC -> whatever clock this Pi is set to. The
+    # conversion is where the timezone comes from, and it is the Pi's
+    # own: a rig left on UTC gets a UTC answer, which is the same
+    # mistake a fixed bedtime makes and is visible in the same log
+    # line.
+    _utc = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc) + dt.timedelta(
+        days=_jset - 2440587.5)
+    return _utc.astimezone().replace(tzinfo=None)
 
 
 class CurfewThread(threading.Thread):
@@ -52,6 +120,37 @@ class CurfewThread(threading.Thread):
         self.enabled = bool(cfg.get("enabled", False))
         self.sleep_hm = _parse_hhmm(cfg.get("sleep", "21:00"))
         self.wake_hm = _parse_hhmm(cfg.get("wake", "06:00"))
+        # ── BEDTIME THAT FOLLOWS THE SUN ─────────────────────────────
+        #
+        # A fixed bedtime is wrong for most of the year. On this course
+        # the sun sets at 17:29 in early November and at 20:31 in late
+        # June: one clock time cannot serve both, so it either burns an
+        # hour of battery filming the dark in December or stops
+        # recording while people are still playing in May. Set
+        # `sleep_after_sunset_minutes` and bedtime is worked out from
+        # the sun each day instead.
+        #
+        # `sleep` stays, and is what runs when this is not configured
+        # or cannot be computed -- an upgrade changes nothing for a rig
+        # that does not opt in.
+        _after = cfg.get("sleep_after_sunset_minutes")
+        self.after_sunset_min = (None if _after is None
+                                 else float(_after))
+        self.lat = cfg.get("latitude")
+        self.lon = cfg.get("longitude")
+        self.lat = None if self.lat is None else float(self.lat)
+        self.lon = None if self.lon is None else float(self.lon)
+        # RAILS, BECAUSE A MISTYPED COORDINATE IS A SILENT ONE. A
+        # longitude with the sign flipped moves sunset by ten hours and
+        # the rig would halt at breakfast; nothing downstream would
+        # question it. These bound the computed answer -- never the
+        # fixed one, which is whatever the operator typed on purpose.
+        self.sleep_not_before = _parse_hhmm(
+            cfg.get("sleep_not_before", "16:00"))
+        self.sleep_not_after = _parse_hhmm(
+            cfg.get("sleep_not_after", "22:30"))
+        self._sun_cache: tuple | None = None
+        self._sun_warned = False
         self.boot_grace = int(cfg.get("boot_grace_seconds", 600))
         self.dry_run = bool(cfg.get("dry_run", False))
         # DO NOT POWER OFF OWING SOMEBODY A CLIP. Called with no
@@ -88,8 +187,88 @@ class CurfewThread(threading.Thread):
         self.stopping = threading.Event()
 
     # ── window math ──────────────────────────────────────────────────
+    def sleep_hm_for(self, day: dt.date) -> tuple[int, int]:
+        """Tonight's bedtime, as (hour, minute).
+
+        The fixed `sleep` unless this rig was given a sunset offset and
+        a position, in which case it is sunset plus that offset, worked
+        out here with no network and cached for the day. Falls back to
+        the fixed time, loudly and once, if the sun cannot be placed.
+        """
+        if self.after_sunset_min is None:
+            return self.sleep_hm
+        if self.lat is None or self.lon is None:
+            if not self._sun_warned:
+                self._sun_warned = True
+                log.warning(
+                    "curfew: sleep_after_sunset_minutes is set but this "
+                    "rig has no latitude/longitude — falling back to the "
+                    "fixed bedtime %02d:%02d", *self.sleep_hm)
+            return self.sleep_hm
+        if self._sun_cache and self._sun_cache[0] == day:
+            return self._sun_cache[1]
+        try:
+            _set = sunset_local(day, self.lat, self.lon)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("curfew: could not work out sunset (%s) — using "
+                        "the fixed bedtime %02d:%02d", exc, *self.sleep_hm)
+            return self.sleep_hm
+        if _set is None:
+            log.warning("curfew: the sun does not set here today — using "
+                        "the fixed bedtime %02d:%02d", *self.sleep_hm)
+            return self.sleep_hm
+        _bed = _set + dt.timedelta(minutes=self.after_sunset_min)
+        _hm = (_bed.hour, _bed.minute)
+        # THE TWO RAILS FAIL IN OPPOSITE DIRECTIONS, so they are not
+        # the same rule.
+        #
+        # TOO LATE is a battery question and a real policy: "whatever
+        # the sun does, be asleep by half ten". Clamping is exactly
+        # what is wanted, and the clamped time is still a safe one --
+        # it is dark by then wherever this runs.
+        #
+        # TOO EARLY is almost always a WRONG COORDINATE -- a longitude
+        # with its sign the wrong way round moves sunset by ten hours
+        # -- and clamping it would still halt the rig in the middle of
+        # the afternoon, which costs the footage this whole system
+        # exists to capture. So the computation is thrown away and the
+        # operator's own fixed bedtime is used: a number a person
+        # typed on purpose beats a number derived from one they
+        # probably mistyped.
+        _mins = _hm[0] * 60 + _hm[1]
+        _lo = self.sleep_not_before[0] * 60 + self.sleep_not_before[1]
+        _hi = self.sleep_not_after[0] * 60 + self.sleep_not_after[1]
+        if _mins < _lo:
+            log.warning(
+                "curfew: sunset %02d:%02d + %.0f min is %02d:%02d, EARLIER "
+                "than the %02d:%02d floor — ignoring it and using the "
+                "fixed bedtime %02d:%02d. CHECK THE LATITUDE AND "
+                "LONGITUDE (%.4f, %.4f): a sign the wrong way round moves "
+                "sunset by hours, and halting in the afternoon costs the "
+                "shots.",
+                _set.hour, _set.minute, self.after_sunset_min, *_hm,
+                *self.sleep_not_before, *self.sleep_hm, self.lat, self.lon)
+            self._sun_cache = (day, self.sleep_hm)
+            return self.sleep_hm
+        _clamped = (_hi // 60, _hi % 60) if _mins > _hi else _hm
+        if _clamped != _hm:
+            log.info(
+                "curfew: sunset %02d:%02d + %.0f min is %02d:%02d, past the "
+                "%02d:%02d ceiling — sleeping at %02d:%02d to protect the "
+                "battery. It is dark by then anyway.",
+                _set.hour, _set.minute, self.after_sunset_min, *_hm,
+                *self.sleep_not_after, *_clamped)
+        if not self._sun_cache or self._sun_cache[0] != day:
+            log.info(
+                "curfew: tonight the sun sets at %02d:%02d, so bedtime is "
+                "%02d:%02d (sunset + %.0f min); wake %02d:%02d",
+                _set.hour, _set.minute, *_clamped, self.after_sunset_min,
+                *self.wake_hm)
+        self._sun_cache = (day, _clamped)
+        return _clamped
+
     def _in_sleep_window(self, now: dt.datetime) -> bool:
-        sh, sm = self.sleep_hm
+        sh, sm = self.sleep_hm_for(now.date())
         wh, wm = self.wake_hm
         sleep_t = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
         wake_t = now.replace(hour=wh, minute=wm, second=0, microsecond=0)
@@ -233,8 +412,14 @@ class CurfewThread(threading.Thread):
                      "(set curfew.enabled: true to sleep it)")
             return
         log.info(
-            "curfew: enabled — sleep %02d:%02d wake %02d:%02d%s",
-            *self.sleep_hm, *self.wake_hm,
+            "curfew: enabled — sleep %s wake %02d:%02d%s",
+            ("%.0f min after sunset (%.4f, %.4f), not before %02d:%02d "
+             "and not after %02d:%02d"
+             % (self.after_sunset_min, self.lat or 0.0, self.lon or 0.0,
+                *self.sleep_not_before, *self.sleep_not_after))
+            if self.after_sunset_min is not None
+            else ("%02d:%02d" % self.sleep_hm),
+            *self.wake_hm,
             " (DRY RUN)" if self.dry_run else "",
         )
         while not self.stopping.is_set():

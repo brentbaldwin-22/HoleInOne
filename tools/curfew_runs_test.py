@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 import sys
 import threading
 import time
@@ -73,6 +74,101 @@ check("asleep at 19:00 it arms for 08:00 tomorrow",
 check("asleep at 07:00 it arms for 08:00 today",
       c._next_wake(dt.datetime(2026, 11, 2, 7, 0)),
       dt.datetime(2026, 11, 2, 8, 0))
+
+print()
+print("bedtime follows the sun:")
+# A COURSE IN SOUTH CAROLINA, and a Pi set to its own timezone --
+# which is where the local clock in the window check comes from.
+os.environ["TZ"] = "America/New_York"
+time.tzset()
+from agent.curfew import sunset_local  # noqa: E402
+
+_LAT, _LON = 32.95, -79.78
+_sun = {d: sunset_local(dt.date.fromisoformat(d), _LAT, _LON)
+        for d in ("2026-11-02", "2026-12-21", "2026-06-21")}
+print("      sunset here: "
+      + ", ".join("%s %s" % (d, v.strftime("%H:%M"))
+                  for d, v in _sun.items()))
+# THE NUMBERS THE OPERATOR CONFIRMED FROM THE TEE: "it gets dark now
+# around 5:30" on 2 November.
+check("November sunset is about half five",
+      17 * 60 + 20 <= _sun["2026-11-02"].hour * 60
+      + _sun["2026-11-02"].minute <= 17 * 60 + 40, True)
+# AND THE REASON A FIXED BEDTIME CANNOT SERVE THE YEAR: three hours
+# of travel between midwinter and midsummer.
+_spread = ((_sun["2026-06-21"].hour * 60 + _sun["2026-06-21"].minute)
+           - (_sun["2026-12-21"].hour * 60 + _sun["2026-12-21"].minute))
+check("midsummer is three hours later than midwinter",
+      170 <= _spread <= 210, True)
+
+sc = CurfewThread({"enabled": True, "wake": "08:00", "sleep": "18:30",
+                   "sleep_after_sunset_minutes": 60,
+                   "latitude": _LAT, "longitude": _LON})
+check("tonight's bedtime is an hour after tonight's sunset",
+      sc.sleep_hm_for(dt.date(2026, 11, 2)), (18, 28))
+check("midwinter moves it earlier",
+      sc.sleep_hm_for(dt.date(2026, 12, 21)), (18, 17))
+check("midsummer moves it later",
+      sc.sleep_hm_for(dt.date(2026, 6, 21)), (21, 31))
+# WORKED OUT ONCE A DAY, not every thirty seconds: the loop asks on
+# every tick and the arithmetic is the same answer all evening.
+sc._sun_cache = None
+_a = sc.sleep_hm_for(dt.date(2026, 11, 2))
+_cached = sc._sun_cache
+check("the answer is cached for the day",
+      _cached[0], dt.date(2026, 11, 2))
+check("...and asking again gives the same one",
+      sc.sleep_hm_for(dt.date(2026, 11, 2)), _a)
+# AND THE WINDOW USES IT, which is the only thing that matters.
+check("18:00 on 2 Nov is still awake",
+      sc._in_sleep_window(dt.datetime(2026, 11, 2, 18, 0)), False)
+check("18:45 on 2 Nov is bedtime",
+      sc._in_sleep_window(dt.datetime(2026, 11, 2, 18, 45)), True)
+check("...but 18:45 in June is not",
+      sc._in_sleep_window(dt.datetime(2026, 6, 21, 18, 45)), False)
+
+print()
+print("a rig that did not ask for it is unchanged:")
+fx = CurfewThread({"enabled": True, "wake": "08:00", "sleep": "18:30"})
+check("the fixed bedtime is used", fx.sleep_hm_for(dt.date(2026, 6, 21)),
+      (18, 30))
+nc = CurfewThread({"enabled": True, "wake": "08:00", "sleep": "18:30",
+                   "sleep_after_sunset_minutes": 60})
+check("...and so it is when the position is missing",
+      nc.sleep_hm_for(dt.date(2026, 6, 21)), (18, 30))
+
+print()
+print("a mistyped coordinate cannot halt the rig in daylight:")
+# The same course with the longitude's sign flipped: sunset computes
+# to 06:50, which would put bedtime at 07:50.
+bad = CurfewThread({"enabled": True, "wake": "08:00", "sleep": "18:30",
+                    "sleep_after_sunset_minutes": 60,
+                    "latitude": _LAT, "longitude": -_LON})
+check("the computed time is thrown away, not clamped to the floor",
+      bad.sleep_hm_for(dt.date(2026, 11, 2)), (18, 30))
+# CLAMPED THE OTHER WAY, THOUGH: "be asleep by half ten whatever the
+# sun does" is a real battery policy, and the clamped time is dark.
+#
+# Northern Scotland in midsummer, with the Pi on ITS OWN clock -- the
+# coordinates and the timezone have to agree, because the conversion
+# out of UTC is where the zone comes from. A rig with the right
+# position and the wrong timezone gets a sunset hours out, and the
+# floor above is what catches that.
+os.environ["TZ"] = "Europe/London"
+time.tzset()
+_far = CurfewThread({"enabled": True, "wake": "08:00", "sleep": "18:30",
+                     "sleep_after_sunset_minutes": 60,
+                     "latitude": 58.0, "longitude": -3.0,
+                     "sleep_not_after": "22:30"})
+check("a midsummer sunset past the ceiling is clamped to it",
+      _far.sleep_hm_for(dt.date(2026, 6, 21)), (22, 30))
+os.environ["TZ"] = "America/New_York"
+time.tzset()
+check("the sun that never sets falls back to the fixed time",
+      CurfewThread({"enabled": True, "wake": "08:00", "sleep": "18:30",
+                    "sleep_after_sunset_minutes": 60,
+                    "latitude": 89.0, "longitude": 0.0}
+                   ).sleep_hm_for(dt.date(2026, 6, 21)), (18, 30))
 
 print()
 print("a dry run reaches the halt and declines it:")
