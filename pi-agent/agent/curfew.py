@@ -68,6 +68,23 @@ class CurfewThread(threading.Thread):
         # card, so a deferred clip is LATE, never lost.
         self.max_defer = float(cfg.get("upload_defer_minutes", 45)) * 60.0
         self._defer_since = None
+        # WHEN THE BOOT GRACE STARTS COUNTING, and it was never set.
+        #
+        # `run()` reads this on the first tick that lands inside the
+        # sleep window: `self.boot_grace - (monotonic() - _started_at)`.
+        # Nothing assigned it, so that line raised AttributeError, the
+        # thread died, and the curfew never halted anything -- on a
+        # daemon thread, where the traceback goes to the journal and
+        # the agent carries on as if nothing happened. The feature has
+        # never once powered a rig off.
+        #
+        # MEASURED FROM THE AGENT'S START, not from boot. In normal
+        # service they are the same instant. When they are not, the
+        # agent restarted because somebody restarted it -- which is
+        # exactly the operator this grace exists for, and cutting
+        # their session off after thirty seconds is the opposite of
+        # what it is for.
+        self._started_at = time.monotonic()
         self.stopping = threading.Event()
 
     # ── window math ──────────────────────────────────────────────────
@@ -193,7 +210,27 @@ class CurfewThread(threading.Thread):
 
     # ── main loop ────────────────────────────────────────────────────
     def run(self) -> None:
+        """Never dies quietly.
+
+        A daemon thread that raises is gone, and the only trace is a
+        traceback on stderr that reads like noise next to a running
+        agent. That is how a curfew that could not halt a Pi went
+        unnoticed: everything else about the rig kept working. An
+        unexpected failure now says so in the agent's own log, every
+        time it happens, and the loop carries on -- a curfew that
+        cannot work out whether to sleep must leave the rig AWAKE,
+        which is the safe direction and is what it will do by looping.
+        """
+        try:
+            self._run()
+        except Exception:  # noqa: BLE001
+            log.exception("curfew: the sleep/wake thread stopped — this "
+                          "rig will NOT power itself off tonight")
+
+    def _run(self) -> None:
         if not self.enabled:
+            log.info("curfew: disabled — this rig stays awake "
+                     "(set curfew.enabled: true to sleep it)")
             return
         log.info(
             "curfew: enabled — sleep %02d:%02d wake %02d:%02d%s",
@@ -228,7 +265,11 @@ class CurfewThread(threading.Thread):
                     "and powering off", wake_at.isoformat(),
                 )
                 if self.dry_run:
-                    log.info("curfew: DRY RUN — skipping halt")
+                    log.info(
+                        "curfew: DRY RUN — NOT powering off. Would have "
+                        "halted now and woken at %s. Remove dry_run (or "
+                        "set it false) to arm it for real.",
+                        wake_at.isoformat())
                     self.stopping.wait(300)
                     continue
                 if not self._sleep_until(wake_at):
