@@ -624,6 +624,11 @@ curfew:
   # sleep_not_after: "22:30"
   wake: "06:00"
   boot_grace_seconds: 600
+  # THE SHORTEST SLEEP WORTH TAKING, in minutes. A halt costs a boot
+  # cycle at full power and stakes the morning on an RTC alarm firing;
+  # over the last of a window it saves a few watt-minutes. Under this
+  # many minutes to the wake time, the rig simply stays up.
+  min_sleep_minutes: 60
   # How long the rig may stay past its bedtime to finish uploading.
   # A clip spooled at 20:55 survives the halt — the spool is on the SD
   # card for exactly that reason — but nobody sees it until the Pi

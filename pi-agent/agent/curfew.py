@@ -53,6 +53,29 @@ def _parse_hhmm(s: str) -> tuple[int, int]:
     return int(h), int(m)
 
 
+def _uptime_seconds() -> float:
+    """How long this machine has been up. 0.0 when it cannot be read,
+    which makes the boot grace start now -- the forgiving direction."""
+    try:
+        with open("/proc/uptime", "r") as fh:
+            return float(fh.read().split()[0])
+    except Exception:  # noqa: BLE001 - not a Linux box, or no procfs
+        return 0.0
+
+
+def _who_is_logged_in() -> list:
+    """Interactive sessions on this machine, by name. Empty when none,
+    and empty when it cannot be worked out -- a curfew must not be
+    blocked forever by a question it cannot answer."""
+    try:
+        out = subprocess.run(["who"], capture_output=True, text=True,
+                             timeout=5)
+        return sorted({ln.split()[0] for ln in (out.stdout or "").splitlines()
+                       if ln.strip()})
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def sunset_local(day: dt.date, lat: float, lon: float) -> dt.datetime | None:
     """Local wall-clock sunset for a date and place. None above the
     Arctic circle in summer, and anywhere else the sun does not set.
@@ -152,6 +175,10 @@ class CurfewThread(threading.Thread):
         self._sun_cache: tuple | None = None
         self._sun_warned = False
         self._early_warned = False
+        # The shortest sleep worth taking. See the halt path: under
+        # this, a halt costs more than it saves and risks the morning.
+        self.min_sleep = float(cfg.get("min_sleep_minutes", 60)) * 60.0
+        self._held_since = None
         self.boot_grace = int(cfg.get("boot_grace_seconds", 600))
         self.dry_run = bool(cfg.get("dry_run", False))
         # DO NOT POWER OFF OWING SOMEBODY A CLIP. Called with no
@@ -175,16 +202,21 @@ class CurfewThread(threading.Thread):
         # Nothing assigned it, so that line raised AttributeError, the
         # thread died, and the curfew never halted anything -- on a
         # daemon thread, where the traceback goes to the journal and
-        # the agent carries on as if nothing happened. The feature has
-        # never once powered a rig off.
+        # the agent carries on as if nothing happened.
         #
-        # MEASURED FROM THE AGENT'S START, not from boot. In normal
-        # service they are the same instant. When they are not, the
-        # agent restarted because somebody restarted it -- which is
-        # exactly the operator this grace exists for, and cutting
-        # their session off after thirty seconds is the opposite of
-        # what it is for.
-        self._started_at = time.monotonic()
+        # FROM BOOT, NOT FROM THE AGENT'S START. I set this to the
+        # agent's start first, reasoning that an agent which restarts
+        # mid-window was restarted by an operator who should get the
+        # full window. That is exactly backwards, and it powered a rig
+        # off under its owner: `update.sh` stops and starts the
+        # service, so running an update at 07:00 -- inside a window
+        # that ends at 08:00 -- reset this clock, and ten minutes
+        # later the curfew halted a Pi somebody was in the middle of
+        # working on. From boot, an agent restart changes nothing: a
+        # rig that has been up all day is past its grace either way,
+        # and the "is somebody working on this" question is answered
+        # properly below by asking whether anybody is logged in.
+        self._started_at = time.monotonic() - _uptime_seconds()
         self.stopping = threading.Event()
 
     # ── window math ──────────────────────────────────────────────────
@@ -452,35 +484,32 @@ class CurfewThread(threading.Thread):
                 self.stopping.wait(30)
                 continue
             if self._in_sleep_window(now):
+                # AWAKE INSIDE ITS OWN SLEEP WINDOW IS NEWS.
+                #
+                # Either somebody powered the rig up on purpose, or the
+                # RTC alarm fired at the wrong time, and the second one
+                # is otherwise invisible: the rig comes back, behaves
+                # normally, and burns a night of battery that nobody is
+                # awake to notice. Said once per boot, before the
+                # grace check rather than inside it -- a rig that has
+                # been up for hours never reaches that branch, and it
+                # is the one whose early wake most needs saying.
+                if not self._early_warned:
+                    self._early_warned = True
+                    _gap = (self._next_wake(now) - now).total_seconds()
+                    log.warning(
+                        "curfew: awake at %s, which is INSIDE this rig's "
+                        "own sleep window and %.1fh before its %02d:%02d "
+                        "wake time. If nobody powered it up, the RTC alarm "
+                        "fired early — a gap of close to a whole number of "
+                        "hours means the hardware clock's timezone "
+                        "(timedatectl, /etc/adjtime) rather than anything "
+                        "about the curfew.",
+                        now.strftime("%H:%M"), _gap / 3600.0, *self.wake_hm)
                 grace_left = self.boot_grace - (
                     time.monotonic() - self._started_at
                 )
                 if grace_left > 0:
-                    # AWAKE INSIDE ITS OWN SLEEP WINDOW IS NEWS.
-                    #
-                    # Either somebody powered the rig up on purpose --
-                    # the case this grace exists for -- or the RTC
-                    # alarm fired at the wrong time, and the second
-                    # one is invisible: the rig comes back, behaves
-                    # normally, and burns a night of battery that
-                    # nobody is awake to notice. Said once per boot,
-                    # with the gap to the intended wake, because that
-                    # gap landing on a whole number of hours is the
-                    # signature of a clock-zone problem rather than of
-                    # an operator with a screwdriver.
-                    if not self._early_warned:
-                        self._early_warned = True
-                        _gap = (self._next_wake(now) - now).total_seconds()
-                        log.warning(
-                            "curfew: awake at %s, which is INSIDE this "
-                            "rig's own sleep window and %.1fh before its "
-                            "%02d:%02d wake time. If nobody powered it up, "
-                            "the RTC alarm fired early — a gap of close to "
-                            "a whole number of hours means the hardware "
-                            "clock's timezone (timedatectl, /etc/adjtime) "
-                            "rather than anything about the curfew.",
-                            now.strftime("%H:%M"), _gap / 3600.0,
-                            *self.wake_hm)
                     log.info(
                         "curfew: in sleep window but %.0fs of boot grace "
                         "remain (operator window) — halting after",
@@ -492,6 +521,56 @@ class CurfewThread(threading.Thread):
                     self.stopping.wait(30)
                     continue
                 wake_at = self._next_wake(now)
+                # ── TOO LATE TO BE WORTH IT ──────────────────────────
+                #
+                # A halt is not free: it costs a boot cycle at full
+                # power, a reconnect, and the risk that the rig does
+                # not come back at all. The curfew earns its keep over
+                # ten dark hours; over the last forty minutes of a
+                # window it saves a few watt-minutes and stakes the
+                # morning on an RTC alarm firing correctly.
+                #
+                # This is also the second half of what powered a rig
+                # off under its owner: an agent restarted at 07:00,
+                # fifty minutes before an 08:00 wake, where the right
+                # answer is obviously "stay up, you are nearly there".
+                _to_wake = (wake_at - now).total_seconds()
+                if _to_wake < self.min_sleep:
+                    log.info(
+                        "curfew: only %.0f min until the %02d:%02d wake — "
+                        "not worth a halt and a boot, staying up",
+                        _to_wake / 60.0, *self.wake_hm)
+                    self.stopping.wait(min(_to_wake + 1, 300))
+                    continue
+                # ── SOMEBODY IS WORKING ON THIS RIG ──────────────────
+                #
+                # The boot grace was meant to be this check and could
+                # not be: it is a timer, so it expires while an
+                # operator is still typing, and it cannot tell a
+                # maintenance visit from an ordinary boot. Asking who
+                # is logged in answers the actual question, and the
+                # answer is good for as long as they stay.
+                #
+                # Bounded by the same deferral the uploads get, so a
+                # forgotten SSH session cannot hold the rig awake all
+                # night and flatten the battery.
+                _who = _who_is_logged_in()
+                if _who:
+                    if self._held_since is None:
+                        self._held_since = time.monotonic()
+                        log.info(
+                            "curfew: bedtime, but %s is logged in — "
+                            "staying up for up to %.0f min so nobody is "
+                            "cut off mid-session",
+                            ", ".join(_who), self.max_defer / 60.0)
+                    if (time.monotonic() - self._held_since) < self.max_defer:
+                        self.stopping.wait(30)
+                        continue
+                    log.warning(
+                        "curfew: %s still logged in after %.0f min — "
+                        "halting anyway to protect the battery",
+                        ", ".join(_who), self.max_defer / 60.0)
+                self._held_since = None
                 log.info(
                     "curfew: sleep window reached — arming RTC for %s "
                     "and powering off", wake_at.isoformat(),

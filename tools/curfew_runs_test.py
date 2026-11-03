@@ -50,12 +50,26 @@ CFG = {"enabled": True, "sleep": "18:20", "wake": "08:00",
 print("the clock it counts the boot grace from:")
 c = CurfewThread(dict(CFG))
 check("it exists", hasattr(c, "_started_at"), True)
-check("...and is a monotonic reading, not a wall clock",
-      abs(c._started_at - time.monotonic()) < 5.0, True)
 # THE LINE THAT USED TO RAISE, run as it is run for real.
 _grace = c.boot_grace - (time.monotonic() - c._started_at)
 check("the grace line computes instead of raising",
-      550 <= _grace <= 600, True)
+      isinstance(_grace, float), True)
+# FROM BOOT, NOT FROM THE AGENT'S START, and this is the assertion
+# that matters: measured from the agent's start, `update.sh` -- which
+# stops and starts the service -- resets the grace, so an update run
+# inside the sleep window halts the Pi ten minutes later. It did,
+# under its owner, at 07:10 on a window that ended at 08:00.
+with open("/proc/uptime") as _fh:
+    _up = float(_fh.read().split()[0])
+check("it is the boot instant, not this moment",
+      abs(c._started_at - (time.monotonic() - _up)) < 2.0, True)
+time.sleep(1.1)
+c2 = CurfewThread(dict(CFG))
+check("restarting the agent does not reset it",
+      abs(c2._started_at - c._started_at) < 0.5, True)
+check("...so a long-running rig is already past its grace",
+      (c.boot_grace - (time.monotonic() - c._started_at)) < 0
+      if _up > c.boot_grace else True, True)
 
 print()
 print("the window these settings describe:")
@@ -200,7 +214,7 @@ d.stop()
 _t.join(timeout=5)
 _said = " | ".join(_rec.lines)
 check("the thread is still alive after reaching bedtime",
-      any("DRY RUN" in x for x in _rec.lines), True)
+      any("Would have halted" in x for x in _rec.lines), True)
 check("...and says what it would have done",
       any("Would have" in x and "woken at" in x for x in _rec.lines), True)
 check("...and how to arm it", "dry_run" in _said, True)
@@ -214,24 +228,26 @@ print("waking early is said out loud, not left to be inferred:")
 # back, behaves normally, and burns a night of battery.
 _rec.lines.clear()
 w = CurfewThread({"enabled": True, "sleep": "18:30", "wake": "08:00",
-                  "boot_grace_seconds": 600, "dry_run": True})
+                  "boot_grace_seconds": 0, "dry_run": True})
 _t2 = threading.Thread(target=w.run, daemon=True)
 # Pretend it is 03:00 -- five hours before the 08:00 wake, which is
 # this course's UTC offset and the shape of a hardware clock in the
 # wrong timezone.
-_real_now = dt.datetime.now
-dt_patch = dt.datetime(2026, 11, 3, 3, 0)
-
-
-class _FakeDt(dt.datetime):
-    @classmethod
-    def now(cls, tz=None):
-        return dt_patch
-
-
 import agent.curfew as _cur  # noqa: E402
 
-_cur.dt.datetime = _FakeDt
+
+def _at(when):
+    """A datetime class whose .now() is frozen at `when`."""
+
+    class _Frozen(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when
+
+    return _Frozen
+
+
+_cur.dt.datetime = _at(dt.datetime(2026, 11, 3, 3, 0))
 try:
     _t2.start()
     time.sleep(1.0)
@@ -250,6 +266,77 @@ check("...and names the clock to check, not the curfew",
 # grace, and a warning repeated sixty times is a warning nobody reads.
 check("said once, not on every tick",
       sum(1 for x in _rec.lines if "INSIDE this rig" in x), 1)
+
+print()
+print("it will not halt a rig that is nearly due to wake:")
+# THE OTHER HALF OF WHAT POWERED A RIG OFF UNDER ITS OWNER. An agent
+# restarted at 07:00, fifty minutes before an 08:00 wake, inside the
+# window: the old code armed the RTC and pulled the power. A halt
+# costs a boot cycle and stakes the morning on an alarm firing; over
+# the last of a window it saves a few watt-minutes.
+_rec.lines.clear()
+m = CurfewThread({"enabled": True, "sleep": "18:30", "wake": "08:00",
+                  "boot_grace_seconds": 0, "dry_run": True,
+                  "min_sleep_minutes": 60})
+_cur.dt.datetime = _at(dt.datetime(2026, 11, 3, 7, 10))
+_t3 = threading.Thread(target=m.run, daemon=True)
+try:
+    _t3.start()
+    time.sleep(1.0)
+    m.stop()
+    _t3.join(timeout=5)
+finally:
+    _cur.dt.datetime = dt.datetime
+_said3 = " | ".join(_rec.lines)
+check("50 minutes before the wake it stays up",
+      "not worth a halt" in _said3, True)
+check("...and never reaches the halt",
+      "Would have halted" in _said3, False)
+check("...saying how long is left", "50 min until" in _said3, True)
+
+# BUT A REAL NIGHT STILL HAPPENS. The guard must not become "never
+# sleep": at bedtime proper there are thirteen hours to go.
+_rec.lines.clear()
+m2 = CurfewThread({"enabled": True, "sleep": "18:30", "wake": "08:00",
+                   "boot_grace_seconds": 0, "dry_run": True,
+                   "min_sleep_minutes": 60})
+_cur.dt.datetime = _at(dt.datetime(2026, 11, 3, 18, 35))
+_t4 = threading.Thread(target=m2.run, daemon=True)
+try:
+    _t4.start()
+    time.sleep(1.0)
+    m2.stop()
+    _t4.join(timeout=5)
+finally:
+    _cur.dt.datetime = dt.datetime
+check("at bedtime proper it goes through with it",
+      any("Would have halted" in x for x in _rec.lines), True)
+
+print()
+print("it will not power off a rig somebody is working on:")
+_rec.lines.clear()
+h = CurfewThread({"enabled": True, "sleep": "18:30", "wake": "08:00",
+                  "boot_grace_seconds": 0, "dry_run": True})
+_cur._who_is_logged_in = lambda: ["pi"]
+_cur.dt.datetime = _at(dt.datetime(2026, 11, 3, 18, 35))
+_t5 = threading.Thread(target=h.run, daemon=True)
+try:
+    _t5.start()
+    time.sleep(1.0)
+    h.stop()
+    _t5.join(timeout=5)
+finally:
+    _cur.dt.datetime = dt.datetime
+    _cur._who_is_logged_in = lambda: []
+_said5 = " | ".join(_rec.lines)
+check("an open session holds the halt off", "is logged in" in _said5, True)
+check("...and it does not halt",
+      "Would have halted" in _said5, False)
+check("...naming who", "pi" in _said5, True)
+# NOT FOREVER, THOUGH. A forgotten SSH session must not flatten the
+# battery, so it is bounded by the same deferral the uploads get.
+check("the hold is bounded, not indefinite",
+      "up to" in _said5 and "min" in _said5, True)
 
 print()
 print("a disabled curfew says so rather than vanishing:")
