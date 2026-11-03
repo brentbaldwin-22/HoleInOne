@@ -16174,23 +16174,34 @@ function ProduceDebugModal({ data, adminPassword, onRerun, onClose }) {
   );
 }
 
-// Debug and Debug2 are retired: Debug3's pipeline now runs inside produce
-// (settings.debug3_tracer). The code and endpoints are left in place so a
-// swing can still be compared against the old methods, but the buttons
-// are off by default -- three diagnostic buttons on every row is noise
-// once one of them is the thing that actually ships.
+// ONE SWITCH FOR EVERY DIAGNOSTIC BUTTON ON A ROW.
+//
+// It started as "legacy debug" and governed the two retired buttons,
+// Debug and Debug2, while Debug3, Swing test, Scan & produce, Find
+// ascents and Produce ascents each appeared on their own terms. Seven
+// buttons under every upload, and the one an operator actually needs
+// -- Produce -- sitting among them. Each was defensible on its own and
+// the row was unreadable.
+//
+// So the switch governs the lot. Off, a row carries its clips and
+// Produce and nothing else; on, everything comes back in one click.
+// What a particular deployment is allowed to show still applies on top
+// of it: the dev-only buttons keep their `produceDebug.enabled` gate,
+// and Scan for ball still wants a mirror to pull from.
 //
 // A CONSTANT MEANT A DEPLOY EACH WAY, which is the wrong price for
 // "let me look at these on the new clips and then put it back". It is
-// a switch now, remembered in this browser only, so turning it on
-// costs a click and turning it off costs another — and nobody else's
-// production page grows three buttons because one person was
-// comparing methods on a Tuesday.
-const LEGACY_DEBUG_STORAGE = "golfreelz.showLegacyDebug";
+// remembered in this browser only, so nobody else's production page
+// grows seven buttons because one person was comparing methods on a
+// Tuesday.
+//
+// The key keeps its old name so a browser that already had the switch
+// on stays on through the rename.
+const DEBUG_BUTTONS_STORAGE = "golfreelz.showLegacyDebug";
 
-function readLegacyDebug() {
+function readShowDebug() {
   try {
-    return localStorage.getItem(LEGACY_DEBUG_STORAGE) === "1";
+    return localStorage.getItem(DEBUG_BUTTONS_STORAGE) === "1";
   } catch {
     // Private windows and blocked site data both throw here, and a
     // diagnostic switch is not worth a blank page.
@@ -16353,16 +16364,16 @@ export default function AdminProduction() {
   // diagnostic comparing the classical-CV and AI tracers. Hidden unless the
   // backend enables it (PRODUCE_DEBUG_ENABLED on this deployment).
   const [produceDebug, setProduceDebug] = useState({ enabled: false });
-  const [showLegacyDebug, setShowLegacyDebug] = useState(readLegacyDebug);
+  const [showDebug, setShowDebug] = useState(readShowDebug);
 
-  function toggleLegacyDebug() {
-    const next = !showLegacyDebug;
-    setShowLegacyDebug(next);
+  function toggleDebug() {
+    const next = !showDebug;
+    setShowDebug(next);
     try {
-      if (next) localStorage.setItem(LEGACY_DEBUG_STORAGE, "1");
-      else localStorage.removeItem(LEGACY_DEBUG_STORAGE);
+      if (next) localStorage.setItem(DEBUG_BUTTONS_STORAGE, "1");
+      else localStorage.removeItem(DEBUG_BUTTONS_STORAGE);
     } catch {
-      // See readLegacyDebug: the switch still works for this session.
+      // See readShowDebug: the switch still works for this session.
     }
   }
   // Debug2 report — kept in memory only; the run writes images but
@@ -17241,16 +17252,20 @@ export default function AdminProduction() {
             switch with a click instead, remembered in this browser
             only — nobody else's page grows three buttons because one
             person is comparing methods today. */}
-        {produceDebug.enabled ? (
-          <label className="tiny"
-                 style={{ display: "inline-flex", alignItems: "center",
-                          gap: 5, cursor: "pointer" }}
-                 title="Show the retired Debug and Debug2 buttons on each row, for comparing the old methods against what produce does now.">
-            <input type="checkbox" checked={showLegacyDebug}
-                   onChange={toggleLegacyDebug} />
-            <span className="muted">legacy debug buttons</span>
-          </label>
-        ) : null}
+        {/* ALWAYS HERE, unlike the buttons it governs. It used to
+            appear only on a deployment with the dev flag set, which
+            was fine while it revealed dev-only toys and is a trap now
+            that it also hides Find ascents and Produce ascents: a
+            switch that can turn something off has to be reachable to
+            turn it back on. */}
+        <label className="tiny"
+               style={{ display: "inline-flex", alignItems: "center",
+                        gap: 5, cursor: "pointer" }}
+               title="Show the per-row diagnostic buttons — Debug, Debug2, Debug3, Swing test, Scan & produce, Find ascents and Produce ascents. Off, a row carries its clips and the ordinary Produce button and nothing else.">
+          <input type="checkbox" checked={showDebug}
+                 onChange={toggleDebug} />
+          <span className="muted">debug buttons</span>
+        </label>
         {courseQuery ? (
           <span className="tiny muted">filtering “{courseQuery}”</span>
         ) : null}
@@ -17720,7 +17735,7 @@ export default function AdminProduction() {
                     </button>
                   )
                 )}
-                {showLegacyDebug && produceDebug.enabled && (
+                {showDebug && produceDebug.enabled && (
                   <button
                     className="small ghost"
                     onClick={() => handleProduceDebug(row)}
@@ -17729,7 +17744,7 @@ export default function AdminProduction() {
                     🐞 Debug
                   </button>
                 )}
-                {showLegacyDebug && produceDebug.enabled && (
+                {showDebug && produceDebug.enabled && (
                   <button
                     className="small ghost"
                     onClick={() => handleDebug2(row)}
@@ -17738,7 +17753,7 @@ export default function AdminProduction() {
                     🔬 Debug2
                   </button>
                 )}
-                {produceDebug.enabled && (
+                {showDebug && produceDebug.enabled && (
                   <button
                     className="small ghost"
                     onClick={() => handleDebug3(row)}
@@ -17747,7 +17762,7 @@ export default function AdminProduction() {
                     🧿 Debug3
                   </button>
                 )}
-                {produceDebug.enabled && (
+                {showDebug && produceDebug.enabled && (
                   <button
                     className="small ghost"
                     onClick={() => handleSwingTest(row)}
@@ -17761,7 +17776,7 @@ export default function AdminProduction() {
                     scan produces nothing -- it is a thing to argue with
                     a produce about, not a thing to hand an operator at
                     a course. */}
-                {produceDebug.enabled && mirror.configured && (
+                {showDebug && produceDebug.enabled && mirror.configured && (
                   <button
                     className="small ghost"
                     onClick={() => handleBallScan(row)}
@@ -17789,7 +17804,7 @@ export default function AdminProduction() {
                     still commits clips: on the card beside the real
                     one it is a trap, not a tool. Kept in dev, where
                     comparing the two on real footage is the point. */}
-                {produceDebug.enabled && (
+                {showDebug && produceDebug.enabled && (
                   <button
                     className="small ghost"
                     onClick={() => handleBallScanProduce(row)}
@@ -17809,22 +17824,33 @@ export default function AdminProduction() {
                     numbers -- it just does not render, so an operator
                     can see what the detector thinks without spending
                     the upload's clips to find out. */}
-                <button
-                  className="small ghost"
-                  onClick={() => handleAscentFind(row)}
-                  disabled={busy}
-                  title="Find every ball leaving the tee and where each was teed, with the full picture of what was considered and why — and produce nothing. The upload's existing clips are left alone."
-                >
-                  🔎 Find ascents
-                </button>
-                <button
-                  className="small ghost"
-                  onClick={() => handleAscentProduce(row)}
-                  disabled={greyed || busy}
-                  title="Find every ball leaving the tee across the whole clip, then work back to where each was sitting and the frame it went — and produce each with the same renderer Save & close uses."
-                >
-                  🛫 Produce ascents
-                </button>
+                {/* BEHIND THE SWITCH TOO, at the operator's request.
+                    These are not dev toys -- Find ascents explains
+                    what Produce does, and Produce ascents is the same
+                    renderer -- but a row carrying seven buttons is a
+                    row nobody can read, and the ordinary Produce
+                    button already runs the ascent path. The switch
+                    brings the whole set back in one click. */}
+                {showDebug && (
+                  <button
+                    className="small ghost"
+                    onClick={() => handleAscentFind(row)}
+                    disabled={busy}
+                    title="Find every ball leaving the tee and where each was teed, with the full picture of what was considered and why — and produce nothing. The upload's existing clips are left alone."
+                  >
+                    🔎 Find ascents
+                  </button>
+                )}
+                {showDebug && (
+                  <button
+                    className="small ghost"
+                    onClick={() => handleAscentProduce(row)}
+                    disabled={greyed || busy}
+                    title="Find every ball leaving the tee across the whole clip, then work back to where each was sitting and the frame it went — and produce each with the same renderer Save & close uses."
+                  >
+                    🛫 Produce ascents
+                  </button>
+                )}
                 {/* THE CALIBRATOR, REACHABLE. `openGreenCal` was written
                     to be opened from the card -- the mapping is a
                     property of the two CAMERAS, not of a swing -- and
