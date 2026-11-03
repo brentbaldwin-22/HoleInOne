@@ -99,8 +99,21 @@ def main() -> int:
         busy = Path(td) / "busy.mp4"
         truth = clip(busy, 70)
         _big = ball_seen(busy, 10, 0, truth)
-        check("with a treeline, largest-first throws the ball away",
-              _big <= len(truth) // 3, True)
+        # THIS USED TO ASSERT THE BALL WAS LOST, and that was the
+        # premise of the whole file: across a band, largest-first
+        # keeps golfers and treeline and the ball never enters the top
+        # ten. It is no longer true, because the per-frame budget is
+        # now spread across the picture instead of down the size order
+        # (see `pick_spread_blobs`) -- on this fixture that took the
+        # uncalibrated default from 8 frames of 24 to 16.
+        #
+        # The premise is gone; the conclusion is not. Ranking by the
+        # ball's own size is still better than any heuristic, which is
+        # what the rest of this file measures.
+        print("      no calibration: ball on %d of %d frames"
+              % (_big, len(truth)))
+        check("spreading the budget keeps most of the flight unaided",
+              _big >= len(truth) // 2, True)
 
         # THE POINT: ranking by ball-likeness gets it back, at the SAME
         # cap. Nothing extra is admitted; only the order changes.
@@ -111,9 +124,12 @@ def main() -> int:
         # ranking only needs to put the ball nearer the target than a
         # 300px tree edge is.
         _near = ball_seen(busy, 10, 60, truth)
+        print("      calibrated:     ball on %d of %d frames"
+              % (_near, len(truth)))
         check("  ranking by the ball's own size keeps it",
               _near >= len(truth) * 0.75, True)
-        check("  at the same per-frame cap (control)", _big < _near, True)
+        check("  which is still better than the spread alone",
+              _big < _near, True)
 
         # ---- and raising the cap is NOT the fix ---------------------
         # It admits more noise ABOVE the ball rather than the ball. Four

@@ -33,6 +33,25 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pi-agent"))
 
 from agent.curfew import CurfewThread  # noqa: E402
+import agent.curfew as _cur  # noqa: E402
+
+
+def _at(when):
+    """A datetime class whose .now() is frozen at `when`.
+
+    Every test of the halt path uses one. The alternative is a
+    fixture that behaves differently depending on the hour the suite
+    runs at, which this file has already been caught by once.
+    """
+
+    class _Frozen(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when
+
+    return _Frozen
+
+
 
 FAILED = []
 
@@ -142,13 +161,24 @@ _log.setLevel(logging.INFO)
 
 # Inside the window, no boot grace left, nothing to upload: the exact
 # state in which the old code raised.
-d = CurfewThread({"enabled": True, "sleep": "00:00", "wake": "23:59",
+#
+# ON A FROZEN CLOCK, because this fixture was "sleep 00:00 wake 23:59"
+# -- always inside the window, whenever the suite runs -- and the
+# minimum-sleep guard later made that depend on the hour after all:
+# run it at 23:53 and the wake is six minutes away, so the curfew
+# rightly declines to halt and the test failed on the time of day. A
+# test of the halt path must not care what o'clock it is.
+d = CurfewThread({"enabled": True, "sleep": "18:30", "wake": "08:00",
                   "boot_grace_seconds": 0, "dry_run": True})
+_cur.dt.datetime = _at(dt.datetime(2026, 11, 3, 19, 0))
 _t = threading.Thread(target=d.run, daemon=True)
-_t.start()
-time.sleep(1.5)
-d.stop()
-_t.join(timeout=5)
+try:
+    _t.start()
+    time.sleep(1.5)
+    d.stop()
+    _t.join(timeout=5)
+finally:
+    _cur.dt.datetime = dt.datetime
 _said = " | ".join(_rec.lines)
 check("the thread is still alive after reaching bedtime",
       any("Would have halted" in x for x in _rec.lines), True)
@@ -170,20 +200,6 @@ _t2 = threading.Thread(target=w.run, daemon=True)
 # Pretend it is 03:00 -- five hours before the 08:00 wake, which is
 # this course's UTC offset and the shape of a hardware clock in the
 # wrong timezone.
-import agent.curfew as _cur  # noqa: E402
-
-
-def _at(when):
-    """A datetime class whose .now() is frozen at `when`."""
-
-    class _Frozen(dt.datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return when
-
-    return _Frozen
-
-
 _cur.dt.datetime = _at(dt.datetime(2026, 11, 3, 3, 0))
 try:
     _t2.start()

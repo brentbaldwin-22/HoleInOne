@@ -340,8 +340,23 @@ def test_the_crop_is_what_keeps_the_ball_in_the_running():
         whole = d3.detect_movers_by_diff(p, 13, 25, sens=3, per_frame=8,
                                          three_frame=False)
     check("cropped, the ball comes back", len(got), 7)
-    check("control, read whole it does not",
-          len([d for d in whole if abs(d["x"] - BX) < 25]), 0)
+    # THIS CONTROL USED TO SAY "AND READ WHOLE IT FINDS NOTHING", and
+    # that was true while the per-frame budget went to the largest few
+    # blobs: across a whole frame the busy junk outweighed the ball
+    # every time, which is the entire reason the re-read crops. The
+    # budget is now spread across the picture instead of down the size
+    # order (`pick_spread_blobs`), so a whole-frame read gets some of
+    # the flight back on its own.
+    #
+    # The crop still wins, and that is what this control is for. It
+    # asserts the MARGIN rather than a zero, because the margin is the
+    # claim: reading a small box around the predicted line beats
+    # reading everything, and by how much is the thing worth watching.
+    _whole_near = len([d for d in whole if abs(d["x"] - BX) < 25])
+    print("      cropped found %d, whole-frame found %d"
+          % (len(got), _whole_near))
+    check("control, and read whole it finds fewer",
+          _whole_near < len(got), True)
 
 
 def test_a_hole_too_long_to_be_one_flight_is_not_read():

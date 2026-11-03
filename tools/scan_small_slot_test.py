@@ -113,7 +113,14 @@ _src = Path("backend/app/routers/admin.py").read_text()
 _fn = _src[_src.index("def scan_plot_region("):]
 _fn = _fn[:_fn.index("def finalize_wizard_video(")]
 check("slots are reserved", "_SMALL_SLOTS" in _fn, True)
-check("with a floor above sensor noise", "_SMALL_FLOOR = 3" in _fn, True)
+# THE FLOOR MOVED INTO THE SERVICE with the picker itself, because
+# the ascent sweep needed the same rule and two copies of it is how
+# the two detectors came apart in the first place.
+check("with a floor above sensor noise",
+      "_SMALL_FLOOR = SCAN_SMALL_FLOOR" in _fn, True)
+check("...which the service defines once",
+      "SPREAD_SMALL_FLOOR = 3" in Path(
+          "backend/app/services/debug3.py").read_text(), True)
 # WHAT SIZE IT ACTUALLY IS. Nothing here is calibrated -- which is why
 # ascent_prefer_area still defaults to 0 -- and the only way to choose
 # a size gate off the footage is to be able to read one off the ball.
