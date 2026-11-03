@@ -21,11 +21,16 @@ somebody standing there.
 
     python3 tools/trigger_mech_test.py
 """
+import os
 import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+os.environ.setdefault("DATABASE_URL", "sqlite://")
+sys.path.insert(0, str(ROOT / "backend"))
+
+from app.routers.cameras import trigger_mechanism  # noqa: E402
 
 FAILED = []
 
@@ -38,30 +43,24 @@ def check(label, got, want):
 
 
 def verdict(triggering_enabled, audio_on, dwell_on, impact_at,
-            recover=False):
+            recover=False, kind=None):
     """The gate, exactly as /event-trigger applies it.
+
+    CALLS THE REAL ONE. This used to be a second implementation of the
+    rule written beside the first, and it agreed with itself happily
+    while an operator's Capture was being refused in the field: a
+    Capture carries no `impact_at`, so the model read it as a dwell and
+    so did the code. A test that re-implements the thing it is testing
+    can only ever confirm the author's idea of it.
 
     Returns None to admit the trigger, or the mechanism that refused
     it. `triggering_enabled` is checked first and answers for both.
     """
     if not triggering_enabled:
         return "paused"
-    mech = "audio" if impact_at is not None else "dwell"
-    on = audio_on if mech == "audio" else dwell_on
-    # A RECOVERY IS NOT A TRIGGER. It re-registers a session whose
-    # trigger was lost, for a clip already on the card, and it sends no
-    # `impact_at` because it has no decision to describe -- so the
-    # discriminator reads it as a dwell. The switch governs whether a
-    # mechanism may FIRE, not whether work already done may be saved.
-    if recover:
-        on = True
-    # ABSENT IS NOT OFF. A row written before the columns existed reads
-    # None until the backfill runs, and None has to mean "nobody turned
-    # this off" -- the alternative is a deploy that silently stops every
-    # trigger on every rig in the field.
-    if on is not None and not on:
-        return mech
-    return None
+    mech, ok = trigger_mechanism(kind, impact_at, audio_on, dwell_on,
+                                 recover=recover)
+    return None if ok else mech
 
 
 print("which mechanism fired:")
@@ -83,6 +82,51 @@ check("a dwell trigger is admitted",
       verdict(True, False, True, impact_at=None), None)
 check("an audio trigger is refused",
       verdict(True, False, True, impact_at=1761710000.0), "audio")
+
+print()
+print("an operator's Capture is not a mechanism:")
+# THE BUG. The Capture button posts the same /event-trigger a real
+# trigger does -- deliberately, so it exercises the whole pipeline --
+# and carries no `impact_at`, because nothing has been struck. That
+# read as a dwell, so a rig running audio-only refused the operator's
+# own request and the button did nothing.
+check("Capture is admitted with the dwell off",
+      verdict(True, True, False, impact_at=None, kind="capture"), None)
+check("...and with BOTH mechanisms off",
+      verdict(True, False, False, impact_at=None, kind="capture"), None)
+check("...and it is logged as a capture, not a dwell",
+      trigger_mechanism("capture", None, False, False)[0], "capture")
+# The force sentinel on the rig is the same thing by another route.
+check("the rig's force sentinel is admitted too",
+      verdict(True, True, False, impact_at=None, kind="manual"), None)
+# WITHOUT THE SWITCHES IT CHANGES NOTHING. A Capture on a rig with
+# everything on behaved correctly before and must still.
+check("Capture with both on is admitted",
+      verdict(True, True, True, impact_at=None, kind="capture"), None)
+# AND A PAUSED CAMERA IS STILL PAUSED. `triggering_enabled` is an
+# outright stop and not this switch's business -- an operator who
+# paused a camera does not expect a button to override it.
+check("a paused camera refuses a Capture",
+      verdict(False, True, True, impact_at=None, kind="capture"), "paused")
+
+print()
+print("the rig's own word beats the inference:")
+# `impact_at` only ever answers "audio or not audio", so anything that
+# is neither reads as a dwell. The rig has said which it was all along.
+check("kind=dwell with the dwell off is refused",
+      verdict(True, True, False, impact_at=None, kind="dwell"), "dwell")
+check("kind=audio with the audio off is refused",
+      verdict(True, False, True, impact_at=1761710000.0, kind="audio"),
+      "audio")
+check("an agent that sends no kind still falls back to the instant",
+      verdict(True, False, True, impact_at=1761710000.0, kind=None),
+      "audio")
+check("...and to the dwell without one",
+      verdict(True, True, False, impact_at=None, kind=None), "dwell")
+# A kind nobody has heard of must not become an admission.
+check("an unknown kind is judged on the instant, not waved through",
+      verdict(True, True, False, impact_at=None, kind="semaphore"),
+      "dwell")
 
 print()
 print("the states that must not surprise anybody:")
@@ -130,12 +174,16 @@ _cams = (ROOT / "backend" / "app" / "routers" / "cameras.py").read_text(
 # The refusal must carry the key old agents read. A new key alone would
 # leave every un-updated rig recording and uploading dwells that the
 # backend then throws away.
-_block = re.search(
-    r'if _mech_on is not None and not _mech_on:.*?\n\n',
-    _cams, re.S)
+_block = re.search(r'if not _mech_ok:.*?\n\n', _cams, re.S)
 check("the mechanism refusal exists", _block is not None, True)
-check("a recovery is exempted before it is applied",
-      bool(re.search(r'if recover:\s*\n\s*_mech_on = True', _cams)), True)
+# The rule itself is exercised above by calling it; what the source
+# has to show is that the ENDPOINT asks it, rather than deciding for
+# itself again.
+check("the endpoint asks the shared rule",
+      "_mech, _mech_ok = trigger_mechanism(" in _cams, True)
+check("...and hands it the rig's own account of the trigger",
+      '(_parse_trigger_detail(trigger_detail) or {}).get("kind")' in _cams,
+      True)
 _txt = _block.group(0) if _block else ""
 check("...and answers with triggering_disabled",
       '"triggering_disabled": True' in _txt, True)

@@ -1549,6 +1549,45 @@ async def verify_swing(
     return out
 
 
+def trigger_mechanism(kind, impact_at, audio_on, dwell_on, recover=False):
+    """(mechanism, is it allowed) for one /event-trigger.
+
+    Pure, and public, so the test exercises THIS rather than a second
+    copy of the rule written beside it. The copy is how a Capture came
+    to be refused for a month of switch settings nobody had tested:
+    the model in the test agreed with itself.
+
+    `kind` is `trigger_detail.kind` as the rig sent it, or None from an
+    agent too old to send one.
+    """
+    # AN OPERATOR IS NOT A MECHANISM. "capture" is the button on the
+    # camera card; "manual" is the force sentinel on the rig. Both mean
+    # a person asked for this recording, and the switches govern what
+    # the rig may do BY ITSELF.
+    if kind in ("capture", "manual"):
+        return kind, True
+    # THE RIG'S OWN WORD FIRST. `impact_at` only ever answers "audio or
+    # not audio", so everything that is neither reads as a dwell --
+    # which is what went wrong. The inference stays for agents that
+    # send no detail.
+    if kind in ("audio", "dwell"):
+        mech = kind
+    else:
+        mech = "audio" if impact_at is not None else "dwell"
+    on = audio_on if mech == "audio" else dwell_on
+    # A RECOVERY IS NOT A TRIGGER EITHER. It re-registers a session
+    # whose trigger was lost, for a clip already on the card. The
+    # switch governs whether a mechanism may FIRE, not whether work
+    # already done may be saved.
+    if recover:
+        return mech, True
+    # ABSENT IS NOT OFF. A row written before these columns existed
+    # reads None until the backfill runs, and None must mean "nobody
+    # has turned this off" -- the alternative is a deploy that silently
+    # stops every trigger on every rig.
+    return mech, (True if on is None else bool(on))
+
+
 def _parse_trigger_detail(raw):
     """The Pi's account of why it fired, or None.
 
@@ -1643,16 +1682,23 @@ async def event_trigger(
     # `triggering_enabled` above deliberately still applies: a camera
     # the operator paused outright is paused, recovery included. That is
     # existing behaviour and not this switch's business.
-    _mech = "audio" if impact_at is not None else "dwell"
-    _mech_on = (cam.audio_trigger_enabled if _mech == "audio"
-                else cam.dwell_trigger_enabled)
-    if recover:
-        _mech_on = True
-    # ABSENT IS NOT OFF. A camera row written before these columns
-    # existed reads None until the backfill runs, and None must mean
-    # "nobody has turned this off" -- the alternative is a deploy that
-    # silently stops every trigger on every rig.
-    if _mech_on is not None and not _mech_on:
+    # AN OPERATOR PRESSING CAPTURE IS NOT A MECHANISM.
+    #
+    # `impact_at` is a good discriminator for the two AUTOMATIC
+    # triggers and a bad one for everything else, because it only ever
+    # answers "audio or not audio". A Capture carries no impact -- the
+    # club has not met anything, somebody clicked a button -- so it
+    # read as a dwell, and a camera running audio-only refused the
+    # operator's own request. Reported as "manual capture only works
+    # when the dwell trigger is on", which is exactly what it did.
+    #
+    # The rig has been sending `trigger_detail.kind` since the
+    # mechanism went on the events page. See `trigger_mechanism`.
+    _mech, _mech_ok = trigger_mechanism(
+        (_parse_trigger_detail(trigger_detail) or {}).get("kind"),
+        impact_at, cam.audio_trigger_enabled, cam.dwell_trigger_enabled,
+        recover=recover)
+    if not _mech_ok:
         log.info(
             "cameras: camera %s refused a %s trigger — the %s trigger is "
             "switched off for this camera (session=%s)",
