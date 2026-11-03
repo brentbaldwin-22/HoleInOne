@@ -100,9 +100,18 @@ class CurfewThread(threading.Thread):
         # `run()` reads this on the first tick that lands inside the
         # sleep window: `self.boot_grace - (monotonic() - _started_at)`.
         # Nothing assigned it, so that line raised AttributeError, the
-        # thread died, and the curfew never halted anything -- on a
-        # daemon thread, where the traceback goes to the journal and
-        # the agent carries on as if nothing happened.
+        # thread died, and the curfew halted nothing -- on a daemon
+        # thread, where the traceback goes to the journal and the agent
+        # carries on as if nothing happened.
+        #
+        # THE EXACT WINDOW, because "it has always been broken" was
+        # wrong and cost a day of looking in the wrong place. The
+        # assignment was there from 07d9cd8 (25 Jul) and was dropped by
+        # c7295b4 (3 Oct), which added the upload deferral and took
+        # this line with it. So the rigs slept nightly for ten weeks,
+        # stopped on 3 Oct, and nobody noticed until a 100Ah pack
+        # started lasting five days instead of twelve -- the curfew's
+        # own power math, read backwards.
         #
         # FROM BOOT, NOT FROM THE AGENT'S START. I set this to the
         # agent's start first, reasoning that an agent which restarts
