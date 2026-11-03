@@ -12798,6 +12798,12 @@ def scan_plot_region(
     row = db.get(LongVideoUpload, upload_id)
     if not row:
         raise HTTPException(404, "long upload not found")
+    # DECLARED BEFORE ANYTHING CAN FAIL. The return at the bottom reads
+    # these, so leaving them to be created inside the try turns any
+    # earlier error into a NameError that hides the real one.
+    _probe = None
+    _probe_rows: list = []
+    _pr = 14.0
     _green = str(payload.get("which") or "tee").lower() == "green"
     _cam = "green" if _green else "tee"
     if _green:
@@ -12888,7 +12894,6 @@ def scan_plot_region(
         # ── "why is there no dot here?" ──────────────────────────────
         _probe = (payload or {}).get("probe") or None
         _pr = float((payload or {}).get("probe_radius") or 14)
-        _probe_rows: list = []
         if _probe is not None:
             try:
                 _px = float(_probe["x"]) - x

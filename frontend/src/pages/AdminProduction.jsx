@@ -3025,14 +3025,16 @@ function ClickToPlotModal({
                     findComet({ frame: p.frame, x: p.x, y: p.y });
                   }
                 }}
-                scanRegion={async (region, sensitivity) => {
+                scanRegion={async (region, sensitivity, extra) => {
                   const out = await api.scanPlotRegion(adminPassword, row.id, {
                     ...region,
                     which: "green",
                     sensitivity,
                     impact_frame: impactFrame ?? null,
+                    ...(extra || {}),
                   });
-                  return out.dots || [];
+                  // A probe wants the verdict, not the dots.
+                  return extra?.probe ? out : (out.dots || []);
                 }}
               />
             ) : (
@@ -3128,7 +3130,7 @@ function ClickToPlotModal({
                 if (id === "aim") dropTeeLanding(pt);
               }}
               onViewFrame={setTeeViewFrame}
-              scanRegion={async (region, sensitivity) => {
+              scanRegion={async (region, sensitivity, extra) => {
                 const out = await api.scanPlotRegion(adminPassword, row.id, {
                   ...region,
                   sensitivity,
@@ -3140,8 +3142,13 @@ function ClickToPlotModal({
                     winHi != null
                       ? Math.min(swing.end_frame ?? winHi, winHi)
                       : swing.end_frame ?? null,
+                  ...(extra || {}),
                 });
-                return inWindow(out.dots || []);
+                // A probe wants the verdict, not the dots -- and not
+                // the window filter either, which would hide the
+                // answer when the answer is "that frame is outside
+                // the window you are looking at".
+                return extra?.probe ? out : inWindow(out.dots || []);
               }}
             />
           ) : (
@@ -12307,18 +12314,30 @@ function PlotHeatCanvas({
     setProbe({ pending: true });
     const _c = viewFrame ?? mid;
     try {
-      const out = await api.scanPlotRegion(adminPassword, uploadId, {
-        x: 0, y: 0, w: frameW, h: frameH,
-        sensitivity: scanLevel,
-        which: "tee",
-        start_frame: Math.max(0, _c - 20),
-        end_frame: _c + 20,
-        probe: { x: nx, y: ny },
+      // THROUGH THE SAME PROP THE SCAN USES. It is the caller that
+      // knows which camera this map is showing and holds the
+      // credentials; reaching for the API here called a green map's
+      // probe against the tee video, in a component that has neither
+      // `api` nor the password in scope -- so every probe failed with
+      // a ReferenceError the operator saw as "try again".
+      const out = await scanRegion(
+        { x: 0, y: 0, w: frameW, h: frameH },
+        scanLevel,
+        {
+          probe: { x: nx, y: ny },
+          start_frame: Math.max(0, _c - 20),
+          end_frame: _c + 20,
+        },
+      );
+      setProbe(out?.probe || {
+        verdict: "the scan answered but said nothing about that spot",
       });
-      setProbe(out?.probe || { verdict: "no answer came back" });
     } catch (e) {
       console.warn("probe failed", e);
-      setProbe({ verdict: "the probe failed — try again" });
+      // THE SERVER'S OWN WORDS. "Try again" is what a diagnostic must
+      // never say: this exists to end a guessing game, and swallowing
+      // the reason starts another one.
+      setProbe({ verdict: `the probe failed — ${e?.message || e}` });
     }
   }
 
