@@ -12649,6 +12649,98 @@ def _green_scan_window(db, row, green_path, impact_frame, green_total, pad_sec):
     return max(0, _start), max(0, _last)
 
 
+# HOW MANY WAYS ACROSS THE PICTURE THE PER-FRAME BUDGET IS SPREAD.
+#
+# 4 gives sixteen cells over the scanned region, which on a 1920-wide
+# tee frame is roughly 480px a side: big enough that a ball crossing
+# one does not fall between two, small enough that the treeline cannot
+# hold every cell at once.
+SCAN_GRID = 4
+# A blob smaller than this is sensor noise, and reserving a slot for
+# the smallest thing on a noisy frame just buys a different speckle.
+SCAN_SMALL_FLOOR = 3
+
+
+def _pick_scan_blobs(frame_hits, per_frame, grid_px,
+                     small_slots=0, small_floor=SCAN_SMALL_FLOOR):
+    """Which blobs of one frame to hand back, within a budget.
+
+    THE BUDGET USED TO BE SPENT AT THE TWO ENDS OF THE SIZE RANGE: the
+    largest few, on the reasoning that a ball beats foliage sparkle,
+    and later the smallest few as well, because on a busy tee it does
+    not. Both are true and together they still miss the ball, because a
+    struck ball near the camera is a SMEAR of a few dozen pixels --
+    bigger than sparkle, far smaller than a golfer, a trolley or a
+    shimmering bunker edge. It sits in the middle of the distribution,
+    which is the one part of it nothing was keeping.
+
+    Measured on the frame this was written for: 300-odd blobs, seven
+    slots going to 700px treeline and three to 3px speckle, and a 46px
+    ball against clear blue sky kept by neither.
+
+    WHAT SEPARATES THE BALL IS NOT ITS SIZE, IT IS THAT IT IS ALONE.
+    The operator picks it out of that picture instantly, and not by
+    measuring it: everything else moving is in the trees, on the
+    houses, around the golfer, and the ball is the one mark on an
+    otherwise empty piece of sky. So the region is cut into cells and
+    half the budget is dealt round-robin over them LONELIEST FIRST --
+    a cell holding one blob is offering something the twelve-blob
+    treeline cells are not. That needs no idea of how big a ball is,
+    which is the thing nobody here has ever been able to calibrate.
+
+    The other half still goes to the largest movers overall, because a
+    frame where the big thing IS the story must not lose it to a
+    speckle in an empty corner. `small_slots` is kept on top for the
+    case the grid cannot help with: a ball crossing the treeline, in
+    the same cell as the things that outweigh it.
+    """
+    if per_frame <= 0 or not frame_hits:
+        return []
+    _budget = max(0, int(per_frame) - int(small_slots))
+    if _budget <= 0:
+        return []
+    # ── half to the biggest movers, as before ────────────────────────
+    _big_slots = max(1, _budget // 2)
+    _keep = sorted(frame_hits, reverse=True)[:_big_slots]
+    _taken = {id(_h) for _h in _keep}
+    # ── and half to the loneliest corners of the picture ─────────────
+    _cell = max(8, int(grid_px))
+    by_cell: dict = {}
+    for _h in frame_hits:
+        by_cell.setdefault(
+            (int(_h[1] // _cell), int(_h[2] // _cell)), []).append(_h)
+    for _v in by_cell.values():
+        _v.sort(reverse=True)
+    # Fewest blobs first, and the biggest of equals -- so one mark on
+    # empty sky outranks a cell of shimmering leaves, and among cells
+    # equally quiet the stronger mover goes first.
+    _order = sorted(by_cell, key=lambda k: (len(by_cell[k]),
+                                            -by_cell[k][0][0]))
+    _at = {k: 0 for k in _order}
+    while len(_keep) < _budget:
+        _added = False
+        for _k in _order:
+            _lst = by_cell[_k]
+            _i = _at[_k]
+            while _i < len(_lst) and id(_lst[_i]) in _taken:
+                _i += 1
+            _at[_k] = _i + 1
+            if _i < len(_lst):
+                _keep.append(_lst[_i])
+                _taken.add(id(_lst[_i]))
+                _added = True
+                if len(_keep) >= _budget:
+                    break
+        if not _added:
+            break
+    # ── and the smallest few, for a ball with no sky around it ───────
+    if small_slots > 0:
+        _rest = [_h for _h in frame_hits if id(_h) not in _taken]
+        _keep += sorted((_h for _h in _rest if _h[0] >= small_floor),
+                        key=lambda _h: _h[0])[:int(small_slots)]
+    return _keep
+
+
 @router.post("/long-uploads/{upload_id}/scan-region")
 def scan_plot_region(
     upload_id: int,
@@ -12776,8 +12868,13 @@ def scan_plot_region(
         # needs no calibration and is exactly the half that was being
         # thrown away. The dot count per frame is unchanged.
         _SMALL_SLOTS = max(1, _PER_FRAME // 3)
-        _SMALL_FLOOR = 3
+        _SMALL_FLOOR = SCAN_SMALL_FLOOR
         _n_small = 0
+        # The grid is cut from the REGION being scanned, so zooming in
+        # does not merely make the ball relatively bigger -- it makes
+        # the cells smaller, and a cell of sky that holds only the ball
+        # is the whole mechanism.
+        _cell_px = max(8, int(min(w, h) / SCAN_GRID))
 
         cap.set(cv2.CAP_PROP_POS_FRAMES, float(start))
         prev = None
@@ -12803,18 +12900,16 @@ def scan_plot_region(
                         frame_hits.append(
                             (area, float(cents[i][0]), float(cents[i][1])),
                         )
-                # Largest few per frame — keeps foliage sparkle from
-                # burying the ball blob in a noisy region — AND the
-                # smallest few, which is where the ball actually is.
-                frame_hits.sort(reverse=True)
-                _keep = frame_hits[:max(0, _PER_FRAME - _SMALL_SLOTS)]
-                _rest = frame_hits[len(_keep):]
-                _small = sorted(
-                    (hh for hh in _rest if hh[0] >= _SMALL_FLOOR),
-                    key=lambda hh: hh[0],
-                )[:_SMALL_SLOTS]
-                _n_small += len(_small)
-                for _area, cx, cy in _keep + _small:
+                # Spread across the PICTURE, not across the size range.
+                # See `_pick_scan_blobs`: a ball is neither the biggest
+                # thing on a tee frame nor the smallest, so taking from
+                # both ends kept everything except it.
+                _picked = _pick_scan_blobs(
+                    frame_hits, _PER_FRAME, _cell_px,
+                    small_slots=_SMALL_SLOTS, small_floor=_SMALL_FLOOR)
+                _n_small += sum(1 for _h in _picked
+                                if _h[0] < 3 * _SMALL_FLOOR)
+                for _area, cx, cy in _picked:
                     dots.append({
                         "frame": int(f),
                         "x": int(round(x + cx)),
