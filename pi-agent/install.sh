@@ -61,6 +61,28 @@ golfreelz ALL=(root) NOPASSWD: /usr/sbin/rtcwake, /usr/sbin/shutdown, /sbin/shut
 SUDOERS
 chmod 440 /etc/sudoers.d/golfreelz-curfew
 
+# ── A LOG THAT SURVIVES THE THING IT IS NEEDED FOR ────────────────────
+#
+# journald defaults to /run/log/journal on Pi OS, which is a tmpfs: the
+# journal is wiped on every boot. That is the wrong way round for a rig
+# whose whole failure mode is going down -- `journalctl -b -1` answers
+# "why did it stop", and it is exactly the command that returns "no
+# persistent journal was found" when you most need it.
+#
+# Measured cost: SystemMaxUse caps it at 64M, which is nothing against
+# a 32G card and perhaps a fortnight of this agent's logging.
+echo "==> journal: making it persistent across reboots"
+mkdir -p /var/log/journal
+if [[ -d /etc/systemd/journald.conf.d ]] || mkdir -p /etc/systemd/journald.conf.d; then
+  cat > /etc/systemd/journald.conf.d/golfreelz.conf <<'JOURNAL'
+[Journal]
+Storage=persistent
+SystemMaxUse=64M
+JOURNAL
+fi
+systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
+systemctl restart systemd-journald || true
+
 echo "==> venv: creating $INSTALL_DIR/venv if needed"
 if [[ ! -d "$INSTALL_DIR/venv" ]]; then
   python3 -m venv "$INSTALL_DIR/venv"
