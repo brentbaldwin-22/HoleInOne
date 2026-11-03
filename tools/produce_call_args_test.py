@@ -98,6 +98,42 @@ for node in ast.walk(tree):
 check("there is at least one call to check", _calls >= 1, True)
 
 print()
+print("and every call SAYS something about each parameter:")
+# KEYWORDS STOPPED THE MIS-ORDERING AND NOT THE OMISSION.
+#
+# `descent_first_frame` sat on the signature with a default, and the
+# wizard endpoint's kwargs dict simply did not mention it. Nothing
+# raised, nothing was mis-assigned, and every produce from the edit
+# wizard ran with the one number that joins the tee arc to the green
+# descent set to None -- reported as "I plot the descent by hand, it
+# looks right, and the produced clip does not connect the paths".
+#
+# A default is for a parameter a caller has nothing to say about. This
+# caller has something to say about all of them, so it must say it.
+_SILENT_OK = {
+    # The wizard is the operator's own produce, and a target they
+    # saved IS an instruction -- the job's default is already that.
+    "saved_track_as_landing",
+    # Positional, always supplied.
+    "upload_id", "ball_xy", "impact_frame",
+}
+for node in ast.walk(tree):
+    _f = getattr(node, "func", None)
+    if not (isinstance(node, ast.Call) and isinstance(_f, ast.Name)
+            and _f.id == "_heavy_thread" and node.args
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "run_wizard_produce_job"):
+        continue
+    _kw = next((k for k in node.keywords if k.arg == "kwargs"), None)
+    _keys = set()
+    if _kw is not None and isinstance(_kw.value, ast.Dict):
+        _keys = {k.value for k in _kw.value.keys
+                 if isinstance(k, ast.Constant)}
+    _missing = sorted(set(_names) - _keys - _SILENT_OK)
+    check("line %d mentions every parameter of the job" % node.lineno,
+          _missing, [])
+
+print()
 if FAILED:
     print("FAILED: %s" % ", ".join(FAILED))
     sys.exit(1)

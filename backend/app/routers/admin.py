@@ -13787,6 +13787,85 @@ def wizard_produce(
         log.warning("wizard produce: could not claim upload %s: %s",
                     upload_id, exc)
 
+    # ── WHERE THE TEE ARC IS AIMED, AND IT WAS NEVER SENT ───────────
+    #
+    # The tracer times its flight to the FIRST frame of the descent --
+    # the instant the green camera picks the ball up falling -- and
+    # that is what joins the two halves into one shot. The ascent
+    # produce passes it. This one never has: `descent_first_frame` is
+    # on the job's signature with a default, and the call below simply
+    # did not mention it, so every produce from the edit wizard ran
+    # with None and the arc timed itself off a hand-off speed instead.
+    #
+    # Reported as: plot the descent by hand, it looks right in the
+    # wizard, and the produced clip does not connect the paths. It
+    # could not -- the half that knows where the ball arrives was not
+    # being told to the half that draws it getting there.
+    #
+    # TAKEN FROM THE PLOTTED CHAIN when the caller does not send one.
+    # The hand-plotted descent IS the descent: its earliest frame is
+    # the number, by definition, and asking the operator's browser to
+    # compute and send something the server is already storing is how
+    # the two come to disagree.
+    _descent_first = payload.get("descent_first_frame")
+    try:
+        _descent_first = (int(_descent_first)
+                          if _descent_first is not None else None)
+    except (TypeError, ValueError):
+        _descent_first = None
+    if _descent_first is None:
+        _gt = _saved_green_track(row, swing_idx) or []
+        _frames = [int(q["frame"]) for q in _gt
+                   if isinstance(q, dict) and q.get("frame") is not None]
+        if _frames:
+            _descent_first = min(_frames)
+            log.info(
+                "wizard produce: upload=%s swing %s — timing the arc to "
+                "f%d, the first frame of the %d-point descent on the "
+                "record", upload_id, swing_idx, _descent_first, len(_frames))
+    # ── AND WHERE IT ARRIVES ────────────────────────────────────────
+    #
+    # The renderer only aims at a landing when it is given a SPOT, so
+    # the first frame above buys nothing on its own. A hand-plotted
+    # descent has both on the record already -- the operator's own
+    # landing if they set one, otherwise the last point of the chain
+    # they drew, which is where the ball finished coming down.
+    #
+    # Read here rather than asked of the browser for the same reason:
+    # the server is storing it, and two copies of a number are two
+    # numbers.
+    if landing_spot is None:
+        _rec = next(
+            (_s for _s in ((row.edit_metrics or {}).get("swings") or [])
+             if isinstance(_s, dict)
+             and int(_s.get("idx", -1)) == swing_idx), None) or {}
+        _ls = _rec.get("landing_spot")
+        if isinstance(_ls, dict):
+            _ls = [_ls.get("x"), _ls.get("y")]
+        if (isinstance(_ls, (list, tuple)) and len(_ls) >= 2
+                and _ls[0] is not None and _ls[1] is not None):
+            landing_spot = [float(_ls[0]), float(_ls[1])]
+            if landing_frame is None and _rec.get("landing_frame") is not None:
+                landing_frame = int(_rec["landing_frame"])
+            log.info("wizard produce: upload=%s swing %s — aiming at the "
+                     "landing already on the record (%s at f%s)",
+                     upload_id, swing_idx, landing_spot, landing_frame)
+        else:
+            _gt2 = _saved_green_track(row, swing_idx) or []
+            _last = max(
+                (q for q in _gt2
+                 if isinstance(q, dict) and q.get("frame") is not None),
+                key=lambda q: int(q["frame"]), default=None)
+            if _last is not None and _last.get("x") is not None:
+                landing_spot = [float(_last["x"]), float(_last["y"])]
+                if landing_frame is None:
+                    landing_frame = int(_last["frame"])
+                log.info(
+                    "wizard produce: upload=%s swing %s — no landing sent, "
+                    "aiming at the last point of the plotted descent "
+                    "(%s at f%s)", upload_id, swing_idx, landing_spot,
+                    landing_frame)
+
     _debugx_set("produce", upload_id, stage="Queued", done=0, total=0,
                 running=True, error=None)
     # BY NAME, NOT BY POSITION. This was a ten-item tuple lined up
@@ -13808,6 +13887,7 @@ def wizard_produce(
             "hole_number": hole_number,
             "landing_frame": landing_frame,
             "landing_spot": landing_spot,
+            "descent_first_frame": _descent_first,
             "solo": solo,
             "swing_idx": swing_idx,
             "points": points,
