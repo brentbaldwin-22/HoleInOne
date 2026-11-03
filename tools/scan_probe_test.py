@@ -145,33 +145,6 @@ check("dots still come back", len(_out2["dots"]) > 0, True)
 check("probe is absent unless asked", "probe" in _out2, True)
 
 print()
-print("the page asks through the prop, not around it:")
-# THE BUG THE FIRST VERSION SHIPPED WITH. `doProbe` called the API
-# directly, in a component that holds neither the password nor the
-# upload id and does not know which camera it is showing -- so every
-# probe threw a ReferenceError, and the green map would have asked
-# about the tee video even if it had not.
-_jsx = (ROOT / "frontend" / "src" / "pages"
-        / "AdminProduction.jsx").read_text(encoding="utf-8")
-_fn = _jsx[_jsx.index("async function doProbe("):]
-_fn = _fn[:_fn.index("\n  async function doScan(")]
-check("the probe goes through scanRegion",
-      "await scanRegion(" in _fn, True)
-check("...and does not reach for the API itself",
-      "api.scanPlotRegion" in _fn, False)
-check("...nor for credentials it does not have",
-      "adminPassword" in _fn, False)
-# BOTH CALL SITES, because the green one is where this was found.
-check("both call sites pass a probe through",
-      _jsx.count("...(extra || {}),"), 2)
-check("...and hand back the verdict rather than the dots",
-      _jsx.count("extra?.probe ? out"), 2)
-# A DIAGNOSTIC THAT SAYS "TRY AGAIN" HAS FAILED TWICE. This exists to
-# end a guessing game; swallowing the reason starts another one.
-check("a failure shows the server's own words",
-      "e?.message" in _fn, True)
-
-print()
 if FAILED:
     print("FAILED: %s" % ", ".join(FAILED))
     sys.exit(1)

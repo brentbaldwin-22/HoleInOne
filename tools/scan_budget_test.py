@@ -33,8 +33,8 @@ ROOT = Path(__file__).resolve().parents[1]
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.routers.admin import (  # noqa: E402
-    SCAN_GRID, _pick_scan_blobs)
+from app.routers.admin import SCAN_GRID, _pick_scan_blobs  # noqa: E402
+from app.services.debug3 import pick_spread_blobs  # noqa: E402
 
 FAILED = []
 
@@ -136,6 +136,29 @@ for _g in (2, 3, 6, 8):
     _c = max(8, int(min(W, H) / _g))
     check("...and at a %dx%d grid" % (_g, _g),
           BALL in _pick_scan_blobs(_hits, 10, _c, small_slots=3), True)
+
+print()
+print("one implementation, used by both detectors:")
+# THE ASCENT SWEEP HAD THE SAME BUG and it is the one that matters:
+# the scan is a manual tool, the sweep is what produce runs. A second
+# copy of the repair is how the two would come apart again.
+check("the scan delegates to the service's picker",
+      _pick_scan_blobs(_hits, 10, CELL, small_slots=3)
+      == pick_spread_blobs(_hits, 10, CELL, small_slots=3), True)
+_d3 = (ROOT / "backend" / "app" / "services"
+       / "debug3.py").read_text(encoding="utf-8")
+# ONE SLICE LEFT, and it belongs to the calibrated branch below.
+check("the sweep takes the largest few in one place only",
+      _d3.count("hits[:per_frame]"), 1)
+check("...and not after the largest-first sort",
+      "hits.sort(reverse=True)\n                        _picked = "
+      "hits[:per_frame]" in _d3, False)
+check("...and spreads the budget instead",
+      "_picked = pick_spread_blobs(" in _d3, True)
+# A CALIBRATED ANSWER STILL WINS. `prefer_area` says what a ball looks
+# like on this hole, and a heuristic must not override a measurement.
+check("a tuned prefer_area still ranks by nearness to it",
+      "hits.sort(key=lambda h: abs(h[0] - prefer_area))" in _d3, True)
 
 print()
 if FAILED:

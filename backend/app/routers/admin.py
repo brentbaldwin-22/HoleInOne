@@ -4315,7 +4315,12 @@ def _process_long_upload_segments(
             if clip_id is not None:
                 nsw["clip_id"] = int(clip_id)
             _imp = tracer_info.get("impact_frame")
-            if _imp is not None:
+            # NEVER ON TOP OF ONE A PERSON SET. Same rule the resting
+            # ball has had, arrived at the same way: the operator moves
+            # the impact frame in the wizard, the produce it starts
+            # writes the tracer's own answer back over it, and the next
+            # open shows the old number.
+            if _imp is not None and not nsw.get("impact_manual"):
                 nsw["impact_frame"] = int(_imp) + offset
                 # AND WHERE IT CAME FROM, in the same frame base. The
                 # wizard reads this record; without these two it can
@@ -4338,7 +4343,8 @@ def _process_long_upload_segments(
             # straight from the instant: one conversion, floored,
             # because a frame covers the time from its own timestamp
             # until the next one and the instant falls inside it.
-            if rig_impact_sec is not None and _src_fps > 0:
+            if (rig_impact_sec is not None and _src_fps > 0
+                    and not nsw.get("impact_manual")):
                 _rigf = max(0, int(float(rig_impact_sec) * _src_fps))
                 if _imp is not None and int(_imp) + offset != _rigf:
                     log.info(
@@ -12663,82 +12669,19 @@ SCAN_SMALL_FLOOR = 3
 
 def _pick_scan_blobs(frame_hits, per_frame, grid_px,
                      small_slots=0, small_floor=SCAN_SMALL_FLOOR):
-    """Which blobs of one frame to hand back, within a budget.
+    """One frame's blobs, within a budget — see `pick_spread_blobs`.
 
-    THE BUDGET USED TO BE SPENT AT THE TWO ENDS OF THE SIZE RANGE: the
-    largest few, on the reasoning that a ball beats foliage sparkle,
-    and later the smallest few as well, because on a busy tee it does
-    not. Both are true and together they still miss the ball, because a
-    struck ball near the camera is a SMEAR of a few dozen pixels --
-    bigger than sparkle, far smaller than a golfer, a trolley or a
-    shimmering bunker edge. It sits in the middle of the distribution,
-    which is the one part of it nothing was keeping.
-
-    Measured on the frame this was written for: 300-odd blobs, seven
-    slots going to 700px treeline and three to 3px speckle, and a 46px
-    ball against clear blue sky kept by neither.
-
-    WHAT SEPARATES THE BALL IS NOT ITS SIZE, IT IS THAT IT IS ALONE.
-    The operator picks it out of that picture instantly, and not by
-    measuring it: everything else moving is in the trees, on the
-    houses, around the golfer, and the ball is the one mark on an
-    otherwise empty piece of sky. So the region is cut into cells and
-    half the budget is dealt round-robin over them LONELIEST FIRST --
-    a cell holding one blob is offering something the twelve-blob
-    treeline cells are not. That needs no idea of how big a ball is,
-    which is the thing nobody here has ever been able to calibrate.
-
-    The other half still goes to the largest movers overall, because a
-    frame where the big thing IS the story must not lose it to a
-    speckle in an empty corner. `small_slots` is kept on top for the
-    case the grid cannot help with: a ball crossing the treeline, in
-    the same cell as the things that outweigh it.
+    THE RULE LIVES IN THE SERVICE because both detectors need it and
+    both got it wrong the same way. The click-to-plot scan here and the
+    ascent sweep in debug3 each took the largest few blobs per frame,
+    each starved the ball on a busy tee for the same reason, and a
+    second copy of the repair is how they would come apart again.
     """
-    if per_frame <= 0 or not frame_hits:
-        return []
-    _budget = max(0, int(per_frame) - int(small_slots))
-    if _budget <= 0:
-        return []
-    # ── half to the biggest movers, as before ────────────────────────
-    _big_slots = max(1, _budget // 2)
-    _keep = sorted(frame_hits, reverse=True)[:_big_slots]
-    _taken = {id(_h) for _h in _keep}
-    # ── and half to the loneliest corners of the picture ─────────────
-    _cell = max(8, int(grid_px))
-    by_cell: dict = {}
-    for _h in frame_hits:
-        by_cell.setdefault(
-            (int(_h[1] // _cell), int(_h[2] // _cell)), []).append(_h)
-    for _v in by_cell.values():
-        _v.sort(reverse=True)
-    # Fewest blobs first, and the biggest of equals -- so one mark on
-    # empty sky outranks a cell of shimmering leaves, and among cells
-    # equally quiet the stronger mover goes first.
-    _order = sorted(by_cell, key=lambda k: (len(by_cell[k]),
-                                            -by_cell[k][0][0]))
-    _at = {k: 0 for k in _order}
-    while len(_keep) < _budget:
-        _added = False
-        for _k in _order:
-            _lst = by_cell[_k]
-            _i = _at[_k]
-            while _i < len(_lst) and id(_lst[_i]) in _taken:
-                _i += 1
-            _at[_k] = _i + 1
-            if _i < len(_lst):
-                _keep.append(_lst[_i])
-                _taken.add(id(_lst[_i]))
-                _added = True
-                if len(_keep) >= _budget:
-                    break
-        if not _added:
-            break
-    # ── and the smallest few, for a ball with no sky around it ───────
-    if small_slots > 0:
-        _rest = [_h for _h in frame_hits if id(_h) not in _taken]
-        _keep += sorted((_h for _h in _rest if _h[0] >= small_floor),
-                        key=lambda _h: _h[0])[:int(small_slots)]
-    return _keep
+    from ..services.debug3 import pick_spread_blobs
+
+    return pick_spread_blobs(frame_hits, per_frame, grid_px,
+                             small_slots=small_slots,
+                             small_floor=small_floor)
 
 
 @router.post("/long-uploads/{upload_id}/scan-region")
@@ -13751,6 +13694,29 @@ def wizard_produce(
         saved = dict(row.edit_metrics or {})
         saved["wizard_ball"] = [bx, by]
         saved["wizard_impact_frame"] = impact_frame
+        # AND ONTO THE SWING ITSELF, WHICH IS WHAT THE WIZARD READS
+        # BACK. `wizard_impact_frame` is a row-level note; the editor
+        # opens on `swings[idx].impact_frame`, and nothing was writing
+        # the operator's number there. The produce that follows then
+        # wrote the TRACER's impact frame into that field, so changing
+        # the impact frame, saving, and reopening showed the detector's
+        # answer again and read as a save that did nothing.
+        #
+        # `impact_manual` is the same flag `ball_manual` has been for
+        # the resting ball, and for the same reason: a number a person
+        # set by eye outranks one a fit produced, and every later run
+        # has to be told so rather than discovering it.
+        _sw_list = [_s for _s in (saved.get("swings") or [])
+                    if isinstance(_s, dict)]
+        _mine = next((_s for _s in _sw_list
+                      if int(_s.get("idx", -1)) == swing_idx), None)
+        if _mine is None:
+            _mine = {"idx": swing_idx}
+            _sw_list.append(_mine)
+        _mine["impact_frame"] = int(impact_frame)
+        _mine["impact_manual"] = True
+        _sw_list.sort(key=lambda _s: int(_s.get("idx", 0)))
+        saved["swings"] = _sw_list
         # THE TOP-LEVEL LANDING IS A SINGLE-SWING ROW'S SLOT, and only
         # that. Every swing on a row shares it, so writing one swing's
         # landing there on a multi-swing row leaves a value that reads
@@ -29004,6 +28970,13 @@ def _d3_save_swing(db, upload_id: int, idx: int, rec: dict,
         if prior and prior.get("ball_manual"):
             merged["ball"] = prior.get("ball", rec.get("ball"))
             merged["ball_manual"] = True
+        # THE IMPACT FRAME THE SAME WAY. A person moved it by eye
+        # against the picture; a run that worked one out from a fit has
+        # not learned anything that outranks that.
+        if prior and prior.get("impact_manual"):
+            merged["impact_frame"] = prior.get(
+                "impact_frame", rec.get("impact_frame"))
+            merged["impact_manual"] = True
         # The landing is the operator's too, and produce has nothing to
         # say about it -- a run that does not know about one must not
         # erase it from under the wizard.

@@ -2050,6 +2050,82 @@ def _merge_blobs(hits: list, merge_px: float,
     return [(c[3], c[1] / c[0], c[2] / c[0]) for c in clusters]
 
 
+# HOW MANY WAYS ACROSS THE PICTURE A PER-FRAME BUDGET IS SPREAD, and
+# the smallest blob worth reserving a slot for. See
+# `pick_spread_blobs`.
+SPREAD_GRID = 4
+SPREAD_SMALL_FLOOR = 3
+
+
+def pick_spread_blobs(hits, per_frame, grid_px,
+                      small_slots=0, small_floor=SPREAD_SMALL_FLOOR):
+    """Which blobs of one frame to keep, within a budget.
+
+    LARGEST-FIRST STARVES THE BALL, and both detectors did it. Across
+    a ball-sized window the ball IS the big one, which is where the
+    rule came from; across a whole band it inverts completely --
+    golfers, trolleys, houses, wind in the pines and a shimmering
+    bunker edge all measure hundreds of pixels, a struck ball measures
+    tens, and the ball never enters the top ten. Reserving the
+    SMALLEST few as well, which was the first repair, keeps speckle
+    instead: the ball is in the middle of the distribution, which is
+    the one part of it neither end was keeping.
+
+    WHAT SEPARATES THE BALL IS NOT ITS SIZE, IT IS THAT IT IS ALONE.
+    An operator picks it out of a crowded frame instantly and not by
+    measuring it: everything else moving is in the trees or around the
+    golfer, and the ball is the one mark on an otherwise empty piece
+    of sky. So the frame is cut into cells and half the budget is
+    dealt round-robin over them LONELIEST FIRST. The other half still
+    goes to the largest movers, so a frame where the big thing IS the
+    story does not lose it to a speckle in an empty corner.
+
+    It needs no idea of how big a ball is, which is the thing nobody
+    here has ever been able to calibrate -- see `prefer_area`, still
+    0 by default.
+
+    `hits` are (area, x, y) and come back in the same shape.
+    """
+    if per_frame <= 0 or not hits:
+        return []
+    _budget = max(0, int(per_frame) - int(small_slots))
+    if _budget <= 0:
+        return []
+    _keep = sorted(hits, reverse=True)[:max(1, _budget // 2)]
+    _taken = {id(_h) for _h in _keep}
+    _cell = max(8, int(grid_px))
+    by_cell: dict = {}
+    for _h in hits:
+        by_cell.setdefault(
+            (int(_h[1] // _cell), int(_h[2] // _cell)), []).append(_h)
+    for _v in by_cell.values():
+        _v.sort(reverse=True)
+    _order = sorted(by_cell, key=lambda k: (len(by_cell[k]),
+                                            -by_cell[k][0][0]))
+    _at = {k: 0 for k in _order}
+    while len(_keep) < _budget:
+        _added = False
+        for _k in _order:
+            _lst = by_cell[_k]
+            _i = _at[_k]
+            while _i < len(_lst) and id(_lst[_i]) in _taken:
+                _i += 1
+            _at[_k] = _i + 1
+            if _i < len(_lst):
+                _keep.append(_lst[_i])
+                _taken.add(id(_lst[_i]))
+                _added = True
+                if len(_keep) >= _budget:
+                    break
+        if not _added:
+            break
+    if small_slots > 0:
+        _rest = [_h for _h in hits if id(_h) not in _taken]
+        _keep += sorted((_h for _h in _rest if _h[0] >= small_floor),
+                        key=lambda _h: _h[0])[:int(small_slots)]
+    return _keep
+
+
 def detect_movers_by_diff(
     input_path: Path,
     f0: int,
@@ -2248,10 +2324,27 @@ def detect_movers_by_diff(
                         if stats is not None:
                             stats["merged"] = (stats.get("merged", 0)
                                                + _n_in - len(hits))
+                    # RANKED, THEN SPREAD. A target area still wins
+                    # outright when the hole has one -- that is a
+                    # calibrated answer and beats any heuristic. With
+                    # none, the budget goes across the picture rather
+                    # than down the size order: see pick_spread_blobs
+                    # for why largest-first throws the ball away on a
+                    # band this wide.
                     if prefer_area > 0:
                         hits.sort(key=lambda h: abs(h[0] - prefer_area))
+                        _picked = hits[:per_frame]
                     else:
                         hits.sort(reverse=True)
+                        # FROM THE BAND BEING SEARCHED, measured off
+                        # the thresholded image itself -- the only
+                        # thing in this scope that knows how big the
+                        # crop is, and correct whether or not an roi
+                        # narrowed it.
+                        _bh, _bw = th_.shape[:2]
+                        _picked = pick_spread_blobs(
+                            hits, per_frame,
+                            max(8, min(_bw, _bh) / SPREAD_GRID))
                     if stats is not None:
                         stats["frames"] = stats.get("frames", 0) + 1
                         stats["max_hits"] = max(stats.get("max_hits", 0),
@@ -2261,7 +2354,7 @@ def detect_movers_by_diff(
                             stats["dropped"] = (stats.get("dropped", 0)
                                                 + len(hits) - per_frame)
                     _kept = []
-                    for a, cx, cy in hits[:per_frame]:
+                    for a, cx, cy in _picked:
                         _x, _y = int(round(x0 + cx)), int(round(y0 + cy))
                         if ghost_px > 0 and any(
                                 abs(_x - px) <= ghost_px
@@ -2277,7 +2370,7 @@ def detect_movers_by_diff(
                     # original lost the cut is still a ghost.
                     _last_emitted[0] = [
                         (int(round(x0 + cx)), int(round(y0 + cy)))
-                        for _a, cx, cy in hits[:per_frame]
+                        for _a, cx, cy in _picked
                     ] if ghost_px > 0 else []
 
                 if three_frame:
