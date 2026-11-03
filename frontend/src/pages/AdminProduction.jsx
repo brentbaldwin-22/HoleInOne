@@ -12153,6 +12153,13 @@ function PlotHeatCanvas({
   const [scanDots, setScanDots] = useState([]);
   const [scanning, setScanning] = useState(false);
   const [scanNote, setScanNote] = useState(null);
+  // "Why is there no dot HERE?" — armed, the next click on the picture
+  // asks the server instead of placing anything. The scan already
+  // walks every gate on every frame; this just makes it say what it
+  // did at one spot, which is the question an operator looking at a
+  // ball with no dot on it is actually asking.
+  const [probing, setProbing] = useState(false);
+  const [probe, setProbe] = useState(null);
   // How hard the next scan looks. Starts at the normal level and steps
   // up when a scan comes back with nothing new -- the operator can see
   // the ball, so "no motion found" means the gates were too tight, not
@@ -12290,7 +12297,30 @@ function PlotHeatCanvas({
     .filter(_notAlreadyShown);
   // What a Scan turned up, on its own. Drawn at any magnification.
   const scannedExtras = scanDots.filter(_notAlreadyShown);
+  const probeLines = probe?.frames
+    ? probe.frames.filter((r) => r.max_diff > 0).slice(0, 8)
+    : [];
   const showDense = zoom >= DENSE_DOT_ZOOM;
+
+  async function doProbe(nx, ny) {
+    setProbing(false);
+    setProbe({ pending: true });
+    const _c = viewFrame ?? mid;
+    try {
+      const out = await api.scanPlotRegion(adminPassword, uploadId, {
+        x: 0, y: 0, w: frameW, h: frameH,
+        sensitivity: scanLevel,
+        which: "tee",
+        start_frame: Math.max(0, _c - 20),
+        end_frame: _c + 20,
+        probe: { x: nx, y: ny },
+      });
+      setProbe(out?.probe || { verdict: "no answer came back" });
+    } catch (e) {
+      console.warn("probe failed", e);
+      setProbe({ verdict: "the probe failed — try again" });
+    }
+  }
 
   async function doScan() {
     if (!scanRegion || scanning || !hasDims) return;
@@ -12405,7 +12435,7 @@ function PlotHeatCanvas({
       >
       <div
         onPointerDown={
-          placingBall && hasDims
+          (placingBall || probing) && hasDims
             ? (e) => {
                 // Measure against THIS element: it is the scaled one, so
                 // its bounding rect already accounts for zoom and the
@@ -12418,10 +12448,10 @@ function PlotHeatCanvas({
                 const fy = Math.round(
                   ((e.clientY - r.top) / r.height) * frameH,
                 );
-                onPlaceBall?.({
-                  x: Math.max(0, Math.min(frameW - 1, fx)),
-                  y: Math.max(0, Math.min(frameH - 1, fy)),
-                });
+                const _x = Math.max(0, Math.min(frameW - 1, fx));
+                const _y = Math.max(0, Math.min(frameH - 1, fy));
+                if (probing) doProbe(_x, _y);
+                else onPlaceBall?.({ x: _x, y: _y });
               }
             : undefined
         }
@@ -12431,7 +12461,7 @@ function PlotHeatCanvas({
           transform: `scale(${zoom})`,
           transformOrigin: `${focus.x}% ${focus.y}%`,
           transition: dragId ? "none" : "transform 120ms ease",
-          cursor: placingBall ? "crosshair" : undefined,
+          cursor: (placingBall || probing) ? "crosshair" : undefined,
         }}
       >
         <img
@@ -12945,6 +12975,48 @@ function PlotHeatCanvas({
               } more clickable detections`}
         </div>
       )}
+      {/* WHAT THE SERVER DID AT THAT PIXEL. The verdict first, because
+          it is the answer; the per-frame rows under it, because the
+          verdict is a summary and the argument is usually about one
+          frame. */}
+      {probe && (
+        <div
+          style={{
+            position: "absolute", right: 8, top: 8, zIndex: 3,
+            background: "rgba(0,0,0,0.72)", color: "#fde047",
+            padding: "6px 10px", borderRadius: 6, fontSize: 12,
+            backdropFilter: "blur(4px)", maxWidth: "min(60%, 560px)",
+          }}
+        >
+          <div className="row" style={{ justifyContent: "space-between",
+                                        gap: 10 }}>
+            <b>{probe.pending ? "asking…" : "❓ why no dot here"}</b>
+            <button type="button" className="ghost small"
+                    style={{ color: "#fde047" }}
+                    onClick={() => setProbe(null)}>✕</button>
+          </div>
+          {!probe.pending && (
+            <>
+              <div style={{ marginTop: 2 }}>{probe.verdict}</div>
+              {probe.peak_diff != null && (
+                <div className="tiny" style={{ opacity: 0.85 }}>
+                  strongest change {probe.peak_diff}
+                  {probe.biggest_blob
+                    ? ` · biggest blob ${probe.biggest_blob}px` : ""}
+                  {probe.radius ? ` · within ${probe.radius}px` : ""}
+                </div>
+              )}
+              {probeLines.map((r) => (
+                <div key={r.frame} className="tiny"
+                     style={{ opacity: 0.8, marginTop: 1 }}>
+                  f{r.frame}: diff {r.max_diff}/{r.threshold}
+                  {r.area ? `, blob ${r.area}px` : ""} — {r.verdict}
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
       {/* FLOATING CONTROLS. These used to be a SIBLING above the image
           (order:-1) to keep them off the map, which cost the map a whole
           toolbar's height on every screen — on a 16:9 frame in a 96vh
@@ -13094,6 +13166,26 @@ function PlotHeatCanvas({
             {scanning
               ? "Scanning…"
               : scanLevel > 2 ? "🔍 Scan harder" : "🔍 Scan"}
+          </button>
+        )}
+        {/* THE OPPOSITE QUESTION, AND THE ONE ACTUALLY BEING ASKED.
+            Scan says "here is what I found"; an operator looking at a
+            ball with no dot on it wants "why not THAT". The server
+            walks every gate on every frame already -- this makes it
+            say what it did at one spot instead of leaving it to be
+            inferred from a screenshot. */}
+        {scanRegion && (
+          <button
+            type="button"
+            style={{
+              ...zoomBtn, width: "auto", padding: "0 8px",
+              background: probing
+                ? "rgba(245,158,11,0.7)" : zoomBtn.background,
+            }}
+            onClick={() => { setProbe(null); setProbing((v) => !v); }}
+            title="Click the ball you can see and the server reports what it did at that pixel on every frame of the window: the strongest frame-to-frame change, the blob if one formed, its size, and which gate turned it away."
+          >
+            {probing ? "click the ball…" : "❓ why no dot?"}
           </button>
         )}
         <div style={{

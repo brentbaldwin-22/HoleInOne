@@ -12781,7 +12781,17 @@ def scan_plot_region(
     the ball and ignores the rest. Only the count is capped, so a noisy
     region cannot return a megabyte of dots.
 
-    Returns {dots: [{frame, x, y}, ...]} in source coords.
+    WITH `probe` {x, y} IT ANSWERS THE OPPOSITE QUESTION: why is there
+    no dot HERE? Two rounds of this were spent reasoning from
+    screenshots about which gate had turned a visible ball away, and
+    the server had the answer the whole time -- the same lesson, and
+    the same remedy, as `diagnose-ball` further down. The operator
+    clicks the smear they can see and every frame of the window reports
+    what happened at that spot: the raw frame-diff value, the blob if
+    one formed, its area, and which of the three gates it fell to.
+
+    Returns {dots: [{frame, x, y}, ...]} in source coords, plus
+    {probe: {...}} when asked.
     """
     import cv2  # type: ignore
 
@@ -12875,6 +12885,16 @@ def scan_plot_region(
         # the cells smaller, and a cell of sky that holds only the ball
         # is the whole mechanism.
         _cell_px = max(8, int(min(w, h) / SCAN_GRID))
+        # ── "why is there no dot here?" ──────────────────────────────
+        _probe = (payload or {}).get("probe") or None
+        _pr = float((payload or {}).get("probe_radius") or 14)
+        _probe_rows: list = []
+        if _probe is not None:
+            try:
+                _px = float(_probe["x"]) - x
+                _py = float(_probe["y"]) - y
+            except (KeyError, TypeError, ValueError):
+                _probe = None
 
         cap.set(cv2.CAP_PROP_POS_FRAMES, float(start))
         prev = None
@@ -12894,12 +12914,20 @@ def scan_plot_region(
                 th = cv2.dilate(th, None, iterations=1)
                 n, _lbl, stats, cents = cv2.connectedComponentsWithStats(th)
                 frame_hits = []
+                _near_any: list = []
                 for i in range(1, n):
                     area = int(stats[i, cv2.CC_STAT_AREA])
+                    _cx, _cy = float(cents[i][0]), float(cents[i][1])
+                    # EVERY component near the click, not only the ones
+                    # that clear the size band -- a blob refused for
+                    # being too big is the answer in exactly the case
+                    # where the band is what is wrong.
+                    if (_probe is not None
+                            and abs(_cx - _px) <= _pr
+                            and abs(_cy - _py) <= _pr):
+                        _near_any.append((area, _cx, _cy))
                     if 1 <= area <= _AREA_MAX:
-                        frame_hits.append(
-                            (area, float(cents[i][0]), float(cents[i][1])),
-                        )
+                        frame_hits.append((area, _cx, _cy))
                 # Spread across the PICTURE, not across the size range.
                 # See `_pick_scan_blobs`: a ball is neither the biggest
                 # thing on a tee frame nor the smallest, so taking from
@@ -12909,6 +12937,44 @@ def scan_plot_region(
                     small_slots=_SMALL_SLOTS, small_floor=_SMALL_FLOOR)
                 _n_small += sum(1 for _h in _picked
                                 if _h[0] < 3 * _SMALL_FLOOR)
+                if _probe is not None:
+                    _bx0 = max(0, int(_px - _pr))
+                    _by0 = max(0, int(_py - _pr))
+                    _sub = diff[_by0:int(_py + _pr), _bx0:int(_px + _pr)]
+                    _row = {
+                        "frame": int(f),
+                        "max_diff": int(_sub.max()) if _sub.size else 0,
+                        "threshold": int(_THRESH),
+                        "area": (max(_h[0] for _h in _near_any)
+                                 if _near_any else None),
+                    }
+                    _kept = [_h for _h in _picked
+                             if abs(_h[1] - _px) <= _pr
+                             and abs(_h[2] - _py) <= _pr]
+                    _in_band = [_h for _h in _near_any
+                                if 1 <= _h[0] <= _AREA_MAX]
+                    if _kept:
+                        _row["verdict"] = "kept — there is a dot here"
+                    elif _in_band:
+                        _row["verdict"] = (
+                            "a blob formed and passed the size band, then "
+                            "lost the per-frame budget to %d others"
+                            % len(frame_hits))
+                    elif _near_any:
+                        _row["verdict"] = (
+                            "a blob formed but is %dpx, outside the 1-%d "
+                            "size band for this level"
+                            % (_row["area"], _AREA_MAX))
+                    elif _row["max_diff"] < _THRESH:
+                        _row["verdict"] = (
+                            "nothing crossed the threshold — the strongest "
+                            "change here was %d against a gate of %d"
+                            % (_row["max_diff"], _THRESH))
+                    else:
+                        _row["verdict"] = (
+                            "pixels changed (peak %d) but formed no "
+                            "connected blob" % _row["max_diff"])
+                    _probe_rows.append(_row)
                 for _area, cx, cy in _picked:
                     dots.append({
                         "frame": int(f),
@@ -12936,8 +13002,40 @@ def scan_plot_region(
         "-> %d dots", upload_id, _cam, x, y, w, h, start, end, _sens,
         len(dots),
     )
+    # ONE SENTENCE NAMING THE GATE, because that is the whole point --
+    # the same shape of answer `diagnose-ball` gives, for the same
+    # reason. A per-frame table is evidence; a verdict is what ends an
+    # argument conducted through screenshots.
+    _probe_out = None
+    if _probe is not None:
+        _hit = [r for r in _probe_rows if r["verdict"].startswith("kept")]
+        _why: dict = {}
+        for _r in _probe_rows:
+            _k = _r["verdict"].split(" — ")[0].split(", then ")[0]
+            _why[_k] = _why.get(_k, 0) + 1
+        _worst = (max(_why.items(), key=lambda kv: kv[1])
+                  if _why else ("nothing was looked at", 0))
+        _probe_out = {
+            "x": int(_probe.get("x", 0)), "y": int(_probe.get("y", 0)),
+            "radius": int(_pr),
+            "n_frames": len(_probe_rows),
+            "n_kept": len(_hit),
+            "frames": _probe_rows[:120],
+            "verdict": (
+                "there IS a dot here on %d of %d frames"
+                % (len(_hit), len(_probe_rows)) if _hit else
+                "no dot on any of %d frames — most often because %s"
+                % (len(_probe_rows), _worst[0])),
+            "peak_diff": max((r["max_diff"] for r in _probe_rows),
+                             default=0),
+            "biggest_blob": max((r["area"] or 0 for r in _probe_rows),
+                                default=0),
+        }
+        log.info("scan-probe upload=%s at (%s,%s): %s", upload_id,
+                 _probe_out["x"], _probe_out["y"], _probe_out["verdict"])
     return {
         "dots": dots[:_CAP],
+        "probe": _probe_out,
         "which": _cam,
         "sensitivity": _sens,
         # Only true when the cap ended the scan early, and then the
