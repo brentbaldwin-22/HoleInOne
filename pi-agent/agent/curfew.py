@@ -151,6 +151,7 @@ class CurfewThread(threading.Thread):
             cfg.get("sleep_not_after", "22:30"))
         self._sun_cache: tuple | None = None
         self._sun_warned = False
+        self._early_warned = False
         self.boot_grace = int(cfg.get("boot_grace_seconds", 600))
         self.dry_run = bool(cfg.get("dry_run", False))
         # DO NOT POWER OFF OWING SOMEBODY A CLIP. Called with no
@@ -293,6 +294,27 @@ class CurfewThread(threading.Thread):
         shutdown for root-run agents. Returns False only when NOTHING
         could both guarantee a wake-up and halt."""
         epoch = int(wake_at.timestamp())
+        # SAY IT IN BOTH CLOCKS, because this is where they can part
+        # company. The epoch is unambiguous; what `rtcwake` DOES with
+        # it is not. With no -u or -l it decides from /etc/adjtime
+        # whether the hardware clock runs UTC or local time, while the
+        # sysfs fallback below hands the kernel an epoch, and the
+        # kernel always reads the RTC as UTC. On a Pi whose
+        # /etc/adjtime says LOCAL the two paths therefore arm
+        # DIFFERENT times, and the gap is exactly this machine's UTC
+        # offset -- five hours here, which turns an 08:00 wake into an
+        # 03:00 one. One line in the journal now says which was meant,
+        # instead of it having to be inferred from a boot time the
+        # next morning.
+        log.info(
+            "curfew: arming the RTC for %s local / %s UTC (epoch %d) — "
+            "if the rig wakes at a different time than that local one, "
+            "the hardware clock's timezone is the thing to check "
+            "(timedatectl, /etc/adjtime)",
+            wake_at.strftime("%Y-%m-%d %H:%M:%S"),
+            dt.datetime.fromtimestamp(epoch, dt.timezone.utc).strftime(
+                "%Y-%m-%d %H:%M:%S"),
+            epoch)
         for cmd in (
             ["sudo", "-n", "rtcwake", "-m", "off", "-t", str(epoch)],
             ["rtcwake", "-m", "off", "-t", str(epoch)],
@@ -434,6 +456,31 @@ class CurfewThread(threading.Thread):
                     time.monotonic() - self._started_at
                 )
                 if grace_left > 0:
+                    # AWAKE INSIDE ITS OWN SLEEP WINDOW IS NEWS.
+                    #
+                    # Either somebody powered the rig up on purpose --
+                    # the case this grace exists for -- or the RTC
+                    # alarm fired at the wrong time, and the second
+                    # one is invisible: the rig comes back, behaves
+                    # normally, and burns a night of battery that
+                    # nobody is awake to notice. Said once per boot,
+                    # with the gap to the intended wake, because that
+                    # gap landing on a whole number of hours is the
+                    # signature of a clock-zone problem rather than of
+                    # an operator with a screwdriver.
+                    if not self._early_warned:
+                        self._early_warned = True
+                        _gap = (self._next_wake(now) - now).total_seconds()
+                        log.warning(
+                            "curfew: awake at %s, which is INSIDE this "
+                            "rig's own sleep window and %.1fh before its "
+                            "%02d:%02d wake time. If nobody powered it up, "
+                            "the RTC alarm fired early — a gap of close to "
+                            "a whole number of hours means the hardware "
+                            "clock's timezone (timedatectl, /etc/adjtime) "
+                            "rather than anything about the curfew.",
+                            now.strftime("%H:%M"), _gap / 3600.0,
+                            *self.wake_hm)
                     log.info(
                         "curfew: in sleep window but %.0fs of boot grace "
                         "remain (operator window) — halting after",

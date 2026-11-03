@@ -207,6 +207,51 @@ check("...and how to arm it", "dry_run" in _said, True)
 check("it did not die", any("stopped" in x for x in _rec.lines), False)
 
 print()
+print("waking early is said out loud, not left to be inferred:")
+# A RIG AWAKE INSIDE ITS OWN SLEEP WINDOW. Either somebody powered it
+# up -- the case the boot grace exists for -- or the RTC fired at the
+# wrong time, and the second one is otherwise invisible: it comes
+# back, behaves normally, and burns a night of battery.
+_rec.lines.clear()
+w = CurfewThread({"enabled": True, "sleep": "18:30", "wake": "08:00",
+                  "boot_grace_seconds": 600, "dry_run": True})
+_t2 = threading.Thread(target=w.run, daemon=True)
+# Pretend it is 03:00 -- five hours before the 08:00 wake, which is
+# this course's UTC offset and the shape of a hardware clock in the
+# wrong timezone.
+_real_now = dt.datetime.now
+dt_patch = dt.datetime(2026, 11, 3, 3, 0)
+
+
+class _FakeDt(dt.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return dt_patch
+
+
+import agent.curfew as _cur  # noqa: E402
+
+_cur.dt.datetime = _FakeDt
+try:
+    _t2.start()
+    time.sleep(1.0)
+    w.stop()
+    _t2.join(timeout=5)
+finally:
+    _cur.dt.datetime = dt.datetime
+_said = " | ".join(_rec.lines)
+check("it says the rig is awake inside its own window",
+      "INSIDE this rig" in _said, True)
+check("...with the gap to the wake time, in hours",
+      "5.0h before" in _said, True)
+check("...and names the clock to check, not the curfew",
+      "timedatectl" in _said and "/etc/adjtime" in _said, True)
+# ONCE PER BOOT. The loop re-enters this branch every minute of the
+# grace, and a warning repeated sixty times is a warning nobody reads.
+check("said once, not on every tick",
+      sum(1 for x in _rec.lines if "INSIDE this rig" in x), 1)
+
+print()
 print("a disabled curfew says so rather than vanishing:")
 _rec.lines.clear()
 e = CurfewThread({"enabled": False, "sleep": "18:20", "wake": "08:00"})
