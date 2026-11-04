@@ -128,13 +128,51 @@ def crop_box(frame_w: int, frame_h: int, focus_x: float, focus_y=None) -> tuple:
 ADDRESS_LEAD_SEC = 1.2
 
 
-def frame_index(fps: float, tracer_t, total_frames: int) -> int:
+def tee_limit_frames(fps: float, total_frames: int, cut_sec=None) -> int:
+    """How many frames of a composite belong to the TEE camera.
+
+    A produced clip is often tee footage followed by green footage,
+    joined at a hard cut. Everything this module wants -- the golfer, the
+    swing, the tracer leaving the club -- is on the tee side. Past the
+    cut is a different camera pointed somewhere else entirely, which is
+    how a tile ended up showing the green.
+
+    Without a cut the whole clip is fair game, because a single-camera
+    clip is all tee.
+    """
+    try:
+        n = int(total_frames)
+    except (TypeError, ValueError):
+        n = 0
+    if n <= 0:
+        return 0
+    if cut_sec is None:
+        return n
+    try:
+        c = float(cut_sec)
+    except (TypeError, ValueError):
+        return n
+    if c != c or c <= 0:
+        return n
+    try:
+        f = float(fps)
+    except (TypeError, ValueError):
+        f = 0.0
+    if f <= 0:
+        f = 30.0
+    # A shade before the join: the frames either side of a cut are the
+    # two cameras blended, and neither is worth freezing.
+    return max(1, min(n, int(round((c - 0.25) * f))))
+
+
+def frame_index(fps: float, tracer_t, total_frames: int, cut_sec=None) -> int:
     """Which frame of the clip to freeze.
 
     With a tracer: ADDRESS_LEAD_SEC before it starts. Without one there
-    is no moment worth naming, so take the middle of the clip -- a golfer
-    is more likely to be somewhere in the middle of their own clip than
-    in its opening frame, which is where the empty tiles came from.
+    is no moment worth naming, so take the middle of the TEE half -- and
+    the tee half is the point. On a composite the whole clip's midpoint
+    lands past the cut about half the time, which is a tile showing the
+    green from a camera the golfer is not standing in front of.
     """
     try:
         n = int(total_frames)
@@ -148,18 +186,22 @@ def frame_index(fps: float, tracer_t, total_frames: int) -> int:
         f = 0.0
     if f <= 0:
         f = 30.0
+
+    limit = tee_limit_frames(f, n, cut_sec)
+    last = max(0, min(n, limit) - 1)
+
     if tracer_t is None:
-        return n // 2
+        return last // 2
     try:
         t = float(tracer_t)
     except (TypeError, ValueError):
-        return n // 2
+        return last // 2
     if t != t:  # NaN
-        return n // 2
+        return last // 2
     idx = int(round((t - ADDRESS_LEAD_SEC) * f))
-    return max(0, min(n - 1, idx))
+    return max(0, min(last, idx))
 
 
 def still_name(stem: str) -> str:
     """Cache filename. One per source file, beside the clip it came from."""
-    return f"{stem}_shot_still3.jpg"
+    return f"{stem}_shot_still4.jpg"

@@ -1366,7 +1366,21 @@ def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_
     # tracer is the anchor that reads the picture itself rather than
     # metadata that may never have reached this file, so it is the only
     # one asked.
-    tsx = _tracer_start_x(scan_src) or {}
+    # WHERE THE TEE HALF ENDS. A produced clip is often tee footage
+    # followed by green footage joined at a hard cut, and everything this
+    # tile wants is on the tee side -- the golfer, the swing, the tracer
+    # leaving the club. Scanning the whole file let the GREEN camera's
+    # tracer win, and the tile came back showing the putting surface.
+    # Read off the frames by the same detector the 9:16 pan uses, because
+    # the d3prod clips carry no tee-clip duration to ask.
+    cut = _detect_cut_sec(scan_src)
+
+    # Only the tee half is scanned, so a late green tracer cannot be
+    # mistaken for the one that came off the club.
+    _scan_kw = {}
+    if cut is not None and cut > 1.0:
+        _scan_kw["max_scan_sec"] = max(1.0, float(cut) - 0.25)
+    tsx = _tracer_start_x(scan_src, **_scan_kw) or {}
     focus = shot_still.clamp_focus(tsx.get("x"))
     focus_y = tsx.get("y")
     at_sec = tsx.get("t")
@@ -1382,7 +1396,7 @@ def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_
         # frame by definition, and not yet swinging, so not blurred.
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        idx = shot_still.frame_index(fps, at_sec, total)
+        idx = shot_still.frame_index(fps, at_sec, total, cut)
         cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ok, frame = cap.read()
         if not ok or frame is None:
@@ -1418,6 +1432,7 @@ def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_
         "focus_y": round(float(focus_y), 3) if focus_y is not None else None,
         "zoomed": focus_y is not None,
         "at_sec": round(float(at_sec), 2) if at_sec is not None else None,
+        "cut_sec": round(float(cut), 2) if cut is not None else None,
         "tracer_why": tsx.get("why"),
         "src_kind": "clean" if scan_src is not src_path else "stamped",
         "cached": False,

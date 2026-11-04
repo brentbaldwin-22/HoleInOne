@@ -123,16 +123,47 @@ def main():
     check("nor past the end of a short one",
           S.frame_index(FPS, 99.0, N) == N - 1, f"{S.frame_index(FPS, 99.0, N)}")
     check("no tracer takes the middle, not the opening",
-          S.frame_index(FPS, None, N) == N // 2, f"{S.frame_index(FPS, None, N)}")
+          S.frame_index(FPS, None, N) == (N - 1) // 2, f"{S.frame_index(FPS, None, N)}")
     check("and that is the point: frame zero can predate the golfer",
           S.frame_index(FPS, None, N) != 0)
     for bad in ("", "abc", float("nan")):
-        check(f"{bad!r} falls back to the middle", S.frame_index(FPS, bad, N) == N // 2)
+        check(f"{bad!r} falls back to the middle", S.frame_index(FPS, bad, N) == (N - 1) // 2)
     check("a single-frame clip has only one answer", S.frame_index(FPS, 5.0, 1) == 0)
     check("a nonsense fps does not crash the grab", S.frame_index(0, 6.0, N) >= 0)
 
+    print("\na composite is tee footage then green footage")
+    # 12s clip, camera changes at 5s. Everything worth freezing is on
+    # the tee side; past the cut is a different camera pointed at the
+    # green, which is how a tile came back showing the putting surface.
+    CUT = 5.0
+    tee_last = S.tee_limit_frames(FPS, N, CUT) - 1
+    check("the tee half is the first part of it",
+          0 < tee_last < N - 1, f"tee ends at frame {tee_last} of {N}")
+    # Not merely "before the cut" -- the frames either side of a join are
+    # the two cameras blended, so it has to stop CLEAR of it.
+    check("and stops clear of the join, not one frame short of it",
+          tee_last <= int((CUT - 0.2) * FPS),
+          f"{tee_last} vs cut frame {int(CUT * FPS)}")
+    check("no tracer takes the middle of the TEE half, not of the clip",
+          S.frame_index(FPS, None, N, CUT) == tee_last // 2,
+          f"{S.frame_index(FPS, None, N, CUT)} (whole-clip middle would be {N // 2})")
+    check("which is the bug: the clip's own middle is past the cut",
+          N // 2 > tee_last)
+    check("a tracer found late cannot drag the frame into the green half",
+          S.frame_index(FPS, 11.0, N, CUT) == tee_last,
+          f"{S.frame_index(FPS, 11.0, N, CUT)} vs tee_last {tee_last}")
+    check("a tee-side tracer is unaffected",
+          S.frame_index(FPS, 4.0, N, CUT) == int(round((4.0 - S.ADDRESS_LEAD_SEC) * FPS)))
+
+    print("\na single-camera clip is all tee")
+    check("no cut means the whole clip", S.tee_limit_frames(FPS, N, None) == N)
+    check("and the midpoint is the clip's", S.frame_index(FPS, None, N, None) == (N - 1) // 2)
+    for bad in ("", "abc", float("nan"), 0, -3):
+        check(f"a cut of {bad!r} is treated as no cut",
+              S.tee_limit_frames(FPS, N, bad) == N)
+
     print("\nthe cache name is per source file")
-    check("named off the stem", S.still_name("clip123_composite") == "clip123_composite_shot_still3.jpg")
+    check("named off the stem", S.still_name("clip123_composite") == "clip123_composite_shot_still4.jpg")
 
     print()
     if fails:
