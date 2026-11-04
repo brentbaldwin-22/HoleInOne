@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import PlayerIdLink, { IDENTIFY_CHANGED } from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
@@ -30,6 +31,18 @@ function dayWindow(localDate) {
   const end = new Date(start);
   end.setDate(end.getDate() + 1);
   return { start: start.toISOString(), end: end.toISOString() };
+}
+
+/** How a tile's crop was aimed, for the tooltip. */
+function aimNote(r) {
+  if (!r) return "";
+  if (r.focus_src === "scan") {
+    return `tracer ${r.focus_x}${r.zoomed ? " (zoomed)" : ""}`;
+  }
+  if (r.focus_src === "vertical") {
+    return `tracer ${r.focus_x} from the 9:16 — this clip's own scan found none`;
+  }
+  return `NO TRACER (${r.tracer_why || "?"}) — centred, so this tile is a guess`;
 }
 
 function clipLabel(c) {
@@ -67,6 +80,8 @@ export default function AdminIdentify() {
   const [player, setPlayer] = useState(null);   // the golfer being worked on
   const [busy, setBusy] = useState(null);       // clip id mid-request
   const [stills, setStills] = useState({});     // {clip_id: url}
+  const [holeIdx, setHoleIdx] = useState(0);    // where in the par-3s we are
+  const [watch, setWatch] = useState(null);     // clip being played full-size
   // Bumped whenever the course or day changes, so stills still in
   // flight for the day you just left cannot land on the new grid.
   const run = useRef(0);
@@ -118,7 +133,7 @@ export default function AdminIdentify() {
           // A still for a day the operator has already navigated away
           // from must not be painted onto the grid now showing.
           if (r.still_url && run.current === mine) {
-            setStills((prev) => ({ ...prev, [id]: r.still_url }));
+            setStills((prev) => ({ ...prev, [id]: r }));
           }
         } catch {
           // The tile stays empty. A missing frame is a worse grid, not
@@ -136,6 +151,22 @@ export default function AdminIdentify() {
   const current = player && data
     ? data.players.find((p) => p.id === player.id) || player
     : null;
+
+  /**
+   * The holes to walk, in play order.
+   *
+   * The course's own par 3s, because that is what they are -- Rivertowne
+   * plays 2, 8, 14 and 17. Where a course has none recorded, fall back
+   * to the holes the day's footage actually came from: an unconfigured
+   * course should still be workable, and showing nothing at all would
+   * look like the page was broken rather than the course unset.
+   */
+  const holes = (data?.course?.par3_holes?.length
+    ? data.course.par3_holes
+    : [...new Set((data?.clips || []).map((c) => c.hole_number))].sort((a, b) => a - b));
+  const hole = holes[Math.min(holeIdx, Math.max(0, holes.length - 1))];
+  const holeClips = (data?.clips || []).filter((c) => c.hole_number === hole);
+  const onLastHole = holeIdx >= holes.length - 1;
 
   async function pair(clip) {
     if (!current) return;
@@ -245,7 +276,7 @@ export default function AdminIdentify() {
                   key={p.id}
                   type="button"
                   className="pick-tile"
-                  onClick={() => setPlayer(p)}
+                  onClick={() => { setHoleIdx(0); setPlayer(p); }}
                   title={`${p.name} — ${p.assigned} shot${p.assigned === 1 ? "" : "s"} so far`}
                 >
                   {p.selfie_url ? (
@@ -289,28 +320,41 @@ export default function AdminIdentify() {
             </button>
           </div>
 
+          <div className="inline" style={{ justifyContent: "space-between", width: "100%", marginTop: 14 }}>
+            <h4 style={{ margin: 0 }}>Hole {hole ?? "—"}</h4>
+            <span className="small muted">
+              Par 3 {Math.min(holeIdx + 1, holes.length)} of {holes.length}
+              {" · "}
+              {holeClips.length} shot{holeClips.length === 1 ? "" : "s"}
+            </span>
+          </div>
           <p className="small muted">
-            Every shot recorded that day. Tap one to give it to {current.name};
-            tap it again to take it back. Shots already belonging to someone
-            else say so — tapping one moves it.
+            {current.name}'s shot on hole {hole ?? "—"}. Tap it to give it to
+            them; tap it again to take it back. Shots already belonging to
+            someone else say so — tapping one moves it.
           </p>
 
-          {data.clips.length === 0 ? (
-            <p className="small muted">No shots were recorded at this course on this day.</p>
+          {holeClips.length === 0 ? (
+            <p className="small muted">
+              No shots on hole {hole ?? "—"} that day — move on.
+            </p>
           ) : (
             <div className="pick-grid">
-              {data.clips.map((c) => {
+              {holeClips.map((c) => {
                 const mine = c.participant_id === current.id;
                 const taken = c.participant_id != null && !mine;
                 return (
+                  <div key={c.id} className="pick-cell">
                   <button
-                    key={c.id}
                     type="button"
                     className={`pick-tile${mine ? " on" : ""}`}
                     onClick={() => pair(c)}
                     disabled={busy === c.id}
                     style={taken ? { opacity: 0.55 } : undefined}
-                    title={taken ? `Currently ${c.participant_name}'s` : clipLabel(c)}
+                    title={[
+                      taken ? `Currently ${c.participant_name}'s` : clipLabel(c),
+                      stills[c.id] && aimNote(stills[c.id]),
+                    ].filter(Boolean).join("  ·  ")}
                   >
                     {/* NO VIDEO ON THIS GRID AT ALL. A <video> here
                         decodes, seeks and repaints while the operator is
@@ -318,7 +362,7 @@ export default function AdminIdentify() {
                         flickered. A still cannot flicker. Until one
                         arrives the tile is simply empty. */}
                     {stills[c.id] ? (
-                      <img src={stills[c.id]} alt={`Shot at ${clipLabel(c)}`} />
+                      <img src={stills[c.id].still_url} alt={`Shot at ${clipLabel(c)}`} />
                     ) : (
                       <span className="pick-empty">…</span>
                     )}
@@ -332,11 +376,75 @@ export default function AdminIdentify() {
                       <span className="pick-check"><Icon name="check" size={16} /></span>
                     )}
                   </button>
+                  {/* A SEPARATE BUTTON, not nested inside the tile: a
+                      button within a button is invalid, and a click
+                      meant for "watch" must never land on "give this
+                      shot to Alex". */}
+                  <button
+                    type="button"
+                    className="tile-watch"
+                    onClick={() => setWatch(c)}
+                    title="Watch the full clip"
+                    aria-label={`Watch the full clip from ${clipLabel(c)}`}
+                  >
+                    <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+                      <path d="M4 2.5 L13 8 L4 13.5 Z" fill="currentColor" />
+                    </svg>
+                  </button>
+                  </div>
                 );
               })}
             </div>
           )}
+
+          {/* NEXT IS ALWAYS LIVE, picked or not. Plenty of golfers do not
+              play every par 3, and plenty of shots never got recorded;
+              an operator made to pick something before moving on would
+              have to give the hole to the wrong person to escape it. */}
+          <div className="inline" style={{ justifyContent: "space-between", width: "100%", marginTop: 16 }}>
+            <button
+              type="button"
+              className="ghost small"
+              disabled={holeIdx === 0}
+              onClick={() => setHoleIdx((i) => Math.max(0, i - 1))}
+            >
+              ← Hole {holes[holeIdx - 1] ?? ""}
+            </button>
+            {onLastHole ? (
+              <button type="button" onClick={() => { setHoleIdx(0); setPlayer(null); }}>
+                Done with {current.name}
+              </button>
+            ) : (
+              <button type="button" onClick={() => setHoleIdx((i) => i + 1)}>
+                Next · Hole {holes[holeIdx + 1]} →
+              </button>
+            )}
+          </div>
         </div>
+      )}
+
+      {/* The full clip, for when a frozen frame is not enough to tell
+          two golfers in similar shirts apart. Through a portal, because
+          the grid sits inside cards that would clip it. */}
+      {watch && createPortal(
+        <div className="clip-watch" onClick={() => setWatch(null)}>
+          <video
+            src={watch.preview_url}
+            controls
+            autoPlay
+            playsInline
+            onClick={(e) => e.stopPropagation()}
+          />
+          <div className="clip-watch-bar">
+            <span className="small">
+              {fmtDateTime(watch.captured_at, undefined, { timeStyle: "short" })}
+              {" · "}{clipLabel(watch)}
+              {watch.participant_name ? ` · ${watch.participant_name}` : ""}
+            </span>
+            <button type="button" onClick={() => setWatch(null)}>Close</button>
+          </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

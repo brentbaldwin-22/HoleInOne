@@ -38,7 +38,8 @@ def main():
     Base.metadata.create_all(eng)
     db = sessionmaker(bind=eng)()
 
-    river = Course(name="Rivertowne Country Club", par3_holes=[8], minutes_per_hole=14)
+    river = Course(name="Rivertowne Country Club", par3_holes=[8, 17, 2, 14],
+                   minutes_per_hole=14)
     other = Course(name="Somewhere Else CC", par3_holes=[3], minutes_per_hole=14)
     db.add_all([river, other]); db.flush()
 
@@ -164,6 +165,18 @@ def main():
     check("nor is the first instant of tomorrow", tomorrow.id not in ids)
     check("the other course stays on its own page",
           all(c["id"] in {s.id for s in shots} for c in d["clips"]))
+
+    print("\nthe holes the operator will be stepped through")
+    # Stored out of order on purpose: entered by hand on the Courses
+    # page, and an unsorted list walks the operator backwards.
+    check("come back in play order", d["course"]["par3_holes"] == [2, 8, 14, 17],
+          f'{d["course"]["par3_holes"]}')
+    check("each course brings its own",
+          identify.day(db, other.id, START, END)["course"]["par3_holes"] == [3])
+    blank = Course(name="Unconfigured GC", minutes_per_hole=14)
+    db.add(blank); db.flush()
+    check("one with none set comes back empty, not broken",
+          identify.day(db, blank.id, START, END)["course"]["par3_holes"] == [])
 
     print("\nthe roster, which is what the operator actually reads")
     names = [p["name"] for p in d["players"]]

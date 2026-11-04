@@ -1366,21 +1366,69 @@ def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_
     # tracer is the anchor that reads the picture itself rather than
     # metadata that may never have reached this file, so it is the only
     # one asked.
-    tsx = _tracer_start_x(scan_src) or {}
-    focus = shot_still.clamp_focus(tsx.get("x"))
+    # WHERE THE TEE HALF ENDS. A produced clip is often tee footage
+    # followed by green footage joined at a hard cut, and everything this
+    # tile wants is on the tee side -- the golfer, the swing, the tracer
+    # leaving the club. Scanning the whole file let the GREEN camera's
+    # tracer win, and the tile came back showing the putting surface.
+    # Read off the frames by the same detector the 9:16 pan uses, because
+    # the d3prod clips carry no tee-clip duration to ask.
+    cut = _detect_cut_sec(scan_src)
+
+    # Only the tee half is scanned, so a late green tracer cannot be
+    # mistaken for the one that came off the club -- BUT NEVER LESS THAN
+    # MIN_SCAN_SEC. A cut detected a second or two in is far likelier to
+    # be a false positive than a real join, and capping the scan to under
+    # that window loses a tracer that starts at three or four seconds,
+    # which is most of them. Losing the tracer is the expensive failure:
+    # the crop falls back to the centre of the frame, which on a tee is
+    # where the golfers WAITING to hit are standing.
+    _scan_kw = {}
+    if cut is not None and float(cut) - 0.25 >= shot_still.MIN_SCAN_SEC:
+        _scan_kw["max_scan_sec"] = float(cut) - 0.25
+    tsx = _tracer_start_x(scan_src, **_scan_kw) or {}
     focus_y = tsx.get("y")
+    at_sec = tsx.get("t")
+    focus_src = "scan"
+
+    # WHAT THE 9:16 ALREADY FOUND. The vertical render runs the same scan
+    # over a longer window and stores what it read; that is the number
+    # the Produced Clips card prints as "tracer 0.704". When this scan
+    # comes back empty, that reading is a far better answer than the
+    # middle of the picture. No y comes with it, so the crop is aimed
+    # correctly across the frame but not zoomed -- right and wide beats
+    # tight and pointed at the wrong people.
+    if tsx.get("x") is None:
+        _stored = ((clip.tracer_diagnostics or {}).get("vertical") or {}).get("tracer")
+        if _stored is not None:
+            tsx = {"x": _stored, "why": f"stored ({tsx.get('why') or 'no scan'})"}
+            focus_y = None
+            at_sec = None
+            focus_src = "vertical"
+        else:
+            focus_src = "centre"
+
+    focus = shot_still.clamp_focus(tsx.get("x"))
 
     cap = cv2.VideoCapture(str(scan_src))
     if not cap.isOpened():
         raise HTTPException(500, "could not open source for frame grab")
     try:
-        # THE VERY FIRST FRAME. The golfer is at address, standing still
-        # and facing the camera, which is the frame that answers "what
-        # is this person wearing". The frame at impact has them mid-swing
-        # and half the time blurred. The tracer is only being asked WHERE
-        # the shot happened, not for a frame to show.
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        # THE ADDRESS FRAME, a beat before the tracer starts. Frame
+        # zero was the first attempt and it put empty grass in the grid:
+        # a clip can open before the golfer has walked onto the tee. A
+        # second before the ball leaves they are stood over it -- in
+        # frame by definition, and not yet swinging, so not blurred.
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        idx = shot_still.frame_index(fps, at_sec, total, cut)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ok, frame = cap.read()
+        if not ok or frame is None:
+            # Some containers refuse to seek. Rewind and take what the
+            # decoder will give rather than failing the tile.
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ok, frame = cap.read()
     finally:
         cap.release()
     if not ok or frame is None:
@@ -1408,6 +1456,9 @@ def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_
         "focus_x": round(focus, 3),
         "focus_y": round(float(focus_y), 3) if focus_y is not None else None,
         "zoomed": focus_y is not None,
+        "at_sec": round(float(at_sec), 2) if at_sec is not None else None,
+        "cut_sec": round(float(cut), 2) if cut is not None else None,
+        "focus_src": focus_src,
         "tracer_why": tsx.get("why"),
         "src_kind": "clean" if scan_src is not src_path else "stamped",
         "cached": False,
