@@ -13,7 +13,7 @@ lowest halted draw set POWER_OFF_ON_HALT=1 in the EEPROM config
 
 Safety rails:
   * Clock sanity — never halt on a clock that predates this code
-    (unsynced boot clock could put "21:00" anywhere in history).
+    (unsynced boot clock could put "18:30" anywhere in history).
   * Boot grace — if the Pi boots INSIDE the curfew window (battery
     reconnected early, manual power-up for maintenance), stay awake
     for boot_grace_seconds so the operator can SSH in and disable the
@@ -72,8 +72,16 @@ class CurfewThread(threading.Thread):
         super().__init__(daemon=True, name="curfew")
         cfg = cfg or {}
         self.enabled = bool(cfg.get("enabled", False))
-        self.sleep_hm = _parse_hhmm(cfg.get("sleep", "21:00"))
-        self.wake_hm = _parse_hhmm(cfg.get("wake", "06:00"))
+        # 18:30 TO 07:30, which is what the rigs are actually run on.
+        # It gets dark at Rivertowne around 17:30 once the clocks go
+        # back, so 21:00 was three hours of nothing being filmed on a
+        # battery pack, and 06:00 was ninety minutes of the dark on
+        # the other end. These are the FALLBACKS -- they apply when a
+        # `curfew:` block says `enabled: true` without saying when,
+        # which is how a rig ends up sleeping on a schedule nobody
+        # typed. Worth them being the right hours.
+        self.sleep_hm = _parse_hhmm(cfg.get("sleep", "18:30"))
+        self.wake_hm = _parse_hhmm(cfg.get("wake", "07:30"))
         self.boot_grace = int(cfg.get("boot_grace_seconds", 600))
         self.dry_run = bool(cfg.get("dry_run", False))
         # DO NOT POWER OFF OWING SOMEBODY A CLIP. Called with no
@@ -137,7 +145,7 @@ class CurfewThread(threading.Thread):
         if sleep_t <= wake_t:
             # window inside one day (e.g. sleep 01:00 wake 06:00)
             return sleep_t <= now < wake_t
-        # window spans midnight (the normal case: sleep 21:00 wake 06:00)
+        # window spans midnight (the normal case: sleep 18:30 wake 07:30)
         return now >= sleep_t or now < wake_t
 
     def _next_wake(self, now: dt.datetime) -> dt.datetime:

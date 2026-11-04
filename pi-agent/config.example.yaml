@@ -594,8 +594,8 @@ battery:
 
 curfew:
   enabled: false          # flip to true on battery-powered rigs
-  sleep: "21:00"
-  wake: "06:00"
+  sleep: "18:30"          # the built-in fallback, and what the rigs run
+  wake: "07:30"           # dark by ~17:30 once the clocks go back
   boot_grace_seconds: 600
   # THE SHORTEST SLEEP WORTH TAKING, in minutes. A halt costs a boot
   # cycle at full power and stakes the morning on an RTC alarm firing;
