@@ -1,13 +1,31 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "./Brand.jsx";
 
 /**
- * In-page camera capture optimised for full-outfit golfer selfies.
+ * Full-screen camera capture optimised for full-outfit golfer selfies.
  *
  * Defaults to the rear camera (wider lens, higher res than the front cam on
  * most phones), shows a faint head-to-toe silhouette guide, and returns a
  * JPEG File via onCapture. Falls back to a file input if getUserMedia is
  * unavailable or permission is denied.
+ *
+ * IT TAKES THE WHOLE SCREEN, and it shoots in two steps the way a phone's
+ * own camera does: frame, then review what you got with Retake or Use
+ * Photo. A head-to-toe photograph cannot be framed in a box the size of a
+ * form field -- the golfer is at arm's length or handing the phone to
+ * someone, and at that distance a thumbnail shows them nothing. The
+ * review step is there for the same reason: whoever pressed the button
+ * could not see the screen while they pressed it, so the first chance to
+ * learn the shot was bad is afterwards.
+ *
+ * Rendered through a portal onto document.body. position:fixed resolves
+ * against the nearest ancestor carrying a transform or filter rather than
+ * the viewport, and this mounts inside a form card -- one transform
+ * anywhere above it and "full screen" quietly becomes "inside that card".
+ *
+ * The stream keeps running behind the review so Retake is instant, and is
+ * stopped on Use Photo, on cancel, and on unmount.
  */
 export default function SelfieCamera({ onCapture, onCancel }) {
   const videoRef = useRef(null);
@@ -16,6 +34,19 @@ export default function SelfieCamera({ onCapture, onCancel }) {
   const [error, setError] = useState(null);
   const [ready, setReady] = useState(false);
   const [facing, setFacing] = useState("environment"); // "environment" | "user"
+  // The frame just taken, held for review. null = still framing.
+  const [shot, setShot] = useState(null); // {file, url}
+
+  // A full-screen camera over a scrollable form: without this the page
+  // behind it scrolls under the viewfinder on touch.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  // Object URLs are not garbage collected on their own.
+  useEffect(() => () => { if (shot) URL.revokeObjectURL(shot.url); }, [shot]);
 
   useEffect(() => {
     let cancelled = false;
@@ -145,12 +176,29 @@ export default function SelfieCamera({ onCapture, onCancel }) {
       (blob) => {
         if (!blob) return;
         const file = new File([blob], "selfie.jpg", { type: "image/jpeg" });
-        stopStream();
-        onCapture(file);
+        // Held, not handed over: the golfer sees it first. The stream is
+        // left running underneath so Retake costs nothing.
+        setShot({ file, url: URL.createObjectURL(blob) });
       },
       "image/jpeg",
       0.9,
     );
+  }
+
+  function retake() {
+    if (shot) URL.revokeObjectURL(shot.url);
+    setShot(null);
+  }
+
+  function usePhoto() {
+    if (!shot) return;
+    stopStream();
+    onCapture(shot.file);
+  }
+
+  function cancel() {
+    stopStream();
+    onCancel();
   }
 
   function handleFallbackPick(file) {
@@ -158,14 +206,14 @@ export default function SelfieCamera({ onCapture, onCancel }) {
     onCapture(file);
   }
 
-  return (
-    <div className="camera-frame">
+  const framing = (
+    <>
       <video
         ref={videoRef}
         playsInline
         muted
         autoPlay
-        className={facing === "user" ? "mirror" : ""}
+        className={`camera-full-media${facing === "user" ? " mirror" : ""}`}
       />
 
       {/* Silhouette guide overlay */}
@@ -189,25 +237,49 @@ export default function SelfieCamera({ onCapture, onCancel }) {
 
       <div className="camera-coach">Fit head to toe inside the outline</div>
 
-      <div className="camera-controls">
-        <button type="button" className="secondary" onClick={onCancel}>
+      <div className="camera-bar">
+        <button type="button" className="camera-text" onClick={cancel}>
           Cancel
         </button>
         <button
           type="button"
+          className="camera-shutter"
+          disabled={!ready}
+          onClick={capture}
+          aria-label={ready ? "Take photo" : "Camera loading"}
+        />
+        <button
+          type="button"
+          className="camera-text"
           onClick={() => setFacing(facing === "user" ? "environment" : "user")}
-          className="secondary"
-          title="Flip camera"
+          aria-label="Flip camera"
         >
-          <Icon name="flip" size={16} /> Flip
-        </button>
-        <button type="button" disabled={!ready} onClick={capture}>
-          <Icon name="capture" size={16} /> {ready ? "Capture" : "Loading…"}
+          <Icon name="flip" size={18} /> Flip
         </button>
       </div>
+    </>
+  );
 
-      {error && (
-        <div className="camera-error">
+  const reviewing = shot && (
+    <>
+      <img className="camera-full-media" src={shot.url} alt="The outfit photo you just took" />
+      <div className="camera-bar">
+        <button type="button" className="camera-text" onClick={retake}>
+          Retake
+        </button>
+        <button type="button" className="camera-use" onClick={usePhoto}>
+          Use Photo
+        </button>
+      </div>
+    </>
+  );
+
+  return createPortal(
+    <div className="camera-full" role="dialog" aria-modal="true" aria-label="Outfit photo">
+      {shot ? reviewing : framing}
+
+      {!shot && error && (
+        <div className="camera-error-full">
           <p className="small">{error}</p>
           <input
             ref={fileFallbackRef}
@@ -222,6 +294,7 @@ export default function SelfieCamera({ onCapture, onCancel }) {
           </button>
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }
