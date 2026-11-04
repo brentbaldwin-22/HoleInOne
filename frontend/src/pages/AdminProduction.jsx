@@ -3246,6 +3246,9 @@ function ClickToPlotModal({
             {swing.impact_from && (
               <div className="tiny muted" style={{ marginTop: 4 }}>
                 f{swing.impact_frame} from {swing.impact_from}
+                {swing.impact_heard_sec != null
+                  ? ` — heard at ${swing.impact_heard_sec}s`
+                  : ""}
                 {swing.impact_frame_fit != null
                   && swing.impact_frame_fit !== swing.impact_frame
                   ? ` — the flight fit said f${swing.impact_frame_fit}`
@@ -9454,6 +9457,96 @@ function DetectorBudget({ sweep }) {
   );
 }
 
+// HOW THE IMPACT FRAME WAS ARRIVED AT, as a sum rather than an answer.
+//
+// The report has always printed "impact f277" and never the arithmetic
+// behind it, which makes the number unarguable and uncheckable at the
+// same time. An operator asking "why does the wizard say f289" had
+// nothing on the page to check against, twice; and the one time this
+// sum was actually wrong -- rounding where it should have floored, a
+// frame late -- no displayed number could have caught it.
+//
+// The sentence comes from the backend (`rig_impact_explained`), not
+// from re-doing the arithmetic here: a page that recomputes what it is
+// displaying is a fourth copy of the sum, and the copies are what drift.
+function ImpactFrameSum({ rig }) {
+  if (!rig) return null;
+  const ex = rig.explain;
+  return (
+    <div className="card tiny" style={{ margin: "10px 0", padding: 10 }}>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <b>How the impact frame was worked out</b>
+        <span className={ex ? "pill ok" : "pill"}>
+          {ex ? "measured — the rig heard it" : "no audio impact"}
+        </span>
+      </div>
+      {ex ? (
+        <table style={{ marginTop: 6, borderSpacing: "10px 1px" }}>
+          <tbody>
+            <tr>
+              <td align="right" className="muted">the rig heard the strike</td>
+              <td><b>{ex.heard_sec}s</b> into the tee clip</td>
+              <td className="muted">= f{ex.heard_frame} at {ex.fps}fps</td>
+            </tr>
+            <tr>
+              <td align="right" className="muted">the ears run late by</td>
+              <td><b>{ex.lead_sec}s</b></td>
+              <td className="muted">
+                = {ex.lead_frames} frame(s) to subtract
+                <span title="The audio comes down its own RTSP session in one-second segments and carries that pipeline's latency; the video ring does not. So the instant the rig reports lands after the strike it describes. AUDIO_IMPACT_LEAD_SEC.">
+                  {" "}ⓘ
+                </span>
+              </td>
+            </tr>
+            <tr>
+              <td align="right" className="muted">so the impact is</td>
+              <td><b>f{ex.heard_frame} − {ex.lead_frames} = f{ex.impact_frame}</b></td>
+              <td className="muted">at {ex.impact_sec}s</td>
+            </tr>
+            {ex.frame_in_cut != null && (
+              <tr>
+                <td align="right" className="muted">in the produced clip</td>
+                <td><b>f{ex.frame_in_cut}</b></td>
+                <td className="muted">
+                  cut from {ex.cut_start_sec}s (f{ex.cut_start_frame})
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      ) : null}
+      {/* THE FLOOR, SAID OUT LOUD. This is the rule the sum was once
+          broken on, and it is not guessable from the numbers when
+          they happen to divide evenly. */}
+      {ex && (
+        <div className="tiny muted" style={{ marginTop: 6 }}>
+          Seconds become frames by flooring, not rounding: a frame covers
+          the time from its own timestamp until the next, so the frame an
+          instant falls in is the one below it. Rounding put this a frame
+          late once.
+        </div>
+      )}
+      {rig.reason && (
+        <div className="tiny muted" style={{ marginTop: 6 }}>{rig.reason}</div>
+      )}
+      {ex && rig.applied === false && rig.reason == null && (
+        <div className="tiny muted" style={{ marginTop: 6 }}>
+          Worked out, but not applied to any swing.
+        </div>
+      )}
+      {rig.applied && rig.was_frame != null && (
+        <div className="tiny muted" style={{ marginTop: 6 }}>
+          Applied to swing {rig.clip_index != null ? rig.clip_index + 1 : "?"},
+          whose own flight fit said f{rig.was_frame}
+          {rig.moved_frames
+            ? ` (${rig.moved_frames > 0 ? "+" : ""}${rig.moved_frames} frames)`
+            : " (the same frame)"}.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AscentProduceModal({ state, adminPassword, onClose }) {
   const rep = state?.report;
   const asc = rep?.ascents || [];
@@ -9507,6 +9600,12 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
 
         <ProduceStepSummary rep={rep} />
 
+        {/* BEFORE THE STEPS THAT USE IT. The impact frame decides where
+            the AI zooms, where the sweep looks and where the tracer's
+            line begins, so "which frame, and why that one" is the first
+            question and was the one the report never answered. */}
+        <ImpactFrameSum rig={rep?.rig_impact} />
+
         {/* STAGE 1, AND IT IS A PICTURE OR IT IS NOTHING. The strip is
             one tile per frame the model was shown, with the crop it
             searched, what it picked and why a frame was refused --
@@ -9526,6 +9625,22 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             </div>
             <div className="tiny muted" style={{ marginTop: 3 }}>
               {rep.ai_launch.reason}
+              {/* THE SUM, COMPACTLY, WHERE THE FRAME IS USED. The
+                  panel above has it in full; this card is the one that
+                  ZOOMS at that frame, so a reader looking at a first
+                  look that landed on nothing should not have to scroll
+                  up to check the frame was right. Same backend
+                  sentence, not a second copy of the arithmetic. */}
+              {rep.ai_launch.explain && (
+                <div className="tiny muted">
+                  f{rep.ai_launch.explain.heard_frame} heard
+                  {" − "}{rep.ai_launch.explain.lead_frames} late
+                  {" = "}<b>f{rep.ai_launch.explain.impact_frame}</b>
+                  {" "}({rep.ai_launch.explain.heard_sec}s
+                  {" − "}{rep.ai_launch.explain.lead_sec}s
+                  {" = "}{rep.ai_launch.explain.impact_sec}s)
+                </div>
+              )}
               {rep.ai_launch.impact_frame != null && (
                 <> — from f{rep.ai_launch.impact_frame}
                   {rep.ai_launch.step ? `, every ${rep.ai_launch.step} frames`

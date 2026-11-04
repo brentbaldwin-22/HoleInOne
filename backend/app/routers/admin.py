@@ -4067,6 +4067,92 @@ def _rig_impact_sec(db, row, upload_id=None) -> dict | None:
         return None
 
 
+def rig_impact_explained(rig: dict | None, fps: float,
+                         cut_start_sec: float | None = None) -> dict | None:
+    """The impact frame's arithmetic, written out in frames.
+
+    THE NUMBER WAS ON SCREEN AND THE SUM WAS NOT. A report saying
+    "impact f277" is unarguable and uncheckable at the same time: it
+    does not say the microphone heard the strike at 4.88s, that the
+    ears run a quarter of a second late, or that 4.88 - 0.25 is where
+    f277 came from. Twice now an operator has had to ask why the
+    wizard showed a different frame, and both times the answer was in
+    arithmetic nobody could see. It is also exactly the arithmetic
+    that was wrong once -- rounding instead of flooring put it a frame
+    late -- which is the kind of error a written-out sum catches and a
+    bare number hides.
+
+    ONE PLACE, because this is the third reader of the same instant.
+    `_rig_impact_sec` already had to become one reader after three
+    copies of the offset drifted apart; three copies of the EXPLANATION
+    would drift the same way, and a report whose prose disagrees with
+    its own number is worse than a report with no prose.
+
+    `lead_frames` is the DIFFERENCE of the two frames, not the lead in
+    seconds times the fps. Both are floors, and flooring twice can
+    leave a sum that does not add up -- "heard f292, subtract 16,
+    impact f277" is a sentence that destroys trust in every other
+    number on the page.
+
+    `cut_start_sec` is where the produced clip was cut from, when a
+    caller knows: the impact frame in the CUT is a different number
+    from the impact frame in the tee clip, and showing one labelled as
+    the other is how f277 and f289 ended up on two screens at once.
+
+    None when the rig heard nothing -- a dwell-triggered clip, a
+    manual capture, or an event with no recording start to measure
+    against. Callers say so rather than printing a sum they do not
+    have.
+    """
+    if not rig:
+        return None
+    _fps = float(fps or 0.0)
+    if _fps <= 0:
+        return None
+    _heard = float(rig.get("heard_sec") or 0.0)
+    _sec = float(rig.get("sec") if rig.get("sec") is not None else _heard)
+    _lead = float(rig.get("lead_sec") or 0.0)
+    # FLOOR, NOT NEAREST, in both places. A frame covers the time from
+    # its own timestamp until the next one, so the frame an instant
+    # falls IN is the floor. See `_ascent_pin_rig_impact`.
+    _hf = max(0, int(_heard * _fps))
+    _f = max(0, int(_sec * _fps))
+    out = {
+        "fps": round(_fps, 3),
+        "heard_sec": round(_heard, 3),
+        "heard_frame": _hf,
+        "lead_sec": round(_lead, 3),
+        "lead_frames": _hf - _f,
+        "impact_sec": round(_sec, 3),
+        "impact_frame": _f,
+        "event_id": rig.get("event_id"),
+    }
+    out["line"] = (
+        f"the rig heard the strike {_heard:.2f}s into the tee clip "
+        f"(f{_hf} at {_fps:g}fps)"
+        + (f"; the ears run {_lead:.2f}s late, so subtract "
+           f"{out['lead_frames']} frame(s)" if _lead else
+           "; no lead correction is configured")
+        + f" — impact f{_f}, at {_sec:.2f}s"
+    )
+    if cut_start_sec is not None:
+        _cs = float(cut_start_sec)
+        _csf = max(0, int(_cs * _fps))
+        out["cut_start_sec"] = round(_cs, 3)
+        out["cut_start_frame"] = _csf
+        # ONE SUBTRACTION, IN FRAMES. Converting the cut start to a
+        # frame and the impact to a frame and subtracting is one floor
+        # each; converting the DIFFERENCE in seconds is a third, and
+        # the three of them composing is what put the wizard a frame
+        # out from the report.
+        out["frame_in_cut"] = max(0, _f - _csf)
+        out["line"] += (
+            f". The clip is cut from {_cs:.2f}s (f{_csf}), so in the "
+            f"produced clip that is f{out['frame_in_cut']}"
+        )
+    return out
+
+
 def _audio_impact_segment(db, row, upload_id):
     """One segment pinned to the impact the RIG heard, or None.
 
@@ -25151,6 +25237,11 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
     _f = max(0, int(float(_rig["sec"]) * _fps))
     out["impact_frame"] = _f
     out["heard_sec"] = _rig["heard_sec"]
+    # THE SAME SENTENCE THE REPORT SHOWS, from the same function. This
+    # step zooms at the impact frame, so "which frame, and why that
+    # one" is the first thing to check when its first look lands on
+    # nothing.
+    out["explain"] = rig_impact_explained(_rig, _fps)
     # WHERE THE BALL IS SITTING, as a box rather than a point. The
     # whole reason this can run before anything else is that it does
     # not need to know where the ball is -- only where to look, and
@@ -25425,6 +25516,23 @@ def _ascent_pin_rig_impact(db, row, rep, fps) -> dict | None:
     """
     _rig = _rig_impact_sec(db, row, getattr(row, "id", None))
     if _rig is None:
+        # SAY SO, RATHER THAN SAYING NOTHING. "Where did the impact
+        # frame come from" has two answers -- the microphone, or the
+        # flight chain's own fit -- and a report that is silent on a
+        # dwell clip looks identical to one where the audio pin was
+        # skipped by mistake. The fit is the weaker of the two (on
+        # #1265 it landed eleven frames after the strike), so which
+        # one ran is worth a line.
+        rep["rig_impact"] = {
+            "applied": False, "explain": None,
+            "reason": (
+                "the rig heard no impact for this clip — a dwell-"
+                "triggered or manual capture, or an event with no tee "
+                "recording start to measure the instant against. Each "
+                "swing's impact frame is its own flight chain run back "
+                "to the tee line, which is a fit rather than a "
+                "measurement"),
+        }
         return None
     _fps = float(fps or 30.0)
     # FLOOR, NOT NEAREST. A frame covers the time from its own
@@ -25439,6 +25547,11 @@ def _ascent_pin_rig_impact(db, row, rep, fps) -> dict | None:
     _note = {"heard_sec": _rig["heard_sec"], "lead_sec": _rig["lead_sec"],
              "sec": round(float(_rig["sec"]), 3), "frame": _f,
              "applied": False, "reason": None}
+    # THE SUM, NOT ONLY ITS ANSWER. See `rig_impact_explained`: "impact
+    # f277" is uncheckable, and the one time this arithmetic was wrong
+    # it was wrong by a frame that no displayed number could have
+    # caught.
+    _note["explain"] = rig_impact_explained(_rig, _fps)
     rep["rig_impact"] = _note
     if not _cands:
         _note["reason"] = "no swing had an impact frame to replace"
