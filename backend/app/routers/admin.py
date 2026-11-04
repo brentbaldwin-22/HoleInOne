@@ -1294,7 +1294,7 @@ def identify_day(
 
 @router.get("/identify/pending")
 def identify_pending(start: str, end: str, db: Session = Depends(get_db)):
-    """The nav badge's number: clips nobody owns, across every course."""
+    """The nav badge's number: golfers still waiting, every course summed."""
     try:
         return identify.pending_total(
             db,

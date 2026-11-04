@@ -127,23 +127,29 @@ def main():
     except ValueError as e:
         check("the counts refuse a backwards day too", True, str(e))
 
-    print("\nthe nav badge counts CLIPS, wherever you are standing")
-    # Deliberately a different unit from the dropdown: footage piles up on
-    # days nobody registered, and the badge rides on pages that have no
-    # course picker to explain that away.
-    check("every loose clip that day, across all courses",
-          identify.pending_total(db, START, END)["clips"] == 5,
-          f'{identify.pending_total(db, START, END)["clips"]}'
-          " (4 at Rivertowne + 1 elsewhere)")
-    check("yesterday's and tomorrow's are not today's",
-          identify.pending_total(db, START + timedelta(days=30),
-                                 END + timedelta(days=30))["clips"] == 0)
+    print("\nthe nav badge is the sum of the dropdown, not its own opinion")
+    # It counted clips once and read 12 on the nav while every course in
+    # the dropdown said clear. One question, one answer.
+    def badge(a=START, b=END):
+        return identify.pending_total(db, a, b)["golfers"]
+
+    check("two golfers at Rivertowne, one elsewhere, badge says three",
+          badge() == 3, f"{badge()}")
+    check("it equals the dropdown added up",
+          badge() == sum(c["unidentified"]
+                         for c in identify.unidentified_counts(db, START, END)))
+    loose = identify.day(db, river.id, START, END)["unidentified"]
+    check("golfers, not clips: Rivertowne alone has four loose shots",
+          badge() == 3 and loose == 4, f"badge={badge()} loose_at_river={loose}")
     identify.pair(db, shots[0].id, alex.id)
-    check("pairing one takes it off the badge",
-          identify.pending_total(db, START, END)["clips"] == 4)
+    check("sorting a golfer takes one off the badge", badge() == 2, f"{badge()}")
+    identify.pair(db, shots[1].id, alex.id)
+    check("a second shot for the same golfer does not", badge() == 2, f"{badge()}")
     identify.unpair(db, shots[0].id)
-    check("and unpairing puts it back",
-          identify.pending_total(db, START, END)["clips"] == 5)
+    identify.unpair(db, shots[1].id)
+    check("undoing puts them back", badge() == 3, f"{badge()}")
+    check("a day nobody played reads zero, so the badge goes green",
+          badge(START + timedelta(days=30), END + timedelta(days=30)) == 0)
     try:
         identify.pending_total(db, END, START)
         check("a backwards day", False, "no error raised")

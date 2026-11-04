@@ -36,7 +36,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..models import (AuditLog, ClipProcessingStatus, Course, Participant,
@@ -118,27 +117,20 @@ def unidentified_counts(db: Session, start: datetime, end: datetime) -> list[dic
 
 
 def pending_total(db: Session, start: datetime, end: datetime) -> dict:
-    """How many clips across every course still belong to nobody.
+    """The nav badge's number: golfers still waiting, across every course.
 
-    For the badge in the operator nav, which is a doorbell rather than a
-    report: it rides on every admin page, where there is no course and no
-    date picker, so it answers the one question those pages can ask --
-    is there anything waiting. CLIPS, not golfers, because footage can
-    pile up on a day nobody registered and that is worth seeing from
-    wherever you happen to be standing.
+    THE SUM OF THE DROPDOWN, not a second query that counts the same
+    thing. It used to count clips instead -- defensible on its own terms,
+    since footage can pile up on a day nobody registered -- but it meant
+    the badge said 12 while every course on the page underneath said
+    clear, and two numbers for one question is worse than either answer.
+    Deriving it means they cannot drift apart later either.
     """
-    if end <= start:
-        raise ValueError("the end of the day must come after its start")
-    n = (
-        db.query(func.count(VideoClip.id))
-        .filter(
-            VideoClip.participant_id.is_(None),
-            VideoClip.captured_at >= start,
-            VideoClip.captured_at < end,
+    return {
+        "golfers": sum(
+            c["unidentified"] for c in unidentified_counts(db, start, end)
         )
-        .scalar()
-    )
-    return {"clips": int(n or 0)}
+    }
 
 
 def _player_row(p: Participant, assigned: int) -> dict:

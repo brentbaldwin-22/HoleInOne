@@ -18,7 +18,7 @@ function todayWindow() {
 }
 
 /**
- * The Player ID link, carrying today's count of clips nobody owns.
+ * The Player ID link, carrying today's count of golfers still waiting.
  *
  * A COMPONENT RATHER THAN A SHARED NAV. The obvious move was to lift the
  * whole operator nav into one place, but the eighteen copies are not the
@@ -29,10 +29,11 @@ function todayWindow() {
  * own shape.
  *
  * Red when there is something waiting, green when there is not. The
- * number is deliberately CLIPS and not golfers -- the dropdown on the
- * page itself counts golfers, because that is the work; this rides on
- * pages with no course or date picker and answers only "is there
- * anything there", which footage with nobody signed up still is.
+ * number is the SUM OF THE DROPDOWN on the identify page -- golfers who
+ * have not been given their shots yet. It counted clips at first, which
+ * read as 12 on the nav while every course in the dropdown said clear;
+ * one question should not have two answers, so the badge now adds up the
+ * same figure rather than measuring its own.
  */
 export default function PlayerIdLink({ active = false }) {
   const adminPassword =
@@ -47,7 +48,7 @@ export default function PlayerIdLink({ active = false }) {
     async function read() {
       try {
         const r = await api.identifyPending(adminPassword, todayWindow());
-        if (alive) setCount(r.clips);
+        if (alive) setCount(r.golfers);
       } catch {
         // A badge is not worth an error on every admin page: if the
         // count cannot be read it simply does not appear.
