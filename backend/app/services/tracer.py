@@ -3033,13 +3033,110 @@ GOLFER_MAX_BBOX_FRAC = 0.25
 # golfer may have taken; from a third of the body up from the feet to a
 # little below them covers the ball on an uneven lie without reaching
 # up into the hands, where the club is.
+# HOW FAR FROM A BODY A SWING MAY BE AND STILL BE THAT BODY'S, as a
+# fraction of the detector's width. Beyond it the aim is telling us
+# about somebody who is not in the mask at all, and the old
+# largest-blob rule is the better of two guesses.
+AIM_MAX_DX_FRAC = 0.12
+
 BALL_BOX_WIDTHS = 3.0
 BALL_BOX_ABOVE_FEET = 0.30
 BALL_BOX_BELOW_FEET = 0.12
 
 
-def golfer_and_ball_box(constant, det_scale: float, width: int, height: int):
+def tee_spot_from_chain(chain, impact_frame, width: int, height: int):
+    """Where the ball was SITTING, run back from the flight it became.
+
+    THE HEAT MAP ALREADY DRAWS THIS AND THREW THE NUMBERS AWAY. The red
+    line on the swing-check composite is `_arc_track_from_heatmap`'s
+    chain: the ball, frame by frame, climbing away from the tee. Its
+    earliest point is the ball a frame or two after it was struck, and
+    the operator could see on the picture that running that line down
+    to the ground lands on the spot the ball was teed on -- while the
+    code exported only how MANY points the chain had.
+
+    This is that run-back. Two early points give the per-frame step;
+    the step carried back to the impact frame gives the tee.
+
+    WHY IT BEATS THE GOLFER'S FEET, which is the other way to guess.
+    "At the feet of the biggest body in the motion heat" picks the
+    wrong person whenever somebody else is standing on the tee, and a
+    partner leaning on a trolley is a bigger constant-motion blob than
+    a golfer mid-swing. A chain cannot pick the wrong person: it starts
+    at the ball that was actually struck.
+
+    Returns (x, y) in the source's pixels, or None when the chain is
+    too short, not rising, or runs back off the frame.
+    """
+    if not chain or len(chain) < 3 or impact_frame is None:
+        return None
+    _pts = sorted(chain, key=lambda d: int(d.frame))
+    _f0, _f1 = int(_pts[0].frame), int(_pts[min(2, len(_pts) - 1)].frame)
+    if _f1 <= _f0:
+        return None
+    _span = float(_f1 - _f0)
+    _vx = (float(_pts[min(2, len(_pts) - 1)].x) - float(_pts[0].x)) / _span
+    _vy = (float(_pts[min(2, len(_pts) - 1)].y) - float(_pts[0].y)) / _span
+    # A BALL LEAVING A TEE GOES UP. A chain whose early heading falls is
+    # a club head, a divot or a walking ghost, and running it back would
+    # put the tee in the sky.
+    if _vy >= 0:
+        return None
+    _back = float(_f0 - int(impact_frame))
+    # AND THE RUN BACK HAS TO BE SHORT. The step is measured over two
+    # frames of a blurred centroid; carried back half a second it is
+    # extrapolation, not measurement.
+    if not (0.0 <= _back <= TEE_RUNBACK_MAX_FRAMES):
+        return None
+    _x = float(_pts[0].x) - _vx * _back
+    _y = float(_pts[0].y) - _vy * _back
+    if not (0 <= _x < width and 0 <= _y < height):
+        return None
+    return (_x, _y)
+
+
+# HOW FAR BACK A CHAIN MAY BE RUN TO FIND THE TEE, in frames. The step
+# is two frames of a smeared centroid; beyond this it is a guess with
+# an error bar wider than the box it would aim.
+TEE_RUNBACK_MAX_FRAMES = 12
+
+# HOW BIG A BOX THE TEE SPOT EARNS, as a fraction of frame width. The
+# run-back is good to a few pixels of where the ball sat, so the box
+# only has to cover that error plus enough grass for the model to see
+# what it is looking at -- not three body widths.
+TEE_BOX_FRAC_W = 0.035
+TEE_BOX_FRAC_H = 0.055
+
+
+def ball_box_at(x: float, y: float, width: int, height: int):
+    """A search box around a point known to hold the ball at rest."""
+    _bw = max(24.0, TEE_BOX_FRAC_W * float(width))
+    _bh = max(24.0, TEE_BOX_FRAC_H * float(height))
+    _x0 = max(0.0, float(x) - _bw / 2.0)
+    _y0 = max(0.0, float(y) - _bh / 2.0)
+    _x1 = min(float(width), _x0 + _bw)
+    _y1 = min(float(height), _y0 + _bh)
+    if _x1 - _x0 < 8 or _y1 - _y0 < 8:
+        return None
+    # ROUNDED, NOT TRUNCATED. int() on each corner walks the box up and
+    # left by up to a pixel on each axis, and this box exists to be
+    # centred on a ball a few pixels across.
+    _rx, _ry = int(round(_x0)), int(round(_y0))
+    return [_rx, _ry, int(round(_x1)) - _rx, int(round(_y1)) - _ry]
+
+
+def golfer_and_ball_box(constant, det_scale: float, width: int, height: int,
+                        aim=None):
     """(golfer, ball_box) in the video's own pixels, from constant motion.
+
+    `aim` is a native-pixel (x, y) where the swing is KNOWN to have
+    happened -- the tee spot run back from the flight chain, or the hub
+    of the club fan. Given one, the body chosen is the one that swing
+    belongs to instead of the one with the most pixels. On a tee with
+    two people on it those are routinely different: a partner standing
+    still beside a trolley is a bigger continuous-motion blob than a
+    golfer mid-swing, and aiming the AI's first look at the wrong
+    person's feet is a miss on every frame that follows.
 
     WHAT `constant` IS. The motion heat counts, per pixel, how many
     frames of the window it was moving in. A golfer standing over the
@@ -3066,7 +3163,16 @@ def golfer_and_ball_box(constant, det_scale: float, width: int, height: int):
     _det_h, _det_w = constant.shape[:2]
     _s = (1.0 / det_scale) if det_scale else 1.0
     _nc, _lab, _st, _cen = cv2.connectedComponentsWithStats(constant, 8)
-    _best = None
+    # The aim arrives in SOURCE pixels and the components are in
+    # detector pixels. Converting the aim once is one multiplication;
+    # converting every component is one per body and a place for the
+    # two spaces to drift apart.
+    _aim_det = None
+    if aim is not None and det_scale:
+        _aim_det = (float(aim[0]) * det_scale, float(aim[1]) * det_scale)
+    elif aim is not None:
+        _aim_det = (float(aim[0]), float(aim[1]))
+    _cand: list = []
     for _i in range(1, _nc):
         _x, _y, _w2, _h2, _a = (
             int(_st[_i, cv2.CC_STAT_LEFT]), int(_st[_i, cv2.CC_STAT_TOP]),
@@ -3079,10 +3185,27 @@ def golfer_and_ball_box(constant, det_scale: float, width: int, height: int):
             continue
         if _h2 < _w2:
             continue
-        if _best is None or _a > _best[4]:
-            _best = (_x, _y, _w2, _h2, _a)
-    if _best is None:
+        _cand.append((_x, _y, _w2, _h2, _a))
+    if not _cand:
         return None, None
+    if _aim_det is not None:
+        # NEAREST THE SWING, measured horizontally and from the body's
+        # own span rather than its centre: a golfer at address is wide
+        # at the shoulders and the ball is under the feet, so "which
+        # body is this swing's" is a question about columns, not about
+        # a centroid. Ties and far-away bodies fall back to area, which
+        # is what the rule was before there was anything to aim at.
+        def _dx(c):
+            _l, _r = c[0], c[0] + c[2]
+            return 0.0 if _l <= _aim_det[0] <= _r else min(
+                abs(_aim_det[0] - _l), abs(_aim_det[0] - _r))
+        _near = min(_cand, key=lambda c: (_dx(c), -c[4]))
+        # A body the swing is nowhere near is not this swing's body.
+        _best = _near if _dx(_near) <= AIM_MAX_DX_FRAC * _det_w else None
+        if _best is None:
+            _best = max(_cand, key=lambda c: c[4])
+    else:
+        _best = max(_cand, key=lambda c: c[4])
     _x, _y, _w2, _h2, _a = _best
     golfer = [int(_x * _s), int(_y * _s), int(_w2 * _s), int(_h2 * _s)]
     _cx = (_x + _w2 / 2.0) * _s
@@ -3130,6 +3253,7 @@ def swing_heat_check(
         "available": False, "verdict": "unknown", "n_timed": 0,
         "chain_len": 0, "chain_f0": None, "chain_f1": None,
         "chain_flight": False, "image": None, "image_clean": None,
+        "chain_points": [], "tee_spot": None,
         "reason": None,
     }
     if not HAS_CV:
@@ -3202,6 +3326,14 @@ def swing_heat_check(
         if chain:
             out["chain_f0"] = int(chain[0].frame)
             out["chain_f1"] = int(chain[-1].frame)
+        # AND WHERE IT WENT, not only how long it was. The chain is
+        # drawn in red on the composite and then reported as a COUNT,
+        # so the one caller that wants to aim something at the ball had
+        # to guess from a body's feet instead. Source pixels.
+        out["chain_points"] = [
+            {"frame": int(d.frame), "x": int(d.x), "y": int(d.y)}
+            for d in chain
+        ]
 
         # CLUB-FAN detection (operator insight: the fan of brief-motion
         # streaks radiating around the golfer — the shaft painting a line
@@ -3275,17 +3407,37 @@ def swing_heat_check(
         # THIS golfer. It is also far smaller, and the model is being
         # asked to find a ball a few pixels across.
         try:
-            _g, _bb = golfer_and_ball_box(constant, det_scale, width, height)
+            # ── THE TEE SPOT, WHEN THE FLIGHT ITSELF SAYS WHERE ──────
+            #
+            # The chain drawn in red on this very composite is the ball
+            # climbing away. Run it back to the impact frame and it
+            # lands on the spot the ball was teed on, which is both a
+            # better box than a body's feet and the thing that says
+            # WHICH body on the tee was swinging. See
+            # `tee_spot_from_chain`.
+            _tee = tee_spot_from_chain(chain, impact_f, width, height)
+            out["tee_spot"] = ([int(_tee[0]), int(_tee[1])]
+                               if _tee else None)
+            _g, _bb = golfer_and_ball_box(constant, det_scale, width,
+                                          height, aim=_tee)
             out["golfer"] = _g
             out["ball_box"] = _bb
             out["ball_box_from"] = (
                 "the feet of the body in the motion heat" if _bb else None)
+            if _tee is not None:
+                _tb = ball_box_at(_tee[0], _tee[1], width, height)
+                if _tb:
+                    out["ball_box"] = _tb
+                    out["ball_box_from"] = (
+                        "the flight chain run back to the impact frame — "
+                        "the spot the ball was teed on")
         except Exception as exc:  # noqa: BLE001
             # DIAGNOSTIC, NOT LOAD-BEARING. Every caller has a fallback
             # for a box this could not find, and a swing check that
             # cannot verify a swing because it failed to guess where
             # the ball was would be a worse trade than no box at all.
             out["golfer"] = out["ball_box"] = out["ball_box_from"] = None
+            out["tee_spot"] = None
             log.debug("swing heat: could not place the ball box: %s", exc)
 
         # Verdict: the AI judge on the heat composite is the decider
@@ -3348,11 +3500,43 @@ def swing_heat_check(
                     cv2.polylines(img, [_poly], False, (0, 0, 255), 4, cv2.LINE_AA)
                     for d in chain:
                         cv2.circle(img, (int(d.x), int(d.y)), 5, (255, 255, 255), -1, cv2.LINE_AA)
+                # ── WHAT THIS PASS IS ABOUT TO AIM AT ───────────────
+                #
+                # The box and the spot below are this check's OTHER
+                # product: the AI launch plot points its first looks at
+                # them, and when they land on the wrong person every
+                # frame after is a miss. They were decided here and
+                # drawn nowhere, so "did it aim at the golfer who
+                # swung" could only be answered by drawing on the
+                # picture by hand -- which is how it got asked.
+                if out.get("ball_box"):
+                    _bx, _by, _bw2, _bh2 = (int(v) for v in out["ball_box"])
+                    cv2.rectangle(img, (_bx, _by), (_bx + _bw2, _by + _bh2),
+                                  (0, 230, 255), 2, cv2.LINE_AA)
+                    cv2.putText(img, "first look",
+                                (_bx, max(14, _by - 6)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3,
+                                cv2.LINE_AA)
+                    cv2.putText(img, "first look",
+                                (_bx, max(14, _by - 6)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 230, 255),
+                                1, cv2.LINE_AA)
+                if out.get("tee_spot"):
+                    _tx, _ty = (int(v) for v in out["tee_spot"])
+                    cv2.drawMarker(img, (_tx, _ty), (0, 230, 255),
+                                   cv2.MARKER_CROSS, 18, 2, cv2.LINE_AA)
+                if out.get("golfer"):
+                    _gx, _gy, _gw2, _gh2 = (int(v) for v in out["golfer"])
+                    cv2.rectangle(img, (_gx, _gy), (_gx + _gw2, _gy + _gh2),
+                                  (120, 255, 120), 1, cv2.LINE_AA)
                 _lbl = (
                     f"swing check @ {float(peak_time_sec):.1f}s - "
                     f"{out['verdict']} (chain {len(chain)}, "
                     f"{len(pts)} dots, {n_rays} rays @ "
                     f"{out.get('n_angles', 0)} angles)"
+                    + ("  tee spot from the chain"
+                       if out.get("tee_spot") else
+                       "  no chain to run back - box is the body's feet")
                 )
                 cv2.putText(img, _lbl, (12, 28), cv2.FONT_HERSHEY_SIMPLEX,
                             0.62, (0, 0, 0), 3, cv2.LINE_AA)

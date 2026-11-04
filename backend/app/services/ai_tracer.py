@@ -7540,6 +7540,18 @@ _LAUNCH_REST_SQUARE_PROMPT = (
 )
 
 
+# HOW WIDE THE FIRST LOOKS STAY, in ball radii, when a box aimed them.
+# Wide enough that a ball drifting across the line of play is still in
+# the columns; narrow enough that the ball is a visible fraction of the
+# picture, which is the whole reason for aiming at all.
+FIRST_LOOK_WIDE_R = 14.0
+
+# AND HOW FAR UP THEY REACH PER LOOK, in ball radii. Nothing here knows
+# the launch speed, so this is the generous end of how far a struck
+# ball climbs in one step.
+FIRST_LOOK_CLIMB_R = 18.0
+
+
 def plot_launch_frames_ai(
     input_path: Path,
     rest_xy: tuple[float, float],
@@ -7651,12 +7663,67 @@ def plot_launch_frames_ai(
                 by0 = max(0, int(first_rect[1]))
                 bx1 = min(w, bx0 + int(first_rect[2]))
                 by1 = min(h, by0 + int(first_rect[3]))
+            elif vel is None and first_rect is not None and not pts:
+                # STILL LOOKING FOR THE FIRST ONE, AND WE KNOW WHERE TO
+                # LOOK. The operator's rule, in their words: look in
+                # the box "for the first couple until we find a ball
+                # and then follow it from there".
+                #
+                # What this replaces reached for the whole frame
+                # instead. With nothing found, the branch below widens
+                # a rest-anchored region by 4r across and 12r up on
+                # every miss, so by the third look the crop is the full
+                # height of the picture and a ball is three pixels in
+                # it — measured on #1280, where four looks in a row
+                # came back "model: not found" and the fifth picked a
+                # cloud edge. A box that was right the first time does
+                # not become wrong because the model missed; what
+                # changes is only that the ball is further up the same
+                # path.
+                #
+                # So: keep the box's columns, and open it UPWARD by how
+                # far the ball could have climbed by this look. Nothing
+                # here knows the launch speed, so the reach is a
+                # multiple of the look number -- generous, and still an
+                # order of magnitude tighter than the whole frame.
+                _bx0, _by0, _bw0, _bh0 = (int(first_rect[0]),
+                                          int(first_rect[1]),
+                                          int(first_rect[2]),
+                                          int(first_rect[3]))
+                # THE BALL GOES UP, SO THE REACH GOES UP. Widening at
+                # the same rate was measured against the fallback this
+                # replaces and LOST by the third look -- 896x720 where
+                # the thing it was fixing searched 832x754. A ball
+                # leaving a tee barely moves across the picture; the
+                # width only has to cover the model's own error, so it
+                # creeps where the height climbs.
+                _wx = (max(_bw0, int(FIRST_LOOK_WIDE_R * r))
+                       * (1.0 + 0.5 * misses))
+                # CENTRED ON THE REST ONCE THE REST IS KNOWN. The zoom
+                # square may have found the ball a little off the box's
+                # middle, and the ball leaves from where it SAT, not
+                # from the centre of the rectangle somebody aimed at
+                # it. `rx` is the caller's seed until that find
+                # replaces it, so this is the box's centre either way
+                # and the measured spot as soon as there is one.
+                _cx = rx if out.get("rest") is not None else _bx0 + _bw0 / 2.0
+                bx0 = max(0, int(_cx - _wx / 2.0))
+                bx1 = min(w, int(_cx + _wx / 2.0))
+                # The ball only ever goes UP from the tee, so the box
+                # grows up and keeps its floor: the ground under the
+                # ball stays in the picture, which is the context that
+                # tells the model what it is looking at.
+                _floor = (ry + _bh0 / 2.0 if out.get("rest") is not None
+                          else float(_by0 + _bh0))
+                by1 = min(h, int(_floor))
+                by0 = max(0, int(by1 - _bh0 - FIRST_LOOK_CLIMB_R * r
+                                 * (i + 0.5 * misses)))
             elif vel is None:
-                # No lock yet (first frame, or every frame so far
-                # missed): the ball is SOMEWHERE up the launch path and
-                # only gets HIGHER each frame — keep the region
-                # anchored at the rest but reach taller and wider on
-                # every miss instead of re-searching the same ground.
+                # No lock yet and nowhere told us where to look: the
+                # ball is SOMEWHERE up the launch path and only gets
+                # HIGHER each frame — keep the region anchored at the
+                # rest but reach taller and wider on every miss instead
+                # of re-searching the same ground.
                 _wx = (14 + 4 * misses) * r
                 _up = (30 + 12 * misses) * r
                 bx0 = max(0, int(rx - _wx))
@@ -7673,7 +7740,27 @@ def plot_launch_frames_ai(
                 bx1 = min(w, int(pcx + half))
                 by0 = max(0, int(pcy - half))
                 by1 = min(h, int(pcy + half))
+            # A BOX TOO SMALL IS PADDED, NOT DROPPED. This used to skip
+            # the look entirely, and the look it skipped most was the
+            # first one -- the zoom square, the only frame that can
+            # establish where the ball is. A tee-box overlap or a
+            # distant golfer routinely gives a box under 3r tall, and
+            # the montage then showed four flight frames with no
+            # address frame and no explanation, while every frame after
+            # it fell back to searching the whole picture.
+            #
+            # Growing it about its own centre is strictly better than
+            # not asking: the box was aimed by something that knew
+            # where the ball was, and padding keeps that aim.
+            if bx1 - bx0 < 3 * r:
+                _c = (bx0 + bx1) / 2.0
+                bx0, bx1 = max(0, int(_c - 1.6 * r)), min(w, int(_c + 1.6 * r))
+            if by1 - by0 < 3 * r:
+                _c = (by0 + by1) / 2.0
+                by0, by1 = max(0, int(_c - 1.6 * r)), min(h, int(_c + 1.6 * r))
             if bx1 - bx0 < 3 * r or by1 - by0 < 3 * r:
+                # Only reachable on a frame smaller than the minimum
+                # crop, which is a different problem entirely.
                 out["frame_log"].append(
                     {"frame": f, "status": "crop clipped off-frame"},
                 )

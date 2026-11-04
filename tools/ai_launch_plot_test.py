@@ -242,7 +242,15 @@ _hc = _hc[:_hc.index("\nSWING_HEAT") if "\nSWING_HEAT" in _hc else len(_hc)]
 # frame, the grass does not move, and a cart crossing the back of the
 # shot is somewhere else each frame.
 check("the swing check asks for the boxes",
-      "golfer_and_ball_box(constant, det_scale, width, height)" in _hc, True)
+      "golfer_and_ball_box(constant, det_scale, width," in _hc, True)
+# AND AIMS THE PICK. Largest-blob picked the partner leaning on a
+# trolley over the golfer mid-swing; the spot the flight chain runs
+# back to cannot pick the wrong person, because it starts at the ball
+# that was actually struck. See tools/swing_aim_test.py.
+check("...aimed at the spot the swing came from",
+      "aim=_tee" in _hc, True)
+check("...which is the flight chain run back to the impact frame",
+      "tee_spot_from_chain(chain, impact_f" in _hc, True)
 check("...from the constant motion, which is the body",
       "const_thr = max(5, int(0.15 * counted))" in _hc, True)
 check("a failure there is a missing box, not a failed check",

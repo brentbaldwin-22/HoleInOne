@@ -9553,6 +9553,14 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                     ? ` · golfer at ${rep.ai_launch.swing_check.golfer
                       .slice(0, 2).join(",")}`
                     : " · the golfer could not be placed"}
+                  {rep.ai_launch.swing_check.chain_len
+                    ? ` · a ${rep.ai_launch.swing_check.chain_len}-point `
+                      + "flight chain"
+                    : " · no flight chain"}
+                  {rep.ai_launch.swing_check.tee_spot
+                    ? ` · teed at ${rep.ai_launch.swing_check.tee_spot
+                      .join(",")}, run back from that chain`
+                    : ""}
                 </div>
                 {rep.ai_launch.rect_from && (
                   <div className="tiny muted">
@@ -9566,9 +9574,15 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                          alt="motion heat around the strike"
                          style={{ width: "100%", borderRadius: 6 }} />
                     <figcaption className="tiny muted">
-                      The motion heat the swing judge is shown. The body
-                      standing in it is the golfer; the box handed to the
-                      model is at its feet.
+                      The motion heat the swing judge is shown, with what
+                      it aimed at drawn on: green is the body it picked,
+                      cyan is the box handed to the model and the cross is
+                      the tee spot. When the red flight chain is long
+                      enough, the box comes from running that chain back
+                      to the impact frame — the spot the ball was teed on
+                      — rather than from a body&apos;s feet, which picks
+                      the wrong person whenever somebody else is standing
+                      on the tee.
                     </figcaption>
                   </figure>
                 )}

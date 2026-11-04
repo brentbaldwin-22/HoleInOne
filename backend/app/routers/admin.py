@@ -25006,7 +25006,15 @@ def _ascent_swing_heat(row, src_path, fps, rig) -> dict:
     out.update({k: _chk.get(k) for k in
                 ("available", "verdict", "fan", "n_rays", "n_angles",
                  "n_timed", "chain_len", "golfer", "ball_box",
-                 "ball_box_from", "reason")})
+                 "ball_box_from", "reason",
+                 # WHERE THE BALL WAS TEED, when the chain drawn on
+                 # this composite was long enough to be run back to
+                 # it, and the chain's own points. Both were computed
+                 # and discarded: the chain was reported as a length
+                 # and the spot was never worked out at all, so the
+                 # one thing that wants to aim at a ball at rest was
+                 # left guessing from a body's feet.
+                 "tee_spot", "chain_points")})
     out["ran"] = bool(_chk.get("available"))
     _img = _chk.get("image") or _chk.get("image_clean")
     if _img:
@@ -25102,13 +25110,21 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
             _rect = tuple(int(v) for v in _heat["ball_box"])
             out["rect_from"] = (_heat.get("ball_box_from")
                                 or "the swing check's motion heat")
+            # A BOX RUN BACK FROM THE FLIGHT IS NOT CLIPPED BY THE TEE
+            # BOX. The hole's tee box is drawn once and the markers
+            # move every morning; this one was measured off the ball
+            # that was actually struck, in this clip, seconds ago. It
+            # is also small -- a few dozen pixels -- so clipping it
+            # against a stale rectangle can only make it wrong or make
+            # it nothing.
+            _measured = bool(_heat.get("tee_spot"))
             # AND KEPT INSIDE THE HITTING AREA when the hole has one.
             # The heat says where this golfer is; the tee box says
             # where a ball on this hole can be. Disagreeing with both
             # at once is not possible, so take the overlap -- unless
             # there is none, in which case one of them is wrong and
             # the measured one is the one measured today.
-            if _box:
+            if _box and not _measured:
                 _clip = _rect_overlap_px(
                     _rect,
                     (int(float(_box["x"]) * _w), int(float(_box["y"]) * _h),
