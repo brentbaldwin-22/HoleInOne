@@ -77,8 +77,42 @@ def main():
         except ValueError as e:
             check(f"{bad} refused", True, str(e))
 
+    print("\nzoomed on the tracer's foot, which is where the golfer stands")
+    # #1266's reading: tracer 0.704. The tile must be cut around that.
+    zx, zy, zw, zh = S.crop_box(W, H, 0.704, 0.72)
+    check("the window is a real zoom, not the whole height",
+          zh < H and zh == int(round(H / S.ZOOM)), f"h={zh} of {H}")
+    check("still 9:16", abs(zw / zh - 9 / 16) < 0.01, f"{zw}x{zh}")
+    check("centred on 0.704 horizontally",
+          abs((zx + zw / 2) / W - 0.704) < 0.01, f"centre={(zx + zw / 2) / W:.3f}")
+    feet = 0.72 * H
+    check("the feet sit near the bottom of the cut, not the middle",
+          abs((feet - zy) / zh - (1.0 - S.FEET_FROM_BOTTOM)) < 0.02,
+          f"feet at {(feet - zy) / zh:.2f} down the crop")
+    check("the golfer's head has room above", zy < feet - zh * 0.5)
+
+    print("\na zoomed window still cannot leave the frame")
+    for fx in (0.0, 0.15, 0.5, 0.85, 1.0):
+        for fy in (0.0, 0.45, 0.72, 1.0):
+            x, y, w, h = S.crop_box(W, H, fx, fy)
+            ok = x >= 0 and y >= 0 and x + w <= W and y + h <= H
+            if not ok:
+                check(f"focus ({fx},{fy}) stays inside", False, f"{x},{y},{w},{h}")
+    check("every focus pair stays inside the frame", True)
+
+    print("\nno tracer means no vertical anchor, so no guessing")
+    check("without a y it frames like the render: full height",
+          S.crop_box(W, H, 0.704, None)[3] == H)
+    check("and that is what a failed scan gets",
+          S.crop_box(W, H, None, None) == S.crop_box(W, H, 0.5, None))
+
+    print("\na frame too small for the zoomed window falls back")
+    x, y, w, h = S.crop_box(200, 300, 0.5, 0.7)
+    check("rather than cutting bigger than the picture",
+          x >= 0 and y >= 0 and x + w <= 200 and y + h <= 300, f"{x},{y},{w},{h}")
+
     print("\nthe cache name is per source file")
-    check("named off the stem", S.still_name("clip123_composite") == "clip123_composite_shot_still.jpg")
+    check("named off the stem", S.still_name("clip123_composite") == "clip123_composite_shot_still2.jpg")
 
     print()
     if fails:

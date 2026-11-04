@@ -121,8 +121,8 @@ export default function AdminIdentify() {
             setStills((prev) => ({ ...prev, [id]: r.still_url }));
           }
         } catch {
-          // The tile keeps its video. A missing still is a worse
-          // picture, not a broken page.
+          // The tile stays empty. A missing frame is a worse grid, not
+          // a broken page.
         }
       }
     }
@@ -312,19 +312,15 @@ export default function AdminIdentify() {
                     style={taken ? { opacity: 0.55 } : undefined}
                     title={taken ? `Currently ${c.participant_name}'s` : clipLabel(c)}
                   >
+                    {/* NO VIDEO ON THIS GRID AT ALL. A <video> here
+                        decodes, seeks and repaints while the operator is
+                        trying to compare eleven outfits -- the tiles
+                        flickered. A still cannot flicker. Until one
+                        arrives the tile is simply empty. */}
                     {stills[c.id] ? (
                       <img src={stills[c.id]} alt={`Shot at ${clipLabel(c)}`} />
                     ) : (
-                      // Until the cropped frame arrives. Not autoplaying:
-                      // eleven decoders running to show a second of sky
-                      // is not what the operator is here to look at.
-                      <video
-                        src={c.preview_url}
-                        poster={c.thumbnail_url || undefined}
-                        muted
-                        playsInline
-                        preload="metadata"
-                      />
+                      <span className="pick-empty">…</span>
                     )}
                     <span className="pick-time">
                       {fmtDateTime(c.captured_at, undefined, { timeStyle: "short" })}

@@ -58,31 +58,65 @@ def clamp_focus(x) -> float:
     return max(FOCUS_MIN, min(FOCUS_MAX, v))
 
 
-def crop_box(frame_w: int, frame_h: int, focus_x: float) -> tuple:
-    """The 9:16 window to cut, as (x, y, w, h) in pixels.
+# How much tighter than the full frame to cut. A 9:16 slice of 1080p is
+# still 1080 tall, so a golfer a hundred pixels high stays a tenth of the
+# tile -- a zoom in name only. This takes a window a fraction of the
+# frame's height and blows it up, which is what makes a tile readable.
+ZOOM = 2.2
 
-    Full frame height, a 9:16 slice of the width, centred on the golfer
-    and then slid back inside the frame if that would hang over an edge.
-    Sliding rather than squeezing: a crop that keeps its shape and misses
-    slightly still shows a person, where one that changes aspect to stay
-    centred shows a stretched one.
+# Where the golfer's feet sit inside the cut. The tracer's foot is the
+# ball, at the golfer's feet, so the window hangs mostly ABOVE it: centre
+# on the feet and the crop is half grass with the head chopped off.
+FEET_FROM_BOTTOM = 0.18
+
+
+def crop_box(frame_w: int, frame_h: int, focus_x: float, focus_y=None) -> tuple:
+    """The window to cut, as (x, y, w, h) in pixels.
+
+    9:16, like the vertical deliverable. With a `focus_y` -- the height of
+    the tracer's foot, which is the ball, which is where the golfer is
+    standing -- it cuts a ZOOMed window around that point and hangs it
+    above the feet. Without one there is no vertical anchor worth
+    trusting, so it falls back to the render's own framing: full height,
+    a 9:16 slice of the width. Guessing a height would put the crop on
+    the sky as often as on the golfer.
+
+    Either way the window keeps its shape and slides back inside the
+    frame rather than being squeezed: a crop that misses slightly still
+    shows a person, where one that changes aspect shows a stretched one.
     """
     w = int(frame_w)
     h = int(frame_h)
     if w <= 0 or h <= 0:
         raise ValueError("frame has no size")
-    cw = int(round(h * ASPECT_W / ASPECT_H))
-    if cw >= w:
-        # Already as tall-and-narrow as we want (an existing vertical, or
-        # a very square source): take the whole thing rather than
-        # inventing a crop.
-        return (0, 0, w, h)
-    cx = clamp_focus(focus_x) * w
-    x = int(round(cx - cw / 2))
+
+    fx = clamp_focus(focus_x)
+
+    if focus_y is None:
+        ch = h
+        cw = int(round(ch * ASPECT_W / ASPECT_H))
+        if cw >= w:
+            return (0, 0, w, h)
+        x = int(round(fx * w - cw / 2))
+        return (max(0, min(w - cw, x)), 0, cw, ch)
+
+    fy = clamp_focus(focus_y)
+    ch = max(1, int(round(h / ZOOM)))
+    cw = max(1, int(round(ch * ASPECT_W / ASPECT_H)))
+    # A frame too small to take the zoomed window: fall back rather than
+    # cut something larger than the picture.
+    if cw >= w or ch >= h:
+        return crop_box(w, h, focus_x, None)
+
+    x = int(round(fx * w - cw / 2))
+    # The feet sit FEET_FROM_BOTTOM up from the bottom edge, so the body
+    # and the swing are in the frame and the ground is not.
+    y = int(round(fy * h - ch * (1.0 - FEET_FROM_BOTTOM)))
     x = max(0, min(w - cw, x))
-    return (x, 0, cw, h)
+    y = max(0, min(h - ch, y))
+    return (x, y, cw, ch)
 
 
 def still_name(stem: str) -> str:
     """Cache filename. One per source file, beside the clip it came from."""
-    return f"{stem}_shot_still.jpg"
+    return f"{stem}_shot_still2.jpg"
