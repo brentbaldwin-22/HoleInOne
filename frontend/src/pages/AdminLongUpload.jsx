@@ -914,6 +914,19 @@ export default function AdminLongUpload() {
                             <> · {testCutResults[u.id].tee_fps} fps</>
                           )}
                           {testCutResults[u.id].dual_camera && <> · dual-cam</>}
+                          {/* HOW MANY SURVIVED THE QUIET PERIOD, and how
+                              many lost it to a stronger neighbour. Every
+                              candidate is judged now, so "7 windows" and
+                              "2 swings" are different numbers and the
+                              gap between them is worth naming. */}
+                          {testCutResults[u.id].n_swings != null && (
+                            <> · {testCutResults[u.id].n_swings} swing
+                              {testCutResults[u.id].n_swings === 1 ? "" : "s"}</>
+                          )}
+                          {testCutResults[u.id].n_superseded > 0 && (
+                            <> · {testCutResults[u.id].n_superseded} superseded
+                              inside the quiet period</>
+                          )}
                         </span>
                       </div>
                       {testCutResults[u.id].debug && (
@@ -1373,6 +1386,17 @@ export default function AdminLongUpload() {
                                           c.verify_confidence
                                             ? ` (${c.verify_confidence})` : ""}`}
                                     </div>
+                                    {/* THE JUDGE SAID SWING AND WE DID NOT
+                                        USE IT. That is a different thing
+                                        from the judge saying no, and it
+                                        used to be invisible: the loser was
+                                        never judged at all, so the row
+                                        read as a bare "?". */}
+                                    {c.is_swing === true && c.kept === false && (
+                                      <div style={{ color: "#b45309" }}>
+                                        superseded
+                                      </div>
+                                    )}
                                     {c.heat_image_url && (
                                       <a href={c.heat_image_url}
                                          target="_blank" rel="noreferrer"
@@ -1393,6 +1417,14 @@ export default function AdminLongUpload() {
                                         whiteSpace: "normal", lineHeight: 1.3,
                                       }}>
                                         {c.verify_reason}
+                                      </div>
+                                    )}
+                                    {c.supersede_reason && (
+                                      <div className="muted" style={{
+                                        maxWidth: 200, marginTop: 2,
+                                        whiteSpace: "normal", lineHeight: 1.3,
+                                      }}>
+                                        {c.supersede_reason}
                                       </div>
                                     )}
                                   </td>

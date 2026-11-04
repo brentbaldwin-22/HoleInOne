@@ -4172,6 +4172,106 @@ def _rig_impact_sec(db, row, upload_id=None) -> dict | None:
         return None
 
 
+# HOW SURE THE JUDGE WAS, AS A NUMBER. The judge answers in words and
+# a contest needs an order; this is that order and nothing more.
+VERIFY_CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
+
+
+def _swing_strength(cut: dict) -> tuple:
+    """How good a swing this candidate looks, for ranking against its
+    neighbours.
+
+    THE JUDGE OUTRANKS THE MICROPHONE, deliberately. The ratio is how
+    LOUD the noise was, and a cart door, a dropped bag and a ball
+    landing are all loud; the judge has looked at four seconds of
+    motion heat and seen whether a body swung a club. A loud bang that
+    does not look like a swing should lose to a quieter one that does.
+
+    The ratio breaks ties inside a confidence band, where it is the
+    only thing left that distinguishes two candidates.
+    """
+    _conf = VERIFY_CONFIDENCE_RANK.get(
+        str(cut.get("verify_confidence") or "").lower(), 0)
+    try:
+        _ratio = float(cut.get("ratio") or 0.0)
+    except (TypeError, ValueError):
+        _ratio = 0.0
+    return (_conf, _ratio)
+
+
+def resolve_swing_refractory(cuts: list, refractory_sec: float) -> int:
+    """Within one quiet period, keep the BEST swing rather than the first.
+
+    WHAT THIS REPLACES, AND WHY IT WAS WRONG. The refractory used to be
+    applied while walking the candidates in time order: the first one
+    the judge confirmed claimed the next N seconds, and everything
+    inside that window was never tested at all -- no heat map, no
+    judge, a bare "12s quiet after the confirmed swing at 20.57s" in
+    the table.
+
+    That makes the EARLIER candidate win by being earlier, which is not
+    a property of a golf swing. Seen on a real clip: a confirmed swing
+    at 36.54s with an audio ratio of x18.8 silenced the candidate at
+    43.07s whose ratio was x40.8 -- the loudest strike on the page,
+    never looked at, because something half as loud happened first.
+
+    So every candidate is judged now, and the refractory decides only
+    which of the confirmed ones is THE swing of its window. Best first:
+    the strongest candidate takes its quiet period, the strongest of
+    what is left outside every claimed period takes the next, and so on.
+
+    Greedy best-first rather than walking in time order, because time
+    order also CHAINS: with a 12s period, 36.5s, 43.1s and 54.5s would
+    fall into one group although the ends are eighteen seconds apart.
+    Each winner claims its own window and nothing else does.
+
+    The judge's own answer is never overwritten -- `is_swing` stays
+    what it said. A loser is marked `kept: False` and told which
+    candidate beat it, because "the judge called this a swing and we
+    did not use it" and "the judge said it was not a swing" need to
+    look different on the page.
+
+    Returns how many were superseded.
+    """
+    if not cuts:
+        return 0
+    _conf = [c for c in cuts
+             if c.get("is_swing") is True
+             and c.get("peak_time_sec") is not None]
+    for c in _conf:
+        c["kept"] = True
+    if refractory_sec <= 0 or len(_conf) < 2:
+        return 0
+    _n = 0
+    _winners: list = []
+    for c in sorted(_conf, key=_swing_strength, reverse=True):
+        _clash = next(
+            (w for w in _winners
+             if abs(float(c["peak_time_sec"])
+                    - float(w["peak_time_sec"])) < float(refractory_sec)),
+            None)
+        if _clash is None:
+            _winners.append(c)
+            continue
+        c["kept"] = False
+        c["superseded_by"] = _clash.get("index")
+        c["supersede_reason"] = (
+            "the judge called this a swing too, but the swing at "
+            "%.2fs is %.1fs away — inside the %.0fs quiet period — and "
+            "scored higher (%s%s vs %s%s), so that one is the swing for "
+            "this window"
+            % (float(_clash["peak_time_sec"]),
+               abs(float(c["peak_time_sec"]) - float(_clash["peak_time_sec"])),
+               float(refractory_sec),
+               _clash.get("verify_confidence") or "no confidence",
+               (" at x%.1f" % float(_clash["ratio"]))
+               if _clash.get("ratio") else "",
+               c.get("verify_confidence") or "no confidence",
+               (" at x%.1f" % float(c["ratio"])) if c.get("ratio") else ""))
+        _n += 1
+    return _n
+
+
 def rig_impact_explained(rig: dict | None, fps: float,
                          cut_start_sec: float | None = None) -> dict | None:
     """The impact frame's arithmetic, written out in frames.
@@ -14511,7 +14611,6 @@ def test_cut_long_upload(
     cuts: list[dict] = []
     t_loop_start = time.monotonic()
     n_windows_total = len(windows)
-    _quiet_until = 0.0
     for idx, w in enumerate(windows):
         start_sec = float(w["start_sec"])
         end_sec = float(w["end_sec"])
@@ -14533,15 +14632,13 @@ def test_cut_long_upload(
             "attack_measured": w.get("attack_measured"),
             "max_attack_ms": w.get("max_attack_ms"),
         }
-        if (verify_swings and peak_time_sec is not None
-                and verify_refractory_sec > 0
-                and peak_time_sec < _quiet_until):
-            cut_entry["is_swing"] = None
-            cut_entry["verify_reason"] = (
-                "%.0fs quiet after the confirmed swing at %.2fs"
-                % (verify_refractory_sec,
-                   _quiet_until - verify_refractory_sec))
-        elif verify_swings and peak_time_sec is not None:
+        # EVERY CANDIDATE IS JUDGED. The quiet period used to skip the
+        # heat check entirely for anything following a confirmed
+        # swing, which let the earlier candidate win by being earlier;
+        # it now decides only which of the CONFIRMED ones is the swing
+        # of its window, after they have all been looked at. See
+        # `resolve_swing_refractory`.
+        if verify_swings and peak_time_sec is not None:
             # Never fatal: this is a second opinion, and a detector run
             # that dies because the opinion could not be had is worse
             # than one that reports without it.
@@ -14593,8 +14690,6 @@ def test_cut_long_upload(
                 log.warning("test-cut: verify failed on peak %.2f: %s",
                             peak_time_sec, exc)
                 cut_entry["verify_reason"] = f"verify failed: {exc}"
-            if cut_entry.get("is_swing") is True and verify_refractory_sec > 0:
-                _quiet_until = peak_time_sec + float(verify_refractory_sec)
 
         if not cut_clips:
             # Detection-only mode: no ffmpeg, no files. Operator just
@@ -14656,6 +14751,16 @@ def test_cut_long_upload(
         )
         cuts.append(cut_entry)
 
+    # NOW the quiet period, as a contest between candidates that have
+    # all been looked at rather than a gate on looking.
+    _n_superseded = (
+        resolve_swing_refractory(cuts, float(verify_refractory_sec))
+        if verify_swings else 0)
+    if _n_superseded:
+        log.info("long-upload test-cut: upload=%s %d confirmed swing(s) "
+                 "superseded by a stronger one inside the %.0fs quiet "
+                 "period", upload_id, _n_superseded,
+                 float(verify_refractory_sec))
     log.info(
         "long-upload test-cut: upload=%s detector=%s windows=%d cut_clips=%s cuts_ok=%d total=%.1fs",
         upload_id,
@@ -14672,6 +14777,12 @@ def test_cut_long_upload(
         "n_windows": len(windows),
         "dual_camera": green_path is not None,
         "cuts_skipped": not cut_clips,
+        "n_superseded": _n_superseded,
+        # None, NOT ZERO, when nothing was verified. "0 swings" on a
+        # run that never asked the judge reads as "the judge found
+        # none", which is the opposite of what happened.
+        "n_swings": (sum(1 for c in cuts if c.get("kept"))
+                     if verify_swings else None),
         "debug": debug or None,
         "cuts": cuts,
     }
