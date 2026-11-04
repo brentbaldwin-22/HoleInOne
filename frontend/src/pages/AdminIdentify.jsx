@@ -33,6 +33,18 @@ function dayWindow(localDate) {
   return { start: start.toISOString(), end: end.toISOString() };
 }
 
+/** How a tile's crop was aimed, for the tooltip. */
+function aimNote(r) {
+  if (!r) return "";
+  if (r.focus_src === "scan") {
+    return `tracer ${r.focus_x}${r.zoomed ? " (zoomed)" : ""}`;
+  }
+  if (r.focus_src === "vertical") {
+    return `tracer ${r.focus_x} from the 9:16 — this clip's own scan found none`;
+  }
+  return `NO TRACER (${r.tracer_why || "?"}) — centred, so this tile is a guess`;
+}
+
 function clipLabel(c) {
   const where = c.camera_type === "tee" ? "tee" : "green";
   return `Hole ${c.hole_number} · ${where}`;
@@ -121,7 +133,7 @@ export default function AdminIdentify() {
           // A still for a day the operator has already navigated away
           // from must not be painted onto the grid now showing.
           if (r.still_url && run.current === mine) {
-            setStills((prev) => ({ ...prev, [id]: r.still_url }));
+            setStills((prev) => ({ ...prev, [id]: r }));
           }
         } catch {
           // The tile stays empty. A missing frame is a worse grid, not
@@ -339,7 +351,10 @@ export default function AdminIdentify() {
                     onClick={() => pair(c)}
                     disabled={busy === c.id}
                     style={taken ? { opacity: 0.55 } : undefined}
-                    title={taken ? `Currently ${c.participant_name}'s` : clipLabel(c)}
+                    title={[
+                      taken ? `Currently ${c.participant_name}'s` : clipLabel(c),
+                      stills[c.id] && aimNote(stills[c.id]),
+                    ].filter(Boolean).join("  ·  ")}
                   >
                     {/* NO VIDEO ON THIS GRID AT ALL. A <video> here
                         decodes, seeks and repaints while the operator is
@@ -347,7 +362,7 @@ export default function AdminIdentify() {
                         flickered. A still cannot flicker. Until one
                         arrives the tile is simply empty. */}
                     {stills[c.id] ? (
-                      <img src={stills[c.id]} alt={`Shot at ${clipLabel(c)}`} />
+                      <img src={stills[c.id].still_url} alt={`Shot at ${clipLabel(c)}`} />
                     ) : (
                       <span className="pick-empty">…</span>
                     )}

@@ -128,6 +128,13 @@ def crop_box(frame_w: int, frame_h: int, focus_x: float, focus_y=None) -> tuple:
 ADDRESS_LEAD_SEC = 1.2
 
 
+# Never scan less of a clip than this looking for the tracer, however
+# early a scene change was detected. A cut found a second in is more
+# likely a camera wobble than a join, and a scan capped below this misses
+# tracers that start three or four seconds in -- which is most of them.
+MIN_SCAN_SEC = 3.0
+
+
 def tee_limit_frames(fps: float, total_frames: int, cut_sec=None) -> int:
     """How many frames of a composite belong to the TEE camera.
 
@@ -204,4 +211,4 @@ def frame_index(fps: float, tracer_t, total_frames: int, cut_sec=None) -> int:
 
 def still_name(stem: str) -> str:
     """Cache filename. One per source file, beside the clip it came from."""
-    return f"{stem}_shot_still4.jpg"
+    return f"{stem}_shot_still5.jpg"

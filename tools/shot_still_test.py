@@ -163,7 +163,7 @@ def main():
               S.tee_limit_frames(FPS, N, bad) == N)
 
     print("\nthe cache name is per source file")
-    check("named off the stem", S.still_name("clip123_composite") == "clip123_composite_shot_still4.jpg")
+    check("named off the stem", S.still_name("clip123_composite") == "clip123_composite_shot_still5.jpg")
 
     print()
     if fails:

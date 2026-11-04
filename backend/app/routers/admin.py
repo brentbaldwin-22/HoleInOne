@@ -1376,14 +1376,39 @@ def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_
     cut = _detect_cut_sec(scan_src)
 
     # Only the tee half is scanned, so a late green tracer cannot be
-    # mistaken for the one that came off the club.
+    # mistaken for the one that came off the club -- BUT NEVER LESS THAN
+    # MIN_SCAN_SEC. A cut detected a second or two in is far likelier to
+    # be a false positive than a real join, and capping the scan to under
+    # that window loses a tracer that starts at three or four seconds,
+    # which is most of them. Losing the tracer is the expensive failure:
+    # the crop falls back to the centre of the frame, which on a tee is
+    # where the golfers WAITING to hit are standing.
     _scan_kw = {}
-    if cut is not None and cut > 1.0:
-        _scan_kw["max_scan_sec"] = max(1.0, float(cut) - 0.25)
+    if cut is not None and float(cut) - 0.25 >= shot_still.MIN_SCAN_SEC:
+        _scan_kw["max_scan_sec"] = float(cut) - 0.25
     tsx = _tracer_start_x(scan_src, **_scan_kw) or {}
-    focus = shot_still.clamp_focus(tsx.get("x"))
     focus_y = tsx.get("y")
     at_sec = tsx.get("t")
+    focus_src = "scan"
+
+    # WHAT THE 9:16 ALREADY FOUND. The vertical render runs the same scan
+    # over a longer window and stores what it read; that is the number
+    # the Produced Clips card prints as "tracer 0.704". When this scan
+    # comes back empty, that reading is a far better answer than the
+    # middle of the picture. No y comes with it, so the crop is aimed
+    # correctly across the frame but not zoomed -- right and wide beats
+    # tight and pointed at the wrong people.
+    if tsx.get("x") is None:
+        _stored = ((clip.tracer_diagnostics or {}).get("vertical") or {}).get("tracer")
+        if _stored is not None:
+            tsx = {"x": _stored, "why": f"stored ({tsx.get('why') or 'no scan'})"}
+            focus_y = None
+            at_sec = None
+            focus_src = "vertical"
+        else:
+            focus_src = "centre"
+
+    focus = shot_still.clamp_focus(tsx.get("x"))
 
     cap = cv2.VideoCapture(str(scan_src))
     if not cap.isOpened():
@@ -1433,6 +1458,7 @@ def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_
         "zoomed": focus_y is not None,
         "at_sec": round(float(at_sec), 2) if at_sec is not None else None,
         "cut_sec": round(float(cut), 2) if cut is not None else None,
+        "focus_src": focus_src,
         "tracer_why": tsx.get("why"),
         "src_kind": "clean" if scan_src is not src_path else "stamped",
         "cached": False,
