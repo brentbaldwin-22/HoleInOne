@@ -3039,14 +3039,6 @@ GOLFER_MAX_BBOX_FRAC = 0.25
 # largest-blob rule is the better of two guesses.
 AIM_MAX_DX_FRAC = 0.12
 
-# HOW THE JUDGE'S PICTURE IS FRAMED ON THE GOLFER, in body widths
-# across and body heights above and below. The judge gets the
-# composite at whatever size it is written, so this is the only thing
-# deciding how big a club plume is in the image it reads.
-JUDGE_CROP_WIDTHS = 4.0
-JUDGE_CROP_HEADROOM = 1.5
-JUDGE_CROP_FOOTROOM = 0.3
-
 BALL_BOX_WIDTHS = 3.0
 BALL_BOX_ABOVE_FEET = 0.30
 BALL_BOX_BELOW_FEET = 0.12
@@ -3480,50 +3472,6 @@ def swing_heat_check(
                 # CLEAN copy (no chain, no verdict label) for the AI swing
                 # judge — the printed verdict would bias it.
                 judged = img
-                # CROP TO THE GOLFER THE HEAT FOUND, not to a box drawn
-                # once for the camera.
-                #
-                # WHY THE WORDS STOPPED WORKING. The judge is handed
-                # this picture at whatever size it is written, with no
-                # resize anywhere -- and the caller's crop is 3x the
-                # extent of the trigger zones, which on a wide tee
-                # clamps to most of the frame. A club plume measures
-                # perhaps 60x100px in a 1920-wide composite, so the
-                # thing the whole verdict turns on was about three per
-                # cent of the picture. Three rounds of prompt wording
-                # could not fix that, and the last of them made the
-                # model assert with HIGH confidence that a plume
-                # plainly in the image was not there.
-                #
-                # `golfer` is measured on THIS swing, a few lines above,
-                # and is about one body wide. Framed on it the plume is
-                # a quarter of the width instead of a thirtieth.
-                #
-                # Generous on purpose: four body-widths across, so a
-                # neighbouring golfer's plume is still in frame if the
-                # body pick went to the wrong person, and a body-and-a-
-                # half of headroom, because the club reaches well above
-                # the head and is the one thing that must not be cut off.
-                _gcrop = None
-                if out.get("golfer"):
-                    try:
-                        _gx, _gy, _gw, _gh = (int(v) for v in out["golfer"])
-                        _cw = max(JUDGE_CROP_WIDTHS * _gw, 0.9 * _gh)
-                        _ccx = _gx + _gw / 2.0
-                        _gcrop = (
-                            int(_ccx - _cw / 2.0),
-                            int(_gy - JUDGE_CROP_HEADROOM * _gh),
-                            int(_cw),
-                            int(_gh * (1.0 + JUDGE_CROP_HEADROOM
-                                       + JUDGE_CROP_FOOTROOM)),
-                        )
-                    except Exception:  # noqa: BLE001
-                        _gcrop = None
-                if _gcrop is not None:
-                    crop = _gcrop
-                    out["crop_from"] = "the golfer the motion heat found"
-                elif crop:
-                    out["crop_from"] = "the camera's trigger zones"
                 if crop:
                     try:
                         cx, cy, cw, ch = (int(crop[0]), int(crop[1]),
@@ -3537,11 +3485,6 @@ def swing_heat_check(
                         if (x1 - x0) >= 160 and (y1 - y0) >= 160:
                             judged = img[y0:y1, x0:x1].copy()
                             out["crop"] = [x0, y0, x1 - x0, y1 - y0]
-                        else:
-                            out["crop_from"] = (
-                                (out.get("crop_from") or "")
-                                + " — too small to use, so the whole frame "
-                                  "was judged")
                     except Exception:  # noqa: BLE001
                         judged = img
                 clean_name = f"{debug_prefix}-clean.jpg"
