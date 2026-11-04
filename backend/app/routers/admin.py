@@ -100,7 +100,7 @@ from ..schemas import (
     HIOReviewAction,
 )
 from ..services import notifications, storage, thanks, tracer_examples
-from ..services import lens_zoom, revenue, site_theme, tee_roi, workload
+from ..services import identify, lens_zoom, revenue, site_theme, tee_roi, workload
 from ..services.matcher import match_clip
 from ..services.qr import generate_qr_png
 from ..services.auth import hash_password
@@ -1243,6 +1243,82 @@ def manually_assign_clip(
 
     db.commit()
     return {"ok": True}
+
+
+# --- Player identification -------------------------------------------------
+#
+# Thin over services/identify.py, which holds the whole of the logic and
+# is importable on its own -- this module is not, because deps.py spells
+# an annotation `str | None` and evaluates it at def time, so it needs a
+# Python newer than the one the tests run under. The service raises
+# ValueError and the router turns it into a 400, the same arrangement
+# revenue.py already uses.
+
+
+@router.get("/identify/courses")
+def identify_courses(start: str, end: str, db: Session = Depends(get_db)):
+    """Each course's unidentified count for ONE day, the client's window."""
+    try:
+        return identify.unidentified_counts(
+            db,
+            identify.parse_instant(start, "start of the day"),
+            identify.parse_instant(end, "end of the day"),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/identify/day")
+def identify_day(
+    course_id: int,
+    start: str,
+    end: str,
+    db: Session = Depends(get_db),
+):
+    """The roster and the footage for one course over one day.
+
+    `start` and `end` are ISO instants the CLIENT computed from its own
+    local midnight. The server cannot work the day out for itself:
+    everything here is naive UTC and Course has no timezone, so an
+    Eastern course's day would start at 8pm the evening before.
+    """
+    try:
+        return identify.day(
+            db, course_id,
+            identify.parse_instant(start, "start of the day"),
+            identify.parse_instant(end, "end of the day"),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/identify/pending")
+def identify_pending(start: str, end: str, db: Session = Depends(get_db)):
+    """The nav badge's number: golfers still waiting, every course summed."""
+    try:
+        return identify.pending_total(
+            db,
+            identify.parse_instant(start, "start of the day"),
+            identify.parse_instant(end, "end of the day"),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/identify/clips/{clip_id}/pair")
+def identify_pair(clip_id: int, participant_id: int, db: Session = Depends(get_db)):
+    try:
+        return identify.pair(db, clip_id, participant_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/identify/clips/{clip_id}/unpair")
+def identify_unpair(clip_id: int, db: Session = Depends(get_db)):
+    try:
+        return identify.unpair(db, clip_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # --- Manual clip upload (proxy for Shot Tracer webhook in V0) ---------------

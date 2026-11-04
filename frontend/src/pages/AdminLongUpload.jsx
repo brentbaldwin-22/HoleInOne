@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
 import { MotionGraph } from "../components/MotionGraph.jsx";
 import { PiTestZones } from "../components/PiTestZones.jsx";
@@ -413,6 +414,7 @@ export default function AdminLongUpload() {
         <Link to="/admin/produced-clips">Produced Clips</Link>
         <Link to="/admin/broadcast-clips">Broadcast</Link>
         <Link to="/admin/cameras">Cameras</Link>
+        <PlayerIdLink />
       </div>
 
       {queuedUploadId != null && (

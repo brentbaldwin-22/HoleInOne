@@ -477,6 +477,29 @@ code {
 .nav a:hover { color: var(--ink); text-decoration: none; }
 .nav a.active, .nav .active { color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); }
 
+/* The count riding on the operator nav's Player ID link: red while
+   clips are waiting to be identified, green once the day is clear. Its
+   own baseline, because the nav is uppercase and letter-spaced and a
+   number set that way reads as a word. */
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+  color: #fff;
+  vertical-align: 1px;
+}
+.nav-badge.waiting { background: var(--danger); }
+.nav-badge.clear { background: var(--ok); }
+
 /* ---- Controls --------------------------------------------------- */
 
 .btn, button.btn, a.btn {
@@ -858,7 +881,7 @@ tr:last-child td { border-bottom: 0; }
 
 /* ---- Clips and media -------------------------------------------- */
 
-.clip, .home-clip-frame, .watch-frame, .camera-frame, .clip-player, .watch-video, .thumb, .gallery-hole, .selfie-preview {
+.clip, .home-clip-frame, .watch-frame, .clip-player, .watch-video, .thumb, .gallery-hole, .selfie-preview {
   position: relative;
   background: var(--ink);
   border-radius: var(--radius-lg);
@@ -867,7 +890,6 @@ tr:last-child td { border-bottom: 0; }
   width: 100%;
 }
 .clip, .home-clip-frame, .watch-frame, .clip-player, .watch-video { aspect-ratio: 16 / 9; }
-.camera-frame { aspect-ratio: 16 / 9; background: #0b0c10; }
 .clip video, .clip img, .clip-player video, .watch-video video, .thumb img, .gallery-hole img, .selfie-preview video, .selfie-preview img {
   width: 100%; height: 100%; object-fit: cover; display: block;
 }
@@ -947,7 +969,117 @@ tr:last-child td { border-bottom: 0; }
   background: rgba(11, 12, 16, 0.82);
   color: #fff; font-size: 0.86rem; text-align: center;
 }
-.camera-controls { display: flex; gap: 12px; justify-content: center; padding: 16px 0; flex-wrap: wrap; }
+
+/* ---- Full-screen outfit capture --------------------------------- */
+/* The viewfinder takes the whole screen and then reviews the frame it
+   caught, the way the phone's own camera does. Rendered through a portal
+   onto document.body, so these are the only styles that reach it. */
+.camera-full {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: #000;
+  overflow: hidden;
+}
+/* capture() flips the canvas for the front camera, so the preview has to
+   flip too or the golfer lines up against one image and saves the other.
+   The class was applied all along; this rule was missing. */
+.camera-full-media.mirror { transform: scaleX(-1); }
+.camera-full-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.camera-full .camera-coach {
+  /* Clear of the control bar, which the original rule sat underneath. */
+  bottom: calc(132px + env(safe-area-inset-bottom, 0px));
+  background: rgba(11, 12, 16, 0.6);
+}
+/* Which lens is live. Flip was silently doing nothing and there was no
+   way to tell from the screen -- not for the golfer, not for anyone
+   debugging it. */
+.camera-which {
+  position: absolute;
+  top: calc(14px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 13px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.camera-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 26px calc(26px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0));
+}
+/* Plain white controls, because they sit on live video rather than paper
+   and the site's furniture would be unreadable there. */
+.camera-full .camera-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 0;
+  padding: 10px 4px;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  box-shadow: none;
+  min-width: 72px;
+}
+.camera-full .camera-text:hover { background: none; color: #fff; }
+.camera-full .camera-shutter {
+  width: 68px;
+  height: 68px;
+  flex: 0 0 68px;
+  padding: 0;
+  border-radius: 50%;
+  background: #fff;
+  border: 4px solid rgba(255, 255, 255, 0.35);
+  background-clip: padding-box;
+  box-shadow: none;
+}
+.camera-full .camera-shutter:disabled { opacity: 0.4; }
+.camera-full .camera-shutter:active { transform: scale(0.94); }
+.camera-full .camera-use {
+  padding: 13px 26px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--on-primary);
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+  border: 0;
+}
+.camera-full .camera-use:hover { background: var(--primary-hover); }
+.camera-error-full {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 18px;
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.96);
+  text-align: center;
+}
 .qr-block { display: inline-block; padding: 16px; background: #fff; border: 1px solid var(--rule); }
 
 /* ---- Banners, toasts, states ------------------------------------ */
@@ -1069,6 +1201,27 @@ tr:last-child td { border-bottom: 0; }
   object-fit: cover;
   display: block;
   pointer-events: none;
+}
+/* The roster tiles on /admin/identify are outfit photos rather than
+   clips, and want exactly what the video wants: fill the 9:16 tile,
+   crop rather than squash, and let the click reach the button. */
+.pick-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+.pick-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 10px;
+  text-align: center;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.5);
 }
 .pick-tile:hover { transform: translateY(-2px); }
 .pick-tile.on { border-color: var(--primary, #1ca85c); }

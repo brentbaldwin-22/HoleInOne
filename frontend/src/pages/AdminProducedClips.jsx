@@ -8,6 +8,7 @@
  */
 import { useCallback, useState } from "react";
 import { Link } from "react-router-dom";
+import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
 import { Brand } from "../components/Brand.jsx";
 import { useInfiniteList } from "../hooks/useInfiniteList.js";
@@ -156,6 +157,7 @@ export default function AdminProducedClips() {
         <Link to="/admin/produced-clips" className="active">Produced Clips</Link>
         <Link to="/admin/broadcast-clips">Broadcast</Link>
         <Link to="/admin/cameras">Cameras</Link>
+        <PlayerIdLink />
       </div>
 
       <div className="card">

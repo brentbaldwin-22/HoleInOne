@@ -20,6 +20,7 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState }
   from "react";
 import { Link } from "react-router-dom";
+import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
 import { Brand } from "../components/Brand.jsx";
 import GreenRestModal from "../components/GreenRestModal.jsx";
@@ -17316,6 +17317,7 @@ export default function AdminProduction() {
         <Link to="/admin/produced-clips">Produced Clips</Link>
         <Link to="/admin/broadcast-clips">Broadcast</Link>
         <Link to="/admin/cameras">Cameras</Link>
+        <PlayerIdLink />
       </div>
 
       <div className="card">

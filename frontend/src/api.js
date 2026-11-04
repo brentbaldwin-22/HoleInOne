@@ -381,6 +381,37 @@ export const api = {
       + (days != null ? `&days=${days}` : ""),
       { method: "POST", adminPassword: key },
     ),
+  // --- Player identification ---
+  // `start`/`end` are ISO instants the CALLER built from its own local
+  // midnight. The server cannot derive the day: its datetimes are naive
+  // UTC and a course carries no timezone.
+  identifyCourses: (key, { start, end }) =>
+    request(
+      `/api/admin/identify/courses?start=${encodeURIComponent(start)}`
+      + `&end=${encodeURIComponent(end)}`,
+      { adminPassword: key },
+    ),
+  identifyDay: (key, { courseId, start, end }) =>
+    request(
+      `/api/admin/identify/day?course_id=${courseId}`
+      + `&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
+      { adminPassword: key },
+    ),
+  identifyPending: (key, { start, end }) =>
+    request(
+      `/api/admin/identify/pending?start=${encodeURIComponent(start)}`
+      + `&end=${encodeURIComponent(end)}`,
+      { adminPassword: key },
+    ),
+  identifyPair: (key, clipId, participantId) =>
+    request(
+      `/api/admin/identify/clips/${clipId}/pair?participant_id=${participantId}`,
+      { method: "POST", adminPassword: key },
+    ),
+  identifyUnpair: (key, clipId) =>
+    request(`/api/admin/identify/clips/${clipId}/unpair`, {
+      method: "POST", adminPassword: key,
+    }),
   revenueReport: (key, { start, end, courseId } = {}) =>
     request(`/api/admin/revenue${revenueQuery({ start, end, courseId })}`, {
       adminPassword: key,

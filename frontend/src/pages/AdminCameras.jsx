@@ -6,6 +6,7 @@
  */
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
 import { fmtDateTime } from "../time.js";
 import { Brand } from "../components/Brand.jsx";
@@ -2828,6 +2829,7 @@ export default function AdminCameras() {
         <Link to="/admin/produced-clips">Produced Clips</Link>
         <Link to="/admin/broadcast-clips">Broadcast</Link>
         <Link to="/admin/cameras" className="active">Cameras</Link>
+        <PlayerIdLink />
       </div>
 
       <div className="card">

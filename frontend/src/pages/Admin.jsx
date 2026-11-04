@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api, API_BASE } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
 import useSiteTheme from "../hooks/useSiteTheme.js";
@@ -146,6 +147,7 @@ export default function Admin() {
         <Link to="/admin/produced-clips">Produced Clips</Link>
         <Link to="/admin/broadcast-clips">Broadcast</Link>
         <Link to="/admin/cameras">Cameras</Link>
+        <PlayerIdLink />
         <button
           className="ghost"
           onClick={() => { localStorage.removeItem(ADMIN_PW_STORAGE); window.location.reload(); }}
