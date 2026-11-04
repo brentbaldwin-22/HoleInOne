@@ -36,7 +36,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..models import (AuditLog, ClipProcessingStatus, Course, Participant,
@@ -65,37 +64,54 @@ def parse_instant(iso: str, what: str = "instant") -> datetime:
 
 
 def unidentified_counts(db: Session, start: datetime, end: datetime) -> list[dict]:
-    """Every course, with how many of ONE DAY's clips nobody owns.
+    """Every course, with how many of that day's GOLFERS still have nothing.
 
-    Scoped to the day rather than to all of history because the pile is
-    worked off daily: an all-time total counts last month's footage,
-    which nobody is going to go back and pair, and buries the number that
-    says whether today is done. The window is the same [start, end) the
-    roster uses, so the dropdown and the page under it cannot disagree.
+    PEOPLE, NOT SHOTS. The number is there to say how much of the day's
+    work is left, and the work is measured in golfers: two sign up, two
+    are unidentified, and each one drops off as soon as a shot is put in
+    their gallery. Counting clips answered a different question -- a
+    camera that fired forty times for one foursome read as forty units of
+    work -- and the figure moved with the weather rather than with the
+    roster.
 
-    Counted on `participant_id IS NULL` rather than on a status, because
-    the status is a processing state and ownership is the question being
-    asked -- a clip can be `processed` and still belong to nobody.
+    A golfer counts as identified once ANY clip is theirs, not once all
+    of their shots are. There is no way to know how many a given golfer
+    hit, so "done" cannot mean "all of them"; it means somebody has been
+    through this golfer and given them what was theirs.
     """
     if end <= start:
         raise ValueError("the end of the day must come after its start")
-    counts = dict(
-        db.query(VideoClip.course_id, func.count(VideoClip.id))
-        .filter(
-            VideoClip.participant_id.is_(None),
-            VideoClip.captured_at >= start,
-            VideoClip.captured_at < end,
-        )
-        .group_by(VideoClip.course_id)
+
+    # Everyone who went out that day, with the course they went out at.
+    roster = (
+        db.query(TeeTime.course_id, Participant.id)
+        .join(Participant, Participant.tee_time_id == TeeTime.id)
+        .filter(TeeTime.starts_at >= start, TeeTime.starts_at < end)
         .all()
     )
+    ids = [pid for _, pid in roster]
+    # Who among them already has something. One query, not one per golfer.
+    owned = set()
+    if ids:
+        owned = {
+            pid for (pid,) in db.query(VideoClip.participant_id)
+            .filter(VideoClip.participant_id.in_(ids))
+            .distinct()
+            .all()
+        }
+
+    pending: dict[int, int] = {}
+    for course_id, pid in roster:
+        if pid not in owned:
+            pending[course_id] = pending.get(course_id, 0) + 1
+
     out = []
     for c in db.query(Course).order_by(Course.name).all():
         out.append({
             "id": c.id,
             "name": c.name,
             "location": c.location or "",
-            "unidentified": int(counts.get(c.id, 0)),
+            "unidentified": int(pending.get(c.id, 0)),
         })
     return out
 

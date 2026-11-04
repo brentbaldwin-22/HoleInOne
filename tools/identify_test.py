@@ -66,34 +66,64 @@ def main():
     alex = register("Alex", MORNING)
     bo = register("Bo", MORNING + timedelta(minutes=10))
     elsewhere = register("Casey", MORNING, course=other)
+    # Tomorrow's golfer, to hold the far edge of the roster window: a
+    # count that only checks `starts_at >= start` would sweep them in.
+    register("Erin", MORNING + timedelta(days=1))
 
     shots = [clip(MORNING + timedelta(minutes=14 * 7, seconds=40 * i)) for i in range(4)]
     clip(MORNING, course=other)                      # another course, same morning
     yesterday = clip(START - timedelta(minutes=1))   # one minute before the day
     tomorrow = clip(END)                             # the first instant of the next
 
-    print("the backlog number on the dropdown is THIS DAY's, not all time")
-    # Rivertowne holds six loose clips in total -- four on the day, one
-    # the minute before it and one the instant after. The dropdown must
-    # say four, because the pile is worked off daily and last week's
-    # footage is not today's job.
-    counts = {c["name"]: c["unidentified"]
-              for c in identify.unidentified_counts(db, START, END)}
-    check("counts the day's loose clips, not the course's whole history",
-          counts["Rivertowne Country Club"] == 4,
-          f'{counts["Rivertowne Country Club"]} (6 exist in total)')
-    check("and does not pool them across courses", counts["Somewhere Else CC"] == 1,
-          f'{counts["Somewhere Else CC"]}')
-    quiet = {c["name"]: c["unidentified"] for c in identify.unidentified_counts(
-        db, START + timedelta(days=30), END + timedelta(days=30))}
-    check("a day with nothing on it reads clear, for every course",
-          all(v == 0 for v in quiet.values()), f"{quiet}")
-    check("the dropdown agrees with the page under it",
-          counts["Rivertowne Country Club"]
-          == identify.day(db, river.id, START, END)["unidentified"])
+    print("the dropdown counts GOLFERS left to do, not shots")
+    # Two golfers out at Rivertowne, neither with anything yet. The
+    # thirteen-shots-on-one-foursome case is exactly what this must not
+    # report: the number is the roster's, so it moves with sign-ups.
+    def counts(a=START, b=END):
+        return {c["name"]: c["unidentified"] for c in identify.unidentified_counts(db, a, b)}
+
+    c0 = counts()
+    check("two signed up, two unidentified", c0["Rivertowne Country Club"] == 2,
+          f'{c0["Rivertowne Country Club"]} (4 loose clips that day)')
+    check("tomorrow's golfer is not today's work",
+          c0["Rivertowne Country Club"] == 2, f'{c0["Rivertowne Country Club"]}')
+    check("the other course counts only its own", c0["Somewhere Else CC"] == 1,
+          f'{c0["Somewhere Else CC"]}')
+    check("a day nobody signed up for reads clear",
+          all(v == 0 for v in counts(START + timedelta(days=30),
+                                     END + timedelta(days=30)).values()))
+
+    print("\nand it falls as golfers are done, not as clips are")
+    identify.pair(db, shots[0].id, alex.id)
+    check("one golfer sorted, one left", counts()["Rivertowne Country Club"] == 1,
+          f'{counts()["Rivertowne Country Club"]}')
+    identify.pair(db, shots[1].id, alex.id)
+    check("a second shot for the same golfer changes nothing",
+          counts()["Rivertowne Country Club"] == 1,
+          f'{counts()["Rivertowne Country Club"]}')
+    check("three of the day's four clips are still loose, and that is NOT the number",
+          identify.day(db, river.id, START, END)["unidentified"] == 2)
+    identify.pair(db, shots[2].id, bo.id)
+    check("both golfers sorted reads clear", counts()["Rivertowne Country Club"] == 0,
+          f'{counts()["Rivertowne Country Club"]}')
+    check("even with a shot still unclaimed",
+          identify.day(db, river.id, START, END)["unidentified"] == 1)
+
+    print("\nthe dropdown agrees with the roster underneath it")
+    pending = sum(1 for p in identify.day(db, river.id, START, END)["players"]
+                  if p["assigned"] == 0)
+    check("same number, counted two different ways",
+          counts()["Rivertowne Country Club"] == pending, f"{pending}")
+
+    identify.unpair(db, shots[0].id)
+    identify.unpair(db, shots[1].id)
+    identify.unpair(db, shots[2].id)
+    check("undoing it all puts both golfers back on the list",
+          counts()["Rivertowne Country Club"] == 2,
+          f'{counts()["Rivertowne Country Club"]}')
     try:
         identify.unidentified_counts(db, END, START)
-        check("a day that ends before it starts", False, "no error raised")
+        check("a backwards day", False, "no error raised")
     except ValueError as e:
         check("the counts refuse a backwards day too", True, str(e))
 

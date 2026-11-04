@@ -159,7 +159,9 @@ export default function AdminIdentify() {
               {(courses || []).map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
-                  {c.unidentified > 0 ? ` — ${c.unidentified} unidentified` : " — clear"}
+                  {c.unidentified > 0
+                    ? ` — ${c.unidentified} golfer${c.unidentified === 1 ? "" : "s"} unidentified`
+                    : " — clear"}
                 </option>
               ))}
             </select>
