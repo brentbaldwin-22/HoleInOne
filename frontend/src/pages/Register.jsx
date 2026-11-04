@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
+import SelfieField from "../components/SelfieField.jsx";
 import useAuth from "../hooks/useAuth.js";
 
 // Today, and a sensible first guess at "now", both on the GOLFER's clock
@@ -42,6 +43,10 @@ export default function Register() {
   const [name, setName] = useState(user?.name || "");
   const [mobile, setMobile] = useState("");
   const [email, setEmail] = useState(user?.email || "");
+  const [selfieFile, setSelfieFile] = useState(null);
+  const [selfiePreview, setSelfiePreview] = useState(null);
+  // Single openCameraId across the whole form so only one device camera is mounted at a time.
+  const [openCameraId, setOpenCameraId] = useState(null);
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -55,12 +60,26 @@ export default function Register() {
     })();
   }, [courseToken]);
 
+  function readPreview(file, set) {
+    const reader = new FileReader();
+    reader.onload = () => set(reader.result);
+    reader.readAsDataURL(file);
+  }
+
+  function onLeadSelfie(file) {
+    if (!file?.type?.startsWith("image/")) { setError("That doesn't look like a photo."); return; }
+    setError(null);
+    setSelfieFile(file);
+    readPreview(file, setSelfiePreview);
+  }
+
   async function submit(e) {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
     try {
       if (!mobile && !email) throw new Error("Enter a mobile number or an email so we can text you your clips.");
+      if (!selfieFile) throw new Error("Take your outfit photo so we can match your shots.");
       const teeDate = dateRef.current?.value || "";
       const teeClock = clockRef.current?.value || "";
       if (!teeDate || !teeClock) throw new Error("Pick the day and time you're teeing off.");
@@ -79,6 +98,7 @@ export default function Register() {
       fd.append("name", name);
       fd.append("mobile", mobile);
       fd.append("email", email);
+      fd.append("selfie", selfieFile, selfieFile.name || "selfie.jpg");
 
       const res = await api.register(fd);
       if (res.client_secret && !res.paid) {
@@ -194,6 +214,23 @@ export default function Register() {
           Roughly when you're teeing off — it doesn't have to be exact.
         </div>
 
+        <div className="field">
+          <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <Icon name="camera" size={16} /> Your outfit photo
+          </label>
+          <p className="hint">
+            Hand your phone to a friend or use a mirror — head to toe, full
+            outfit visible. We use this to pick your shots out of the footage.
+          </p>
+          <SelfieField
+            id="lead"
+            openCameraId={openCameraId}
+            setOpenCameraId={setOpenCameraId}
+            preview={selfiePreview}
+            onPicked={onLeadSelfie}
+          />
+        </div>
+
         <div className="divider" />
         <div className="inline" style={{ justifyContent: "space-between", marginBottom: 14, width: "100%" }}>
           <span className="small muted"><Icon name="lock" size={14} /> Secure Stripe checkout</span>
@@ -201,7 +238,7 @@ export default function Register() {
         </div>
 
         {error && <p className="err-text small">{error}</p>}
-        <button disabled={submitting || !name}>
+        <button disabled={submitting || !name || !selfieFile}>
           {submitting ? "Processing…" : "Pay $20 and register"}
         </button>
       </form>
