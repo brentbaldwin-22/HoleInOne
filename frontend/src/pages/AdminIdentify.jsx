@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import PlayerIdLink, { IDENTIFY_CHANGED } from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
@@ -66,6 +66,10 @@ export default function AdminIdentify() {
   const [data, setData] = useState(null);
   const [player, setPlayer] = useState(null);   // the golfer being worked on
   const [busy, setBusy] = useState(null);       // clip id mid-request
+  const [stills, setStills] = useState({});     // {clip_id: url}
+  // Bumped whenever the course or day changes, so stills still in
+  // flight for the day you just left cannot land on the new grid.
+  const run = useRef(0);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -80,14 +84,49 @@ export default function AdminIdentify() {
   }, [day]);
 
   async function load(cid = courseId, d = day) {
+    run.current += 1;
+    setStills({});
     if (!cid) { setData(null); return; }
     setError(null);
     try {
-      setData(await api.identifyDay(adminPassword, { courseId: cid, ...dayWindow(d) }));
+      const d2 = await api.identifyDay(adminPassword, { courseId: cid, ...dayWindow(d) });
+      setData(d2);
+      loadStills(d2.clips || []);
     } catch (e) {
       setData(null);
       setError(e.message);
     }
+  }
+
+  /**
+   * Fill in the frozen frames, a few at a time.
+   *
+   * The first call for a clip scans its video for the tracer, which is
+   * seconds of work, so eleven at once would hold the page up and
+   * eleven in sequence would take a minute. Three at a time fills the
+   * grid visibly, in roughly the order the operator reads it, and every
+   * call after the first is a cache hit.
+   */
+  async function loadStills(clips) {
+    const mine = run.current;
+    const queue = clips.map((c) => c.id);
+    async function worker() {
+      while (queue.length) {
+        const id = queue.shift();
+        try {
+          const r = await api.identifyStill(adminPassword, id);
+          // A still for a day the operator has already navigated away
+          // from must not be painted onto the grid now showing.
+          if (r.still_url && run.current === mine) {
+            setStills((prev) => ({ ...prev, [id]: r.still_url }));
+          }
+        } catch {
+          // The tile keeps its video. A missing still is a worse
+          // picture, not a broken page.
+        }
+      }
+    }
+    await Promise.all([worker(), worker(), worker()]);
   }
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [courseId, day]);
@@ -273,14 +312,20 @@ export default function AdminIdentify() {
                     style={taken ? { opacity: 0.55 } : undefined}
                     title={taken ? `Currently ${c.participant_name}'s` : clipLabel(c)}
                   >
-                    <video
-                      src={c.preview_url}
-                      poster={c.thumbnail_url || undefined}
-                      muted
-                      loop
-                      autoPlay
-                      playsInline
-                    />
+                    {stills[c.id] ? (
+                      <img src={stills[c.id]} alt={`Shot at ${clipLabel(c)}`} />
+                    ) : (
+                      // Until the cropped frame arrives. Not autoplaying:
+                      // eleven decoders running to show a second of sky
+                      // is not what the operator is here to look at.
+                      <video
+                        src={c.preview_url}
+                        poster={c.thumbnail_url || undefined}
+                        muted
+                        playsInline
+                        preload="metadata"
+                      />
+                    )}
                     <span className="pick-time">
                       {fmtDateTime(c.captured_at, undefined, { timeStyle: "short" })}
                       {" · "}

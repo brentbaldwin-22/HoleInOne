@@ -403,6 +403,12 @@ export const api = {
       + `&end=${encodeURIComponent(end)}`,
       { adminPassword: key },
     ),
+  // Slow on first call for a clip (it scans the video for the tracer),
+  // instant afterwards -- the frame is cached beside the clip.
+  identifyStill: (key, clipId) =>
+    request(`/api/admin/identify/clips/${clipId}/still`, {
+      method: "POST", adminPassword: key,
+    }),
   identifyPair: (key, clipId, participantId) =>
     request(
       `/api/admin/identify/clips/${clipId}/pair?participant_id=${participantId}`,

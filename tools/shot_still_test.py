@@ -1,0 +1,90 @@
+"""Where the Player ID tile's frozen frame gets cut.
+
+The tile and the 9:16 deliverable have to frame the same shot, so the
+clamp and the aspect here are the render's own. What is worth pinning is
+the arithmetic at the edges: a golfer near the left touchline must not
+produce a crop that starts at a negative x and comes back empty, and a
+scan that found no tracer must land on centre rather than on a crash.
+"""
+import os, sys
+from pathlib import Path
+
+os.environ.setdefault("DATABASE_URL", "sqlite://")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+
+from app.services import shot_still as S
+
+fails = []
+
+
+def check(label, cond, detail=""):
+    print(("  PASS  " if cond else "  FAIL  ") + label + (f"   {detail}" if detail else ""))
+    if not cond:
+        fails.append(label)
+
+
+def main():
+    W, H = 1920, 1080
+    CW = int(round(H * 9 / 16))          # 608
+
+    print("a 9:16 slice of a 1080p frame")
+    x, y, w, h = S.crop_box(W, H, 0.5)
+    check("full height, never letterboxed", (y, h) == (0, H), f"y={y} h={h}")
+    check("nine-sixteenths of it wide", w == CW, f"{w}")
+    check("centred on a centred golfer", x == (W - CW) // 2, f"x={x}")
+
+    print("\nthe golfer stands where the tracer starts")
+    xl, _, wl, _ = S.crop_box(W, H, 0.25)
+    xr, _, wr, _ = S.crop_box(W, H, 0.75)
+    check("left of frame crops left", xl < (W - CW) // 2, f"x={xl}")
+    check("right of frame crops right", xr > (W - CW) // 2, f"x={xr}")
+    check("and the window keeps its shape either way", wl == wr == CW)
+
+    print("\nthe edges, where an off-by-one shows a blank tile")
+    for f in (0.0, 0.05, 0.15, 0.85, 0.95, 1.0):
+        x, _, w, _ = S.crop_box(W, H, f)
+        ok = x >= 0 and x + w <= W
+        check(f"focus {f} stays inside the frame", ok, f"x={x} x+w={x+w} W={W}")
+
+    print("\na scan that found nothing")
+    for bad in (None, "", "abc", float("nan")):
+        check(f"{bad!r} falls back to centre", S.clamp_focus(bad) == 0.5)
+    check("and crops dead centre, like the render does",
+          S.crop_box(W, H, None)[0] == (W - CW) // 2)
+
+    print("\nthe clamp is the render's")
+    check("below the band", S.clamp_focus(0.01) == S.FOCUS_MIN)
+    check("above the band", S.clamp_focus(0.99) == S.FOCUS_MAX)
+    check("inside it is untouched", S.clamp_focus(0.42) == 0.42)
+
+    print("\nsources that are already tall")
+    check("a 9:16 source is taken whole, not re-cropped",
+          S.crop_box(608, 1080, 0.2) == (0, 0, 608, 1080))
+    check("so is something squarer than the window",
+          S.crop_box(500, 1080, 0.9) == (0, 0, 500, 1080))
+
+    print("\nother frame sizes the pipeline produces")
+    for (fw, fh) in ((1280, 720), (3840, 2160), (720, 1280)):
+        x, y, w, h = S.crop_box(fw, fh, 0.3)
+        check(f"{fw}x{fh} crops inside itself", x >= 0 and x + w <= fw and h == fh,
+              f"x={x} w={w}")
+
+    print("\na frame with no size is an error, not a silent empty crop")
+    for bad in ((0, 1080), (1920, 0)):
+        try:
+            S.crop_box(*bad, 0.5)
+            check(f"{bad} refused", False, "no error raised")
+        except ValueError as e:
+            check(f"{bad} refused", True, str(e))
+
+    print("\nthe cache name is per source file")
+    check("named off the stem", S.still_name("clip123_composite") == "clip123_composite_shot_still.jpg")
+
+    print()
+    if fails:
+        print("FAILURES:", fails); return 1
+    print("ALL PASS"); return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -100,7 +100,7 @@ from ..schemas import (
     HIOReviewAction,
 )
 from ..services import notifications, storage, thanks, tracer_examples
-from ..services import identify, lens_zoom, revenue, site_theme, tee_roi, workload
+from ..services import identify, lens_zoom, revenue, shot_still, site_theme, tee_roi, workload
 from ..services.matcher import match_clip
 from ..services.qr import generate_qr_png
 from ..services.auth import hash_password
@@ -1303,6 +1303,111 @@ def identify_pending(start: str, end: str, db: Session = Depends(get_db)):
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@router.post("/identify/clips/{clip_id}/still")
+def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_db)):
+    """The frozen, cropped frame behind one tile on the Player ID grid.
+
+    THE SAME ANCHOR THE 9:16 USES, deliberately. `_tracer_start_x` reads
+    the burned-in tracer off the pixels and reports where it begins and
+    when; the ball at impact is at the golfer's feet, so that fraction is
+    where the golfer is standing and that instant is the swing. Cropping
+    a tile by any other rule would mean the grid and the vertical could
+    disagree about where the shot happened.
+
+    Rendered from the CLEAN pre-overlay copy where one survives, for the
+    same reason the vertical is: the landscape name plate and logo are
+    burned into the stamped file, and a 9:16 slice of it carries a piece
+    of each into a 132px tile.
+
+    Cached per source file. The scan walks several seconds of video, so
+    this is slow once and instant afterwards -- `force` re-does it.
+    """
+    try:
+        import cv2  # local import: keeps admin.py importable even on
+        # boxes where opencv-python isn't installed.
+    except ImportError:
+        raise HTTPException(500, "opencv required for frame grab")
+
+    clip = db.get(VideoClip, clip_id)
+    if not clip:
+        raise HTTPException(404, "clip not found")
+    src_url = clip.tracer_url or clip.source_url
+    if not src_url:
+        raise HTTPException(400, "clip has no video")
+    src_name = src_url.split("?")[0].rsplit("/", 1)[-1]
+    if not storage.ensure_local(CLIPS_DIR, src_name):
+        raise HTTPException(404, f"source file {src_name} not found")
+    src_path = CLIPS_DIR / src_name
+
+    out_path = CLIPS_DIR / shot_still.still_name(src_path.stem)
+    if out_path.exists() and not force:
+        return {
+            "clip_id": clip.id,
+            "still_url": f"{settings.app_base_url}/uploads/clips/{out_path.name}"
+                         f"?v={int(out_path.stat().st_mtime)}",
+            "cached": True,
+        }
+
+    # Prefer unstamped pixels, exactly as the vertical render does.
+    scan_src = src_path
+    _stem = src_path.stem
+    if _stem.endswith("_composite"):
+        _stem = _stem[: -len("_composite")]
+    for _cand in (clean_copy_path(src_path).name, f"{_stem}_ai_mog2_tracer.mp4"):
+        if storage.ensure_local(CLIPS_DIR, _cand) and (CLIPS_DIR / _cand).exists():
+            scan_src = CLIPS_DIR / _cand
+            break
+
+    tsx = _tracer_start_x(scan_src) or {}
+    focus = shot_still.clamp_focus(tsx.get("x"))
+    at_sec = tsx.get("t")
+
+    cap = cv2.VideoCapture(str(scan_src))
+    if not cap.isOpened():
+        raise HTTPException(500, "could not open source for frame grab")
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        # No tracer found: a second in beats frame zero, which on these
+        # clips is usually the address and sometimes a black lead-in.
+        idx = int(round(float(at_sec) * fps)) if at_sec else int(round(fps))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, idx))
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            # Seeking past the end of a short clip: take the opening.
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ok, frame = cap.read()
+    finally:
+        cap.release()
+    if not ok or frame is None:
+        raise HTTPException(500, "could not read a frame to still")
+
+    fh, fw = frame.shape[:2]
+    x, y, w, h = shot_still.crop_box(fw, fh, focus)
+    crop = frame[y:y + h, x:x + w]
+    # Tile-sized. A 132px column does not need a 608px JPEG, and eleven
+    # of them do.
+    if crop.shape[1] > 540:
+        scale = 540.0 / float(crop.shape[1])
+        crop = cv2.resize(
+            crop, (540, max(1, int(round(crop.shape[0] * scale)))),
+            interpolation=cv2.INTER_AREA,
+        )
+    if not cv2.imwrite(str(out_path), crop, [int(cv2.IMWRITE_JPEG_QUALITY), 86]):
+        # imwrite signals failure by returning False, and does not raise.
+        raise HTTPException(500, "could not write the still")
+
+    return {
+        "clip_id": clip.id,
+        "still_url": f"{settings.app_base_url}/uploads/clips/{out_path.name}"
+                     f"?v={int(out_path.stat().st_mtime)}",
+        "focus_x": round(focus, 3),
+        "at_sec": round(float(at_sec), 2) if at_sec else None,
+        "tracer_why": tsx.get("why"),
+        "src_kind": "clean" if scan_src is not src_path else "stamped",
+        "cached": False,
+    }
 
 
 @router.post("/identify/clips/{clip_id}/pair")
