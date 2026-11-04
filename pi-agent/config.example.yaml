@@ -819,11 +819,28 @@ log_level: "INFO"
 #   # are parked on the card beside the refused clips, never deleted.
 #   # The refractory then starts from the swing that SHIPPED.
 #   #
-#   # Strictly higher confidence replaces the leader and nothing else
-#   # does: a tie keeps the FIRST, because a golfer lowering his
-#   # follow-through paints the same picture and arrives AFTER the
-#   # strike. Only a judge that is MORE sure about the later one is
-#   # evidence the earlier was a rehearsal.
+#   # A STRONGER CANDIDATE REPLACES THE LEADER: higher confidence from
+#   # the judge, or -- where the judge rated them the same -- a louder
+#   # strike. The judge outranks the microphone, because the ratio is
+#   # only how loud the noise was and a cart door is loud; the ratio
+#   # separates candidates the judge could not.
+#   #
+#   # This used to be confidence alone, a tie keeping the FIRST,
+#   # because a golfer lowering his follow-through paints the same
+#   # picture and arrives AFTER the strike. Loudness answers that
+#   # argument rather than ignoring it: a strike is the loud one, and
+#   # a waggle, a practice swing and a lowered follow-through are all
+#   # quiet, so the earlier-is-safer rule was keeping the rehearsal
+#   # whenever the judge rated them alike. An exact tie on both still
+#   # keeps the first.
+#   #
+#   # It is NOT min_separation_sec, which sorts by loudness ALONE and
+#   # once let a false positive at 15.43s delete a genuine swing 5.6s
+#   # later: the ratio is read only after the judge has said swing.
+#   #
+#   # The server's test-cut table resolves the same contest by the
+#   # same rule (tools/pick_best_rank_test.py holds the two copies to
+#   # the same answers), so tuning against that table tunes this.
 #   #
 #   # COSTS: the clip is delayed by this many seconds (the green cuts
 #   # backwards from its own ring, so it is unaffected), and several

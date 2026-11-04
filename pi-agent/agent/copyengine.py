@@ -190,6 +190,52 @@ def _confidence_rank(conf) -> int:
     return _CONFIDENCE_RANK.get(str(conf or "").strip().lower(), 0)
 
 
+def _swing_strength(conf, detail) -> tuple:
+    """How good a swing a candidate looks, for ranking it against the
+    one currently held.
+
+    A COPY OF THE SERVER'S `_swing_strength`, and it has to stay one.
+    The test-cut endpoint resolves the same contest over a whole clip
+    and the rig resolves it in real time over a hold window, so the
+    two can never share code -- but a rig that picks a different
+    candidate from the one the operator's tuning table picks on the
+    same audio is worse than either rule on its own, because the table
+    is how the rule gets tuned. tools/pick_best_rank_test.py holds
+    them to the same answers.
+
+    THE JUDGE OUTRANKS THE MICROPHONE. The ratio is how LOUD the noise
+    was and a cart door is loud; the judge has looked at four seconds
+    of motion heat and seen whether a body swung a club.
+
+    THE RATIO IS THE TIEBREAK INSIDE A BAND, which is a deliberate
+    change from what stood here. The rule used to be "strictly higher
+    confidence replaces the leader, a tie keeps the FIRST", on the
+    argument that a golfer lowering his follow-through paints the same
+    figure-and-plume and arrives AFTER the strike -- so preferring the
+    later of two equal candidates would hand it the clip.
+
+    That argument is real and it is what loudness answers: a strike is
+    the loud one. A waggle, a practice swing and a lowered follow
+    through are all quiet, so between two candidates the judge is
+    equally sure about, the louder is the strike and the earlier-is-
+    safer rule was keeping the rehearsal. Event 1492 is the case where
+    the judge separated them; this is the case where it could not.
+
+    NOT min_separation_sec, which sorted by loudness ALONE and let a
+    false positive at 15.43s delete a genuine swing 5.6s later. The
+    ratio is read only after the judge has already said swing, and
+    only to separate candidates it rated the same.
+
+    An exact tie on both still keeps the first, so the original
+    argument survives where nothing distinguishes the two.
+    """
+    try:
+        _ratio = float((detail or {}).get("ratio") or 0.0)
+    except (TypeError, ValueError):
+        _ratio = 0.0
+    return (_confidence_rank(conf), _ratio)
+
+
 def _keep_refused(clips_dir, clip_path):
     """Park a clip the judge refused. Its name, or None if it is gone.
 
@@ -765,21 +811,21 @@ class CopyEngine:
                         clock_offset_sec, detail, res, conf, hold_sec):
         """Keep this confirmed swing; ship the best one when time is up.
 
-        STRICTLY HIGHER CONFIDENCE REPLACES THE HELD ONE, and nothing
-        else does. A tie keeps the FIRST, deliberately: the codebase
-        already knows that "a golfer holding and lowering his
-        follow-through paints the same figure-and-plume a swing does",
-        and that ghost arrives AFTER the strike. Preferring the later
-        of two equal candidates would hand it the clip. Only a judge
-        that is MORE sure about the second one is evidence the first
-        was the rehearsal.
+        A STRONGER CANDIDATE REPLACES THE HELD ONE: higher confidence
+        from the judge, or -- where the judge rated them the same --
+        a louder strike. See `_swing_strength` for why loudness is the
+        tiebreak and why it is safe here when `min_separation_sec`
+        was not. An exact tie on both keeps the FIRST, because a
+        golfer lowering his follow-through paints the same
+        figure-and-plume and arrives AFTER the strike.
         """
         held = self._held
         cand = {
             "session_id": session_id, "clip_path": clip_path,
             "impact_ts": float(impact_ts),
             "clock_offset_sec": clock_offset_sec, "detail": detail,
-            "res": res, "conf": conf, "rank": _confidence_rank(conf),
+            "res": res, "conf": conf,
+            "rank": _swing_strength(conf, detail),
             # THE DEADLINE BELONGS TO THE WINDOW, not to its current
             # leader: a late challenger must not be able to extend it
             # indefinitely and sit on a swing that should have shipped.
@@ -803,16 +849,21 @@ class CopyEngine:
             self._park(cand)
             return self._flush_held(runner)
 
+        # WHY IT WON OR LOST, in the numbers that decided it. "beats
+        # held" said nothing about whether the judge or the microphone
+        # separated them, and the whole point of the tiebreak is that
+        # those are different events.
+        _how = "%s x%.1f vs %s x%.1f" % (
+            conf or "no confidence", cand["rank"][1],
+            held["conf"] or "no confidence", held["rank"][1])
         if cand["rank"] > held["rank"]:
-            log.info("copy: %s (%s) beats held %s (%s) — the earlier one "
-                     "was the rehearsal", session_id, conf or "-",
-                     held["session_id"], held["conf"] or "-")
+            log.info("copy: %s beats held %s (%s) — the earlier one was "
+                     "the rehearsal", session_id, held["session_id"], _how)
             self._park(held)
             self._held = cand
         else:
-            log.info("copy: %s (%s) does not beat held %s (%s) — parked",
-                     session_id, conf or "-", held["session_id"],
-                     held["conf"] or "-")
+            log.info("copy: %s does not beat held %s (%s) — parked",
+                     session_id, held["session_id"], _how)
             self._park(cand)
             self._held["entrants"] = cand["entrants"]
         return None

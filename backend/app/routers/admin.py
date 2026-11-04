@@ -4194,8 +4194,13 @@ def _swing_strength(cut: dict) -> tuple:
     The ratio breaks ties inside a confidence band, where it is the
     only thing left that distinguishes two candidates.
     """
+    # STRIPPED AS WELL AS LOWERED. The confidence is a word out of a
+    # model's JSON, so " high" is as likely as "high" -- and without
+    # the strip it scores 0, which is below "low" and loses to
+    # anything. The rig's copy has always stripped; this one did not,
+    # and tools/pick_best_rank_test.py is where the two disagreed.
     _conf = VERIFY_CONFIDENCE_RANK.get(
-        str(cut.get("verify_confidence") or "").lower(), 0)
+        str(cut.get("verify_confidence") or "").strip().lower(), 0)
     try:
         _ratio = float(cut.get("ratio") or 0.0)
     except (TypeError, ValueError):
