@@ -53,6 +53,12 @@ from .swingfind import coverage_fraction, find_swings, merge_windows
 
 log = logging.getLogger("golfreelz_agent.copyengine")
 
+# "The caller did not say", which is NOT the same as "the caller said
+# None". None means a person detector never ran and the swing gate must
+# stand down; [] means it ran and saw nobody, and the gate applies. See
+# _enqueue_swings. A default of None would merge the two.
+_UNSET = object()
+
 # A clip is extracted only once the segment covering its last moment has
 # been closed by ffmpeg, which happens when the NEXT one opens. Waiting
 # is normally one segment; this is the bound on how long we will wait
@@ -449,8 +455,28 @@ class CopyEngine:
         fixed_seconds: Optional[float] = None,
         not_before: Optional[float] = None,
         tick: float = 0.2,
+        defer: Optional[Callable[[dict], None]] = None,
     ) -> str:
         """Wait out the swing, then cut it from the ring and upload it.
+
+        TWO PHASES, AND ONLY THE FIRST BELONGS TO THE CALLER'S THREAD.
+        Watching for the end of the swing has to happen there -- the
+        stop policy polls the person detector, which the detection loop
+        owns. Everything after it is ffmpeg and the link: waiting for
+        the last segment to close (up to 8s), the extract (9.25s on a
+        126s clip, measured on the tee 4 Nov), the audio mux, and the
+        hand-off to the uploader. `defer`, when given, is handed that
+        second phase as a job and this returns as soon as the swing has
+        ended. See cutqueue for why that matters -- the same thread
+        reads the microphone.
+
+        The reason string is settled before the split, so a caller's
+        dwell state machine sees exactly what it always did. The one
+        exception is `copy_extract_failed`, which can only be known
+        after the cut: deferred, the caller is told `length_cap` or
+        `no_person` instead. That changes nothing about splits or
+        cooldowns -- a person still standing in the ROI is still
+        standing there whether or not ffmpeg managed the cut.
 
         `should_stop(now)` is the RUNNER'S policy, not ours — the tee
         ends a clip when nobody has been in the tee box for a while, the
@@ -482,14 +508,24 @@ class CopyEngine:
         # silent clips -- the server's own swing detector reads this
         # audio (detect_swings_from_audio), so losing it would break
         # something a long way from here.
-        audio = None
-        try:
-            audio = self._audio_recorder_for(runner)
-            audio.start(session_id)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("copy: audio capture did not start (%s) — the clip "
-                        "will be silent", exc)
-            audio = None
+        #
+        # AND "NO RECORDER" IS NOT A FAILURE. `_audio_recorder_for`
+        # returns None on purpose when `keep_audio` is set -- the
+        # camera's own track is already in the segments and a second
+        # recorder would overwrite it with something worse. That None
+        # used to fall straight into `audio.start(...)`, raise
+        # AttributeError, and be reported as "audio capture did not
+        # start — the clip will be silent", on every single clip, on
+        # exactly the rigs whose clips are NOT silent. The guard, not
+        # the except, is what tells those two apart.
+        audio = self._audio_recorder_for(runner)
+        if audio is not None:
+            try:
+                audio.start(session_id)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("copy: audio capture did not start (%s) — the "
+                            "clip will be silent", exc)
+                audio = None
 
         # NOTHING IS RECORDED HERE. The video is already being written
         # by the ring; this loop only watches for the end of the swing.
@@ -544,6 +580,68 @@ class CopyEngine:
                 session_id, t_end - t_trigger,
                 getattr(should_stop, "stats", "no diagnostics"),
             )
+
+        # THE SIGHTINGS ARE SNAPSHOT HERE, ON THE CALLER'S THREAD.
+        # `_person_seen_at` is a deque the detection loop appends to,
+        # and iterating a deque while it is appended to raises "deque
+        # mutated during iteration". Today the swing gate reads it from
+        # that same thread, so it is safe; read it from the worker and
+        # the race is real -- and it fails QUIETLY, because
+        # _enqueue_swings catches everything and returns 0, which means
+        # "upload the session whole". A 126s clip is 60 MB on a
+        # cellular modem, which is the exact bill the swing gate exists
+        # to avoid. So it is copied to a plain list before the hand-off,
+        # keeping None distinct from [].
+        _seen = getattr(runner, "_person_seen_at", None)
+        job = {
+            "runner": runner, "session_id": session_id,
+            "t_start": t_start, "t_end": t_end, "t_trigger": t_trigger,
+            "reason": reason, "audio": audio,
+            "sightings": None if _seen is None else tee_roi.seen_times(_seen),
+        }
+        if defer is not None and self.clip_tail_is_deferrable(audio):
+            # THE SWING HAS ENDED; THE CUTTING HAS NOT STARTED. Handing
+            # it over here is the whole point: the caller gets its
+            # thread back before a second of ffmpeg is spent.
+            defer(job)
+            return reason
+        return self.finish_clip(job)
+
+    def clip_tail_is_deferrable(self, audio) -> bool:
+        """Can this clip's cut be finished on another thread?
+
+        ONLY THE RECORDER DECIDES. The cut itself is thread-safe --
+        reading segments and running ffmpeg over them -- and the
+        counters it touches are only touched there. What is not safe is
+        a SECOND RTSP audio session: deferring the tail keeps this
+        clip's recorder open across the queue wait, and the detection
+        loop may open the next clip's meanwhile. Two sessions to the
+        same camera cost eight seconds each to establish on the tee and
+        would fight for the one the pre-roll needs.
+
+        A RingAudioRecorder is not a session -- it reads the ring the
+        video already comes from, and is told apart by `extract_span`,
+        which is the same discriminator the mux below uses. That is the
+        path every rig with the ears on takes, including both of ours.
+        A rig using a real recorder keeps today's behaviour exactly.
+        """
+        return audio is None or hasattr(audio, "extract_span")
+
+    def finish_clip(self, job: dict) -> str:
+        """Cut the clip from the ring, mux its audio, hand it up.
+
+        RUNS ON THE CUT QUEUE'S WORKER when the caller gave
+        `record_and_upload` a `defer`, and inline on the caller's
+        thread when it did not. Nothing here touches the detection
+        loop's state: everything it needs was settled in phase one and
+        travels in `job`.
+        """
+        runner = job["runner"]
+        session_id = job["session_id"]
+        t_start, t_end = job["t_start"], job["t_end"]
+        t_trigger, reason = job["t_trigger"], job["reason"]
+        audio = job["audio"]
+        sightings = job.get("sightings", _UNSET)
 
         # WAIT FOR THE LAST SEGMENT TO CLOSE. The newest file is the one
         # ffmpeg is writing into, and the ring deliberately will not hand
@@ -662,7 +760,8 @@ class CopyEngine:
             # were never re-timed, so there is nothing to correct.
             # precompressed likewise: this IS the camera's encode.
             sent = self._enqueue_swings(
-                runner, up, session_id, clip_path, res, t_trigger)
+                runner, up, session_id, clip_path, res, t_trigger,
+                sightings=sightings)
             if not sent:
                 up.enqueue(
                     session_id, clip_path, res["start"],
@@ -1056,7 +1155,7 @@ class CopyEngine:
     # ---- swing selection -----------------------------------------------
 
     def _enqueue_swings(self, runner, up, session_id, clip_path, res,
-                        t_trigger) -> int:
+                        t_trigger, *, sightings=_UNSET) -> int:
         """Upload only the swings. Returns how many clips were sent.
 
         ZERO MEANS "SEND THE WHOLE THING", and every failure path
@@ -1092,9 +1191,18 @@ class CopyEngine:
             # falls back to uploading whole. Writing `if people else
             # None` collapsed the two and let cloud movement through on
             # a camera with no golfer in it.
-            seen = getattr(runner, "_person_seen_at", None)
+            # PREFER THE SNAPSHOT the caller took on its own thread;
+            # see record_and_upload on why reading the live deque from
+            # the cut queue's worker is not safe. _UNSET means nobody
+            # offered one, which is the inline callers, and reading it
+            # here is what they have always done.
+            if sightings is _UNSET:
+                _s = getattr(runner, "_person_seen_at", None)
+                seen = None if _s is None else tee_roi.seen_times(_s)
+            else:
+                seen = sightings
             people = (None if seen is None
-                      else [t - clip_start for t in tee_roi.seen_times(seen)])
+                      else [t - clip_start for t in seen])
 
             dbg: dict = {}
             windows = merge_windows(find_swings(

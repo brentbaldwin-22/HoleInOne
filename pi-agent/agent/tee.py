@@ -1312,6 +1312,7 @@ class TeeAgent:
         except Exception:  # noqa: BLE001
             _detail = None
         _job = {
+            "kind": "audio",
             "at": float(decision["at"]),
             "before_sec": float(decision["at"]) - float(decision["start"]),
             "after_sec": float(decision["end"]) - float(decision["at"]),
@@ -1332,13 +1333,26 @@ class TeeAgent:
         _q.submit(_job)
 
     def _run_cut_job(self, job: dict) -> None:
-        """The thirteen seconds: sub-cut, judge, contest, ship.
+        """Whatever ffmpeg work the detection loop handed over.
 
-        RUNS ON THE CUT QUEUE'S WORKER. Nothing in here may touch the
-        detection loop's state; everything it needs about the strike
-        was captured in `_cut_at_impact` and travels in `job`.
+        RUNS ON THE CUT QUEUE'S WORKER, for both kinds of clip:
+
+          "audio"  a strike the microphone heard -- sub-cut, swing
+                   judge, pick-best contest, ship. About thirteen
+                   seconds.
+          "dwell"  the tail of a finished dwell recording -- wait for
+                   the last segment to close, cut, mux, hand up. Up to
+                   eight seconds of waiting plus nine of extract on a
+                   126s clip.
+
+        Nothing in here may touch the detection loop's state;
+        everything either kind needs was settled before it was queued
+        and travels in `job`.
         """
         if self._copy is None:
+            return
+        if job.get("kind") == "dwell":
+            self._copy.finish_clip(job["clip"])
             return
         self._copy.cut_at_impact(
             self, job["at"],
@@ -1347,6 +1361,30 @@ class TeeAgent:
             clock_offset_sec=job["clock_offset_sec"],
             detail=job["detail"],
         )
+
+    def _defer_clip_tail(self, clip_job: dict) -> None:
+        """Queue the tail of a dwell recording. Called by the engine.
+
+        AT THE FRONT, because a dwell clip has far less slack against
+        the ring than an audio cut does -- see CutQueue.submit.
+
+        AND INLINE ONCE WE ARE STOPPING, rather than queued. `stop`
+        abandons whatever is still queued, on purpose -- those cuts
+        would mostly fail against a ring that is being stopped
+        underneath them. A dwell tail is the exception: the golfer has
+        already hit, the footage is already on disk, and there is no
+        microphone left to protect by deferring. So it is finished
+        here, which is exactly what this path did before the queue
+        existed. Same if the queue refuses it for any other reason.
+        """
+        _q = getattr(self, "_cuts", None)
+        if (_q is not None
+                and not self.stopping.is_set()
+                and _q.submit({"kind": "dwell", "clip": clip_job},
+                              front=True)):
+            return
+        if self._copy is not None:
+            self._copy.finish_clip(clip_job)
 
     def _flush_cut_window(self) -> None:
         """Close the pick-best window if it is due. On the worker."""
@@ -1852,6 +1890,14 @@ class TeeAgent:
                         # rather than losing it, and says so once.
                         _copy = getattr(self, "_copy", None)
                         if _copy is not None and _copy.ready():
+                            # ONLY WHEN THERE IS A WORKER TO DEFER TO.
+                            # Passing None leaves this rig on exactly
+                            # the behaviour it has always had, including
+                            # the copy_extract_failed reason that can
+                            # only be known after the cut.
+                            _defer = (self._defer_clip_tail
+                                      if getattr(self, "_cuts", None)
+                                      else None)
                             _why = _copy.record_and_upload(
                                 self, session_id,
                                 self._copy_stop_policy(
@@ -1869,6 +1915,7 @@ class TeeAgent:
                                         session_id)),
                                 fixed_seconds=pending_secs,
                                 not_before=_not_before,
+                                defer=_defer,
                             )
                         else:
                             if _copy is not None:

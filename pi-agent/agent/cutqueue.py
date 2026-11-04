@@ -171,14 +171,26 @@ class CutQueue:
 
     # ---- submission -----------------------------------------------------
 
-    def submit(self, job: dict) -> bool:
-        """Queue a job. True if it was taken, False if the queue is full.
+    def submit(self, job: dict, front: bool = False) -> bool:
+        """Queue a job. True if it was taken, False if it was refused.
 
         Returns rather than blocks, because the caller is the detection
         loop and blocking it is the entire problem this class exists to
         solve. A full queue drops the OLDEST job, not this one: the
         oldest is the closest to having its footage swept out of the
         ring and so the least likely to still be cuttable.
+
+        `front` jumps the queue, and exactly one caller uses it: a
+        finished DWELL clip. The two job kinds have very different
+        amounts of slack against the ring. An audio cut needs about
+        13.5s of footage around an impact a second or two old, so it
+        can wait more than two minutes and still be cuttable. A dwell
+        clip can be 126s long, and the ring holds about 153 -- so it
+        has perhaps 25 seconds before its own beginning is swept out
+        from under it. Behind a burst of ten audio cuts at 13s each it
+        would be gone, and today it is never lost at all. So it goes
+        first. There is only one worker either way, so this reorders
+        the queue without ever running two ffmpegs at once.
         """
         with self._wake:
             # CHECKED UNDER THE LOCK, not before it. `stop` sets the
@@ -193,7 +205,10 @@ class CutQueue:
             if len(self._q) >= self._max_depth:
                 dropped = self._q.popleft()
                 self.shed += 1
-            self._q.append(job)
+            if front:
+                self._q.appendleft(job)
+            else:
+                self._q.append(job)
             self.queued += 1
             depth = len(self._q)
             self._wake.notify()
