@@ -29449,13 +29449,44 @@ def _d3_save_swing(db, upload_id: int, idx: int, rec: dict,
         # With one, everything is kept as before. Without one, a run
         # that found no landing is believed -- it looked, and there was
         # nothing there.
-        _by_hand = bool((prior or {}).get("green_track"))
-        for _k in ("landing_frame", "landing_spot", "green_track"):
-            if prior and prior.get(_k) is not None and rec.get(_k) is None:
-                if _by_hand or not rec.get("landing_searched"):
-                    merged[_k] = prior[_k]
-                else:
-                    merged.pop(_k, None)
+        # ...UNLESS A PERSON SAID TO DROP IT, which is the one case the
+        # rule above cannot survive. `_by_hand` is true exactly when a
+        # hand-plotted descent exists -- so pressing "clear descent" and
+        # saving sent green_track: null, the rule saw a hand-plotted
+        # prior and a null in the record, and put the twenty points
+        # straight back. A hand-plotted descent could therefore never be
+        # deleted: clear, save & close, reopen, and it is still there,
+        # and the clip is still produced from it.
+        #
+        # THE FRONTEND ALREADY FIXED THIS ONCE, one layer up: the save
+        # used to omit the landing keys entirely when there was none, so
+        # the patch never mentioned them and the old values survived. It
+        # sends explicit nulls now. This rule, added afterwards, undid
+        # that fix underneath it.
+        #
+        # A NULL AND A CLEARANCE ARE DIFFERENT STATEMENTS. Null is "this
+        # run has nothing to say about a descent", which is what every
+        # produce that found nothing is saying, and which must not erase
+        # a person's work. `descent_cleared` is "a person looked at this
+        # and says there is no descent", which must. Only the wizard
+        # ever sends it. Same shape as ball_manual and impact_manual:
+        # the record says whose answer it is carrying.
+        if rec.get("descent_cleared"):
+            for _k in ("landing_frame", "landing_spot", "green_track"):
+                merged.pop(_k, None)
+        else:
+            _by_hand = bool((prior or {}).get("green_track"))
+            for _k in ("landing_frame", "landing_spot", "green_track"):
+                if prior and prior.get(_k) is not None and rec.get(_k) is None:
+                    if _by_hand or not rec.get("landing_searched"):
+                        merged[_k] = prior[_k]
+                    else:
+                        merged.pop(_k, None)
+        # NOT STORED. It is an instruction about this save, not a fact
+        # about the swing -- left on the record it would sit in `prior`
+        # for ever and clear every descent a later produce managed to
+        # find.
+        merged.pop("descent_cleared", None)
         swings = [s for s in swings if int(s.get("idx", -1)) != idx]
         swings.append(merged)
         swings.sort(key=lambda s: int(s.get("idx", 0)))

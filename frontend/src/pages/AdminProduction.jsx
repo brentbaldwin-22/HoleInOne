@@ -2252,6 +2252,15 @@ function ClickToPlotModal({
                     landing_frame: null,
                     landing_spot: null,
                     green_track: null,
+                    // AND SAY IT IS A CLEARANCE, not an absence. The
+                    // nulls above were not enough: the save endpoint's
+                    // merge restores a hand-plotted descent whenever
+                    // the record carries none, which is right for a
+                    // produce that found nothing and wrong for a
+                    // person who has just pressed "clear descent". The
+                    // three nulls went in and the twenty points came
+                    // straight back out. See _d3_save_swing.
+                    descent_cleared: true,
                   }),
               ...(ballAtRest
                 // ball_manual marks it operator-placed; the produce
