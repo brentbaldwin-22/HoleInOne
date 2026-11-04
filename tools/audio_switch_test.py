@@ -64,7 +64,11 @@ class FakeCopy:
     def __init__(self):
         self.flushes = 0
 
-    def flush_pick_best(self, runner):
+    def ship_held_now(self, runner):
+        # NOT flush_pick_best, which the handler used to call and which
+        # refuses before the contest deadline -- so the old code
+        # believed it had shipped and had not. See
+        # CopyEngine.ship_held_now.
         self.flushes += 1
 
 
@@ -120,8 +124,9 @@ check("the ring is stopped", s.live.ring.stopped, 1)
 check("the trigger is let go", s.listening, False)
 check("the answer is remembered", s._audio_wanted, False)
 # A CANDIDATE WAITING OUT ITS CONTEST WINDOW was heard before the
-# switch was flipped and nothing else will ever flush it: the flush
-# only happens on a tick, and there are about to be no more ticks.
+# switch was flipped, and it can only be beaten by another strike --
+# of which there are about to be none. So it ships now rather than
+# sitting on the card for the rest of its window.
 check("a held swing is shipped first, not stranded", s._copy.flushes, 1)
 # Idempotent: watch-status repeats the same answer about once a second.
 s.note(False)

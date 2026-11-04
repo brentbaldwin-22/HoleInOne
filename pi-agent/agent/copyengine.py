@@ -36,6 +36,7 @@ alone here.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -306,7 +307,18 @@ class CopyEngine:
         # THE SWING CURRENTLY WINNING ITS WINDOW, or None. See
         # _hold_candidate: a confirmed swing is held rather than
         # shipped while a better one might still arrive.
+        #
+        # LOCKED, because three threads reach it. The cut queue's
+        # worker enters it from `cut_at_impact` and leaves it from
+        # `flush_pick_best`, and the watch-status thread flushes it
+        # from under both when the ears are switched off mid-contest.
+        # That last one was already a race before the queue existed --
+        # two threads could each read the same `_held` and ship it
+        # twice, registering one swing as two events. The lock is only
+        # ever held long enough to SWAP the candidate out; shipping it
+        # is an upload and happens outside.
         self._held: dict | None = None
+        self._held_lock = threading.Lock()
         self._last: dict = {}
 
     # ---- construction --------------------------------------------------
@@ -819,7 +831,6 @@ class CopyEngine:
         golfer lowering his follow-through paints the same
         figure-and-plume and arrives AFTER the strike.
         """
-        held = self._held
         cand = {
             "session_id": session_id, "clip_path": clip_path,
             "impact_ts": float(impact_ts),
@@ -832,40 +843,51 @@ class CopyEngine:
             "until": time.time() + float(hold_sec),
             "entrants": 1,
         }
-        if held is None:
-            self._held = cand
-            log.info("copy: HOLDING %s (%s) for %.0fs — looking for a "
-                     "better swing before spending the link",
-                     session_id, conf or "no confidence", hold_sec)
-            return None
+        # DECIDED UNDER THE LOCK, ACTED ON OUTSIDE IT. Parking moves a
+        # file and shipping is an upload; neither may be done while
+        # holding a lock the cut queue's next job wants. So the whole
+        # contest is settled here and the two slow verbs are handed out
+        # as `_park_me` and `_ship`.
+        _park_me = None
+        _ship = None
+        with self._held_lock:
+            held = self._held
+            if held is None:
+                self._held = cand
+                log.info("copy: HOLDING %s (%s) for %.0fs — looking for a "
+                         "better swing before spending the link",
+                         session_id, conf or "no confidence", hold_sec)
+                return None
 
-        cand["until"] = held["until"]
-        cand["entrants"] = held["entrants"] + 1
-        if cand["entrants"] > _PICK_BEST_MAX_ENTRANTS:
-            # Enough. Ship the leader now and let the refractory it
-            # starts quieten whatever else is making this noise.
-            log.info("copy: %d candidates in one window — shipping %s and "
-                     "closing it", cand["entrants"], held["session_id"])
-            self._park(cand)
-            return self._flush_held(runner)
-
-        # WHY IT WON OR LOST, in the numbers that decided it. "beats
-        # held" said nothing about whether the judge or the microphone
-        # separated them, and the whole point of the tiebreak is that
-        # those are different events.
-        _how = "%s x%.1f vs %s x%.1f" % (
-            conf or "no confidence", cand["rank"][1],
-            held["conf"] or "no confidence", held["rank"][1])
-        if cand["rank"] > held["rank"]:
-            log.info("copy: %s beats held %s (%s) — the earlier one was "
-                     "the rehearsal", session_id, held["session_id"], _how)
-            self._park(held)
-            self._held = cand
-        else:
-            log.info("copy: %s does not beat held %s (%s) — parked",
-                     session_id, held["session_id"], _how)
-            self._park(cand)
-            self._held["entrants"] = cand["entrants"]
+            cand["until"] = held["until"]
+            cand["entrants"] = held["entrants"] + 1
+            # WHY IT WON OR LOST, in the numbers that decided it. "beats
+            # held" said nothing about whether the judge or the microphone
+            # separated them, and the whole point of the tiebreak is that
+            # those are different events.
+            _how = "%s x%.1f vs %s x%.1f" % (
+                conf or "no confidence", cand["rank"][1],
+                held["conf"] or "no confidence", held["rank"][1])
+            if cand["entrants"] > _PICK_BEST_MAX_ENTRANTS:
+                # Enough. Ship the leader now and let the refractory it
+                # starts quieten whatever else is making this noise.
+                log.info("copy: %d candidates in one window — shipping %s "
+                         "and closing it",
+                         cand["entrants"], held["session_id"])
+                _park_me, _ship, self._held = cand, held, None
+            elif cand["rank"] > held["rank"]:
+                log.info("copy: %s beats held %s (%s) — the earlier one was "
+                         "the rehearsal", session_id, held["session_id"], _how)
+                _park_me, self._held = held, cand
+            else:
+                log.info("copy: %s does not beat held %s (%s) — parked",
+                         session_id, held["session_id"], _how)
+                _park_me = cand
+                self._held["entrants"] = cand["entrants"]
+        if _park_me is not None:
+            self._park(_park_me)
+        if _ship is not None:
+            return self._ship_one(runner, _ship)
         return None
 
     def _park(self, cand):
@@ -887,8 +909,19 @@ class CopyEngine:
 
     def _flush_held(self, runner):
         """Ship whatever is holding. Returns its session id, or None."""
-        cand = self._held
-        self._held = None
+        with self._held_lock:
+            cand, self._held = self._held, None
+        return self._ship_one(runner, cand)
+
+    def _ship_one(self, runner, cand):
+        """Ship a candidate already taken out of `_held`, or nothing.
+
+        TAKEN OUT FIRST, DELIBERATELY. Every caller swaps the
+        candidate out under the lock and then calls this, so two
+        threads racing to flush the same window cannot both ship it --
+        the loser gets None. Before the lock existed that race
+        registered one swing as two events.
+        """
         if cand is None:
             return None
         # Only a confirmed swing is ever held, so shipping one always
@@ -898,23 +931,45 @@ class CopyEngine:
             cand["clock_offset_sec"], cand["detail"], cand["res"],
             confirmed=True)
 
+    def ship_held_now(self, runner):
+        """Ship the held swing immediately, window or no window.
+
+        FOR SWITCHING THE EARS OFF, and nothing else. A candidate
+        waiting out its contest can only be beaten by another strike,
+        and there are about to be none -- so waiting out the rest of
+        the window buys nothing and leaves a clip sitting on the card
+        for twelve seconds after the operator asked for it.
+
+        `flush_pick_best` deliberately refuses before the deadline,
+        which is right while the ears are open and was WRONG here: the
+        switch-off path called it believing it shipped, and so a swing
+        heard a second before the switch was never uploaded at all.
+        """
+        return self._flush_held(runner)
+
     def flush_pick_best(self, runner, now=None):
         """Ship a held swing once its window has closed.
 
-        DRIVEN FROM THE DETECTION LOOP, beside the audio trigger's own
-        tick. Nothing else would ever call it, and a swing that is
-        held and never shipped is worse than one that was never held:
-        the clip is on the card and nobody is waiting for it.
+        DRIVEN FROM THE CUT QUEUE'S WORKER -- after every job and on
+        every idle tick, so the window closes on schedule whether or
+        not another strike arrives. It used to be driven from the
+        detection loop, which is also where the ship's /event-trigger
+        round trip was paid; see cutqueue for why that moved.
+
+        Nothing else would ever call it, and a swing that is held and
+        never shipped is worse than one that was never held: the clip
+        is on the card and nobody is waiting for it.
         """
-        cand = self._held
-        if cand is None:
-            return None
-        if (now if now is not None else time.time()) < cand["until"]:
-            return None
+        _now = now if now is not None else time.time()
+        with self._held_lock:
+            cand = self._held
+            if cand is None or _now < cand["until"]:
+                return None
+            self._held = None
         log.info("copy: window closed — shipping %s (%s), best of %d",
                  cand["session_id"], cand["conf"] or "no confidence",
                  cand["entrants"])
-        return self._flush_held(runner)
+        return self._ship_one(runner, cand)
 
     def _ship_impact(self, runner, session_id, clip_path, impact_ts,
                      clock_offset_sec, detail, res, confirmed=False):

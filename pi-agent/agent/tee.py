@@ -47,6 +47,7 @@ from .common import (
 )
 from . import audiotrigger
 from . import tee_roi
+from .cutqueue import CutQueue
 from .focus_meter import FocusMeter
 from .livestream import LiveStreamer
 from .copyengine import (
@@ -1037,13 +1038,21 @@ class TeeAgent:
             if not want and self._audio_trigger is not None:
                 # SHIP WHAT IS ALREADY HELD BEFORE GOING QUIET. A
                 # candidate waiting out its contest window was heard
-                # before the switch was flipped, and nothing else will
-                # ever flush it -- `flush_pick_best` is only called on a
-                # tick, and there are about to be no more ticks. The
-                # backend decides whether it still wants it.
+                # before the switch was flipped, and it can only be
+                # beaten by another strike -- of which there are about
+                # to be none. The backend decides whether it still
+                # wants it.
+                #
+                # `ship_held_now`, NOT `flush_pick_best`: the latter
+                # refuses before the deadline, so this path used to
+                # believe it had shipped and had not. The cut queue's
+                # worker would get to it in the end now that the flush
+                # is no longer gated on there being a live trigger, but
+                # "in the end" is twelve seconds after the operator
+                # asked, and the old code was wrong on its own terms.
                 try:
                     if self._copy is not None:
-                        self._copy.flush_pick_best(self)
+                        self._copy.ship_held_now(self)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("copy: could not flush the held swing "
                                 "before switching the ears off (%s)", exc)
@@ -1256,11 +1265,20 @@ class TeeAgent:
             return None
 
     def _cut_at_impact(self, decision: dict) -> None:
-        """Cut and upload a swing the audio trigger confirmed.
+        """Hand a confirmed swing to the cut queue. Returns at once.
+
+        CALLED ON THE DETECTION LOOP, from the audio trigger's own
+        tick, which is why it does almost nothing. Describing the
+        strike is cheap and has to happen here -- the zone label and
+        the confirm tolerance are read off live state that may have
+        changed by the time the worker gets to it -- but the sub-cut,
+        the judge, the contest and the upload are thirteen seconds of
+        ffmpeg and modem, and paying them here is what put the ears
+        two minutes behind the course. See cutqueue.
 
         Called only when the trigger is LIVE -- in shadow it decides
         and returns -- and only for a crack that had a golfer in the
-        named zone. Everything that can go wrong here is logged and
+        named zone. Everything that can go wrong is logged and
         swallowed: the dwell is still running, still recording and
         still uploading, so a failure costs bandwidth, not a swing.
         """
@@ -1293,13 +1311,47 @@ class TeeAgent:
             }
         except Exception:  # noqa: BLE001
             _detail = None
+        _job = {
+            "at": float(decision["at"]),
+            "before_sec": float(decision["at"]) - float(decision["start"]),
+            "after_sec": float(decision["end"]) - float(decision["at"]),
+            "clock_offset_sec": _off,
+            "detail": _detail,
+        }
+        # getattr, because the worker is built in run() and plenty of
+        # things hold a TeeAgent that has never been run -- the
+        # trigger-detail and switch-off tests among them. An
+        # AttributeError here would lose the swing for a reason that
+        # has nothing to do with swings.
+        _q = getattr(self, "_cuts", None)
+        if _q is None:
+            # No queue. Do it here rather than drop the swing: slow is
+            # survivable, losing it is not.
+            self._run_cut_job(_job)
+            return
+        _q.submit(_job)
+
+    def _run_cut_job(self, job: dict) -> None:
+        """The thirteen seconds: sub-cut, judge, contest, ship.
+
+        RUNS ON THE CUT QUEUE'S WORKER. Nothing in here may touch the
+        detection loop's state; everything it needs about the strike
+        was captured in `_cut_at_impact` and travels in `job`.
+        """
+        if self._copy is None:
+            return
         self._copy.cut_at_impact(
-            self, float(decision["at"]),
-            before_sec=float(decision["at"]) - float(decision["start"]),
-            after_sec=float(decision["end"]) - float(decision["at"]),
-            clock_offset_sec=_off,
-            detail=_detail,
+            self, job["at"],
+            before_sec=job["before_sec"],
+            after_sec=job["after_sec"],
+            clock_offset_sec=job["clock_offset_sec"],
+            detail=job["detail"],
         )
+
+    def _flush_cut_window(self) -> None:
+        """Close the pick-best window if it is due. On the worker."""
+        if self._copy is not None:
+            self._copy.flush_pick_best(self)
 
     def run(self) -> None:
         cap = open_camera(self.cam_cfg)
@@ -1346,6 +1398,13 @@ class TeeAgent:
         self._audio_capable = False
         self._audio_wanted = None
         self._audio_lock = threading.Lock()
+        # THE THREAD THAT DOES THE THIRTEEN SECONDS. Built in run(),
+        # beside the copy engine it drives, and None until then: a
+        # TeeAgent that is constructed but never run has no worker, and
+        # `_cut_at_impact` falls back to doing the work inline so a
+        # test or a decode-engine rig still cuts the swing. See
+        # cutqueue.
+        self._cuts: CutQueue | None = None
         # WHERE a live audio trigger may suppress the dwell: None,
         # True for anywhere, or a set of zone indices. Off by default:
         # the dwell is the thing that has always produced clips, and
@@ -1527,6 +1586,13 @@ class TeeAgent:
         self._copy = CopyEngine.from_config(self.cfg, self.work_dir)
         if self._copy is not None:
             self._copy.start()
+            # AND THE WORKER THAT CUTS FROM IT. Every second this
+            # thread spends is a second the detection loop does not,
+            # and the detection loop is where the microphone is read.
+            self._cuts = CutQueue(
+                work=self._run_cut_job, flush=self._flush_cut_window,
+            )
+            self._cuts.start()
         # LISTENING FOR THE SWING ITSELF, alongside everything above and
         # changing none of it. Off unless asked for, and shadow by
         # default: it writes the cut it WOULD have made and nothing
@@ -1620,15 +1686,13 @@ class TeeAgent:
                         _at.tick()
                     except Exception as exc:  # noqa: BLE001
                         log.warning("audio trigger: tick failed (%s)", exc)
-                    # AND SHIP A SWING WHOSE WINDOW HAS CLOSED. Nothing
-                    # else calls this, and a swing held but never
-                    # shipped is worse than one never held: the clip is
-                    # on the card and nobody is waiting for it.
-                    try:
-                        self._copy.flush_pick_best(self)
-                    except Exception as exc:  # noqa: BLE001
-                        log.warning("copy: could not flush the held "
-                                    "swing (%s)", exc)
+                    # THE HELD SWING IS NOT SHIPPED FROM HERE ANY MORE.
+                    # Closing the window registers the event and hands
+                    # the clip to the uploader -- a backend round trip,
+                    # on the thread that reads the microphone. The cut
+                    # queue's worker drives it now, after every job and
+                    # on every idle tick, so the window still closes on
+                    # schedule when nothing is being heard. See cutqueue.
                 pending_secs = self._take_pending_capture()
                 forced = _take_force_trigger() or pending_secs is not None
                 if not forced and now < _cooldown_until:
@@ -1867,6 +1931,16 @@ class TeeAgent:
             cap.release()
             detector.close()
             hb.stop()
+            # THE WORKER FIRST, BEFORE THE UPLOADER IT FEEDS AND THE
+            # RING IT READS. `CutQueue.stop` finishes the job in hand
+            # and ships what is held, and shipping hands a clip to the
+            # uploader -- so stopping the uploader first would drain it
+            # and THEN be given one more swing, which nothing would
+            # ever send. Stopping the ring first would fail that same
+            # cut halfway through. This is the one ordering that lets
+            # the last swing of the day out.
+            if getattr(self, "_cuts", None) is not None:
+                self._cuts.stop()
             self.uploader.stop(drain_timeout=10.0)
             streamer.stop()
             if getattr(self, "_copy", None) is not None:

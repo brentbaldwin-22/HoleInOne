@@ -15,6 +15,7 @@ refractory starts when a swing SHIPS.
 """
 import sys
 import tempfile
+import threading
 import types
 from pathlib import Path
 
@@ -75,6 +76,12 @@ def rig(script, *, pick_best=12.0, refractory=12.0, tmp=None):
     eng.clips_dir = tmp
     eng.keep_audio = True
     eng._held = None
+    # The contest is reached from the cut queue's worker and from the
+    # watch-status thread, so `_held` is locked. This engine is built
+    # field by field rather than through __init__, so the lock has to
+    # be one of the fields -- a lazily created one would be racy in
+    # exactly the case the lock exists for.
+    eng._held_lock = threading.Lock()
 
     trig = object.__new__(audiotrigger.AudioTrigger)
     trig.verify = True
@@ -230,8 +237,11 @@ _src = Path(ROOT / "pi-agent/agent/audiotrigger.py").read_text()
 check("read from config.yaml", 'a.get("pick_best_sec"' in _src, True)
 _tee = Path(ROOT / "pi-agent/agent/tee.py").read_text()
 # A SWING HELD AND NEVER SHIPPED is worse than one never held: the
-# clip is on the card and nobody is waiting for it.
-check("and the loop drives the flush",
+# clip is on the card and nobody is waiting for it. WHICH thread
+# drives it is pinned by tools/cut_queue_test.py -- it used to be the
+# detection loop and is now the cut queue's worker. All this one cares
+# about is that somebody still does.
+check("and something still drives the flush",
       "flush_pick_best" in _tee, True)
 
 for q in TMP.rglob("*"):
