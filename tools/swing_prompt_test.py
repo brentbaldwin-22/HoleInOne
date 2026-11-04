@@ -51,6 +51,44 @@ says("a plume alone is enough, with no fan anywhere",
      "even with no fan shape")
 
 print()
+print("it handles the golfer being HIDDEN behind somebody else:")
+# THE SAME SHAPE OF BUG AS THE FAN, A SECOND TIME. Every positive
+# description in the first version required a compact hot body, so
+# there was no route to "true" without one -- and on a tee where
+# everybody stands in a line looking down the hole, a playing partner
+# in front of the swinger is routine. A person standing still carries
+# no heat, so they do not show up as a blob; they just block the body
+# behind them and the compact figure never forms.
+#
+# Upload 1310's neighbour, row 8 at 36.09s: refused "medium", reason
+# "two figures standing with clubs grounded; heat is scattered without
+# a compact bright body and vertical club plume" -- on a picture with
+# a bright vertical plume over the right-hand golfer's head AND a
+# dotted ball trail climbing away from it. The model applied the
+# rubric it was given, correctly.
+says("it says the body is often hidden", "body is often hidden")
+says("...and names what hides it", "playing partner", "cart", "bunker lip")
+says("...explaining why a still bystander is invisible, not a blob",
+     "standing still carries no heat")
+says("a plume ALONE is a swing, with no hot body at all",
+     "with no compact hot body anywhere")
+says("...and so is a ball trail alone", "ball trail setting off")
+# THE SENTENCE THAT UNDOES THE FAILURE, as "even with no fan shape"
+# undid the one before it. Without it the model can still reason "no
+# compact figure, therefore no swing" from the positives alone.
+says("it forbids refusing on a missing body by itself",
+     "do not answer false merely because no compact bright figure")
+says("...while still saying when false IS the answer",
+     "neither the plume nor the ball trail")
+
+print()
+print("and the ball trail counts FOR a swing, not only against:")
+says("its presence is evidence", "presence is strong evidence")
+says("...described so it cannot be confused with shimmer",
+     "evenly-spaced line of dots")
+says("...while its absence still means nothing", "absence means nothing")
+
+print()
 print("it still rejects the things that are not swings:")
 says("walking", "walking")
 says("...distinguished by travel, not by absence of a fan",
@@ -58,6 +96,11 @@ says("...distinguished by travel, not by absence of a fan",
 says("bending to tee up", "bending to tee")
 says("foliage shimmer", "shimmer")
 says("bystanders carrying no heat are not the subject", "standing around")
+# ...but the negative must not re-create the hole the positives just
+# closed: "judge the figure that IS hot" was the old wording, and on
+# an occluded swing there is no hot figure to judge.
+says("...but they may be in front of the one who swung",
+     "standing in front")
 
 print()
 print("and it still returns the shape the caller parses:")
