@@ -170,6 +170,55 @@ def main() -> int:
     check("each look reaches higher than the last",
           held(3, 3)[1] > held(1, 1)[1], True)
 
+    # ---- the judge's own picture is framed on the golfer ------------
+    # THE REASON THREE ROUNDS OF PROMPT WORDING DID NOTHING. The judge
+    # gets the composite at whatever size it is written -- there is no
+    # resize anywhere in judge_swing_heat_image -- and the crop came
+    # from the trigger zones, 3x their extent, which on a wide tee
+    # clamps to most of the frame. A club plume measures perhaps
+    # 60x100px in a 1920-wide composite: about three per cent of the
+    # picture, and the whole verdict turns on it.
+    def judge_crop(golfer):
+        _gx, _gy, _gw, _gh = golfer
+        _cw = max(tr.JUDGE_CROP_WIDTHS * _gw, 0.9 * _gh)
+        _ccx = _gx + _gw / 2.0
+        return (int(_ccx - _cw / 2.0),
+                int(_gy - tr.JUDGE_CROP_HEADROOM * _gh),
+                int(_cw),
+                int(_gh * (1.0 + tr.JUDGE_CROP_HEADROOM
+                           + tr.JUDGE_CROP_FOOTROOM)))
+
+    # A golfer as the heat actually measures one on this camera.
+    GOLFER = [1180, 560, 60, 200]
+    _c = judge_crop(GOLFER)
+    _plume_px = 60 * 100          # what a club plume spans
+    _full = (W * H) / float(_plume_px)
+    _cropped = (_c[2] * _c[3]) / float(_plume_px)
+    print(f"      plume is 1/{_full:.0f} of the full frame, "
+          f"1/{_cropped:.0f} of the crop")
+    check("framing on the golfer makes the plume a far bigger share",
+          _cropped < _full / 8.0, True)
+    check("  the crop clears the ≥160px floor both ways",
+          min(_c[2], _c[3]) >= 160, True)
+    # IT MUST NOT CUT THE CLUB OFF, which is the one thing it exists to
+    # show. The plume reaches above the head by about a body height.
+    check("  it reaches a body-height-and-a-half above the head",
+          _c[1] <= GOLFER[1] - GOLFER[3], True)
+    check("  and keeps the feet in frame",
+          _c[1] + _c[3] >= GOLFER[1] + GOLFER[3], True)
+    # WIDE ENOUGH THAT THE WRONG PERSON IS SURVIVABLE. If the body pick
+    # went to a partner, the swinger beside them must still be in shot.
+    check("  and is several body-widths across, not one",
+          _c[2] >= 3 * GOLFER[2], True)
+    src2 = (ROOT / "backend" / "app" / "services" / "tracer.py").read_text()
+    check("the judged picture prefers it over the caller's zones",
+          'out["crop_from"] = "the golfer the motion heat found"' in src2,
+          True)
+    check("  and says so when it fell back to the zones",
+          '"the camera\'s trigger zones"' in src2, True)
+    check("  and when the crop was too small to use",
+          "too small to use" in src2, True)
+
     # ---- and the composite shows what it aimed at -------------------
     src = (ROOT / "backend" / "app" / "services" / "tracer.py").read_text()
     check("the evidence image draws the first-look box",
