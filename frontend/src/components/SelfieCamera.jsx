@@ -1,31 +1,41 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./Brand.jsx";
+import { pickCamera, sideOf } from "./cameraPick.js";
 
 /**
  * Full-screen camera capture optimised for full-outfit golfer selfies.
  *
- * Defaults to the rear camera (wider lens, higher res than the front cam on
- * most phones), shows a faint head-to-toe silhouette guide, and returns a
- * JPEG File via onCapture. Falls back to a file input if getUserMedia is
- * unavailable or permission is denied.
- *
- * IT TAKES THE WHOLE SCREEN, and it shoots in two steps the way a phone's
- * own camera does: frame, then review what you got with Retake or Use
- * Photo. A head-to-toe photograph cannot be framed in a box the size of a
- * form field -- the golfer is at arm's length or handing the phone to
+ * It takes the whole screen and shoots in two steps the way a phone's own
+ * camera does: frame, then review the shot with Retake or Use Photo. A
+ * head-to-toe photograph cannot be framed in a box the size of a form
+ * field -- the golfer is at arm's length or has handed the phone to
  * someone, and at that distance a thumbnail shows them nothing. The
- * review step is there for the same reason: whoever pressed the button
- * could not see the screen while they pressed it, so the first chance to
- * learn the shot was bad is afterwards.
+ * review exists for the same reason: whoever pressed the button could not
+ * see the screen while they pressed it.
  *
- * Rendered through a portal onto document.body. position:fixed resolves
- * against the nearest ancestor carrying a transform or filter rather than
- * the viewport, and this mounts inside a form card -- one transform
- * anywhere above it and "full screen" quietly becomes "inside that card".
+ * FLIP CHOOSES A CAMERA, IT DOES NOT ASK FOR A DIRECTION. This used to
+ * pass `facingMode: { ideal: ... }` and hope. `ideal` is a preference the
+ * browser may decline in silence, and it declined: Flip toggled the state
+ * and the mirroring, so the picture appeared to change, while the same
+ * front lens stayed live. Worse, a second pass then went looking for an
+ * ultrawide by label and swapped the stream out from under the first --
+ * two async paths writing one streamRef, with no way to tell which won.
  *
- * The stream keeps running behind the review so Retake is instant, and is
- * stopped on Use Photo, on cancel, and on unmount.
+ * So the devices are enumerated once (labels and ids are blank until
+ * permission is granted, which the first getUserMedia does) and from then
+ * on a camera is named outright with `deviceId: { exact }`. A named
+ * device is not a hint. Where labels are withheld entirely there is still
+ * a `facingMode: { exact }` fallback, which at least fails loudly rather
+ * than quietly handing back the lens that was already running.
+ *
+ * Which way the live camera actually points is read back from the track
+ * rather than assumed from what was asked for, so the mirroring and the
+ * saved JPEG follow the hardware instead of the request.
+ *
+ * Rendered through a portal onto document.body: position:fixed resolves
+ * against the nearest ancestor with a transform, and this mounts inside a
+ * form card.
  */
 export default function SelfieCamera({ onCapture, onCancel }) {
   const videoRef = useRef(null);
@@ -33,8 +43,12 @@ export default function SelfieCamera({ onCapture, onCancel }) {
   const fileFallbackRef = useRef(null);
   const [error, setError] = useState(null);
   const [ready, setReady] = useState(false);
-  const [facing, setFacing] = useState("environment"); // "environment" | "user"
-  // The frame just taken, held for review. null = still framing.
+  // What to open. "default" on first run, then a named device, or a bare
+  // direction where the browser will not name its cameras.
+  const [request, setRequest] = useState({ kind: "default" });
+  const [cameras, setCameras] = useState([]);
+  // Read back off the live track, not inferred from the request.
+  const [side, setSide] = useState("back");
   const [shot, setShot] = useState(null); // {file, url}
 
   // A full-screen camera over a scrollable form: without this the page
@@ -51,9 +65,26 @@ export default function SelfieCamera({ onCapture, onCancel }) {
   useEffect(() => {
     let cancelled = false;
 
+    function constraintsFor(req) {
+      if (req.kind === "device") {
+        return { deviceId: { exact: req.id } };
+      }
+      if (req.kind === "facing") {
+        // exact, not ideal: a refusal we can see beats a silent no-op.
+        return { facingMode: { exact: req.facing } };
+      }
+      return {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      };
+    }
+
     async function start() {
       setReady(false);
       setError(null);
+      // iOS will hand back the lens already running if the old tracks are
+      // still live, so the stop has to come first and has to be complete.
       stopStream();
 
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -61,37 +92,66 @@ export default function SelfieCamera({ onCapture, onCancel }) {
         return;
       }
 
+      let stream;
       try {
-        // Ask for high-res video to hint the browser toward a wider lens.
-        const stream = await navigator.mediaDevices.getUserMedia({
+        stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
-          video: {
-            facingMode: { ideal: facing },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-          },
+          video: constraintsFor(request),
         });
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
+      } catch (e) {
+        if (cancelled) return;
+        if (request.kind !== "default") {
+          // That camera would not open. Say so and stay on the one that
+          // was working rather than leaving a black screen.
+          setError("Couldn't switch camera on this phone.");
+          setReady(true);
           return;
         }
-        streamRef.current = stream;
-
-        // Try to widen the field of view: pick the ultrawide back lens
-        // (iPhones expose it as a separate device) and/or apply min-zoom
-        // (Android Chrome supports the zoom constraint).
-        await widenIfPossible(facing);
-
-        const video = videoRef.current;
-        if (video) {
-          video.srcObject = streamRef.current;
-          // iOS requires playsInline + a user gesture; we start from the
-          // parent's onClick so this play() call is allowed.
-          await video.play().catch(() => {});
-          setReady(true);
-        }
-      } catch (e) {
         setError(e?.message || "Couldn't open camera. Use the file picker below.");
+        return;
+      }
+      if (cancelled) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      streamRef.current = stream;
+
+      const track = stream.getVideoTracks()[0];
+
+      // Widen the field of view where the device allows it. Zoom only --
+      // picking a different lens is the selection step's job now.
+      try {
+        const caps = track?.getCapabilities ? track.getCapabilities() : {};
+        if (caps.zoom && typeof caps.zoom.min === "number") {
+          await track.applyConstraints({ advanced: [{ zoom: caps.zoom.min }] });
+        }
+      } catch { /* best-effort */ }
+
+      // Labels and ids are blank strings until permission has been
+      // granted, which has now happened, so this is the moment to look.
+      if (!cameras.length) {
+        try {
+          const list = (await navigator.mediaDevices.enumerateDevices())
+            .filter((d) => d.kind === "videoinput" && d.deviceId)
+            .map((d) => ({ deviceId: d.deviceId, label: d.label || "", side: sideOf(d.label) }));
+          if (!cancelled && list.length) setCameras(list);
+        } catch { /* flip falls back to facingMode */ }
+      }
+
+      const settings = track?.getSettings ? track.getSettings() : {};
+      const live =
+        settings.facingMode === "user" ? "front"
+          : settings.facingMode === "environment" ? "back"
+            : sideOf(track?.label || "");
+      if (!cancelled && live !== "unknown") setSide(live);
+
+      const video = videoRef.current;
+      if (video) {
+        video.srcObject = stream;
+        // iOS requires playsInline + a user gesture; we start from the
+        // parent's onClick so this play() call is allowed.
+        await video.play().catch(() => {});
+        if (!cancelled) setReady(true);
       }
     }
 
@@ -101,61 +161,23 @@ export default function SelfieCamera({ onCapture, onCancel }) {
       stopStream();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [facing]);
-
-  async function widenIfPossible(currentFacing) {
-    const stream = streamRef.current;
-    if (!stream) return;
-
-    // 1. Apply min-zoom on the existing track if the device supports it.
-    //    Works on most modern Android Chrome; iOS Safari ignores it.
-    const track = stream.getVideoTracks()[0];
-    try {
-      const caps = track && track.getCapabilities ? track.getCapabilities() : {};
-      if (caps.zoom && typeof caps.zoom.min === "number") {
-        await track.applyConstraints({ advanced: [{ zoom: caps.zoom.min }] });
-      }
-    } catch { /* best-effort */ }
-
-    // 2. On rear-facing only, look for an ultrawide device and swap to it.
-    //    enumerateDevices only returns labels after permission has been
-    //    granted (which we just did above), so this is the right time.
-    if (currentFacing !== "environment") return;
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const ultrawide = devices.find(
-        (d) =>
-          d.kind === "videoinput" &&
-          /ultra.?wide|0\.?5/i.test(d.label || "")
-      );
-      if (!ultrawide || !ultrawide.deviceId) return;
-
-      stream.getTracks().forEach((t) => t.stop());
-      const newStream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: { deviceId: { exact: ultrawide.deviceId } },
-      });
-      streamRef.current = newStream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = newStream;
-        await videoRef.current.play().catch(() => {});
-      }
-      // Re-apply min zoom on the new track too.
-      const t2 = newStream.getVideoTracks()[0];
-      try {
-        const c2 = t2 && t2.getCapabilities ? t2.getCapabilities() : {};
-        if (c2.zoom && typeof c2.zoom.min === "number") {
-          await t2.applyConstraints({ advanced: [{ zoom: c2.zoom.min }] });
-        }
-      } catch { /* best-effort */ }
-    } catch { /* fall back to the default rear cam */ }
-  }
+  }, [request]);
 
   function stopStream() {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
+  }
+
+  function flip() {
+    const want = side === "front" ? "back" : "front";
+    const cam = pickCamera(cameras, want);
+    // Optimistic: corrected from the track once the new stream is live.
+    setSide(want);
+    setRequest(cam
+      ? { kind: "device", id: cam.deviceId }
+      : { kind: "facing", facing: want === "front" ? "user" : "environment" });
   }
 
   function capture() {
@@ -165,9 +187,9 @@ export default function SelfieCamera({ onCapture, onCancel }) {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
-    // Mirror for the user-facing camera so the captured image matches what the
-    // golfer saw on screen (we mirrored the preview via CSS).
-    if (facing === "user") {
+    // Mirror the front camera so the JPEG matches the preview the golfer
+    // framed against. Keyed on the LIVE camera, not the requested one.
+    if (side === "front") {
       ctx.translate(canvas.width, 0);
       ctx.scale(-1, 1);
     }
@@ -213,7 +235,7 @@ export default function SelfieCamera({ onCapture, onCancel }) {
         playsInline
         muted
         autoPlay
-        className={`camera-full-media${facing === "user" ? " mirror" : ""}`}
+        className={`camera-full-media${side === "front" ? " mirror" : ""}`}
       />
 
       {/* Silhouette guide overlay */}
@@ -235,6 +257,10 @@ export default function SelfieCamera({ onCapture, onCancel }) {
         <path d="M64 50 L74 100 L76 130" />
       </svg>
 
+      {/* Which lens is live. The flip was silently doing nothing before,
+          and a golfer could not tell; neither could anyone debugging it. */}
+      <div className="camera-which">{side === "front" ? "Front camera" : "Back camera"}</div>
+
       <div className="camera-coach">Fit head to toe inside the outline</div>
 
       <div className="camera-bar">
@@ -251,8 +277,8 @@ export default function SelfieCamera({ onCapture, onCancel }) {
         <button
           type="button"
           className="camera-text"
-          onClick={() => setFacing(facing === "user" ? "environment" : "user")}
-          aria-label="Flip camera"
+          onClick={flip}
+          aria-label={`Switch to the ${side === "front" ? "back" : "front"} camera`}
         >
           <Icon name="flip" size={18} /> Flip
         </button>
