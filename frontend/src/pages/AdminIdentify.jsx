@@ -67,6 +67,7 @@ export default function AdminIdentify() {
   const [player, setPlayer] = useState(null);   // the golfer being worked on
   const [busy, setBusy] = useState(null);       // clip id mid-request
   const [stills, setStills] = useState({});     // {clip_id: url}
+  const [holeIdx, setHoleIdx] = useState(0);    // where in the par-3s we are
   // Bumped whenever the course or day changes, so stills still in
   // flight for the day you just left cannot land on the new grid.
   const run = useRef(0);
@@ -136,6 +137,22 @@ export default function AdminIdentify() {
   const current = player && data
     ? data.players.find((p) => p.id === player.id) || player
     : null;
+
+  /**
+   * The holes to walk, in play order.
+   *
+   * The course's own par 3s, because that is what they are -- Rivertowne
+   * plays 2, 8, 14 and 17. Where a course has none recorded, fall back
+   * to the holes the day's footage actually came from: an unconfigured
+   * course should still be workable, and showing nothing at all would
+   * look like the page was broken rather than the course unset.
+   */
+  const holes = (data?.course?.par3_holes?.length
+    ? data.course.par3_holes
+    : [...new Set((data?.clips || []).map((c) => c.hole_number))].sort((a, b) => a - b));
+  const hole = holes[Math.min(holeIdx, Math.max(0, holes.length - 1))];
+  const holeClips = (data?.clips || []).filter((c) => c.hole_number === hole);
+  const onLastHole = holeIdx >= holes.length - 1;
 
   async function pair(clip) {
     if (!current) return;
@@ -245,7 +262,7 @@ export default function AdminIdentify() {
                   key={p.id}
                   type="button"
                   className="pick-tile"
-                  onClick={() => setPlayer(p)}
+                  onClick={() => { setHoleIdx(0); setPlayer(p); }}
                   title={`${p.name} — ${p.assigned} shot${p.assigned === 1 ? "" : "s"} so far`}
                 >
                   {p.selfie_url ? (
@@ -289,17 +306,27 @@ export default function AdminIdentify() {
             </button>
           </div>
 
+          <div className="inline" style={{ justifyContent: "space-between", width: "100%", marginTop: 14 }}>
+            <h4 style={{ margin: 0 }}>Hole {hole ?? "—"}</h4>
+            <span className="small muted">
+              Par 3 {Math.min(holeIdx + 1, holes.length)} of {holes.length}
+              {" · "}
+              {holeClips.length} shot{holeClips.length === 1 ? "" : "s"}
+            </span>
+          </div>
           <p className="small muted">
-            Every shot recorded that day. Tap one to give it to {current.name};
-            tap it again to take it back. Shots already belonging to someone
-            else say so — tapping one moves it.
+            {current.name}'s shot on hole {hole ?? "—"}. Tap it to give it to
+            them; tap it again to take it back. Shots already belonging to
+            someone else say so — tapping one moves it.
           </p>
 
-          {data.clips.length === 0 ? (
-            <p className="small muted">No shots were recorded at this course on this day.</p>
+          {holeClips.length === 0 ? (
+            <p className="small muted">
+              No shots on hole {hole ?? "—"} that day — move on.
+            </p>
           ) : (
             <div className="pick-grid">
-              {data.clips.map((c) => {
+              {holeClips.map((c) => {
                 const mine = c.participant_id === current.id;
                 const taken = c.participant_id != null && !mine;
                 return (
@@ -336,6 +363,30 @@ export default function AdminIdentify() {
               })}
             </div>
           )}
+
+          {/* NEXT IS ALWAYS LIVE, picked or not. Plenty of golfers do not
+              play every par 3, and plenty of shots never got recorded;
+              an operator made to pick something before moving on would
+              have to give the hole to the wrong person to escape it. */}
+          <div className="inline" style={{ justifyContent: "space-between", width: "100%", marginTop: 16 }}>
+            <button
+              type="button"
+              className="ghost small"
+              disabled={holeIdx === 0}
+              onClick={() => setHoleIdx((i) => Math.max(0, i - 1))}
+            >
+              ← Hole {holes[holeIdx - 1] ?? ""}
+            </button>
+            {onLastHole ? (
+              <button type="button" onClick={() => { setHoleIdx(0); setPlayer(null); }}>
+                Done with {current.name}
+              </button>
+            ) : (
+              <button type="button" onClick={() => setHoleIdx((i) => i + 1)}>
+                Next · Hole {holes[holeIdx + 1]} →
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>

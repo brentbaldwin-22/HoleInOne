@@ -212,8 +212,19 @@ def day(db: Session, course_id: int, start: datetime, end: datetime) -> dict:
         for p in tt.participants:
             players.append(_player_row(p, tally.get(p.id, 0)))
 
+    # THE PAR 3s, IN PLAY ORDER. The operator works a golfer one hole at
+    # a time, and which holes those are is a property of the course --
+    # Rivertowne's are 2, 8, 14 and 17. Sorted here rather than trusted:
+    # the column is free-form JSON set from the Courses page, and a list
+    # entered out of order would walk the operator backwards up the
+    # course.
+    try:
+        par3s = sorted({int(h) for h in (course.par3_holes or [])})
+    except (TypeError, ValueError):
+        par3s = []
+
     return {
-        "course": {"id": course.id, "name": course.name},
+        "course": {"id": course.id, "name": course.name, "par3_holes": par3s},
         "players": players,
         "clips": [_clip_row(c) for c in clips],
         "unidentified": sum(1 for c in clips if c.participant_id is None),
