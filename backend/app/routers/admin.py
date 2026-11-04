@@ -1360,31 +1360,34 @@ def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_
             scan_src = CLIPS_DIR / _cand
             break
 
+    # ONLY THE TRACER. The 9:16 render ranks five anchors -- marked
+    # ball, pose, ball track, tracer, pin -- because a pan has to hold up
+    # across a whole clip. A tile is one frame of one moment, and the
+    # tracer is the anchor that reads the picture itself rather than
+    # metadata that may never have reached this file, so it is the only
+    # one asked.
     tsx = _tracer_start_x(scan_src) or {}
     focus = shot_still.clamp_focus(tsx.get("x"))
-    at_sec = tsx.get("t")
+    focus_y = tsx.get("y")
 
     cap = cv2.VideoCapture(str(scan_src))
     if not cap.isOpened():
         raise HTTPException(500, "could not open source for frame grab")
     try:
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        # No tracer found: a second in beats frame zero, which on these
-        # clips is usually the address and sometimes a black lead-in.
-        idx = int(round(float(at_sec) * fps)) if at_sec else int(round(fps))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, idx))
+        # THE VERY FIRST FRAME. The golfer is at address, standing still
+        # and facing the camera, which is the frame that answers "what
+        # is this person wearing". The frame at impact has them mid-swing
+        # and half the time blurred. The tracer is only being asked WHERE
+        # the shot happened, not for a frame to show.
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         ok, frame = cap.read()
-        if not ok or frame is None:
-            # Seeking past the end of a short clip: take the opening.
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ok, frame = cap.read()
     finally:
         cap.release()
     if not ok or frame is None:
         raise HTTPException(500, "could not read a frame to still")
 
     fh, fw = frame.shape[:2]
-    x, y, w, h = shot_still.crop_box(fw, fh, focus)
+    x, y, w, h = shot_still.crop_box(fw, fh, focus, focus_y)
     crop = frame[y:y + h, x:x + w]
     # Tile-sized. A 132px column does not need a 608px JPEG, and eleven
     # of them do.
@@ -1403,7 +1406,8 @@ def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_
         "still_url": f"{settings.app_base_url}/uploads/clips/{out_path.name}"
                      f"?v={int(out_path.stat().st_mtime)}",
         "focus_x": round(focus, 3),
-        "at_sec": round(float(at_sec), 2) if at_sec else None,
+        "focus_y": round(float(focus_y), 3) if focus_y is not None else None,
+        "zoomed": focus_y is not None,
         "tracer_why": tsx.get("why"),
         "src_kind": "clean" if scan_src is not src_path else "stamped",
         "cached": False,
@@ -6414,8 +6418,16 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0):
                     _foot = _ys >= (_ys.max() - 6)
                     if _foot.sum() >= 3:
                         fx = float(np.median(_xs[_foot])) / sm.shape[1]
+                        # THE FOOT'S HEIGHT, TOO. The stroke rises from
+                        # the ball and the ball is at the golfer's feet,
+                        # so this y is where the golfer is standing --
+                        # which is what the Player ID tile crops around
+                        # vertically. Additive: the 9:16 render reads
+                        # "x" and "t" and is untouched by its presence.
+                        fy = float(np.median(_ys[_foot])) / sm.shape[0]
                         cands.append(
-                            (min(1.0, max(0.0, fx)), idx / fps),
+                            (min(1.0, max(0.0, fx)), idx / fps,
+                             min(1.0, max(0.0, fy))),
                         )
                 idx += 1
                 # DON'T TRUST ONE FRAME. The stroke's foot stays at the
@@ -6428,8 +6440,10 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0):
             if cands:
                 _xs = sorted(c[0] for c in cands)
                 _med = _xs[len(_xs) // 2]
+                _fys = sorted(c[2] for c in cands)
                 return {
-                    "x": _med, "t": cands[0][1], "why": "ok",
+                    "x": _med, "y": _fys[len(_fys) // 2],
+                    "t": cands[0][1], "why": "ok",
                     "best": best, "n": len(cands),
                     "spread": round(_xs[-1] - _xs[0], 3),
                 }
