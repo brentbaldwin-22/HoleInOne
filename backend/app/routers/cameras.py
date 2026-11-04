@@ -1531,7 +1531,20 @@ async def verify_swing(
         if _dest is None:
             out["reason"] = "could not write the composite anywhere"
             return out
-        j = judge_swing_heat_image(_dest)
+        # OFF THE EVENT LOOP. `judge_swing_heat_image` makes a
+        # SYNCHRONOUS vision call -- seconds of blocking network I/O --
+        # and this is an `async def`, so it ran ON the loop and every
+        # other request to the backend queued behind it. A rig heard an
+        # impact, the loop stopped, and the heartbeats, polls and
+        # uploads from both rigs waited out a model call.
+        #
+        # FastAPI runs a plain `def` endpoint in a threadpool for
+        # exactly this reason; an `async def` one it does not, so the
+        # work has to be handed over by hand. Two endpoints in this
+        # file already do (`post_live_frame`, `post_still`) -- this one
+        # was missed, and it is the one that blocks for seconds rather
+        # than milliseconds.
+        j = await asyncio.to_thread(judge_swing_heat_image, _dest)
         out["is_swing"] = j.get("is_swing")
         out["confidence"] = j.get("confidence")
         out["reason"] = j.get("reason")
@@ -1543,7 +1556,9 @@ async def verify_swing(
         # The fallback copy only ever existed to be judged.
         if _tmp is not None:
             _tmp.unlink(missing_ok=True)
-    _sweep_rig_heat()
+    # Also off the loop: it globs and stats a directory that only ever
+    # grows, which is a filesystem walk on a machine that is busy.
+    await asyncio.to_thread(_sweep_rig_heat)
     log.info("verify-swing: camera=%s -> %s (%s)",
              cam.id, out["is_swing"], out["reason"])
     return out

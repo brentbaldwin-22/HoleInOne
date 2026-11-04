@@ -330,6 +330,58 @@ _ORPHAN_MARKERS = (
 )
 
 
+def short_body(resp) -> str:
+    """A response body worth putting in front of a person.
+
+    AN HTML ERROR PAGE IS NOT INFORMATION. The rig pasted the first
+    120 characters of whatever came back into the event detail, which
+    reached the operator's card as:
+
+        502: <!DOCTYPE html> <HTML LANG="EN"> <HEAD> <META
+        CHARSET="UTF-8"> <META NAME="VIEWPORT" CONTENT="WIDTH=DEVICE-WID
+
+    -- a sentence that fills the card, cuts off mid-attribute, and
+    contains exactly one useful fact, which is the number in front of
+    it. The host's error page says nothing about this request; the
+    STATUS says it all, and the page's <title> ("502 Bad Gateway")
+    says it in four words.
+
+    A JSON body is different: the backend's own `detail` is written
+    for this reader and is the one case where the body beats the code.
+    So: the detail when there is one, the title when it is a web
+    page, the text when it is short and plain, and a shape-and-size
+    note when it is none of those.
+    """
+    try:
+        _ct = (resp.headers.get("content-type") or "").lower()
+    except Exception:  # noqa: BLE001
+        _ct = ""
+    try:
+        _txt = resp.text or ""
+    except Exception:  # noqa: BLE001
+        return "<unreadable body>"
+    if "json" in _ct or _txt[:1] in ("{", "["):
+        try:
+            _j = resp.json()
+            if isinstance(_j, dict):
+                _d = _j.get("detail") or _j.get("error") or _j.get("reason")
+                if _d:
+                    return str(_d)[:160]
+        except Exception:  # noqa: BLE001
+            pass
+    _low = _txt.lstrip()[:200].lower()
+    if "html" in _ct or _low.startswith(("<!doctype html", "<html")):
+        _m = re.search(r"<title[^>]*>(.*?)</title>", _txt,
+                       re.I | re.S)
+        _title = re.sub(r"\s+", " ", _m.group(1)).strip()[:80] if _m else ""
+        return ("%s (%d-byte HTML error page from the host, not the "
+                "backend)" % (_title or "no title", len(_txt)))
+    _flat = re.sub(r"\s+", " ", _txt).strip()
+    if not _flat:
+        return "<empty body>"
+    return _flat[:160]
+
+
 def _clip_is_orphaned(body: str) -> bool:
     low = (body or "").lower()
     return any(m in low for m in _ORPHAN_MARKERS)
@@ -430,13 +482,17 @@ class BackendClient:
                     return resp.json() if resp.content else {}
                 if resp.status_code in (400, 401, 403, 404):
                     # Hard fail — auth or validation problem, retry won't help.
+                    # The orphan check reads the BACKEND's own words,
+                    # so it gets the raw body; the message a person
+                    # reads gets the short one. See `short_body`.
                     _body = resp.text[:200]
                     _err = (UnattachableClip
                             if _clip_is_orphaned(_body) else RuntimeError)
+                    _body = short_body(resp)
                     raise _err(
                         f"{method} {path} -> {resp.status_code}: {_body}",
                     )
-                last_err = f"{resp.status_code}: {resp.text[:120]}"
+                last_err = f"{resp.status_code}: {short_body(resp)}"
                 log.warning(
                     "backend %s %s status %s (attempt %d/%d)",
                     method, path, resp.status_code, attempt + 1, retries,
