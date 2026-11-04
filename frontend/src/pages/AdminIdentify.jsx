@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import PlayerIdLink, { IDENTIFY_CHANGED } from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
@@ -68,6 +69,7 @@ export default function AdminIdentify() {
   const [busy, setBusy] = useState(null);       // clip id mid-request
   const [stills, setStills] = useState({});     // {clip_id: url}
   const [holeIdx, setHoleIdx] = useState(0);    // where in the par-3s we are
+  const [watch, setWatch] = useState(null);     // clip being played full-size
   // Bumped whenever the course or day changes, so stills still in
   // flight for the day you just left cannot land on the new grid.
   const run = useRef(0);
@@ -330,8 +332,8 @@ export default function AdminIdentify() {
                 const mine = c.participant_id === current.id;
                 const taken = c.participant_id != null && !mine;
                 return (
+                  <div key={c.id} className="pick-cell">
                   <button
-                    key={c.id}
                     type="button"
                     className={`pick-tile${mine ? " on" : ""}`}
                     onClick={() => pair(c)}
@@ -359,6 +361,22 @@ export default function AdminIdentify() {
                       <span className="pick-check"><Icon name="check" size={16} /></span>
                     )}
                   </button>
+                  {/* A SEPARATE BUTTON, not nested inside the tile: a
+                      button within a button is invalid, and a click
+                      meant for "watch" must never land on "give this
+                      shot to Alex". */}
+                  <button
+                    type="button"
+                    className="tile-watch"
+                    onClick={() => setWatch(c)}
+                    title="Watch the full clip"
+                    aria-label={`Watch the full clip from ${clipLabel(c)}`}
+                  >
+                    <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+                      <path d="M4 2.5 L13 8 L4 13.5 Z" fill="currentColor" />
+                    </svg>
+                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -388,6 +406,30 @@ export default function AdminIdentify() {
             )}
           </div>
         </div>
+      )}
+
+      {/* The full clip, for when a frozen frame is not enough to tell
+          two golfers in similar shirts apart. Through a portal, because
+          the grid sits inside cards that would clip it. */}
+      {watch && createPortal(
+        <div className="clip-watch" onClick={() => setWatch(null)}>
+          <video
+            src={watch.preview_url}
+            controls
+            autoPlay
+            playsInline
+            onClick={(e) => e.stopPropagation()}
+          />
+          <div className="clip-watch-bar">
+            <span className="small">
+              {fmtDateTime(watch.captured_at, undefined, { timeStyle: "short" })}
+              {" · "}{clipLabel(watch)}
+              {watch.participant_name ? ` · ${watch.participant_name}` : ""}
+            </span>
+            <button type="button" onClick={() => setWatch(null)}>Close</button>
+          </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

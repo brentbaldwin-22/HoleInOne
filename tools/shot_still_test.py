@@ -111,8 +111,28 @@ def main():
     check("rather than cutting bigger than the picture",
           x >= 0 and y >= 0 and x + w <= 200 and y + h <= 300, f"{x},{y},{w},{h}")
 
+    print("\nwhich frame gets frozen")
+    FPS, N = 30.0, 360          # a 12s clip
+    check("a second or so before the tracer, where the golfer is at address",
+          S.frame_index(FPS, 6.0, N) == int(round((6.0 - S.ADDRESS_LEAD_SEC) * FPS)),
+          f"{S.frame_index(FPS, 6.0, N)}")
+    check("which is BEFORE the swing, not frame zero",
+          0 < S.frame_index(FPS, 6.0, N) < int(6.0 * FPS))
+    check("a tracer that starts immediately cannot seek before the clip",
+          S.frame_index(FPS, 0.2, N) == 0, f"{S.frame_index(FPS, 0.2, N)}")
+    check("nor past the end of a short one",
+          S.frame_index(FPS, 99.0, N) == N - 1, f"{S.frame_index(FPS, 99.0, N)}")
+    check("no tracer takes the middle, not the opening",
+          S.frame_index(FPS, None, N) == N // 2, f"{S.frame_index(FPS, None, N)}")
+    check("and that is the point: frame zero can predate the golfer",
+          S.frame_index(FPS, None, N) != 0)
+    for bad in ("", "abc", float("nan")):
+        check(f"{bad!r} falls back to the middle", S.frame_index(FPS, bad, N) == N // 2)
+    check("a single-frame clip has only one answer", S.frame_index(FPS, 5.0, 1) == 0)
+    check("a nonsense fps does not crash the grab", S.frame_index(0, 6.0, N) >= 0)
+
     print("\nthe cache name is per source file")
-    check("named off the stem", S.still_name("clip123_composite") == "clip123_composite_shot_still2.jpg")
+    check("named off the stem", S.still_name("clip123_composite") == "clip123_composite_shot_still3.jpg")
 
     print()
     if fails:

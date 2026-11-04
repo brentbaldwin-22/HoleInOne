@@ -1369,18 +1369,27 @@ def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_
     tsx = _tracer_start_x(scan_src) or {}
     focus = shot_still.clamp_focus(tsx.get("x"))
     focus_y = tsx.get("y")
+    at_sec = tsx.get("t")
 
     cap = cv2.VideoCapture(str(scan_src))
     if not cap.isOpened():
         raise HTTPException(500, "could not open source for frame grab")
     try:
-        # THE VERY FIRST FRAME. The golfer is at address, standing still
-        # and facing the camera, which is the frame that answers "what
-        # is this person wearing". The frame at impact has them mid-swing
-        # and half the time blurred. The tracer is only being asked WHERE
-        # the shot happened, not for a frame to show.
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        # THE ADDRESS FRAME, a beat before the tracer starts. Frame
+        # zero was the first attempt and it put empty grass in the grid:
+        # a clip can open before the golfer has walked onto the tee. A
+        # second before the ball leaves they are stood over it -- in
+        # frame by definition, and not yet swinging, so not blurred.
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        idx = shot_still.frame_index(fps, at_sec, total)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ok, frame = cap.read()
+        if not ok or frame is None:
+            # Some containers refuse to seek. Rewind and take what the
+            # decoder will give rather than failing the tile.
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ok, frame = cap.read()
     finally:
         cap.release()
     if not ok or frame is None:
@@ -1408,6 +1417,7 @@ def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_
         "focus_x": round(focus, 3),
         "focus_y": round(float(focus_y), 3) if focus_y is not None else None,
         "zoomed": focus_y is not None,
+        "at_sec": round(float(at_sec), 2) if at_sec is not None else None,
         "tracer_why": tsx.get("why"),
         "src_kind": "clean" if scan_src is not src_path else "stamped",
         "cached": False,

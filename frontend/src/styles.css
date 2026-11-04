@@ -1231,6 +1231,58 @@ tr:last-child td { border-bottom: 0; }
   inset: 0;
   background: rgba(28, 168, 92, 0.18);
 }
+/* The Player ID grid puts a second control on each tile, so the tile
+   needs a wrapper to hang it off: a button cannot contain a button. */
+.pick-cell { position: relative; display: block; }
+.pick-cell .pick-tile { width: 100%; }
+.tile-watch {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  box-shadow: none;
+}
+.tile-watch:hover { background: rgba(0, 0, 0, 0.82); color: #fff; }
+/* The tick moves out of the watch button's corner. Scoped to this grid
+   so the golfer's own pick-your-shots screen keeps its own layout. */
+.pick-cell .pick-check { right: auto; left: 6px; }
+
+/* The full clip, over everything. */
+.clip-watch {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.88);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+}
+.clip-watch video {
+  max-width: min(100%, 420px);
+  max-height: 78vh;
+  border-radius: var(--radius-lg);
+  background: #000;
+}
+.clip-watch-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: #fff;
+}
+
 .pick-time {
   position: absolute;
   left: 6px;

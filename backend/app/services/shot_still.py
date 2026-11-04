@@ -117,6 +117,49 @@ def crop_box(frame_w: int, frame_h: int, focus_x: float, focus_y=None) -> tuple:
     return (x, y, cw, ch)
 
 
+# How far BEFORE the tracer starts to take the frame.
+#
+# Frame zero was the obvious choice and it is wrong often enough to show:
+# a clip can open before the golfer has walked onto the tee, and the tile
+# comes back as an empty box of grass. The tracer's start is the ball
+# leaving, so a second or so earlier is the golfer stood over it -- in
+# frame by definition, because they are about to hit the shot that made
+# the tracer, and still, because they have not swung yet.
+ADDRESS_LEAD_SEC = 1.2
+
+
+def frame_index(fps: float, tracer_t, total_frames: int) -> int:
+    """Which frame of the clip to freeze.
+
+    With a tracer: ADDRESS_LEAD_SEC before it starts. Without one there
+    is no moment worth naming, so take the middle of the clip -- a golfer
+    is more likely to be somewhere in the middle of their own clip than
+    in its opening frame, which is where the empty tiles came from.
+    """
+    try:
+        n = int(total_frames)
+    except (TypeError, ValueError):
+        n = 0
+    if n <= 1:
+        return 0
+    try:
+        f = float(fps)
+    except (TypeError, ValueError):
+        f = 0.0
+    if f <= 0:
+        f = 30.0
+    if tracer_t is None:
+        return n // 2
+    try:
+        t = float(tracer_t)
+    except (TypeError, ValueError):
+        return n // 2
+    if t != t:  # NaN
+        return n // 2
+    idx = int(round((t - ADDRESS_LEAD_SEC) * f))
+    return max(0, min(n - 1, idx))
+
+
 def still_name(stem: str) -> str:
     """Cache filename. One per source file, beside the clip it came from."""
-    return f"{stem}_shot_still2.jpg"
+    return f"{stem}_shot_still3.jpg"
