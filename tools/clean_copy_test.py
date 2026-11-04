@@ -84,8 +84,20 @@ def main():
     ]
     check("no site still builds this filename by hand",
           not hand_rolled, "; ".join(f"line {n}: {t}" for n, t in hand_rolled))
-    check("the helper is called in three places (two writers, one reader)",
-          src.count("clean_copy_path(") == 3, str(src.count("clean_copy_path(")))
+    # A FLOOR, NOT A HEADCOUNT. This asserted exactly three call sites
+    # and broke the moment a legitimate fourth reader arrived -- the
+    # Player ID tile, which crops its 9:16 from the pre-overlay copy
+    # and went through the helper to find it, which is precisely the
+    # behaviour this file exists to encourage. A test that fails when
+    # the code does the right thing teaches people to edit the test.
+    #
+    # What actually matters is above and below: nothing spells the
+    # filename by hand, and both WRITERS still copy before the overlay
+    # stamps. The count only needs to prove the helper has readers at
+    # all, so a site quietly deleted does not pass unnoticed.
+    _n_sites = src.count("clean_copy_path(")
+    check("the helper has both writers and at least one reader",
+          _n_sites >= 3, f"only {_n_sites} call site(s)")
 
     # The ordering is the whole fix: a copy taken AFTER the overlay is a
     # copy of the stamped frame, which is worse than none -- the render
