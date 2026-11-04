@@ -1292,6 +1292,19 @@ def identify_day(
         raise HTTPException(400, str(e))
 
 
+@router.get("/identify/pending")
+def identify_pending(start: str, end: str, db: Session = Depends(get_db)):
+    """The nav badge's number: clips nobody owns, across every course."""
+    try:
+        return identify.pending_total(
+            db,
+            identify.parse_instant(start, "start of the day"),
+            identify.parse_instant(end, "end of the day"),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 @router.post("/identify/clips/{clip_id}/pair")
 def identify_pair(clip_id: int, participant_id: int, db: Session = Depends(get_db)):
     try:

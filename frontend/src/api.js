@@ -397,6 +397,12 @@ export const api = {
       + `&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
       { adminPassword: key },
     ),
+  identifyPending: (key, { start, end }) =>
+    request(
+      `/api/admin/identify/pending?start=${encodeURIComponent(start)}`
+      + `&end=${encodeURIComponent(end)}`,
+      { adminPassword: key },
+    ),
   identifyPair: (key, clipId, participantId) =>
     request(
       `/api/admin/identify/clips/${clipId}/pair?participant_id=${participantId}`,

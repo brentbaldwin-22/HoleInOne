@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..models import (AuditLog, ClipProcessingStatus, Course, Participant,
@@ -114,6 +115,30 @@ def unidentified_counts(db: Session, start: datetime, end: datetime) -> list[dic
             "unidentified": int(pending.get(c.id, 0)),
         })
     return out
+
+
+def pending_total(db: Session, start: datetime, end: datetime) -> dict:
+    """How many clips across every course still belong to nobody.
+
+    For the badge in the operator nav, which is a doorbell rather than a
+    report: it rides on every admin page, where there is no course and no
+    date picker, so it answers the one question those pages can ask --
+    is there anything waiting. CLIPS, not golfers, because footage can
+    pile up on a day nobody registered and that is worth seeing from
+    wherever you happen to be standing.
+    """
+    if end <= start:
+        raise ValueError("the end of the day must come after its start")
+    n = (
+        db.query(func.count(VideoClip.id))
+        .filter(
+            VideoClip.participant_id.is_(None),
+            VideoClip.captured_at >= start,
+            VideoClip.captured_at < end,
+        )
+        .scalar()
+    )
+    return {"clips": int(n or 0)}
 
 
 def _player_row(p: Participant, assigned: int) -> dict:

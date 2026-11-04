@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import PlayerIdLink, { IDENTIFY_CHANGED } from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
 import { fmtDateTime } from "../time.js";
@@ -105,6 +106,7 @@ export default function AdminIdentify() {
       if (clip.participant_id === current.id) await api.identifyUnpair(adminPassword, clip.id);
       else await api.identifyPair(adminPassword, clip.id, current.id);
       await load();
+      window.dispatchEvent(new Event(IDENTIFY_CHANGED));
     } catch (e) {
       setError(e.message);
     } finally {
@@ -130,13 +132,13 @@ export default function AdminIdentify() {
       <div className="nav">
         <Link to="/admin">Dashboard</Link>
         <Link to="/admin/participants">Players</Link>
-        <Link to="/admin/identify" className="active">Player ID</Link>
         <Link to="/admin/courses">Courses</Link>
         <Link to="/admin/upload-videos">Upload</Link>
         <Link to="/admin/production">Production</Link>
         <Link to="/admin/produced-clips">Produced Clips</Link>
         <Link to="/admin/broadcast-clips">Broadcast</Link>
         <Link to="/admin/cameras">Cameras</Link>
+        <PlayerIdLink active />
       </div>
 
       <div className="card">

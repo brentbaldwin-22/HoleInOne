@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
 
 const ADMIN_PW_STORAGE = "golfreelz.adminPassword";
@@ -46,9 +47,9 @@ export default function AdminClaims() {
       <div className="nav">
         <Link to="/admin">Dashboard</Link>
         <Link to="/admin/participants">Players</Link>
-        <Link to="/admin/identify">Player ID</Link>
         <Link to="/admin/claims" className="active">Claims</Link>
         <Link to="/admin/reviews">Reviews</Link>
+        <PlayerIdLink />
       </div>
 
       <div className="card">

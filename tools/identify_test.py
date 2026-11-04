@@ -127,6 +127,29 @@ def main():
     except ValueError as e:
         check("the counts refuse a backwards day too", True, str(e))
 
+    print("\nthe nav badge counts CLIPS, wherever you are standing")
+    # Deliberately a different unit from the dropdown: footage piles up on
+    # days nobody registered, and the badge rides on pages that have no
+    # course picker to explain that away.
+    check("every loose clip that day, across all courses",
+          identify.pending_total(db, START, END)["clips"] == 5,
+          f'{identify.pending_total(db, START, END)["clips"]}'
+          " (4 at Rivertowne + 1 elsewhere)")
+    check("yesterday's and tomorrow's are not today's",
+          identify.pending_total(db, START + timedelta(days=30),
+                                 END + timedelta(days=30))["clips"] == 0)
+    identify.pair(db, shots[0].id, alex.id)
+    check("pairing one takes it off the badge",
+          identify.pending_total(db, START, END)["clips"] == 4)
+    identify.unpair(db, shots[0].id)
+    check("and unpairing puts it back",
+          identify.pending_total(db, START, END)["clips"] == 5)
+    try:
+        identify.pending_total(db, END, START)
+        check("a backwards day", False, "no error raised")
+    except ValueError as e:
+        check("the badge refuses a backwards day too", True, str(e))
+
     print("\nthe day is exactly the window it was given")
     d = identify.day(db, river.id, START, END)
     ids = {c["id"] for c in d["clips"]}

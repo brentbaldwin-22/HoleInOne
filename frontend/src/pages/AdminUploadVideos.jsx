@@ -12,6 +12,7 @@
  */
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
 import { Brand } from "../components/Brand.jsx";
 
@@ -101,13 +102,13 @@ export default function AdminUploadVideos() {
       <div className="nav">
         <Link to="/admin">Dashboard</Link>
         <Link to="/admin/participants">Players</Link>
-        <Link to="/admin/identify">Player ID</Link>
         <Link to="/admin/courses">Courses</Link>
         <Link to="/admin/upload-videos" className="active">Upload</Link>
         <Link to="/admin/production">Production</Link>
         <Link to="/admin/produced-clips">Produced Clips</Link>
         <Link to="/admin/broadcast-clips">Broadcast</Link>
         <Link to="/admin/cameras">Cameras</Link>
+        <PlayerIdLink />
       </div>
 
       <div className="card">

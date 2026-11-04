@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
 import { useInfiniteList } from "../hooks/useInfiniteList.js";
@@ -404,13 +405,13 @@ export default function AdminBroadcastClips() {
       <div className="nav">
         <Link to="/admin">Dashboard</Link>
         <Link to="/admin/participants">Players</Link>
-        <Link to="/admin/identify">Player ID</Link>
         <Link to="/admin/courses">Courses</Link>
         <Link to="/admin/upload-videos">Upload</Link>
         <Link to="/admin/production">Production</Link>
         <Link to="/admin/produced-clips">Produced Clips</Link>
         <Link to="/admin/broadcast-clips" className="active">Broadcast</Link>
         <Link to="/admin/cameras">Cameras</Link>
+        <PlayerIdLink />
       </div>
 
       <ChannelsSection adminPassword={adminPassword} />
