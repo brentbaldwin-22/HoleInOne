@@ -9304,6 +9304,155 @@ function deltaSourceLabel(src) {
 }
 
 
+// WHAT THE DETECTOR WAS HELD TO, in the numbers it already measured.
+//
+// `sweep_ascents` has been counting these all along -- how many frames
+// the per-frame budget bound on, how many blobs it dropped, the most it
+// ever saw in one frame -- and none of them were drawn anywhere. So the
+// one question that separates the three reasons a flight comes back as
+// seven points ("the detector never emitted the ball", "it emitted it
+// and the budget dropped it", "it emitted it and the tracker would not
+// link it") was being answered by guesswork and screenshots, three
+// times, wrongly.
+//
+// The distinction is not subtle once the numbers are visible:
+//
+//   capped on most frames        -> the band carries more traffic than
+//                                   the budget can hold. The ball lost
+//                                   a slot and nothing downstream can
+//                                   reach it. NARROW THE BAND first:
+//                                   measured in
+//                                   tools/ascent_band_traffic_test.py,
+//                                   raising the skyline and trimming
+//                                   the columns took a ball from 22% of
+//                                   frames to 100% with the budget
+//                                   untouched, where raising
+//                                   ascent_per_frame EIGHTFOLD only
+//                                   reached 91%.
+//   capped on none, few dets     -> the ball never cleared threshold in
+//                                   the band, or is not IN the band.
+//                                   Sensitivity, or the skyline.
+//   capped on none, many dets    -> the detector saw it. The chain gates
+//                                   are the place to look.
+//
+// And the corridor is in none of those rows. It is a CHAIN gate, so it
+// runs after this cut and cannot put back what the cut dropped -- which
+// is why trying 10, 25 and 35 on upload 1280 read as "does nothing".
+//
+// Deliberately no verdict pill: the numbers say which row applies, and
+// a pill that guessed would be the fourth wrong theory.
+function DetectorBudget({ sweep }) {
+  if (!sweep || sweep.n_dets == null) return null;
+  const frames = sweep.scanned_frames || 0;
+  const cap = sweep.per_frame_cap;
+  const capFrames = sweep.cap_hit_frames || 0;
+  const capFrac = sweep.cap_hit_frac;
+  const perFrame = frames ? (sweep.n_dets / frames) : null;
+  const band = sweep.band || null;
+  const areaProfile = sweep.area_profile?.n ? sweep.area_profile : null;
+  // THE ACCEPTED CHAINS ONLY. A refused chain's points may be anything
+  // in the band, and a size read off a tree edge typed into
+  // prefer_area is worse than leaving it at 0.
+  const ballAreas = (sweep.considered || [])
+    .filter((c) => !(c.why || []).length)
+    .flatMap((c) => (c.points || []).map((q) => q.area))
+    .filter((a) => a != null && a > 0);
+  return (
+    <div className="tiny" style={{ margin: "6px 0", lineHeight: 1.7 }}>
+      <div>
+        <b>What the detector emitted</b>{" "}
+        <span className="muted">
+          — {sweep.n_dets} detection(s) over {frames} frame(s)
+          {perFrame != null && (
+            <> ({perFrame.toFixed(1)} per frame)</>
+          )}
+          {sweep.sens != null && <>, sensitivity {sweep.sens}</>}
+        </span>
+      </div>
+      <div>
+        <b>Per-frame budget</b>{" "}
+        <span className="muted">
+          — {cap} slot(s); bound on {capFrames} frame(s)
+          {capFrac != null && <> ({Math.round(capFrac * 100)}%)</>}
+          {sweep.dropped_to_cap
+            ? `, dropping ${sweep.dropped_to_cap} blob(s)` : ""}
+          {sweep.max_hits_in_a_frame != null && (
+            <>; the busiest frame held {sweep.max_hits_in_a_frame}</>
+          )}
+        </span>
+        {capFrac != null && capFrac >= 0.5 && (
+          <span className="pill warn" style={{ marginLeft: 6 }}
+                title="The budget bound on most frames, so blobs were dropped before any chain gate saw them. A ball losing a slot here cannot be recovered by tuning the gates. Measured (tools/ascent_band_traffic_test.py): narrowing the band is the strong lever — raising the skyline and trimming the left/right columns took retention from 22% to 100% with the budget untouched, while raising ascent_per_frame eightfold only reached 91%.">
+            the budget is binding
+          </span>
+        )}
+      </div>
+      <div>
+        <b>Where it looked</b>{" "}
+        <span className="muted">
+          {band
+            ? `x ${band[0]}–${band[0] + band[2]}, y ${band[1]}–${band[1] + band[3]}`
+            : "no band reported"}
+          {sweep.tee_line_y ? `; tee line y ${sweep.tee_line_y}` : ""}
+          {sweep.band_floor_source ? ` — floor from ${sweep.band_floor_source}` : ""}
+        </span>
+        {sweep.band_warning && (
+          <span className="pill warn" style={{ marginLeft: 6 }}
+                title={sweep.band_warning}>
+            band may be too thin
+          </span>
+        )}
+      </div>
+      <div className="muted">
+        <b>And what it did to them</b> — merge {sweep.merge_px ?? "?"}px
+        {sweep.merged_away != null && (
+          <> (merged {sweep.merged_away} away)</>
+        )}
+        , ghost {sweep.ghost_px ?? 0}px
+        , {sweep.three_frame ? "three-frame" : "two-frame"} difference
+        , prefer area {sweep.prefer_area || 0}
+        , corridor {sweep.corridor_px ?? "?"}px
+      </div>
+      {/* AND WHAT A BALL MEASURES HERE. ascent_prefer_area is the one
+          thing measured to hold a ball outright in a crowded band, and
+          the only reason it still defaults to 0 is that nobody could
+          say what number to type. These two rows are that number: the
+          size spread of everything around the best chain, and -- when
+          a chain was accepted -- the areas of its own points, which
+          ARE the ball. Being within 2x is total; being off by three
+          loses it entirely, so this is worth reading before typing. */}
+      {(areaProfile || ballAreas.length > 0) && (
+        <div className="muted">
+          <b>What things measure here</b>
+          {areaProfile && (
+            <> — around the best chain: p10 {areaProfile.p10}px, median{" "}
+              {areaProfile.median}px, p90 {areaProfile.p90}px (n{" "}
+              {areaProfile.n})</>
+          )}
+          {ballAreas.length > 0 && (
+            <>; the accepted chain&apos;s own points:{" "}
+              {Math.min(...ballAreas)}–{Math.max(...ballAreas)}px
+              {" "}(median {ballAreas.slice()
+                .sort((a, b) => a - b)[ballAreas.length >> 1]}px over{" "}
+              {ballAreas.length} point(s)) — this is a ball on this tee,
+              and the number to try in ascent_prefer_area</>
+          )}
+        </div>
+      )}
+      <div className="muted" style={{ marginTop: 4 }}>
+        If the band above does not contain the flight, nothing below is
+        about this ball: the sweep never looked there. If it does, and the
+        budget is not binding, then the detections in the picture are
+        everything the tracker had, and the chain gates are the place to
+        look. If it IS binding, the band is carrying more traffic than the
+        budget can hold — narrow it (skyline, left/right) before touching
+        anything else; the chain gates, the corridor included, run after
+        this cut and cannot put back what it dropped.
+      </div>
+    </div>
+  );
+}
+
 function AscentProduceModal({ state, adminPassword, onClose }) {
   const rep = state?.report;
   const asc = rep?.ascents || [];
@@ -9505,6 +9654,15 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             </a>
             <div className="tiny muted">{rep.sweep.reason}</div>
           </div>
+        )}
+
+        {/* AND THE NUMBERS BEHIND THE PICTURE. The pictures show what
+            the sweep assembled; these say what it was held to while
+            assembling it, which is the half that decides whether a
+            short chain is a detector problem, a budget problem or a
+            linking problem. See `DetectorBudget`. */}
+        {rep?.sweep && rep.sweep.n_dets != null && (
+          <DetectorBudget sweep={rep.sweep} />
         )}
 
         {/* WHAT THE TRACKER WAS GIVEN, not what it built. Every other

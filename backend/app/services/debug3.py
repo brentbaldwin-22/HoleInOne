@@ -6346,8 +6346,23 @@ def sweep_ascents(
                 # they run early. A number that does not say which it
                 # is cannot be read.
                 "from_model": _from_model,
+                # AREA COMES WITH THEM NOW. `ascent_prefer_area` is
+                # the only gate measured to hold a ball outright in a
+                # crowded band -- 100% of frames when it is within 2x
+                # of the ball's real blob area, 0% when it is off by
+                # three (tools/ascent_band_traffic_test.py) -- and it
+                # still defaults to 0 because nobody could say what a
+                # ball on a given tee actually spans. An ACCEPTED
+                # chain is the answer: its points are the ball, so
+                # their areas are what to type in. They were being
+                # thrown away one line before the operator could see
+                # them. None where a fit or a hole fill invented the
+                # point rather than a detection supplying it.
                 "points": [{"frame": int(q["frame"]), "x": int(q["x"]),
-                            "y": int(q["y"])} for q in pts],
+                            "y": int(q["y"]),
+                            "area": (int(q["area"])
+                                     if q.get("area") else None)}
+                           for q in pts],
                 "tilt_deg": round(_tilt, 1),
                 "backrun_frames": (int(pts[0]["frame"]) - _from_f
                                    if _from_f is not None else None),
