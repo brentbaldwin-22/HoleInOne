@@ -64,17 +64,28 @@ def parse_instant(iso: str, what: str = "instant") -> datetime:
     return when
 
 
-def unidentified_counts(db: Session) -> list[dict]:
-    """Every course, with how many of its clips nobody owns.
+def unidentified_counts(db: Session, start: datetime, end: datetime) -> list[dict]:
+    """Every course, with how many of ONE DAY's clips nobody owns.
+
+    Scoped to the day rather than to all of history because the pile is
+    worked off daily: an all-time total counts last month's footage,
+    which nobody is going to go back and pair, and buries the number that
+    says whether today is done. The window is the same [start, end) the
+    roster uses, so the dropdown and the page under it cannot disagree.
 
     Counted on `participant_id IS NULL` rather than on a status, because
     the status is a processing state and ownership is the question being
-    asked. A clip can be `processed` and still belong to nobody, and that
-    is exactly the backlog this number is meant to show.
+    asked -- a clip can be `processed` and still belong to nobody.
     """
+    if end <= start:
+        raise ValueError("the end of the day must come after its start")
     counts = dict(
         db.query(VideoClip.course_id, func.count(VideoClip.id))
-        .filter(VideoClip.participant_id.is_(None))
+        .filter(
+            VideoClip.participant_id.is_(None),
+            VideoClip.captured_at >= start,
+            VideoClip.captured_at < end,
+        )
         .group_by(VideoClip.course_id)
         .all()
     )

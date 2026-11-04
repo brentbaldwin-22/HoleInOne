@@ -72,12 +72,30 @@ def main():
     yesterday = clip(START - timedelta(minutes=1))   # one minute before the day
     tomorrow = clip(END)                             # the first instant of the next
 
-    print("the backlog number on the dropdown")
-    counts = {c["name"]: c["unidentified"] for c in identify.unidentified_counts(db)}
-    check("counts a course's own loose clips", counts["Rivertowne Country Club"] == 6,
-          f'{counts["Rivertowne Country Club"]}')
+    print("the backlog number on the dropdown is THIS DAY's, not all time")
+    # Rivertowne holds six loose clips in total -- four on the day, one
+    # the minute before it and one the instant after. The dropdown must
+    # say four, because the pile is worked off daily and last week's
+    # footage is not today's job.
+    counts = {c["name"]: c["unidentified"]
+              for c in identify.unidentified_counts(db, START, END)}
+    check("counts the day's loose clips, not the course's whole history",
+          counts["Rivertowne Country Club"] == 4,
+          f'{counts["Rivertowne Country Club"]} (6 exist in total)')
     check("and does not pool them across courses", counts["Somewhere Else CC"] == 1,
           f'{counts["Somewhere Else CC"]}')
+    quiet = {c["name"]: c["unidentified"] for c in identify.unidentified_counts(
+        db, START + timedelta(days=30), END + timedelta(days=30))}
+    check("a day with nothing on it reads clear, for every course",
+          all(v == 0 for v in quiet.values()), f"{quiet}")
+    check("the dropdown agrees with the page under it",
+          counts["Rivertowne Country Club"]
+          == identify.day(db, river.id, START, END)["unidentified"])
+    try:
+        identify.unidentified_counts(db, END, START)
+        check("a day that ends before it starts", False, "no error raised")
+    except ValueError as e:
+        check("the counts refuse a backwards day too", True, str(e))
 
     print("\nthe day is exactly the window it was given")
     d = identify.day(db, river.id, START, END)

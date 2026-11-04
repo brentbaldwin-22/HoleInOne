@@ -1256,8 +1256,16 @@ def manually_assign_clip(
 
 
 @router.get("/identify/courses")
-def identify_courses(db: Session = Depends(get_db)):
-    return identify.unidentified_counts(db)
+def identify_courses(start: str, end: str, db: Session = Depends(get_db)):
+    """Each course's unidentified count for ONE day, the client's window."""
+    try:
+        return identify.unidentified_counts(
+            db,
+            identify.parse_instant(start, "start of the day"),
+            identify.parse_instant(end, "end of the day"),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.get("/identify/day")

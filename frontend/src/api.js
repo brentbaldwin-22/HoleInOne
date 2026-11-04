@@ -385,8 +385,12 @@ export const api = {
   // `start`/`end` are ISO instants the CALLER built from its own local
   // midnight. The server cannot derive the day: its datetimes are naive
   // UTC and a course carries no timezone.
-  identifyCourses: (key) =>
-    request("/api/admin/identify/courses", { adminPassword: key }),
+  identifyCourses: (key, { start, end }) =>
+    request(
+      `/api/admin/identify/courses?start=${encodeURIComponent(start)}`
+      + `&end=${encodeURIComponent(end)}`,
+      { adminPassword: key },
+    ),
   identifyDay: (key, { courseId, start, end }) =>
     request(
       `/api/admin/identify/day?course_id=${courseId}`

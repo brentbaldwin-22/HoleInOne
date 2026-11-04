@@ -70,13 +70,13 @@ export default function AdminIdentify() {
   useEffect(() => {
     (async () => {
       try {
-        setCourses(await api.identifyCourses(adminPassword));
+        setCourses(await api.identifyCourses(adminPassword, dayWindow(day)));
       } catch (e) {
         setError(e.message);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [day]);
 
   async function load(cid = courseId, d = day) {
     if (!cid) { setData(null); return; }
@@ -159,7 +159,7 @@ export default function AdminIdentify() {
               {(courses || []).map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
-                  {c.unidentified > 0 ? ` — ${c.unidentified} unidentified` : " — all identified"}
+                  {c.unidentified > 0 ? ` — ${c.unidentified} unidentified` : " — clear"}
                 </option>
               ))}
             </select>
