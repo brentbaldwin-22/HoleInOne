@@ -46,6 +46,7 @@ export default function AdminClaims() {
       <div className="nav">
         <Link to="/admin">Dashboard</Link>
         <Link to="/admin/participants">Players</Link>
+        <Link to="/admin/identify">Player ID</Link>
         <Link to="/admin/claims" className="active">Claims</Link>
         <Link to="/admin/reviews">Reviews</Link>
       </div>

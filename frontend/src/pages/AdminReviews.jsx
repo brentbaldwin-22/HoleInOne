@@ -43,6 +43,7 @@ export default function AdminReviews() {
       <div className="nav">
         <Link to="/admin">Dashboard</Link>
         <Link to="/admin/participants">Players</Link>
+        <Link to="/admin/identify">Player ID</Link>
         <Link to="/admin/reviews" className="active">Reviews</Link>
         <Link to="/admin/courses">Courses</Link>
       </div>

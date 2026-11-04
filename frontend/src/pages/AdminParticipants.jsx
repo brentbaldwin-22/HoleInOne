@@ -212,6 +212,7 @@ export default function AdminParticipants() {
       <div className="nav">
         <Link to="/admin">Dashboard</Link>
         <Link to="/admin/participants" className="active">Players</Link>
+        <Link to="/admin/identify">Player ID</Link>
         <Link to="/admin/courses">Courses</Link>
         <Link to="/admin/upload-videos">Upload</Link>
         <Link to="/admin/production">Production</Link>

@@ -138,6 +138,7 @@ export default function Admin() {
       <div className="nav">
         <Link to="/admin" className="active">Dashboard</Link>
         <Link to="/admin/participants">Players</Link>
+        <Link to="/admin/identify">Player ID</Link>
         <Link to="/admin/claims">Claims</Link>
         <Link to="/admin/reviews">Reviews</Link>
         <Link to="/admin/courses">Courses</Link>

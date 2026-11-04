@@ -4,6 +4,7 @@ import Confirmation from "./pages/Confirmation.jsx";
 import Gallery from "./pages/Gallery.jsx";
 import Admin from "./pages/Admin.jsx";
 import AdminParticipants from "./pages/AdminParticipants.jsx";
+import AdminIdentify from "./pages/AdminIdentify.jsx";
 import AdminReview from "./pages/AdminReview.jsx";
 import AdminUpload from "./pages/AdminUpload.jsx";
 import AdminLongUpload from "./pages/AdminLongUpload.jsx";
@@ -78,6 +79,7 @@ export default function App() {
         <Route path="/claim/:galleryToken" element={<Claim />} />
         <Route path="/admin" element={<Admin />} />
         <Route path="/admin/participants" element={<AdminParticipants />} />
+        <Route path="/admin/identify" element={<AdminIdentify />} />
         <Route path="/admin/upload" element={<AdminUpload />} />
         <Route path="/admin/long-upload" element={<AdminLongUpload />} />
         <Route path="/admin/clips" element={<AdminClips />} />

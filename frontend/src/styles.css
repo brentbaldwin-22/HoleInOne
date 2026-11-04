@@ -1070,6 +1070,27 @@ tr:last-child td { border-bottom: 0; }
   display: block;
   pointer-events: none;
 }
+/* The roster tiles on /admin/identify are outfit photos rather than
+   clips, and want exactly what the video wants: fill the 9:16 tile,
+   crop rather than squash, and let the click reach the button. */
+.pick-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+.pick-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 10px;
+  text-align: center;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.5);
+}
 .pick-tile:hover { transform: translateY(-2px); }
 .pick-tile.on { border-color: var(--primary, #1ca85c); }
 .pick-tile.on::after {
