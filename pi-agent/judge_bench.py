@@ -30,10 +30,14 @@ USAGE
 ON THE RIG, where the clips are and ~1 GB of them is not coming down
 a cellular modem. update.sh installs this beside agent/, so:
 
-    cd /opt/golfreelz-agent
-    sudo python3 judge_bench.py --clips /var/lib/golfreelz-agent/notswing \\
-         --init
-    sudo python3 judge_bench.py --clips /var/lib/golfreelz-agent/notswing \\
+    # THE VENV'S PYTHON, not the system one: opencv is only in the
+    # venv, and `python3 judge_bench.py` fails with ModuleNotFoundError
+    # on a rig that is working perfectly.
+    PY=/opt/golfreelz-agent/venv/bin/python3
+    sudo $PY /opt/golfreelz-agent/judge_bench.py \\
+         --clips /var/lib/golfreelz-agent/notswing --init
+    sudo $PY /opt/golfreelz-agent/judge_bench.py \\
+         --clips /var/lib/golfreelz-agent/notswing \\
          --sample 40 --export /tmp/corpus
 
 That renders ~250 KB a clip instead of 6.5 MB. Copy /tmp/corpus off
@@ -93,10 +97,25 @@ for _p in (ROOT / "pi-agent", ROOT / "backend", ROOT,
     if (_p / "agent").is_dir() or (_p / "app").is_dir():
         sys.path.insert(0, str(_p))
 
-import cv2                                            # noqa: E402
-import numpy as np                                    # noqa: E402
+try:
+    import cv2                                        # noqa: E402
+    import numpy as np                                # noqa: E402
 
-from agent import swingheat, swingjudge               # noqa: E402
+    from agent import swingheat, swingjudge           # noqa: E402
+except ModuleNotFoundError as _exc:                   # pragma: no cover
+    # THE AGENT RUNS IN A VENV AND `python3` IS NOT IT. On a rig,
+    # opencv lives in /opt/golfreelz-agent/venv and the system
+    # interpreter has never heard of it, so the obvious command is the
+    # wrong one and the traceback does not say why.
+    sys.stderr.write(
+        "judge_bench: %s\n\n"
+        "On a rig, run it with the agent's own interpreter -- the\n"
+        "system python3 has no opencv:\n\n"
+        "    sudo /opt/golfreelz-agent/venv/bin/python3 \\\n"
+        "         /opt/golfreelz-agent/judge_bench.py --clips ... \n\n"
+        "Anywhere else: pip install opencv-python-headless numpy\n"
+        % _exc)
+    raise SystemExit(2)
 
 LABELS = "labels.csv"
 COLUMNS = ["clip", "is_swing", "impact_sec", "ratio", "gate_ratio",
