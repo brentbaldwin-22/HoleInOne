@@ -56,7 +56,7 @@ FRAME_TILE_PX = 640
 
 def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
           after_sec: float = 0.5, crop=None, out_path=None,
-          meta=None, frames_out=None):
+          meta=None, frames_out=None, prefer_xy=None):
     """Render the heat composite around `at_sec`. Path, or None.
 
     `meta`, when a dict is passed, is filled with what this pass
@@ -186,7 +186,15 @@ def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
         if meta is not None:
             try:
                 from . import swingjudge
-                _geo = swingjudge.measure_heat(hm_n)
+                # WHICH BLOB IS THE GOLFER, not which is biggest.
+                # See swingjudge.measure_heat: on clip 1734 a bystander
+                # rummaging in a bag beat the actual swing by 27% of
+                # area, and the crop, the frames and the stance gate
+                # all then pointed at him.
+                _pxy = prefer_xy
+                if _pxy is not None and (ox or oy):
+                    _pxy = (float(_pxy[0]) - ox, float(_pxy[1]) - oy)
+                _geo = swingjudge.measure_heat(hm_n, prefer_xy=_pxy)
                 # IN THE ORIGINAL FRAME'S PIXELS, because the caller's
                 # other evidence -- the person detector's stance point
                 # -- is in those, and comparing the two is the whole

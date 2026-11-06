@@ -101,6 +101,26 @@ def main() -> int:
     check("  and the body alone would have measured short",
           measure_heat(heat_with([(400, 260, 60, 120)]))["main"]["h"], 120)
 
+    # WHICH BLOB IS THE GOLFER. Clip 1734, 6 Nov: a confirmed swing
+    # whose golfer measured 74x134 at x=1813 and LOST to a bystander
+    # rummaging in a bag beside a cart at x=26 -- 5677 px against
+    # 4108. The crop, the frames the judge saw and the stance gate
+    # then all pointed at the wrong man, and the judge correctly said
+    # it was not a swing.
+    m = np.zeros((1080, 1920), np.uint8)
+    m[617:751, 26:97] = 255
+    m[617:671, 26:97] = 0            # bystander, the larger area
+    m[608:742, 1813:1887] = 255
+    m[608:686, 1813:1887] = 0        # golfer, smaller
+    check("largest wins when nothing says where the golfer is",
+          measure_heat(m)["main"]["x"], 26)
+    check("  the trigger zone picks the golfer instead",
+          measure_heat(m, prefer_span=(728, 1845))["main"]["x"], 1813)
+    check("  so does a detected stance point",
+          measure_heat(m, prefer_xy=(1850, 880))["main"]["x"], 1813)
+    check("  and the measurement says which it was",
+          "size alone" in measure_heat(m)["picked_by"], True)
+
     check("an empty map measures nothing, and says so",
           measure_heat(np.zeros((540, 960), np.uint8))["ok"], False)
 

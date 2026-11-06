@@ -3320,6 +3320,9 @@ def swing_heat_check(
     before_sec: float = 2.0,
     after_sec: float = 2.5,
     crop=None,
+    # Where the golfer is believed to be, so the measurement picks
+    # THEIR blob rather than the largest thing that moved.
+    prefer_xy=None,
 ) -> dict:
     """Confirm a suspected swing with MOG2 physics.
 
@@ -3596,7 +3599,12 @@ def swing_heat_check(
                         _cx, _cy, _cw, _ch = out["crop"]
                         _hmj = hm_n[_cy:_cy + _ch, _cx:_cx + _cw]
                         _ox, _oy = _cx, _cy
-                    _geo = _sj.measure_heat(_hmj)
+                    # The golfer's blob, not the biggest one -- see
+                    # swingjudge.measure_heat on clip 1734.
+                    _pxy = prefer_xy
+                    if _pxy is not None and (_ox or _oy):
+                        _pxy = (float(_pxy[0]) - _ox, float(_pxy[1]) - _oy)
+                    _geo = _sj.measure_heat(_hmj, prefer_xy=_pxy)
                     _mm = _geo.get("main")
                     if _mm:
                         _mm["frame_x"] = _mm["x"] + _ox

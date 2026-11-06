@@ -8226,6 +8226,10 @@ def swing_audit(limit: int = 30, refresh: bool = False,
                     clip, float(at), 60.0, debug_dir=CLIPS_DIR,
                     debug_prefix=f"audit-{ev.id}",
                     before_sec=0.5, after_sec=0.5,
+                    # The stance the rig recorded, when it has one, so
+                    # the audit measures the golfer and not whoever
+                    # moved most. Older events have none.
+                    prefer_xy=(ev.trigger_detail or {}).get("stance"),
                 ) or {}
                 geo = _chk.get("geo") or {}
                 geo["server_heat"] = _chk.get("image_clean")
@@ -14879,6 +14883,10 @@ def test_cut_long_upload(
                 _chk = swing_heat_check(
                     src_path, peak_time_sec, tee_fps,
                     crop=_crop,
+                    # No golfer position on a long upload -- nothing
+                    # detected a person -- so the measurement falls
+                    # back to the largest mover and says so.
+                    prefer_xy=None,
                     debug_dir=CLIPS_DIR,
                     debug_prefix=f"verify-{upload_id}-{idx:02d}-"
                                  f"{secrets.token_hex(3)}",
@@ -31690,6 +31698,11 @@ def _debug3_run(row, src_path, db, progress=None, debug_artifacts=True,
                 _heat = swing_heat_check(
                     src_path, peak_t, fps,
                     ball_hint=_rest_xy or c.get("impact_wrist_xy"),
+                    # THE POSE STAGE ALREADY FOUND THE GOLFER'S FEET.
+                    # Without this the measurement picks the largest
+                    # mover, which on clip 1734 was a bystander at a
+                    # cart who beat the actual swing by 27% of area.
+                    prefer_xy=c.get("impact_feet_xy") or _rest_xy,
                     debug_dir=_heat_dir,
                     debug_prefix=f"d3heat-{upload_id}-{tok}-{i}",
                 ) or {}

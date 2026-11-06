@@ -842,12 +842,14 @@ class CopyEngine:
                     getattr(runner, "roi", None), tee_roi.boxes)
                 _meta: dict = {}
                 _strip = clip_path.with_suffix(".frames.jpg")
+                _stance0 = (detail or {}).get("stance")
                 _img = swingheat.build(
                     clip_path, float(impact_ts) - float(res["start"]),
                     before_sec=_t.verify_window_sec,
                     after_sec=_t.verify_window_sec,
                     crop=_crop,
                     meta=_meta, frames_out=_strip,
+                    prefer_xy=_stance0,
                 )
                 # WHAT THE PICTURE ACTUALLY CONTAINS, before anyone is
                 # asked about it. On 5 Nov the judge called a 150x199

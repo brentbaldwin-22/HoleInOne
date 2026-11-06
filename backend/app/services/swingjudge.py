@@ -64,8 +64,24 @@ MIN_BLOB_FRAC = 0.00015
 
 
 def measure_heat(heat8, hot_level: int = HOT_LEVEL,
-                 min_blob_frac: float = MIN_BLOB_FRAC) -> dict:
+                 min_blob_frac: float = MIN_BLOB_FRAC,
+                 prefer_xy=None, prefer_span=None) -> dict:
     """Describe the hot regions of a heat map. Never raises.
+
+    `prefer_xy` is where the golfer is believed to be -- the person
+    detector's stance point, or the pose stage's feet -- and
+    `prefer_span` an (x0, x1) range they must be standing in, normally
+    the camera's trigger zones. Either one picks WHICH blob is `main`.
+
+    WITHOUT ONE IT IS THE LARGEST, AND THAT IS WRONG OFTEN ENOUGH TO
+    MATTER. Clip 1734, 6 Nov, is a swing the operator confirmed: the
+    golfer measured 74x134 at x=1813, a textbook 1.81 aspect, and
+    LOST to a bystander rummaging in a bag beside a cart at x=26 --
+    5677 pixels against 4108, a 27% margin. A second of someone
+    reaching into a golf bag is simply more sustained motion than a
+    fast swing. Everything downstream then pointed at the wrong
+    person: the crop, the frames the judge was shown, and the stance
+    gate. The judge looked at a man at a cart and correctly said no.
 
     `heat8` is the single-channel 0-255 map, at whatever scale the
     caller has it in; everything returned is in those pixels, plus
@@ -137,8 +153,36 @@ def measure_heat(heat8, hot_level: int = HOT_LEVEL,
             })
         if not blobs:
             return out
-        blobs.sort(key=lambda b: b["area"], reverse=True)
+        # NEAREST THE GOLFER FIRST, then largest. A blob the anchor
+        # actually falls inside beats one it does not, however big.
+        def _rank(b):
+            cx = b["x"] + b["w"] / 2.0
+            inside = 0
+            dist = 0.0
+            if prefer_span is not None:
+                try:
+                    lo, hi = float(prefer_span[0]), float(prefer_span[1])
+                    inside = 0 if (lo <= cx <= hi) else 1
+                    dist = 0.0 if not inside else min(abs(cx - lo),
+                                                      abs(cx - hi))
+                except Exception:  # noqa: BLE001
+                    inside, dist = 0, 0.0
+            if prefer_xy is not None:
+                try:
+                    px = float(prefer_xy[0])
+                    inside = 0 if (b["x"] <= px <= b["x"] + b["w"]) else 1
+                    dist = 0.0 if not inside else min(abs(px - b["x"]),
+                                                      abs(px - b["x"] - b["w"]))
+                except Exception:  # noqa: BLE001
+                    inside, dist = 0, 0.0
+            return (inside, dist, -b["area"])
+
+        blobs.sort(key=_rank)
         out["ok"] = True
+        out["picked_by"] = ("the golfer's own position"
+                            if (prefer_xy is not None
+                                or prefer_span is not None)
+                            else "size alone — no golfer position given")
         out["n_blobs"] = len(blobs)
         out["main"] = blobs[0]
         out["others"] = blobs[1:6]
