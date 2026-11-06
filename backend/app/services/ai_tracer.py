@@ -8769,6 +8769,114 @@ def trace_ball_path_ai(image_path, model: str | None = None) -> dict:
     return out
 
 
+_JUDGE_SWING_FRAMES_PROMPT = (
+    "You are judging whether a golfer SWUNG A CLUB, from a fixed "
+    "course camera that stands BEHIND the hitting area and looks down "
+    "the hole.\n"
+    "You get two pictures.\n"
+    "PICTURE 1 is four ORDINARY VIDEO FRAMES in a 2x2 grid, read left "
+    "to right then top to bottom, labelled with their time relative to "
+    "the suspected impact: about -0.25s (late backswing), 0.00s (the "
+    "strike), +0.15s and +0.40s (follow-through). They are cropped "
+    "around whatever moved, so the candidate fills the tile.\n"
+    "PICTURE 2 is a MOTION-HEAT map of the same moment: one frame with "
+    "accumulated motion overlaid in color (blue/cyan = moved briefly, "
+    "green/yellow/orange/red = moved through more of the window). It "
+    "tells you WHERE the motion was. It does not tell you what the "
+    "thing is -- that is what the frames are for.\n"
+    "Question: do these show a GOLFER SWINGING A GOLF CLUB?\n"
+    "DECIDE FROM THE FRAMES FIRST. Look for an actual person, in an "
+    "address or swing posture, holding a club, with the club or the "
+    "body in a DIFFERENT POSITION across the four tiles. A swing is a "
+    "change over time; four tiles that look identical are not one, "
+    "however much heat the map shows.\n"
+    "Use the heat map only to locate the motion and to confirm it was "
+    "sustained rather than a flicker.\n"
+    "Answer FALSE when: you cannot make out a person at all; you can "
+    "see a person but no club and no posture change; the moving thing "
+    "is a cart, a mower, a bag or a camera/exposure shift rather than "
+    "a human figure; someone is walking, bending to tee up, or "
+    "retrieving a ball; or the motion is foliage.\n"
+    "A HEAT BLOB IS NOT EVIDENCE OF A GOLFER. If the frames do not "
+    "show a person with a club, answer false whatever shape the heat "
+    "map makes.\n"
+    "Say in `reason` what you actually saw in the FRAMES.\n"
+    'Reply with JSON only:\n{"is_swing": true|false, '
+    '"confidence": "high"|"medium"|"low", "reason": "<one short sentence>"}'
+)
+
+
+def judge_swing_with_frames(frames_path, image_path,
+                            model: str | None = None) -> dict:
+    """The swing judge, shown real frames as well as the heat map.
+
+    WHY A SECOND FUNCTION rather than a flag on the first. The two
+    take different pictures and ask different questions, and the
+    rig, Test Cut and tools/judge_bench.py all have to be able to run
+    BOTH over the same clip and compare. Folding them together would
+    make "which one answered" a thing you had to reconstruct from the
+    arguments.
+
+    Falls back to the heat-only judge when no strip could be built, so
+    a caller never loses a verdict for want of frames.
+
+    Returns the same dict as judge_swing_heat_image, plus `saw` naming
+    which prompt answered. Never raises.
+    """
+    out = {"available": False, "is_swing": None, "confidence": None,
+           "reason": None, "saw": "frames+heat"}
+    if not frames_path or not Path(frames_path).exists():
+        _o = judge_swing_heat_image(image_path, model=model)
+        _o["saw"] = "heat only (no strip)"
+        return _o
+    if not HAS_ANTHROPIC or not os.environ.get("ANTHROPIC_API_KEY"):
+        out["reason"] = "ANTHROPIC_API_KEY not set"
+        return out
+    try:
+        fdata = Path(frames_path).read_bytes()
+        hdata = Path(image_path).read_bytes()
+    except Exception as exc:  # noqa: BLE001
+        out["reason"] = f"could not read images: {exc}"
+        return out
+    try:
+        client = _anthropic_client()
+        resp = client.messages.create(
+            model=_resolve_frame_picker_model(model),
+            max_tokens=200,
+            system=[{
+                "type": "text",
+                "text": _JUDGE_SWING_FRAMES_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": "PICTURE 1 - the four frames:"},
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/jpeg",
+                    "data": base64.standard_b64encode(fdata).decode("ascii"),
+                }},
+                {"type": "text", "text": "PICTURE 2 - the motion-heat map:"},
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/jpeg",
+                    "data": base64.standard_b64encode(hdata).decode("ascii"),
+                }},
+                {"type": "text", "text": "JSON only."},
+            ]}],
+        )
+    except Exception as exc:  # noqa: BLE001
+        out["reason"] = f"api_failed: {exc}"
+        return out
+    text = "".join(
+        c.text for c in resp.content if getattr(c, "type", None) == "text"
+    )
+    parsed = _extract_json(text) or {}
+    out["available"] = True
+    if isinstance(parsed.get("is_swing"), bool):
+        out["is_swing"] = parsed["is_swing"]
+    out["confidence"] = parsed.get("confidence")
+    out["reason"] = parsed.get("reason")
+    return out
+
+
 def judge_swing_heat_image(image_path, model: str | None = None) -> dict:
     """One Claude vision call: does this motion-heat composite look like a
     golfer swinging a club? The operator A/B-tested this against the
