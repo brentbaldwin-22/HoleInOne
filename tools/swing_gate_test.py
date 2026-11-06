@@ -163,12 +163,17 @@ def main() -> int:
     # treated as the same evidence as a high verdict on a x40 crack.
     check("the 5 Nov verdict: a medium yes on x4.7 over a x4.0 gate",
           confidence_verdict(True, "medium", 4.7, 4.0)["ok"], False)
-    check("  the same verdict on a loud strike stands",
-          confidence_verdict(True, "medium", 6.6, 4.0)["ok"], True)
+    # x6.6 against a x4.0 gate is 1.65 -- #1760 on 6 Nov, which was
+    # NOT a swing. The threshold sits above it, in the gap before the
+    # only genuine medium-confidence swing in that corpus at 4.95x.
+    check("  and a medium yes at 1.65x the gate does not",
+          confidence_verdict(True, "medium", 6.6, 4.0)["ok"], False)
+    check("  the one real medium swing in the corpus, at 4.95x, stands",
+          confidence_verdict(True, "medium", 19.8, 4.0)["ok"], True)
     check("high confidence stands on its own at any volume",
           confidence_verdict(True, "high", 4.7, 4.0)["ok"], True)
     check("a low yes needs much more",
-          confidence_verdict(True, "low", 6.6, 4.0)["ok"], False)
+          confidence_verdict(True, "low", 9.0, 4.0)["ok"], False)
     # ONLY EVER NARROWS A YES. A false verdict is the judge's to make,
     # and null has always meant "could not tell" -> upload.
     check("a no is left alone", confidence_verdict(False, "low", 1.0, 4.0)

@@ -346,11 +346,37 @@ CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
 # weak signals are not one strong one.
 #
 # So a verdict below high has to be carried by the sound: the strike
-# must be this many times the floor the operator set. UNMEASURED; 1.6
-# would have refused the 5 Nov clip (x4.7 against x4.0 = 1.18) while
-# keeping every confirmed swing in that day's journal, all of which
-# ran x5.6 or better against the same gate. Set to 0 to switch off.
-MEDIUM_NEEDS_RATIO_OVER_GATE = 1.6
+# must be this many times the floor the operator set.
+#
+# MEASURED, on the 29 audio-triggered clips the tee rig got ACCEPTED
+# on 5-6 Nov -- the half of the corpus that can show a false positive,
+# because the refused ones never reach a card. Sorted by how far over
+# the x4.0 gate each strike was:
+#
+#   read as real swings            read as not swings
+#     1.02x  high                    1.02x  medium
+#     1.12x  high                    1.05x  medium
+#     1.23x  high                    1.05x  medium
+#     1.90x  high                    1.15x  medium
+#     2.62x  high                    1.18x  medium
+#     3.65x  high                    1.25x  medium
+#     4.95x  MEDIUM                  1.65x  medium
+#     6.83x  high
+#     7.67x  high
+#    10.20x  high
+#
+# EVERY false positive is a MEDIUM verdict at 1.65x or less. The only
+# medium verdict among the swings is at 4.95x, and the quiet genuine
+# swings -- x4.1, x4.5, x4.9 -- are all HIGH. The judge's confidence
+# was informative the whole time and nothing was reading it.
+#
+# 2.0 sits in the middle of the empty gap between 1.65 and 4.95
+# rather than against either edge, so it is not fitted to a boundary
+# one clip either side would move. On that corpus it refuses 11 of
+# 29, catches all 7 of the false positives and loses none of the 10
+# swings. 2.5 and 3.0 refuse 12 and 13 and still lose none, so there
+# is room to tighten if the field disagrees. Set to 0 to switch off.
+MEDIUM_NEEDS_RATIO_OVER_GATE = 2.0
 
 # A LOW VERDICT IS NOT EVIDENCE AT ALL, whichever way it points. It
 # costs nothing to require the sound to carry those on its own.

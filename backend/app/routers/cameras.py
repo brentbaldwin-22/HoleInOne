@@ -1455,6 +1455,11 @@ def _sweep_rig_heat() -> None:
 async def verify_swing(
     token: str,
     image: UploadFile = File(...),
+    # FOUR REAL FRAMES AROUND THE IMPACT, when the rig built them.
+    # Optional on purpose: a rig and a backend are updated separately
+    # and in either order, and an older rig that sends only the
+    # composite must keep getting judged exactly as it did.
+    frames: UploadFile | None = File(default=None),
     db: Session = Depends(get_db),
 ):
     """Judge a motion-heat composite the rig built: swing, or not?
@@ -1525,8 +1530,26 @@ async def verify_swing(
                      _tp)
         except OSError as exc:
             log.warning("verify-swing: no temp file either (%s)", exc)
+    # THE STRIP IS KEPT TOO, beside the composite and for the same
+    # reason: the one picture that explains a verdict should outlive
+    # the request that produced it.
+    _fdest = None
     try:
-        from ..services.ai_tracer import judge_swing_heat_image
+        _fdata = await frames.read() if frames is not None else b""
+        if _fdata and len(_fdata) <= MAX_VERIFY_IMAGE_BYTES:
+            _fname = f"rigframes-{cam.id}-{secrets.token_hex(6)}.jpg"
+            _fp = CLIPS_DIR / _fname
+            _fp.write_bytes(_fdata)
+            _fdest = _fp
+            out["frames_image"] = _fname
+    except Exception as exc:  # noqa: BLE001
+        log.warning("verify-swing: could not keep the frame strip (%s)", exc)
+        _fdest = None
+
+    try:
+        from ..services.ai_tracer import (
+            judge_swing_heat_image, judge_swing_with_frames,
+        )
 
         if _dest is None:
             out["reason"] = "could not write the composite anywhere"
@@ -1544,10 +1567,15 @@ async def verify_swing(
         # file already do (`post_live_frame`, `post_still`) -- this one
         # was missed, and it is the one that blocks for seconds rather
         # than milliseconds.
-        j = await asyncio.to_thread(judge_swing_heat_image, _dest)
+        if _fdest is not None:
+            j = await asyncio.to_thread(
+                judge_swing_with_frames, _fdest, _dest)
+        else:
+            j = await asyncio.to_thread(judge_swing_heat_image, _dest)
         out["is_swing"] = j.get("is_swing")
         out["confidence"] = j.get("confidence")
         out["reason"] = j.get("reason")
+        out["saw"] = j.get("saw") or "heat only"
     except Exception as exc:  # noqa: BLE001
         log.warning("verify-swing: judge failed for camera %s: %s",
                     cam.id, exc)

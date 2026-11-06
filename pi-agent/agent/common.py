@@ -575,7 +575,8 @@ class BackendClient:
                 log.debug("trigger detail would not serialise (%s)", exc)
         return self._retry("POST", "/event-trigger", data=data)
 
-    def verify_swing(self, image_path, timeout: float = 25.0) -> dict:
+    def verify_swing(self, image_path, timeout: float = 25.0,
+                     frames_path=None) -> dict:
         """Ask the backend whether this composite shows a club swing.
 
         Returns {"is_swing": True|False|None, ...}. NULL IS NOT FALSE
@@ -594,13 +595,30 @@ class BackendClient:
                # the event is what lets the picture be found again when
                # a verdict is argued with.
                "image": None}
+        # THE FRAMES AS WELL, WHEN THERE ARE ANY. The composite is a
+        # one-second projection of motion: it says where something
+        # moved and throws away both when and what. Four real frames
+        # around the impact say what it was, which is the question a
+        # heat blob cannot answer -- and on 6 Nov most of a day's
+        # accepted clips turned out not to be swings. Optional on the
+        # wire so a rig and a backend can be updated in either order.
         try:
-            with open(image_path, "rb") as fh:
-                r = self._retry(
-                    "POST", "/verify-swing",
-                    files={"image": ("heat.jpg", fh, "image/jpeg")},
-                    retries=1, timeout=timeout,
-                ) or {}
+            _fh2 = None
+            try:
+                _files = {}
+                with open(image_path, "rb") as fh:
+                    _files["image"] = ("heat.jpg", fh, "image/jpeg")
+                    if frames_path is not None:
+                        _fh2 = open(frames_path, "rb")
+                        _files["frames"] = ("frames.jpg", _fh2, "image/jpeg")
+                    r = self._retry(
+                        "POST", "/verify-swing",
+                        files=_files,
+                        retries=1, timeout=timeout,
+                    ) or {}
+            finally:
+                if _fh2 is not None:
+                    _fh2.close()
             for k in out:
                 if k in r:
                     out[k] = r[k]

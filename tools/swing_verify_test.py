@@ -57,7 +57,7 @@ class FakeClient:
         self.order.append("register")
         return {}
 
-    def verify_swing(self, image_path, timeout=25.0):
+    def verify_swing(self, image_path, timeout=25.0, frames_path=None):
         self.asked += 1
         self.order.append("ask")
         if self.raises:

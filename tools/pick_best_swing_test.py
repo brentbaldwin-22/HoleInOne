@@ -56,7 +56,7 @@ class FakeClient:
         self.registered.append((sid, kw.get("impact_at")))
         return {}
 
-    def verify_swing(self, image_path, timeout=25.0):
+    def verify_swing(self, image_path, timeout=25.0, frames_path=None):
         v, c = self.script.pop(0)
         return {"is_swing": v, "confidence": c, "reason": "because"}
 

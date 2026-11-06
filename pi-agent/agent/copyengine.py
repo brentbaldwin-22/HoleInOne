@@ -837,19 +837,70 @@ class CopyEngine:
             if detail is not None:
                 detail["verdict_asked"] = True
             try:
-                from . import swingheat
+                from . import swingheat, swingjudge
                 _crop = swingheat.zone_crop(
                     getattr(runner, "roi", None), tee_roi.boxes)
+                _meta: dict = {}
+                _strip = clip_path.with_suffix(".frames.jpg")
                 _img = swingheat.build(
                     clip_path, float(impact_ts) - float(res["start"]),
                     before_sec=_t.verify_window_sec,
                     after_sec=_t.verify_window_sec,
                     crop=_crop,
+                    meta=_meta, frames_out=_strip,
                 )
-                if _img is not None:
-                    _v = runner.client.verify_swing(_img)
+                # WHAT THE PICTURE ACTUALLY CONTAINS, before anyone is
+                # asked about it. On 5 Nov the judge called a 150x199
+                # near-square mass a golfer with a club, 837 px from
+                # the only person the detector saw -- and on 6 Nov, of
+                # 29 accepted clips the operator read most as not
+                # swings. A tape measure answers that question for
+                # nothing; a judge call costs ~13s on a cellular link
+                # and has been answering it wrong.
+                _geo = _meta.get("geo") or {}
+                _stance = (detail or {}).get("stance")
+                _pre = swingjudge.prejudge(_geo, _stance)
+                if detail is not None:
+                    _m = _geo.get("main") or {}
+                    detail["heat_blob"] = (
+                        [_m.get("w"), _m.get("h"), _m.get("aspect")]
+                        if _m else None)
+                    if not _pre["ask"]:
+                        detail["refused_by"] = _pre["why"][:160]
+                if _img is not None and not _pre["ask"]:
+                    # NOT ASKED, AND COUNTED AS A NO. The clip is
+                    # parked like any other refusal below, so a gate
+                    # that turns out to be wrong costs a review rather
+                    # than the footage.
+                    _verdict = False
+                    _vreason = _pre["why"]
+                    _vconf = "gate"
+                    log.info("copy: not asking the judge about %s — %s",
+                             session_id, _pre["why"])
+                    _img.unlink(missing_ok=True)
+                    _strip.unlink(missing_ok=True)
+                elif _img is not None:
+                    _v = runner.client.verify_swing(
+                        _img, frames_path=(_strip if _strip.exists()
+                                           else None))
                     _verdict = _v.get("is_swing")
                     _vconf, _vreason = _v.get("confidence"), _v.get("reason")
+                    # AND A HEDGED YES NEEDS THE MICROPHONE BEHIND IT.
+                    # Eleven of those 29 accepted clips were between
+                    # x4.1 and x5.0 against a x4.0 gate; a medium
+                    # verdict on a barely-audible strike is two weak
+                    # signals being counted as one strong one.
+                    _post = swingjudge.postjudge(
+                        _verdict, _vconf,
+                        (detail or {}).get("ratio"),
+                        getattr(_t, "min_ratio", None))
+                    if not _post["keep"]:
+                        log.info("copy: overruling the judge on %s — %s",
+                                 session_id, _post["why"])
+                        if detail is not None:
+                            detail["refused_by"] = _post["why"][:160]
+                        _verdict = False
+                        _vreason = _post["why"]
                     if detail is not None:
                         # THE PICTURE AND THE INSTANT IT WAS BUILT FROM.
                         # Test Cut re-derives the impact from the cut
@@ -861,12 +912,14 @@ class CopyEngine:
                             detail["verdict_image"] = str(_v["image"])[:120]
                         detail["verdict_at_sec"] = round(
                             float(impact_ts) - float(res["start"]), 2)
-                    log.info("copy: swing check on %s — %s (%s) %s",
+                    log.info("copy: swing check on %s — %s (%s) %s%s",
                              session_id,
                              {True: "SWING", False: "not a swing"}.get(
                                  _verdict, "could not tell"),
-                             _vconf or "-", _vreason or "")
+                             _vconf or "-", _vreason or "",
+                             " [+frames]" if _strip.exists() else "")
                     _img.unlink(missing_ok=True)
+                    _strip.unlink(missing_ok=True)
                     if _verdict is None:
                         _vwhy = _vreason or "no answer"
                 else:
