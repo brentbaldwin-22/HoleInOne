@@ -52,6 +52,7 @@ except Exception:  # pragma: no cover
     HAS_CV = False
 
 # Shared with Debug2 so the two are directly comparable on the same window.
+from . import swingjudge  # noqa: E402
 from .debug2 import WIN_POST, WIN_PRE, _label  # noqa: E402
 
 # A golf ball is TINY, but "20-30 pixels of area" is a 1080p number and it
@@ -4515,6 +4516,8 @@ ASCENT_WHY_COLORS = {
     "backrun": "#b5487d",
     # Points back outside the hitting area.
     "outside": "#c0392b",
+    # Points back at somebody other than the golfer who swung.
+    "aim": "#d8743f",
     # Mostly gaps -- specks joined across frames the ball was not in.
     "sparse": "#8fa03a",
     # One long hole in the middle, however dense the rest of it is.
@@ -5911,6 +5914,23 @@ def sweep_ascents(
     # (f_lo, f_hi) pairs in frames. None scans the whole clip exactly
     # as before, which is what happens whenever nothing knows better.
     windows: list | None = None,
+    # WHERE THE GOLFER WHO SWUNG WAS STANDING, in frame pixels, or
+    # None. A ball is struck from where the golfer is; a chain whose
+    # own run-back lands somewhere else came off somebody else's club,
+    # a bird, or a cart.
+    #
+    # THIS IS THE `outside` GATE AIMED PROPERLY. That one runs the same
+    # run-back against the hole's whole tee box, which on hole 8 is two
+    # wide strips spanning most of the frame -- so on the 6 Nov sweep a
+    # chain running back to x=1018 was accepted while the golfer who
+    # swung stood at x=1790, because 1018 is inside the box as well. It
+    # is nearer the man standing with his club at rest.
+    #
+    # None leaves every chain alone. Most callers reach here before
+    # anything knows which golfer swung, and a gate that fired on
+    # absent evidence would refuse every chain on every clip that
+    # never asked.
+    aim_x: float | None = None,
 ) -> dict:
     """Every ball leaving the tee in the WHOLE video, found from above.
 
@@ -6301,6 +6321,13 @@ def sweep_ascents(
                     <= _span[1] + ASCENT_ROI_MARGIN_PX):
                 _why.append("outside")
                 out["n_outside_area"] += 1
+            # AND AT THE GOLFER WHO SWUNG, when the caller knows which
+            # one that was. Same run-back, a far tighter target than
+            # the whole tee box. See `aim_x`.
+            _aim = swingjudge.aim_verdict(_from_x, aim_x, frame_w)
+            if not _aim["ok"]:
+                _why.append("aim")
+                out["n_wrong_golfer"] = out.get("n_wrong_golfer", 0) + 1
             _entry = {
                 "first_frame": int(pts[0]["frame"]),
                 "last_frame": int(pts[-1]["frame"]),
@@ -6506,6 +6533,17 @@ def sweep_ascents(
                      "hole, widened by a fixed margin. A chain refused "
                      "here is pointing somewhere nobody tees off from — "
                      "redraw the box, do not tune a gate."},
+            {"key": "aim", "limit": ("%.0f%% of the frame from the golfer"
+                                     % (swingjudge.AIM_MAX_DX_FRAC * 100.0)
+                                     if aim_x is not None
+                                     else "off — nothing said which "
+                                          "golfer swung"),
+             "knobs": [],
+             "what": "where that run-back crosses the tee line, against "
+                     "WHERE THE GOLFER WHO SWUNG WAS STANDING rather "
+                     "than against the whole tee box. A ball is struck "
+                     "from where the golfer is; a chain refused here "
+                     "came off somebody else's club."},
             {"key": "sparse", "limit": f"{ASCENT_MIN_DENSITY:g}",
              "knobs": ["ascent_min_density"],
              "what": "points divided by the frames they span. A real "

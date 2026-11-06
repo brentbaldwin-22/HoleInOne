@@ -388,6 +388,61 @@ def confidence_verdict(is_swing, confidence, ratio, gate_ratio, *,
             % (band, r, over)}
 
 
+# ---- where the ball left from --------------------------------------
+
+# How far from the golfer who swung a chain's launch point may sit,
+# as a fraction of the frame width.
+#
+# THE EXISTING `outside` GATE ALREADY RUNS A CHAIN'S HEADING BACK to
+# the tee line and refuses it if it lands outside the hole's tee box.
+# That is the right idea against the wrong box: the zones on hole 8
+# are two wide flat strips spanning most of the frame, so a chain
+# landing anywhere along them passes. On the 6 Nov sweep the accepted
+# chain ran back to x~1018 while the golfer who swung stood at
+# x~1790 -- 772 px apart, 40% of the frame -- and it was accepted
+# because 1018 is inside the tee box too. It is nearer the man
+# standing with his club at rest.
+#
+# A ball is struck from where the golfer is standing. 0.12 of the
+# frame is ~230 px at 1920: wide enough for the run-back
+# extrapolation's own error and for a golfer who has followed through
+# across their stance, far short of a different person.
+#
+# UNMEASURED against a corpus. It fires only where a caller supplies
+# an anchor, so a pipeline that has no idea which golfer swung is
+# unaffected.
+AIM_MAX_DX_FRAC = 0.12
+
+
+def aim_verdict(from_x, aim_x, frame_w, *,
+                max_dx_frac: float = AIM_MAX_DX_FRAC) -> dict:
+    """Did this ball leave from in front of the golfer who swung?
+
+    `from_x` is where the chain's own heading, run back to the tee
+    line, says it started. `aim_x` is where the golfer who swung was
+    -- the ball at rest, the stance point, or the base of the swing's
+    heat, whichever the caller has.
+
+    None for either is not a rejection. Most of the pipeline does not
+    know which golfer swung, and a gate that fires on absent evidence
+    would refuse every chain on every clip that never asked.
+    """
+    if from_x is None or aim_x is None or not frame_w:
+        return {"ok": True, "why": "no golfer to aim at"}
+    try:
+        dx = abs(float(from_x) - float(aim_x))
+        allow = float(max_dx_frac) * float(frame_w)
+    except Exception:  # noqa: BLE001
+        return {"ok": True, "why": "unreadable aim"}
+    if dx > allow:
+        return {"ok": False, "why": (
+            "runs back to x=%.0f, but the golfer who swung was at "
+            "x=%.0f — %.0f px away, %.0f%% of the frame"
+            % (from_x, aim_x, dx, dx / float(frame_w) * 100.0))}
+    return {"ok": True, "why": "leaves from the golfer who swung (%.0f px)"
+            % dx}
+
+
 # ---- the whole decision, in one place ---------------------------------
 
 def prejudge(geo: dict, stance_xy, **kw) -> dict:

@@ -37,8 +37,8 @@ sys.path.insert(0, str(ROOT / "pi-agent"))
 import numpy as np                                    # noqa: E402
 
 from agent.swingjudge import (                        # noqa: E402
-    confidence_verdict, measure_heat, pick_stance, postjudge, prejudge,
-    shape_verdict, stance_verdict, MIN_ASPECT,
+    aim_verdict, confidence_verdict, measure_heat, pick_stance, postjudge,
+    prejudge, shape_verdict, stance_verdict, MIN_ASPECT,
 )
 
 FAIL: list[str] = []
@@ -187,6 +187,28 @@ def main() -> int:
           prejudge(nov5, None)["ask"], True)
     check("postjudge refuses the 5 Nov verdict",
           postjudge(True, "medium", 4.7, 4.0)["keep"], False)
+
+    # ---- 8. where the ball left from -------------------------------
+    # The `outside` gate already runs a chain back to the tee line and
+    # refuses it outside the hole's tee box. On hole 8 that box is two
+    # wide strips spanning most of the frame, so the 6 Nov sweep
+    # accepted a chain running back to x=1018 while the golfer who
+    # swung stood at x=1790 -- nearer the man holding his club at rest.
+    check("the 6 Nov chain: runs back 772 px from the golfer, refused",
+          aim_verdict(1018, 1790, 1920)["ok"], False)
+    check("  a chain leaving from the golfer is kept",
+          aim_verdict(1835, 1790, 1920)["ok"], True)
+    check("  and one just inside the tolerance",
+          aim_verdict(1790 - 0.11 * 1920, 1790, 1920)["ok"], True)
+    check("  and just outside it",
+          aim_verdict(1790 - 0.13 * 1920, 1790, 1920)["ok"], False)
+    # MOST OF THE PIPELINE DOES NOT KNOW WHICH GOLFER SWUNG. A gate
+    # that fired on absent evidence would refuse every chain on every
+    # clip that never asked.
+    check("no anchor is not a rejection", aim_verdict(1018, None, 1920)["ok"],
+          True)
+    check("no run-back is not a rejection", aim_verdict(None, 1790, 1920)
+          ["ok"], True)
 
     print()
     if FAIL:
