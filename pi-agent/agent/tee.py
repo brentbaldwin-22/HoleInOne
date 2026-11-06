@@ -48,6 +48,7 @@ from .common import (
 from . import audiotrigger
 from . import tee_roi
 from .cutqueue import CutQueue
+from . import swingjudge
 from .focus_meter import FocusMeter
 from .livestream import LiveStreamer
 from .copyengine import (
@@ -482,6 +483,27 @@ def _roi_zone(pt, roi):
         return tee_roi.which(pt, roi)
     except Exception:  # noqa: BLE001
         return None
+
+
+def _stance_xy(stance):
+    """A stance point as (x, y), or (None, None) for anything else.
+
+    THE SIGHTING LIST IS BOOKKEEPING AND MUST NOT RAISE. One of the two
+    places it is appended sits INSIDE the copy engine's stop policy,
+    and record_and_upload treats a policy that raises as a reason to
+    END THE CLIP ("stop policy raised — ending clip"). So a detector
+    returning something this did not expect would not merely lose a
+    sighting, it would cut the recording short -- which is how a
+    stop_policy test with a stub returning the string "person" caught
+    `int(stance[0])` before a rig did.
+
+    The real detectors all return Optional[tuple[int, int]]. This is
+    for everything else.
+    """
+    try:
+        return int(stance[0]), int(stance[1])
+    except Exception:  # noqa: BLE001
+        return None, None
 
 
 def _dwell_yield_zones(value):
@@ -1197,7 +1219,19 @@ class TeeAgent:
         is called, and nothing here may disturb it.
         """
         try:
-            self._person_seen_at.append((float(now), _roi_zone(stance, roi)))
+            # (time, zone, x, y). THE POINT WAS ALWAYS HERE AND ALWAYS
+            # THROWN AWAY. The zone index answers "was somebody on a
+            # tee", which is the audio trigger's gate; it cannot answer
+            # "is the thing that MOVED that person", which is the
+            # sharper question and the one that would have refused the
+            # 5 Nov composite -- heat 837 px to the side of the only
+            # golfer in frame. Appended rather than substituted: every
+            # reader indexes (seen_times, seen_in_zones, zone_seen_in),
+            # so a longer tuple costs them nothing and a rig mid-
+            # upgrade can hold both shapes at once.
+            _sx, _sy = _stance_xy(stance)
+            self._person_seen_at.append((
+                float(now), _roi_zone(stance, roi), _sx, _sy))
         except Exception:  # noqa: BLE001
             pass
 
@@ -1290,6 +1324,14 @@ class TeeAgent:
             _off, _ = clock_offset()
         except Exception:  # noqa: BLE001
             pass
+        _stance_pt = None
+        try:
+            _st = swingjudge.pick_stance(list(self._person_seen_at),
+                                         float(decision["at"]))
+            if _st is not None:
+                _stance_pt = [int(_st[0]), int(_st[1])]
+        except Exception:  # noqa: BLE001
+            _stance_pt = None
         _detail = None
         try:
             with self._roi_lock:
@@ -1302,6 +1344,11 @@ class TeeAgent:
                 "attack_ms": decision.get("attack_ms"),
                 "zone": _z,
                 "zone_label": self._zone_name(_roi, _z),
+                # WHERE THE GOLFER ACTUALLY STOOD, so the verdict can be
+                # argued with afterwards and so judge_bench can score
+                # the stance gate on real events. Read on this thread,
+                # which is the one that writes the deque.
+                "stance": _stance_pt,
                 "why": decision.get("why"),
                 "window": [round(float(decision["start"]), 3),
                            round(float(decision["end"]), 3)],
@@ -2090,7 +2137,8 @@ class TeeAgent:
                     # happened" rather than "was anybody anywhere".
                     # Older readers want a bare float, so `_seen_times`
                     # keeps giving them one.
-                    _seen.append((now, _roi_zone(stance, _roi)))
+                    _sx, _sy = _stance_xy(stance)
+                    _seen.append((now, _roi_zone(stance, _roi), _sx, _sy))
                 return None
             if now - state["last_seen"] >= no_person_timeout:
                 return "no_person"

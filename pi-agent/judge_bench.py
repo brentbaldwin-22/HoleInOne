@@ -177,6 +177,66 @@ def init_labels(d: Path) -> Path:
     return path
 
 
+def corpus_from_events(events_json: Path, clips_dir: Path, out: Path,
+                       gate_ratio: float):
+    """Turn a camera-events dump into a labelled corpus, minus the label.
+
+    THE EVENT ALREADY KNOWS MOST OF IT. `verdict_at_sec` is the exact
+    offset into the clip the rig built its composite at -- not the
+    middle of the clip, which is what --init has to guess -- and
+    `ratio` is the strike the microphone measured. Typing either by
+    hand would be typing in numbers the rig has already recorded, and
+    getting impact_sec wrong scores the renderer on the wrong second.
+
+    So the only column left is is_swing, which is the one a person
+    has to answer.
+
+    Links rather than copies: these are the backend's own clips and
+    the bench only reads them.
+    """
+    import json
+    import os
+    rows = json.loads(Path(events_json).read_text())
+    out.mkdir(parents=True, exist_ok=True)
+    recs, miss = [], 0
+    for r in rows:
+        url = r.get("tee_url") or ""
+        name = url.rsplit("/", 1)[-1] if url else ""
+        if not name:
+            continue
+        src = Path(clips_dir) / name
+        if not src.exists():
+            miss += 1
+            continue
+        dst = out / name
+        if not dst.exists():
+            try:
+                os.symlink(src.resolve(), dst)
+            except OSError:
+                import shutil
+                shutil.copy(src, dst)
+        td_ratio = r.get("ratio")
+        recs.append({
+            "clip": name,
+            "is_swing": "",
+            "impact_sec": ("%.2f" % r["at_sec"]) if r.get("at_sec") is not None
+                          else "",
+            "ratio": ("%s" % td_ratio) if td_ratio is not None else "",
+            "gate_ratio": ("%g" % gate_ratio) if gate_ratio else "",
+            "stance_x": "", "stance_y": "",
+            # WHAT THE RIG DECIDED, carried through so a disagreement
+            # can be read off the table without going back to the card.
+            # NOT the label: that is the whole point of the exercise.
+            "note": "event %s  rig said %s/%s" % (
+                r.get("id"), r.get("verdict"), r.get("conf")),
+        })
+    with (out / LABELS).open("w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=COLUMNS)
+        w.writeheader()
+        w.writerows(recs)
+    return len(recs), miss
+
+
 def read_labels(d: Path):
     path = d / LABELS
     if not path.exists():
@@ -372,17 +432,41 @@ def main() -> int:
                          "measurement into this folder and stop. ~250 KB a "
                          "clip against ~6.5 MB, so a rig's whole notswing/ "
                          "folder fits in a copy you can actually make.")
+    ap.add_argument("--from-events", type=Path,
+                    help="build the corpus from a camera-events JSON dump "
+                         "(see the module docstring). Fills in impact_sec "
+                         "and ratio from what the rig recorded, so the only "
+                         "column left to type is is_swing.")
+    ap.add_argument("--clips-dir", type=Path,
+                    help="where the clips named in --from-events live; on "
+                         "the backend that is <upload_dir>/clips")
+    ap.add_argument("--gate-ratio", type=float, default=0.0,
+                    help="the rig's audio min_ratio, for the confidence "
+                         "gate. The startup line prints it: 'gate x4.0'.")
     ap.add_argument("--prebuilt", action="store_true",
                     help="score renders a previous --export made, instead "
                          "of decoding the clips again (or at all)")
     a = ap.parse_args()
 
     d = a.clips
+    if a.from_events:
+        # --clips is the corpus being BUILT here, not one being read.
+        d.mkdir(parents=True, exist_ok=True)
     if not d.is_dir():
         print(f"no such folder: {d}")
         return 2
     work = d / "_bench"
     work.mkdir(exist_ok=True)
+
+    if a.from_events:
+        n, miss = corpus_from_events(a.from_events, a.clips_dir or d, d,
+                                     a.gate_ratio)
+        print(f"{n} clip(s) linked into {d}, {miss} named but not on disk")
+        print(f"wrote {d / LABELS} with impact_sec and ratio already "
+              f"filled in")
+        print("Only is_swing is left. Render cards to label from:")
+        print(f"  --clips {d} --sheet {d}/sheet")
+        return 0
 
     if a.init:
         p = init_labels(d)

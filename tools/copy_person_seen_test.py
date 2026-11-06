@@ -98,7 +98,15 @@ def test_a_person_in_the_zone_is_remembered():
     check("and they are the times they happened",
           tee_roi.seen_times(f._person_seen_at), [100.0, 100.5, 101.0])
     check("...each attributed to the zone they stood in",
-          [z for _t, z in f._person_seen_at], [0, 0, 0])
+          [s[1] for s in f._person_seen_at], [0, 0, 0])
+    # AND THE POINT, appended on the end so every reader that indexes
+    # is unaffected. The zone says somebody was on a tee; the point is
+    # what lets the swing gate ask whether the thing that MOVED is
+    # that person. Indexed, not unpacked: the tuple grew once and may
+    # again.
+    check("the stance point rides along too",
+          [(s[2], s[3]) for s in f._person_seen_at],
+          [(1000, 550), (1000, 550), (1000, 550)])
 
 
 def test_the_detection_loop_records_them_too():
@@ -124,7 +132,7 @@ def test_the_detection_loop_records_them_too():
     check("the loop can record a sighting with nothing recording",
           tee_roi.seen_times(f._person_seen_at), [100.0, 100.5])
     check("...attributed to a zone",
-          [z for _t, z in f._person_seen_at], [0, 0])
+          [s[1] for s in f._person_seen_at], [0, 0])
 
     # It must not be able to disturb the detector's decision.
     f._note_sighting(101.0, None, "not an roi")
