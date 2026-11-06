@@ -3222,6 +3222,94 @@ def golfer_and_ball_box(constant, det_scale: float, width: int, height: int,
                     int(_bx1 - _bx0), int(_by1 - _by0)]
 
 
+def frames_strip(input_path, at_sec: float, out_path, *, box=None,
+                 offsets=(-0.25, 0.0, 0.15, 0.40), tile_px: int = 640,
+                 pad_frac: float = 1.0):
+    """Four ordinary frames around the impact, as one 2x2 tile. Bool.
+
+    THE COMPANION TO THE HEAT COMPOSITE, and the thing it cannot be.
+    The composite accumulates a second of motion into one picture: it
+    says WHERE something moved and discards both when and what, which
+    is why "a compact hot figure with a cooler plume" is a fair
+    description of a near-square orange mass with blue edges. Four
+    real frames say what the thing was, and whether it moved like a
+    swing, which is a question a vision model is good at.
+
+    `box` is (x, y, w, h) of whatever moved -- normally the measured
+    heat blob -- and the tiles are cropped around it with padding, so
+    the candidate fills the frame instead of being forty pixels of a
+    whole golf hole. Without one the full frame is used.
+
+    A MIRROR OF agent/swingheat._frame_strip, deliberately: the rig
+    and Test Cut must hand the judge the same KIND of picture or
+    their verdicts cannot be compared, which is the drift the warning
+    at the top of agent/swingheat.py is about. Never raises.
+    """
+    cap = None
+    try:
+        cap = cv2.VideoCapture(str(input_path))
+        if not cap.isOpened():
+            return False
+        fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
+        W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if W <= 0 or H <= 0:
+            return False
+        if box:
+            bx, by, bw, bh = (int(box[0]), int(box[1]),
+                              int(box[2]), int(box[3]))
+            px, py = int(bw * pad_frac), int(bh * pad_frac)
+            x0, y0 = max(0, bx - px), max(0, by - py)
+            x1, y1 = min(W, bx + bw + px), min(H, by + bh + py)
+            if x1 - x0 < 64 or y1 - y0 < 64:
+                x0, y0, x1, y1 = 0, 0, W, H
+        else:
+            x0, y0, x1, y1 = 0, 0, W, H
+
+        tiles = []
+        for off in offsets:
+            f = int((float(at_sec) + off) * fps)
+            if f < 0:
+                continue
+            cap.set(cv2.CAP_PROP_POS_FRAMES, f)
+            ok, fr = cap.read()
+            if not ok or fr is None:
+                continue
+            t = fr[y0:y1, x0:x1]
+            th, tw = t.shape[:2]
+            if max(th, tw) > tile_px:
+                sc = tile_px / float(max(th, tw))
+                t = cv2.resize(t, (max(1, int(tw * sc)),
+                                   max(1, int(th * sc))))
+            # WHICH MOMENT THIS IS. Four near-identical tiles are
+            # unorderable, and the order is the evidence.
+            for col, wid in (((0, 0, 0), 3), ((255, 255, 255), 1)):
+                cv2.putText(t, "%+.2fs" % off, (6, 22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, wid,
+                            cv2.LINE_AA)
+            tiles.append(t)
+        if not tiles:
+            return False
+        th = max(t.shape[0] for t in tiles)
+        tw = max(t.shape[1] for t in tiles)
+        cells = []
+        for t in tiles:
+            pad = np.zeros((th, tw, 3), np.uint8)
+            pad[:t.shape[0], :t.shape[1]] = t
+            cells.append(pad)
+        while len(cells) < 4:
+            cells.append(np.zeros((th, tw, 3), np.uint8))
+        grid = np.vstack([np.hstack(cells[0:2]), np.hstack(cells[2:4])])
+        return bool(cv2.imwrite(str(out_path), grid,
+                                [int(cv2.IMWRITE_JPEG_QUALITY), 80]))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("frames_strip: %s", exc)
+        return False
+    finally:
+        if cap is not None:
+            cap.release()
+
+
 def swing_heat_check(
     input_path,
     peak_time_sec: float,
@@ -3493,6 +3581,31 @@ def swing_heat_check(
                     [int(cv2.IMWRITE_JPEG_QUALITY), 80],
                 )
                 out["image_clean"] = clean_name
+                # WHAT IS IN THE PICTURE, measured on the heat map the
+                # judge's own crop covers rather than read back off a
+                # colormapped JPEG -- that has the photograph blended
+                # through it and its saturation says as much about the
+                # grass as about the motion. Same module the rig uses,
+                # held byte-identical, so a Test Cut gate and a rig
+                # gate cannot disagree about the same blob.
+                try:
+                    from . import swingjudge as _sj
+                    _hmj = hm_n
+                    _ox = _oy = 0
+                    if out.get("crop"):
+                        _cx, _cy, _cw, _ch = out["crop"]
+                        _hmj = hm_n[_cy:_cy + _ch, _cx:_cx + _cw]
+                        _ox, _oy = _cx, _cy
+                    _geo = _sj.measure_heat(_hmj)
+                    _mm = _geo.get("main")
+                    if _mm:
+                        _mm["frame_x"] = _mm["x"] + _ox
+                        _mm["frame_y"] = _mm["y"] + _oy
+                        _mm["frame_base"] = (_mm["base"][0] + _ox,
+                                             _mm["base"][1] + _oy)
+                    out["geo"] = _geo
+                except Exception as _exc:  # noqa: BLE001
+                    log.debug("swing heat: could not measure (%s)", _exc)
                 if len(chain) >= 2:
                     _poly = np.array(
                         [(int(d.x), int(d.y)) for d in chain], np.int32,

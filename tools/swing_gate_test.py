@@ -142,6 +142,18 @@ def main() -> int:
     club2 = measure_heat(heat_with([(400, 300, 75, 35)]))
     check("a club arc above its own golfer is not 'someone else'",
           stance_verdict(club2, (437, 390))["ok"], True)
+    # AN ALLOWANCE THAT SCALES WITH THE BLOB LETS A BIG BLOB EXCUSE
+    # ITSELF. Measured on clip 1768 through Test Cut's renderer, whose
+    # 4.5s window accumulates far more motion than the rig's 1.0s one:
+    # a 727 px wide blob made a golfer 900 px away only 0.74 of its
+    # own widths off, and the gate waved it through.
+    wide = measure_heat(heat_with([(500, 600, 727, 294)], w=1920, h=1080))
+    _b = wide["main"]["base"]
+    check("a wide blob cannot excuse a distant golfer",
+          stance_verdict(wide, (_b[0] - 900, _b[1] + 10))["ok"], False)
+    check("  but still passes one standing under it",
+          stance_verdict(wide, (_b[0], _b[1] + 10))["ok"], True)
+
     check("motion ABOVE the feet with nothing between is refused",
           stance_verdict(g4, (430, 150))["ok"], False)
     check("no sighting is not a rejection", stance_verdict(g4, None)["ok"],

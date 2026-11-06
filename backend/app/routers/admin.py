@@ -115,6 +115,7 @@ from ..services.ai_tracer import (
     refine_impact_frame,
     track_ball_after_impact,
     judge_swing_heat_image,
+    judge_swing_with_frames,
     trace_ball_path_ai,
     render_tracer_video,
     run_full_ai_tracer_pipeline,
@@ -31482,15 +31483,64 @@ def _debug3_run(row, src_path, db, progress=None, debug_artifacts=True,
                     debug_dir=_heat_dir,
                     debug_prefix=f"d3heat-{upload_id}-{tok}-{i}",
                 ) or {}
-                if _heat.get("image_clean") and os.environ.get(
+                # THE SAME GATES THE RIG RUNS, from the same module.
+                # A blob that is not where the golfer was standing is
+                # not that golfer's swing, and the pose stage has
+                # already found their feet -- so this costs nothing
+                # and is answerable without a model.
+                from ..services import swingjudge as _sj
+                _geo = _heat.get("geo") or {}
+                _anchor = c.get("impact_feet_xy") or _rest_xy
+                # _gate, NOT _pre: this loop already has a `_pre`,
+                # the ball-at-rest result, read a few lines above.
+                # Shadowing it worked only because the read happens
+                # first, which is the kind of thing that stops being
+                # true the next time somebody moves a block.
+                _gate = _sj.prejudge(_geo, _anchor)
+                _heat["gate"] = _gate["why"]
+                _heat["gate_ask"] = _gate["ask"]
+                if _heat.get("image_clean") and not _gate["ask"]:
+                    _heat["verdict"] = "no_swing"
+                    _heat["ai_reason"] = _gate["why"]
+                    _ai_seen = True
+                    # NOT "confident". The gate is sure about geometry,
+                    # not about swings, and _ai_sure is what lets a NO
+                    # delete a candidate outright. Narrow on purpose:
+                    # a bad candidate kept costs a clip nobody watches.
+                elif _heat.get("image_clean") and os.environ.get(
                     "ANTHROPIC_API_KEY",
                 ):
-                    _j = judge_swing_heat_image(
-                        _heat_dir / _heat["image_clean"],
-                    )
+                    # AND FOUR REAL FRAMES ALONGSIDE THE HEAT MAP. See
+                    # tracer.frames_strip: the composite says where
+                    # something moved and throws away what it was.
+                    _strip = None
+                    try:
+                        from ..services.tracer import frames_strip
+                        _m = _geo.get("main") or {}
+                        _sp = _heat_dir / (
+                            f"d3frames-{upload_id}-{tok}-{i}.jpg")
+                        if frames_strip(
+                            src_path, peak_t, _sp,
+                            box=((_m.get("frame_x"), _m.get("frame_y"),
+                                  _m.get("w"), _m.get("h"))
+                                 if _m.get("w") else None),
+                        ):
+                            _strip = _sp
+                            _heat["frames_image"] = _sp.name
+                    except Exception as _fx:  # noqa: BLE001
+                        log.debug("debug3 frame strip failed: %s", _fx)
+                    if _strip is not None:
+                        _j = judge_swing_with_frames(
+                            _strip, _heat_dir / _heat["image_clean"],
+                        )
+                    else:
+                        _j = judge_swing_heat_image(
+                            _heat_dir / _heat["image_clean"],
+                        )
                     _heat["ai_judge"] = _j.get("is_swing")
                     _heat["ai_reason"] = _j.get("reason")
                     _heat["ai_confidence"] = _j.get("confidence")
+                    _heat["ai_saw"] = _j.get("saw") or "heat only"
                     if _j.get("is_swing") is True:
                         _heat["verdict"] = "club_swing"
                         _ai_seen = True

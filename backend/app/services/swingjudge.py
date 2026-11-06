@@ -234,6 +234,22 @@ def shape_verdict(geo: dict, *, min_aspect: float = MIN_ASPECT,
 # only person in frame, which is nine of its own widths away.
 MAX_STANCE_GAP_FRAC = 1.0
 
+# AND AN ABSOLUTE CEILING, as a fraction of the frame width, because
+# an allowance that scales with the blob lets a big blob excuse
+# itself. Measured on clip 1768 through Test Cut's renderer, whose
+# 4.5s window accumulates far more motion than the rig's 1.0s one:
+# the blob came back 727 px wide, so a golfer 900 px away was only
+# 0.74 of its own widths off and sailed through. "Anywhere within a
+# third of the frame" is not a gate.
+#
+# 0.20 of the frame is ~384 px at 1920 -- generous against the
+# run-back of a wide follow-through and against a blob that includes
+# a playing partner, and still far short of a different person on a
+# different tee. UNMEASURED as a number; what IS measured is that
+# without any ceiling the gate stops working on exactly the wide
+# blobs it was written for.
+MAX_STANCE_GAP_FRAME_FRAC = 0.20
+
 # A golfer's feet are BELOW their motion, never above it, and not a
 # great distance below. This catches the other half: heat high in the
 # sky above someone standing on the tee is a bird, not their swing.
@@ -248,6 +264,7 @@ STANCE_MAX_AGE_SEC = 2.5
 
 def stance_verdict(geo: dict, stance_xy, *,
                    max_gap_frac: float = MAX_STANCE_GAP_FRAC,
+                   max_gap_frame_frac: float = MAX_STANCE_GAP_FRAME_FRAC,
                    max_below_frac: float = MAX_STANCE_BELOW_FRAC) -> dict:
     """Is the hot blob standing where a person was actually detected?
 
@@ -278,11 +295,14 @@ def stance_verdict(geo: dict, stance_xy, *,
     gap_x = 0.0 if left <= sx <= right else min(abs(sx - left),
                                                 abs(sx - right))
     allow_x = float(max_gap_frac) * float(m["w"])
+    _fw = float(geo.get("frame_w") or 0.0)
+    if _fw > 0:
+        allow_x = min(allow_x, float(max_gap_frame_frac) * _fw)
     if gap_x > allow_x:
         return {"ok": False, "why": (
             "the moving thing is %.0f px to the side of the golfer the "
-            "detector saw (%.1f of its own widths); it is not that person"
-            % (gap_x, gap_x / float(m["w"])))}
+            "detector saw (allowed %.0f); it is not that person"
+            % (gap_x, allow_x))}
     # Vertically: the feet must be below the motion, within reason.
     top, bottom = float(m["y"]), float(m["y"] + m["h"])
     if sy < top:
@@ -485,6 +505,7 @@ def prejudge(geo: dict, stance_xy, **kw) -> dict:
         "stance": stance_verdict(geo, stance_xy,
                                  **{k: v for k, v in kw.items()
                                     if k in ("max_gap_frac",
+                                             "max_gap_frame_frac",
                                              "max_below_frac")}),
     }
     bad = [v["why"] for v in checks.values() if not v["ok"]]
