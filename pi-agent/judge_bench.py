@@ -27,17 +27,39 @@ judge costs one command instead of an argument.
 
 USAGE
 
-    # 1. lay out a labels file for a folder of clips
-    python3 tools/judge_bench.py --clips ./corpus --init
+ON THE RIG, where the clips are and ~1 GB of them is not coming down
+a cellular modem. update.sh installs this beside agent/, so:
 
-    # 2. render a contact sheet and fill in the is_swing column
-    python3 tools/judge_bench.py --clips ./corpus --sheet ./sheet
+    cd /opt/golfreelz-agent
+    sudo python3 judge_bench.py --clips /var/lib/golfreelz-agent/notswing \\
+         --init
+    sudo python3 judge_bench.py --clips /var/lib/golfreelz-agent/notswing \\
+         --sample 40 --export /tmp/corpus
+
+That renders ~250 KB a clip instead of 6.5 MB. Copy /tmp/corpus off
+and everything below works on it with --prebuilt; the clips never
+have to move.
+
+ANYWHERE ELSE, on a folder of clips downloaded off the Production card:
+
+    # 1. lay out a labels file
+    python3 judge_bench.py --clips ./corpus --init
+
+    # 2. render contact cards and fill in the is_swing column
+    python3 judge_bench.py --clips ./corpus --sheet ./sheet
 
     # 3. score. --dry-run spends no API calls: it scores the gates
     #    alone, which is free and catches most mistakes.
-    python3 tools/judge_bench.py --clips ./corpus --dry-run
-    ANTHROPIC_API_KEY=... python3 tools/judge_bench.py --clips ./corpus \\
+    python3 judge_bench.py --clips ./corpus --dry-run
+    ANTHROPIC_API_KEY=... python3 judge_bench.py --clips ./corpus \\
         --variant baseline --variant gates --variant frames --variant all
+
+WHAT EACH HALF OF THE CORPUS CAN MEASURE, because it is easy to get
+this backwards and label the wrong 162 clips. notswing/ holds only
+clips the pipeline REFUSED, so it measures one direction: real swings
+being thrown away. The false positives are the clips that were
+ACCEPTED, and those went up -- they are on the Production card, not on
+the rig. Both halves or the table lies.
 
 VARIANTS
     baseline   the composite alone, no gates    (what shipped before)
@@ -59,9 +81,17 @@ import sys
 import time
 from pathlib import Path
 
+# RUNS IN THREE PLACES, and has to find `agent` in all of them: the
+# repo, a laptop with clips downloaded off the Production card, and
+# the rig itself -- /var/lib/golfreelz-agent/notswing holds 162 refused
+# clips and ~1 GB of them is not coming down a cellular modem, so the
+# rendering has to be doable where they are. The backend is optional:
+# only the judge needs it, and --dry-run and --export do not.
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "pi-agent"))
-sys.path.insert(0, str(ROOT / "backend"))
+for _p in (ROOT / "pi-agent", ROOT / "backend", ROOT,
+           Path("/opt/golfreelz-agent")):
+    if (_p / "agent").is_dir() or (_p / "app").is_dir():
+        sys.path.insert(0, str(_p))
 
 import cv2                                            # noqa: E402
 import numpy as np                                    # noqa: E402
@@ -162,20 +192,50 @@ def read_labels(d: Path):
 
 # ---- running one clip -------------------------------------------------
 
-def render(d: Path, row: dict, work: Path, want_frames: bool):
-    """Build the composite (and strip) exactly as the rig does."""
+def render(d: Path, row: dict, work: Path, want_frames: bool,
+           prebuilt: bool = False):
+    """Build the composite (and strip) exactly as the rig does.
+
+    `prebuilt` reads renders an earlier --export made instead, so the
+    rendering can happen on the rig where the clips are and the
+    judging somewhere with an API key. The composite is ~100 KB and
+    the strip ~150; the clip they came from is ~6.5 MB.
+    """
+    stem = work / Path(row["clip"]).stem
+    himg = Path(str(stem) + ".heat.jpg")
+    fo = Path(str(stem) + ".frames.jpg")
+    if prebuilt:
+        if not himg.exists():
+            return None, None, None, "no exported composite"
+        meta = {}
+        try:
+            import json as _json
+            mp = Path(str(stem) + ".geo.json")
+            if mp.exists():
+                meta = _json.loads(mp.read_text())
+        except Exception:  # noqa: BLE001
+            meta = {}
+        return himg, (fo if fo.exists() else None), meta, None
+
     clip = d / row["clip"]
     at = row["impact_sec"]
     if at is None:
         return None, None, None, "no impact_sec"
     meta: dict = {}
-    stem = work / Path(row["clip"]).stem
-    fo = Path(str(stem) + ".frames.jpg") if want_frames else None
-    img = swingheat.build(clip, float(at), meta=meta, frames_out=fo,
-                          out_path=Path(str(stem) + ".heat.jpg"))
+    img = swingheat.build(clip, float(at), meta=meta,
+                          frames_out=(fo if want_frames else None),
+                          out_path=himg)
     if img is None:
         return None, None, meta, "composite failed"
-    return img, (fo if fo and fo.exists() else None), meta, None
+    # THE MEASUREMENT TRAVELS WITH THE PICTURE. Without it an exported
+    # corpus can be judged elsewhere but not gated, and the gates are
+    # half the thing being measured.
+    try:
+        import json as _json
+        Path(str(stem) + ".geo.json").write_text(_json.dumps(meta))
+    except Exception:  # noqa: BLE001
+        pass
+    return img, (fo if fo.exists() else None), meta, None
 
 
 def run_variant(variant: str, row, img, strip, meta, dry: bool):
@@ -240,14 +300,14 @@ def score(rows):
     return {"tp": tp, "fp": fp, "tn": tn, "fn": fn}
 
 
-def sheet(d: Path, rows, work: Path, out: Path):
+def sheet(d: Path, rows, work: Path, out: Path, prebuilt: bool = False):
     """A contact sheet per clip, so labelling is a few minutes not an
     afternoon. The composite and the frame strip side by side is also
     the fastest way to see WHY a verdict went the way it did."""
     out.mkdir(parents=True, exist_ok=True)
     n = 0
     for row in rows:
-        img, strip, meta, err = render(d, row, work, True)
+        img, strip, meta, err = render(d, row, work, True, prebuilt)
         if img is None:
             print(f"  !! {row['clip']}: {err}")
             continue
@@ -285,6 +345,17 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true",
                     help="score the gates only; no API calls, no key needed")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--sample", type=int, default=0,
+                    help="score a fixed random subset; 162 clips is more "
+                         "than anyone will label and 40 is plenty")
+    ap.add_argument("--export", type=Path,
+                    help="render every clip's composite, strip and "
+                         "measurement into this folder and stop. ~250 KB a "
+                         "clip against ~6.5 MB, so a rig's whole notswing/ "
+                         "folder fits in a copy you can actually make.")
+    ap.add_argument("--prebuilt", action="store_true",
+                    help="score renders a previous --export made, instead "
+                         "of decoding the clips again (or at all)")
     a = ap.parse_args()
 
     d = a.clips
@@ -309,9 +380,34 @@ def main() -> int:
         return 2
     if a.limit:
         rows = rows[:a.limit]
+    if a.sample and a.sample < len(rows):
+        import random
+        # SEEDED. A corpus that reshuffles between runs cannot be used
+        # to compare two variants, which is the only thing this is for.
+        random.Random(1979).shuffle(rows)
+        rows = rows[:a.sample]
+
+    if a.export:
+        a.export.mkdir(parents=True, exist_ok=True)
+        n = 0
+        for r in rows:
+            img, strip, meta, err = render(d, r, a.export, True)
+            if img is None:
+                print(f"  !! {r['clip']}: {err}")
+                continue
+            n += 1
+        import shutil
+        src = d / LABELS
+        if src.exists():
+            shutil.copy(src, a.export / LABELS)
+        print(f"exported {n} renders to {a.export}")
+        print("Copy that folder somewhere with an API key and run:")
+        print(f"  python3 judge_bench.py --clips {a.export} --prebuilt \\")
+        print("      --variant baseline --variant gates --variant frames")
+        return 0
 
     if a.sheet:
-        n = sheet(d, rows, work, a.sheet)
+        n = sheet(d, rows, d if a.prebuilt else work, a.sheet, a.prebuilt)
         print(f"wrote {n} cards to {a.sheet}")
         return 0
 
@@ -330,10 +426,12 @@ def main() -> int:
 
     rendered = {}
     want_frames = any(v in ("frames", "all") for v in variants)
-    print("rendering…", end="", flush=True)
+    src = d if a.prebuilt else work
+    print("reading renders…" if a.prebuilt else "rendering…",
+          end="", flush=True)
     t0 = time.time()
     for r in labelled:
-        rendered[r["clip"]] = render(d, r, work, want_frames)
+        rendered[r["clip"]] = render(d, r, src, want_frames, a.prebuilt)
     print(f" {time.time() - t0:.1f}s\n")
 
     results = {}

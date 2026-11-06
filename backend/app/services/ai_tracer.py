@@ -8812,8 +8812,8 @@ def judge_swing_with_frames(frames_path, image_path,
 
     WHY A SECOND FUNCTION rather than a flag on the first. The two
     take different pictures and ask different questions, and the
-    rig, Test Cut and tools/judge_bench.py all have to be able to run
-    BOTH over the same clip and compare. Folding them together would
+    rig, Test Cut and pi-agent/judge_bench.py all have to be able to
+    run BOTH over the same clip and compare. Folding them together would
     make "which one answered" a thing you had to reconstruct from the
     arguments.
 
