@@ -14739,13 +14739,74 @@ def test_cut_long_upload(
                 cut_entry["heat_image_url"] = _clip_url_for(
                     _chk.get("image_clean") or _chk.get("image"))
                 cut_entry["verify_window_sec"] = float(verify_window_sec)
+                # THE SAME GATES THE RIG RUNS, on the same measurement
+                # out of the same renderer. This is the endpoint the
+                # operator tunes against, so a verdict it gives has to
+                # be the verdict the rig would give.
+                from ..services import swingjudge as _sj
+                _geo = _chk.get("geo") or {}
+                _m = _geo.get("main") or {}
+                if _m:
+                    cut_entry["heat_blob"] = [_m.get("w"), _m.get("h"),
+                                              _m.get("aspect")]
+                # NO STANCE HERE, and it is not an oversight: a long
+                # upload has no person detector behind it, so there is
+                # no golfer position to compare the blob against.
+                # prejudge treats a missing anchor as "nothing rules it
+                # out", which is why it is safe to call anyway -- the
+                # shape half still catches a whole-frame wash.
+                _gate = _sj.prejudge(_geo, None)
+                cut_entry["gate"] = _gate["why"]
                 if (_chk.get("image_clean")
                         and os.environ.get("ANTHROPIC_API_KEY")):
-                    _j = judge_swing_heat_image(
-                        CLIPS_DIR / _chk["image_clean"])
-                    cut_entry["is_swing"] = _j.get("is_swing")
-                    cut_entry["verify_confidence"] = _j.get("confidence")
-                    cut_entry["verify_reason"] = _j.get("reason")
+                    # FOUR REAL FRAMES TOO. See tracer.frames_strip.
+                    _strip = None
+                    try:
+                        from ..services.tracer import frames_strip
+                        _sp = CLIPS_DIR / (
+                            f"verifyframes-{upload_id}-{idx:02d}-"
+                            f"{secrets.token_hex(3)}.jpg")
+                        if frames_strip(
+                            src_path, peak_time_sec, _sp,
+                            box=((_m.get("frame_x"), _m.get("frame_y"),
+                                  _m.get("w"), _m.get("h"))
+                                 if _m.get("w") else None),
+                        ):
+                            _strip = _sp
+                            cut_entry["frames_image_url"] = _clip_url_for(
+                                _sp.name)
+                    except Exception as _fx:  # noqa: BLE001
+                        log.debug("test-cut frame strip failed: %s", _fx)
+                    if not _gate["ask"]:
+                        cut_entry["is_swing"] = False
+                        cut_entry["verify_confidence"] = "gate"
+                        cut_entry["verify_reason"] = _gate["why"]
+                    else:
+                        if _strip is not None:
+                            _j = judge_swing_with_frames(
+                                _strip, CLIPS_DIR / _chk["image_clean"])
+                        else:
+                            _j = judge_swing_heat_image(
+                                CLIPS_DIR / _chk["image_clean"])
+                        cut_entry["is_swing"] = _j.get("is_swing")
+                        cut_entry["verify_confidence"] = _j.get("confidence")
+                        cut_entry["verify_reason"] = _j.get("reason")
+                        cut_entry["verify_saw"] = _j.get("saw") or "heat only"
+                        # AND A HEDGED YES NEEDS THE MICROPHONE BEHIND
+                        # IT -- the rule measured on the rig's own 29
+                        # accepted clips, where every false positive
+                        # was a MEDIUM verdict at 1.65x the gate or
+                        # less. This is the one endpoint on the server
+                        # that HAS an audio ratio to weigh, which is
+                        # why the gate can run here and not in debug3.
+                        _post = _sj.postjudge(
+                            cut_entry.get("is_swing"),
+                            cut_entry.get("verify_confidence"),
+                            cut_entry.get("ratio"), float(pi_min_ratio))
+                        if not _post["keep"]:
+                            cut_entry["is_swing"] = False
+                            cut_entry["verify_reason"] = _post["why"]
+                            cut_entry["overruled"] = True
                 else:
                     # SAY WHICH ANSWER THIS IS. The fan heuristic and
                     # the judge disagree often enough that reporting
