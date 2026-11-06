@@ -492,7 +492,11 @@ export const api = {
   swingAudit: (key, limit = 30, refresh = false) =>
     request(
       `/api/admin/swing-audit?limit=${limit}${refresh ? "&refresh=1" : ""}`,
-      { adminPassword: key, timeoutMs: 300000 },
+      // Measured: ~1.5s a clip to decode, measure and build a strip,
+      // and Render's shared CPU runs 2-3x slower than that. Thirty
+      // clips is comfortably inside this; the cache makes every later
+      // load instant.
+      { adminPassword: key, timeoutMs: 900000 },
     ),
 
   // ---- Camera-event production queue ----

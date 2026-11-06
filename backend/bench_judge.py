@@ -93,7 +93,17 @@ def main() -> int:
     print(" " + "-" * 72)
     n_flip = n_gate = n_same = 0
     for r in rs:
+        # THE RIG'S OWN WINDOW. swing_heat_check defaults to 2.0s
+        # before and 2.5s after; the rig uses verify_window_sec either
+        # side, 0.5 by default. Both arms of this A/B share whatever
+        # picture is built, so the comparison is valid either way --
+        # but a verdict read off a 4.5s composite is not the verdict
+        # the rig reached, and the point of the exercise is the rig.
+        # Measured: the 1.0s window reproduces the rig's own blob
+        # exactly on 1784 (33x113) and 1744 (119x257). It is also four
+        # times faster.
         chk = swing_heat_check(r["clip"], r["at"], 60.0, debug_dir=work,
+                               before_sec=0.5, after_sec=0.5,
                                debug_prefix="bj-%d" % r["id"]) or {}
         if not chk.get("image_clean"):
             print(" %-5d  (no composite)" % r["id"])

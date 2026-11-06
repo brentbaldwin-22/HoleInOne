@@ -8207,9 +8207,25 @@ def swing_audit(limit: int = 30, refresh: bool = False,
             # measurement of what the rig saw.
             try:
                 from ..services.tracer import frames_strip, swing_heat_check
+                # THE RIG'S OWN WINDOW, not swing_heat_check's default.
+                # The default brackets the impact by 2.0s and 2.5s; the
+                # rig uses verify_window_sec either side, 0.5 by
+                # default, so 1.0s in total. Matching it does two
+                # things at once:
+                #
+                #   it is CORRECT -- this page audits verdicts the rig
+                #   reached, so it should measure the picture the rig
+                #   measured. On clip 1784 the 1.0s window returns
+                #   33x113, exactly what the rig recorded, where the
+                #   4.5s one returns 92x181. Same for 1744 at 119x257.
+                #
+                #   and it is four times faster: 1.2s a clip against
+                #   5.0s, which is the difference between this page
+                #   loading in a minute and timing out.
                 _chk = swing_heat_check(
                     clip, float(at), 60.0, debug_dir=CLIPS_DIR,
                     debug_prefix=f"audit-{ev.id}",
+                    before_sec=0.5, after_sec=0.5,
                 ) or {}
                 geo = _chk.get("geo") or {}
                 geo["server_heat"] = _chk.get("image_clean")
