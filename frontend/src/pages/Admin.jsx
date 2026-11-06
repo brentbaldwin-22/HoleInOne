@@ -147,6 +147,7 @@ export default function Admin() {
         <Link to="/admin/produced-clips">Produced Clips</Link>
         <Link to="/admin/broadcast-clips">Broadcast</Link>
         <Link to="/admin/cameras">Cameras</Link>
+        <Link to="/admin/swing-audit">Swing Audit</Link>
         <PlayerIdLink />
         <button
           className="ghost"

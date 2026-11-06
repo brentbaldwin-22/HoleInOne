@@ -15,6 +15,7 @@ import AdminCameras from "./pages/AdminCameras.jsx";
 import AdminCaptureLab from "./pages/AdminCaptureLab.jsx";
 import AdminUploadVideos from "./pages/AdminUploadVideos.jsx";
 import AdminProduction from "./pages/AdminProduction.jsx";
+import AdminSwingAudit from "./pages/AdminSwingAudit.jsx";
 import AdminProducedClips from "./pages/AdminProducedClips.jsx";
 import AdminCourses from "./pages/AdminCourses.jsx";
 import AdminShowcase from "./pages/AdminShowcase.jsx";
@@ -89,6 +90,7 @@ export default function App() {
         <Route path="/admin/capture-lab" element={<AdminCaptureLab />} />
         <Route path="/admin/upload-videos" element={<AdminUploadVideos />} />
         <Route path="/admin/production" element={<AdminProduction />} />
+        <Route path="/admin/swing-audit" element={<AdminSwingAudit />} />
         <Route path="/admin/produced-clips" element={<AdminProducedClips />} />
         <Route path="/admin/courses" element={<AdminCourses />} />
         <Route path="/admin/showcase" element={<AdminShowcase />} />

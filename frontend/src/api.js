@@ -484,6 +484,17 @@ export const api = {
     );
   },
 
+  // ---- Swing audit ----
+  // A LONG TIMEOUT ON PURPOSE. The first call decodes every clip to
+  // build its frame strip and measure its heat; after that the
+  // renders are cached and it returns immediately. `refresh` rebuilds
+  // them, which is what you want after changing a threshold.
+  swingAudit: (key, limit = 30, refresh = false) =>
+    request(
+      `/api/admin/swing-audit?limit=${limit}${refresh ? "&refresh=1" : ""}`,
+      { adminPassword: key, timeoutMs: 300000 },
+    ),
+
   // ---- Camera-event production queue ----
   listCameraEvents: (key, limit = 100, offset = 0) =>
     request(

@@ -8142,6 +8142,139 @@ def list_camera_events(
     return out
 
 
+@router.get("/swing-audit")
+def swing_audit(limit: int = 30, refresh: bool = False,
+                db: Session = Depends(get_db)):
+    """Show the whole swing decision for recent audio-triggered clips.
+
+    EVERY PIECE OF EVIDENCE IN ONE PLACE, because until now they were
+    scattered: the clip on the production card, the composite the
+    judge saw in a filename on the event, the geometry nowhere at all,
+    and the gates' reasoning only in a log line on the rig. Arguing
+    with a verdict meant reconstructing it.
+
+    Per event this returns the original clip, the composite the rig's
+    judge was actually shown, four real frames around the impact, the
+    measured heat blob, and what each gate makes of it -- with the
+    reason, not just a pass/fail.
+
+    NOTHING IS ASKED OF THE MODEL. The stored verdict is the one the
+    rig got; re-judging 30 clips on a page load would spend real money
+    every refresh. The gates are arithmetic and run fresh.
+
+    CACHED, because the strip and the measurement need the clip
+    decoded and that is seconds each. The renders land in CLIPS_DIR
+    beside everything else; `refresh=1` rebuilds them.
+    """
+    import json as _json
+
+    from ..services import swingjudge as _sj
+
+    rows = (
+        db.query(CameraEvent)
+        .order_by(CameraEvent.triggered_at.desc())
+        .limit(400)
+        .all()
+    )
+    out = []
+    for ev in rows:
+        d = ev.trigger_detail or {}
+        if d.get("kind") != "audio":
+            continue
+        name = ev.tee_clip_filename
+        if not name:
+            continue
+        clip = CLIPS_DIR / name
+        if not clip.exists():
+            continue
+        at = d.get("verdict_at_sec")
+
+        strip_name = f"audit-{ev.id}-frames.jpg"
+        side_name = f"audit-{ev.id}-geo.json"
+        strip_p = CLIPS_DIR / strip_name
+        side_p = CLIPS_DIR / side_name
+        geo = {}
+        if side_p.exists() and not refresh:
+            try:
+                geo = _json.loads(side_p.read_text())
+            except Exception:  # noqa: BLE001
+                geo = {}
+        if at is not None and (refresh or not side_p.exists()
+                               or not strip_p.exists()):
+            # THE SERVER'S RENDERER, not the rig's, and the page says
+            # so: the two build different pictures from the same clip
+            # (different windows) and a number read here is not a
+            # measurement of what the rig saw.
+            try:
+                from ..services.tracer import frames_strip, swing_heat_check
+                _chk = swing_heat_check(
+                    clip, float(at), 60.0, debug_dir=CLIPS_DIR,
+                    debug_prefix=f"audit-{ev.id}",
+                ) or {}
+                geo = _chk.get("geo") or {}
+                geo["server_heat"] = _chk.get("image_clean")
+                side_p.write_text(_json.dumps(geo))
+                _m = geo.get("main") or {}
+                frames_strip(
+                    clip, float(at), strip_p,
+                    box=((_m.get("frame_x"), _m.get("frame_y"),
+                          _m.get("w"), _m.get("h"))
+                         if _m.get("w") else None),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("swing-audit: could not render %s (%s)",
+                            ev.id, exc)
+
+        stance = d.get("stance")
+        pre = _sj.prejudge(geo, stance)
+        post = _sj.postjudge(
+            d.get("verdict"), d.get("verdict_confidence"),
+            d.get("ratio"), 4.0)
+        m = (geo or {}).get("main") or {}
+        out.append({
+            "id": ev.id,
+            "session_id": ev.session_id,
+            "hole": ev.hole_number,
+            "triggered_at": (ev.triggered_at.isoformat()
+                             if ev.triggered_at else None),
+            "clip_url": _clip_url_for(name),
+            # The composite the rig's judge was SHOWN, which is the one
+            # that matters when a verdict is argued with.
+            "rig_heat_url": _clip_url_for(d.get("verdict_image")),
+            "server_heat_url": _clip_url_for(geo.get("server_heat")),
+            "frames_url": (_clip_url_for(strip_name)
+                           if strip_p.exists() else None),
+            "ratio": d.get("ratio"),
+            "attack_ms": d.get("attack_ms"),
+            "gate_ratio": 4.0,
+            "zone": d.get("zone"),
+            "zone_label": d.get("zone_label"),
+            "stance": stance,
+            "impact_at_sec": at,
+            "verdict": d.get("verdict"),
+            "confidence": d.get("verdict_confidence"),
+            "reason": d.get("verdict_reason"),
+            "blob": ([m.get("w"), m.get("h"), m.get("aspect"),
+                      m.get("height_frac")] if m else None),
+            "blob_base": m.get("frame_base") or m.get("base"),
+            "frame_size": [geo.get("frame_w"), geo.get("frame_h")],
+            # EACH GATE WITH ITS REASON. A bare false tells an operator
+            # nothing they can act on.
+            "gate_shape": pre["checks"]["shape"],
+            "gate_stance": pre["checks"]["stance"],
+            "gate_confidence": post["checks"]["confidence"],
+            "would_ask": pre["ask"],
+            "would_keep": bool(pre["ask"] and post["keep"]),
+        })
+        if len(out) >= max(1, min(100, limit)):
+            break
+    return {"ok": True, "events": out,
+            "note": ("geometry and the frame strip are rendered by the "
+                     "SERVER's renderer; the rig's own composite is shown "
+                     "beside it and the two differ by design")}
+
+
+
 @router.post("/previews/sweep")
 def post_preview_sweep(payload: dict = Body(default={})):
     """Make the previews for raws that never got one.
