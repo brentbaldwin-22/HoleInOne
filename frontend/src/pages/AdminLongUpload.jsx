@@ -1494,7 +1494,7 @@ export default function AdminLongUpload() {
                                     {c.heat_image_url && (
                                       <a href={c.heat_image_url}
                                          target="_blank" rel="noreferrer"
-                                         title="Open the full-size composite the judge was shown">
+                                         title="Open the full-size composite. The trigger zones are outlined in magenta for you; the judge was shown the same picture without them.">
                                         <img src={c.heat_image_url}
                                              alt={`motion heat around ${
                                                c.peak_time_sec}s`}
@@ -1513,7 +1513,7 @@ export default function AdminLongUpload() {
                                     {c.frames_image_url && (
                                       <a href={c.frames_image_url}
                                          target="_blank" rel="noreferrer"
-                                         title="Open the four frames the judge was shown: -0.25s, 0.00s, +0.15s, +0.40s around the impact">
+                                         title="Open the four frames: -0.25s, 0.00s, +0.15s, +0.40s around the impact. The trigger zones are outlined in magenta for you; the judge was shown the same tiles without them.">
                                         <img src={c.frames_image_url}
                                              alt={`frames around ${
                                                c.peak_time_sec}s`}
@@ -1523,6 +1523,30 @@ export default function AdminLongUpload() {
                                                border: "1px solid var(--border, #333)",
                                              }} />
                                       </a>
+                                    )}
+                                    {/* SAY SO ONCE, UNDER BOTH PICTURES.
+                                        A magenta box in a motion heat
+                                        map is not self-explanatory, and
+                                        the thing that most needs saying
+                                        is that the judge did NOT see it
+                                        -- otherwise every verdict that
+                                        mentions a shape invites the
+                                        question of whether it meant the
+                                        outline. */}
+                                    {(c.heat_image_url || c.frames_image_url)
+                                      && c.gate !== undefined && (
+                                      <div className="tiny muted"
+                                           style={{ marginTop: 2,
+                                                    maxWidth: 200,
+                                                    whiteSpace: "normal",
+                                                    lineHeight: 1.3 }}>
+                                        <span style={{ color: "#c0f" }}>
+                                          magenta
+                                        </span>
+                                        {" "}= trigger zones, drawn for you
+                                        only — the judge saw these pictures
+                                        without them
+                                      </div>
                                     )}
                                     {/* EACH GOLFER THAT MOVED, when more
                                         than one did. Nothing in the heat

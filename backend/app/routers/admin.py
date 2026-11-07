@@ -14888,6 +14888,7 @@ def test_cut_long_upload(
                 _crop = None
                 _zspan = None
                 _zfloor = None
+                _zbox = None
                 try:
                     _zs = _tee_trigger_zones(db, row) or []
                     if _zs:
@@ -14909,16 +14910,24 @@ def test_cut_long_upload(
                         # bottom edge is the ground line the crop
                         # should reach down to.
                         _zfloor = _y1
+                        # AND THE BOXES THEMSELVES, to draw. The span
+                        # above is their union; these are the zones as
+                        # the operator actually drew them, which is
+                        # what they want to check the picture against.
+                        _zbox = [(int(z["x"]), int(z["y"]),
+                                  int(z["w"]), int(z["h"])) for z in _zs]
                 except Exception:  # noqa: BLE001
                     _crop = None
                     _zspan = None
                     _zfloor = None
+                    _zbox = None
                 from ..services.tracer import swing_heat_check
                 _chk = swing_heat_check(
                     src_path, peak_time_sec, tee_fps,
                     crop=_crop,
                     prefer_span=_zspan,
                     floor_y=_zfloor,
+                    zones=_zbox,
                     # ASK ABOUT EVERY GOLFER, because nothing in the
                     # heat map says which of them swung -- two people
                     # measure the same to within a few percent on
@@ -14932,8 +14941,13 @@ def test_cut_long_upload(
                     before_sec=float(verify_window_sec),
                     after_sec=float(verify_window_sec),
                 )
+                # THE OPERATOR'S COPY, with the zones drawn on it.
+                # `image_clean` is what the judge is handed and stays
+                # untouched; this is only what the page shows. Falls
+                # back when there were no zones to draw.
                 cut_entry["heat_image_url"] = _clip_url_for(
-                    _chk.get("image_clean") or _chk.get("image"))
+                    _chk.get("image_zones") or _chk.get("image_clean")
+                    or _chk.get("image"))
                 cut_entry["verify_window_sec"] = float(verify_window_sec)
                 # THE SAME GATES THE RIG RUNS, on the same measurement
                 # out of the same renderer. This is the endpoint the
@@ -14988,7 +15002,9 @@ def test_cut_long_upload(
                                     CLIPS_DIR / _k["image"])
                                 _alts.append({
                                     "image": _k["image"],
-                                    "image_url": _clip_url_for(_k["image"]),
+                                    "image_url": _clip_url_for(
+                                        _k.get("image_zones")
+                                        or _k["image"]),
                                     "box": _k["box"],
                                     "is_swing": _ja.get("is_swing"),
                                     "confidence": _ja.get("confidence"),
@@ -15037,12 +15053,21 @@ def test_cut_long_upload(
                                 # See tracer.swing_heat_check's
                                 # frames_rect. Falls back to the blob
                                 # box on a camera with no zones drawn.
+                                _zp = CLIPS_DIR / (
+                                    _sp.name[:-4] + "-zones.jpg")
                                 if frames_strip(src_path, peak_time_sec, _sp,
                                                 rect=_chk.get("frames_rect"),
-                                                box=_heat_box):
+                                                box=_heat_box,
+                                                zones=_zbox,
+                                                zones_out=(_zp if _zbox
+                                                           else None)):
                                     _strip = _sp
+                                    # Again: the judge gets _sp, the
+                                    # page gets the drawn-on copy.
                                     cut_entry["frames_image_url"] = (
-                                        _clip_url_for(_sp.name))
+                                        _clip_url_for(
+                                            _zp.name if _zp.exists()
+                                            else _sp.name))
                             except Exception as _fx:  # noqa: BLE001
                                 log.debug(
                                     "test-cut frame strip failed: %s", _fx)

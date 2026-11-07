@@ -3222,9 +3222,69 @@ def golfer_and_ball_box(constant, det_scale: float, width: int, height: int,
                     int(_bx1 - _bx0), int(_by1 - _by0)]
 
 
+# The trigger zones, drawn in a colour COLORMAP_TURBO does not
+# contain. Turbo runs dark blue -> cyan -> green -> yellow -> red, so
+# magenta cannot be mistaken for heat, which a white or green outline
+# on a busy composite can.
+ZONE_COLOR = (255, 0, 255)
+
+
+def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
+               color=ZONE_COLOR, thickness=2, label=True):
+    """A copy of `img` with the trigger zones outlined, or None.
+
+    NOT ON THE PICTURE THE JUDGE SEES. This writes a SEPARATE copy for
+    the operator to look at, and the clean one still goes to the
+    model. Drawing boxes into the judge's input would change the
+    question being asked -- magenta rectangles in a motion heat map
+    are exactly the kind of thing a vision model will narrate -- and
+    the whole point of showing the zones is to check the picture
+    against what was drawn, which is worthless if the showing alters
+    it.
+
+    `zones` are (x, y, w, h) in ORIGINAL FRAME pixels. `offset` is
+    where this crop's top-left sits in that frame and `scale` what it
+    was then resized by, so the same zone lands in the right place on
+    a heat composite and on a frames tile alike.
+
+    Returns None when nothing could be drawn -- no zones, or all of
+    them outside this crop -- so a caller can tell "nothing to show"
+    from "here it is". Never raises.
+    """
+    if img is None or not zones:
+        return None
+    try:
+        out = img.copy()
+        h, w = out.shape[:2]
+        ox, oy, sc = float(offset[0]), float(offset[1]), float(scale)
+        drew = 0
+        for _i, z in enumerate(zones):
+            zx, zy, zw, zh = (float(z[0]), float(z[1]),
+                              float(z[2]), float(z[3]))
+            x0 = int(round((zx - ox) * sc))
+            y0 = int(round((zy - oy) * sc))
+            x1 = int(round((zx + zw - ox) * sc))
+            y1 = int(round((zy + zh - oy) * sc))
+            if x1 <= 0 or y1 <= 0 or x0 >= w or y0 >= h:
+                continue            # wholly outside this crop
+            cv2.rectangle(out, (x0, y0), (x1, y1), color, thickness)
+            if label:
+                _t = "zone %d" % (_i + 1)
+                _p = (max(2, min(w - 64, x0 + 3)),
+                      max(14, min(h - 4, y0 - 5)))
+                for _c, _th in (((0, 0, 0), 3), (color, 1)):
+                    cv2.putText(out, _t, _p, cv2.FONT_HERSHEY_SIMPLEX,
+                                0.45, _c, _th, cv2.LINE_AA)
+            drew += 1
+        return out if drew else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def frames_strip(input_path, at_sec: float, out_path, *, box=None,
                  rect=None, offsets=(-0.25, 0.0, 0.15, 0.40),
-                 tile_px: int = 640, pad_frac: float = 1.0):
+                 tile_px: int = 640, pad_frac: float = 1.0,
+                 zones=None, zones_out=None):
     """Four ordinary frames around the impact, as one 2x2 tile. Bool.
 
     THE COMPANION TO THE HEAT COMPOSITE, and the thing it cannot be.
@@ -3281,6 +3341,7 @@ def frames_strip(input_path, at_sec: float, out_path, *, box=None,
                 x0, y0, x1, y1 = _a, _b, _c, _d
 
         tiles = []
+        ztiles = []
         for off in offsets:
             f = int((float(at_sec) + off) * fps)
             if f < 0:
@@ -3302,10 +3363,36 @@ def frames_strip(input_path, at_sec: float, out_path, *, box=None,
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, wid,
                             cv2.LINE_AA)
             tiles.append(t)
+            # THE SAME TILE WITH THE ZONES ON IT, for the operator.
+            # Built from the already-resized tile so the scale is the
+            # one actually on screen. See draw_zones for why this is a
+            # separate picture and not the one being judged.
+            if zones_out is not None:
+                _zt = draw_zones(t, zones, offset=(x0, y0),
+                                 scale=(t.shape[1] / float(x1 - x0))
+                                 if x1 > x0 else 1.0)
+                ztiles.append(_zt if _zt is not None else t)
         if not tiles:
             return False
         th = max(t.shape[0] for t in tiles)
         tw = max(t.shape[1] for t in tiles)
+
+        def _grid(ts):
+            cs = []
+            for _t in ts:
+                _pad = np.zeros((th, tw, 3), np.uint8)
+                _pad[:_t.shape[0], :_t.shape[1]] = _t
+                cs.append(_pad)
+            while len(cs) < 4:
+                cs.append(np.zeros((th, tw, 3), np.uint8))
+            return np.vstack([np.hstack(cs[0:2]), np.hstack(cs[2:4])])
+
+        if zones_out is not None and ztiles:
+            try:
+                cv2.imwrite(str(zones_out), _grid(ztiles),
+                            [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            except Exception:  # noqa: BLE001
+                pass
         cells = []
         for t in tiles:
             pad = np.zeros((th, tw, 3), np.uint8)
@@ -3341,6 +3428,7 @@ def swing_heat_check(
     # which a long upload has even though it has no person detector.
     prefer_xy=None,
     prefer_span=None,
+    zones=None,
     # THE GROUND LINE, in frame pixels: the golfer's feet, or the
     # bottom of the trigger zones, which are drawn round feet. The
     # heat blob's own bottom is NOT the feet -- a golfer's legs barely
@@ -3385,6 +3473,9 @@ def swing_heat_check(
         "available": False, "verdict": "unknown", "n_timed": 0,
         "chain_len": 0, "chain_f0": None, "chain_f1": None,
         "chain_flight": False, "image": None, "image_clean": None,
+        # The operator's copy of `image_clean`, with the trigger zones
+        # outlined on it. Never the picture the judge saw.
+        "image_zones": None,
         "chain_points": [], "tee_spot": None,
         "reason": None,
     }
@@ -3790,11 +3881,12 @@ def swing_heat_check(
                             # wide shot just because it is cropped;
                             # the point is apparent size.
                             _lh, _lw = judged.shape[:2]
+                            _usc = 1.0
                             if max(_lh, _lw) < 512:
-                                _sc = 512.0 / max(_lh, _lw)
+                                _usc = 512.0 / max(_lh, _lw)
                                 judged = cv2.resize(
                                     judged,
-                                    (int(_lw * _sc), int(_lh * _sc)),
+                                    (int(_lw * _usc), int(_lh * _usc)),
                                     interpolation=cv2.INTER_CUBIC)
                             _nm = (clean_name if _ci == 0 else
                                    f"{debug_prefix}-clean{_ci + 1}.jpg")
@@ -3802,15 +3894,35 @@ def swing_heat_check(
                                 str(Path(debug_dir) / _nm), judged,
                                 [int(cv2.IMWRITE_JPEG_QUALITY), 80],
                             )
+                            # AND A COPY WITH THE ZONES ON IT. Not the
+                            # judged one -- see draw_zones. The crop
+                            # sits at (_ox + _zx0, _oy + _zy0) in the
+                            # original frame and was then upscaled by
+                            # _usc, which is what puts a zone back in
+                            # the right place.
+                            _zn = None
+                            _zimg = draw_zones(
+                                judged, zones,
+                                offset=(_ox + _zx0, _oy + _zy0),
+                                scale=_usc)
+                            if _zimg is not None:
+                                _zn = _nm[:-4] + "-zones.jpg"
+                                if not cv2.imwrite(
+                                    str(Path(debug_dir) / _zn), _zimg,
+                                    [int(cv2.IMWRITE_JPEG_QUALITY), 80],
+                                ):
+                                    _zn = None
                             _box = [int(_mz["x"] + _ox), int(_mz["y"] + _oy),
                                     int(_mz["w"]), int(_mz["h"])]
                             out["candidates"].append(
-                                {"image": _nm, "box": _box,
+                                {"image": _nm, "image_zones": _zn,
+                                 "box": _box,
                                  "zoom": [int(_zx0 + _ox), int(_zy0 + _oy),
                                           int(_zx1 - _zx0),
                                           int(_zy1 - _zy0)]})
                             if _ci == 0:
                                 out["zoom"] = out["candidates"][0]["zoom"]
+                                out["image_zones"] = _zn
                     _mm = _geo.get("main")
                     if _mm:
                         _mm["frame_x"] = _mm["x"] + _ox
