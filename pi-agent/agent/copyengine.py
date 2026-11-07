@@ -928,9 +928,20 @@ class CopyEngine:
                     # A backend too old to send the pair leaves both
                     # None, which tiebreak reads as "no opinion" rather
                     # than a contradiction, so nothing changes.
-                    _tb = swingjudge.tiebreak(
-                        _v.get("heat_is_swing"), _v.get("frames_is_swing"),
-                        (detail or {}).get("ratio"))
+                    # UNLESS THE SERVER ALREADY DECIDED. When it
+                    # sends `decided_by` it ran the whole pipeline --
+                    # both judges, the ball, and the majority between
+                    # all three -- and re-running a two-way tie-break
+                    # here would overturn that majority with the ball
+                    # left out of it. The rig only arbitrates for a
+                    # backend that did not.
+                    _served = _v.get("decided_by") is not None
+                    _tb = ({"split": False, "is_swing": None,
+                            "why": "the server decided"} if _served
+                           else swingjudge.tiebreak(
+                               _v.get("heat_is_swing"),
+                               _v.get("frames_is_swing"),
+                               (detail or {}).get("ratio")))
                     if detail is not None:
                         detail["verdict_heat"] = _v.get("heat_is_swing")
                         detail["verdict_frames"] = _v.get("frames_is_swing")
@@ -959,10 +970,15 @@ class CopyEngine:
                     # x4.1 and x5.0 against a x4.0 gate; a medium
                     # verdict on a barely-audible strike is two weak
                     # signals being counted as one strong one.
-                    _post = swingjudge.postjudge(
-                        _verdict, _vconf,
-                        (detail or {}).get("ratio"),
-                        getattr(_t, "min_ratio", None))
+                    # SAME REASON. postjudge narrows a HEDGED yes
+                    # against the x-ratio, and a verdict the server
+                    # reached by majority -- or by that same ratio --
+                    # is not a hedge for it to second-guess.
+                    _post = ({"keep": True, "why": "the server decided"}
+                             if _served else swingjudge.postjudge(
+                                 _verdict, _vconf,
+                                 (detail or {}).get("ratio"),
+                                 getattr(_t, "min_ratio", None)))
                     if not _post["keep"]:
                         log.info("copy: overruling the judge on %s — %s",
                                  session_id, _post["why"])
