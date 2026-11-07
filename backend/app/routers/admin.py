@@ -14932,8 +14932,19 @@ def test_cut_long_upload(
                 if detector == "audio2":
                     try:
                         from ..services.people import find_people, frame_at
+
                         _fr2 = frame_at(src_path, peak_time_sec)
-                        _people2 = find_people(_fr2) if _fr2 is not None else []
+                        # IN THE SAME REGION THE HEAT IS MEASURED IN.
+                        # The model's input is fixed at 320x320, so a
+                        # 1920-wide frame leaves a golfer about 15 px
+                        # across and the detector answers accordingly.
+                        # Searching the tee band instead -- in
+                        # overlapping near-square windows, see
+                        # people.find_people -- puts them nearer 120.
+                        # A golfer outside this region is outside the
+                        # zones too, so nothing eligible is lost.
+                        _people2 = (find_people(_fr2, region=_crop)
+                                    if _fr2 is not None else [])
                     except Exception as _px:  # noqa: BLE001
                         log.debug("test-cut: person detect failed: %s", _px)
                         _people2 = None
