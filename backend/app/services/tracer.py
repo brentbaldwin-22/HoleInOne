@@ -3385,13 +3385,14 @@ def frames_strip(input_path, at_sec: float, out_path, *, box=None,
                 sc = tile_px / float(max(th, tw))
                 t = cv2.resize(t, (max(1, int(tw * sc)),
                                    max(1, int(th * sc))))
-            # WHICH MOMENT THIS IS, AND WHICH FRAME. Near-identical
-            # tiles are unorderable and the order is the evidence --
-            # but a reader comparing a verdict against the picture
-            # has to count cells to find "the third frame", and a
-            # blank cell or a dropped offset makes that count wrong.
-            # The number is on the tile, so it travels with it.
-            _lbl = "%d  %+.2fs" % (len(tiles) + 1, off)
+            # WHICH MOMENT THIS IS, AND WHICH FRAME OF THE CLIP.
+            # Near-identical tiles are unorderable and the order is
+            # the evidence. The number is the frame's own index in
+            # the source video, not its position in the strip: a
+            # position only says "the third cell", while a frame
+            # number can be seeked to, scrubbed to, and compared
+            # against anything else measured off the same clip.
+            _lbl = "f%d  %+.2fs" % (f, off)
             for col, wid in (((0, 0, 0), 3), ((255, 255, 255), 1)):
                 cv2.putText(t, _lbl, (6, 22),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, wid,
@@ -3404,7 +3405,7 @@ def frames_strip(input_path, at_sec: float, out_path, *, box=None,
             # it was actually sent -- a prompt that lists evidence
             # which is not there invites the model to imagine it.
             if used is not None:
-                used.append(off)
+                used.append((off, f))
             # THE SAME TILE WITH THE ZONES ON IT, for the operator.
             # Built from the already-resized tile so the scale is the
             # one actually on screen. See draw_zones for why this is a
@@ -3871,6 +3872,7 @@ def swing_heat_check(
                         _pf = _sj.pick_front_golfer(
                             _cands_all, zones, offset=(_ox, _oy))
                         out["picked_front"] = _pf["why"]
+                        out["front_candidates"] = _pf.get("considered")
                         _front = _pf.get("pick")
                         _front_floor = _pf.get("floor")
                     if _front is not None:

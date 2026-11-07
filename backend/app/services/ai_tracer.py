@@ -8975,7 +8975,7 @@ AUDIO2_CLASSES = {
 
 
 def judge_swing_audio2(frames_path, image_path, *, ratio=None,
-                       attack_ms=None, offsets=None,
+                       attack_ms=None, offsets=None, frames=None,
                        model: str | None = None) -> dict:
     """The audio-2 judge: five frames, the heat map, and the numbers.
 
@@ -9016,14 +9016,19 @@ def judge_swing_audio2(frames_path, image_path, *, ratio=None,
     # starts less than 1.2s before the peak has no address frame, and
     # telling the model to look for one that is not there is how a
     # judge comes to describe a picture it was never sent.
-    # NUMBERED, AND THE NUMBERS ARE ON THE TILES. Saying "frame 3"
-    # only helps if the model and the operator reading its answer
-    # agree which tile that is; both now read it off the picture.
+    # NUMBERED BY THEIR FRAME IN THE CLIP, and the same numbers are
+    # drawn on the tiles. Saying "frame 1840" only helps if the model
+    # and whoever reads its answer agree which tile that is; both read
+    # it off the picture. Falls back to the position in the strip when
+    # the caller has no frame numbers to give.
+    _fr = list(frames or [])
+    _lab = [("frame %d" % _fr[_i]) if _i < len(_fr) else ("frame %d" % (_i + 1))
+            for _i in range(len(_offs))]
     _facts = ["The %d frames are in reading order, left to right and "
               "top to bottom. Each tile is labelled with its frame "
-              "number and its offset from the audio peak: "
+              "number in the clip and its offset from the audio peak: "
               % len(_offs)
-              + ", ".join("frame %d at %+.2fs" % (_i + 1, _o)
+              + ", ".join("%s at %+.2fs" % (_lab[_i], _o)
                           for _i, _o in enumerate(_offs)) + "."]
     _facts.append("Audio signal-to-noise ratio: %s."
                   % ("x%.1f" % float(ratio) if ratio else "not measured"))

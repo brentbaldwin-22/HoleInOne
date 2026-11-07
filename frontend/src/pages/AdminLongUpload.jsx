@@ -1658,6 +1658,35 @@ export default function AdminLongUpload() {
                                             crop: {c.picked_front}
                                           </div>
                                         )}
+                                        {/* AND ITS WORKING. Which blob
+                                            won is only arguable if you
+                                            can see what it measured on
+                                            each one -- the foot point
+                                            is the bottom of a MOTION
+                                            blob, which is not reliably
+                                            anybody's feet. */}
+                                        {Array.isArray(c.front_candidates)
+                                          && c.front_candidates.length > 0 && (
+                                          <div className="muted"
+                                               style={{ marginTop: 2 }}>
+                                            {c.front_candidates
+                                              .slice()
+                                              .sort((a, b) => a.feet[1] - b.feet[1])
+                                              .map((f, i) => (
+                                              <div key={i} style={{
+                                                color: f.picked
+                                                  ? "#c0f" : undefined,
+                                              }}>
+                                                {f.picked ? "▸ " : "  "}
+                                                feet ({f.feet[0]},{f.feet[1]})
+                                                {" · "}{f.box[2]}×{f.box[3]}
+                                                {f.zone
+                                                  ? ` · floor ${f.floor}`
+                                                  : " · not in a zone"}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
                                       </div>
                                     )}
                                     {/* BOTH VERDICTS, SIDE BY SIDE, when

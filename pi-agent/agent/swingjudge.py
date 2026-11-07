@@ -576,6 +576,15 @@ def pick_front_golfer(blobs, zones, *, offset=(0, 0),
     somewhere they are not standing.
     """
     out = {"pick": None, "floor": None, "close": False,
+           # EVERY BLOB IT LOOKED AT AND WHAT IT MEASURED. The rule
+           # reads a FOOT POINT off each blob -- the bottom-centre of
+           # its bounding box -- and when it picks the wrong golfer
+           # the question is always "what did it think their feet
+           # were", which until now could only be guessed at from the
+           # crop that came out. Each entry is
+           # {feet: [x, y], box: [x, y, w, h], zone: bool,
+           #  floor: y|None, picked: bool} in FRAME pixels.
+           "considered": [],
            "why": "no zones drawn"}
     if not zones:
         return out
@@ -614,10 +623,20 @@ def pick_front_golfer(blobs, zones, *, offset=(0, 0),
                     continue
                 if best_d is None or d < best_d:
                     best_d, best_floor = d, zy + zh
+            out["considered"].append({
+                "feet": [int(fx), int(fy)],
+                "box": [int(b["x"]) + int(ox), int(b["y"]) + int(oy),
+                        int(b["w"]), int(b["h"])],
+                "area": int(b.get("area") or 0),
+                "zone": best_floor is not None,
+                "floor": None if best_floor is None else int(best_floor),
+                "picked": False,
+            })
             if best_floor is not None:
                 standing.append((fy, b, best_floor))
         if not standing:
-            out["why"] = "nobody's feet are in a trigger zone"
+            out["why"] = ("nobody's feet are in a trigger zone (%d blob(s) "
+                          "looked at)" % len(out["considered"]))
             return out
         standing.sort(key=lambda t: t[0])
         lead_y, lead, lead_floor = standing[0]
@@ -634,6 +653,10 @@ def pick_front_golfer(blobs, zones, *, offset=(0, 0),
                 return out
         out["pick"] = lead
         out["floor"] = int(lead_floor)
+        for _c in out["considered"]:
+            if _c["feet"][1] == int(lead_y) and _c["box"][2] == lead["w"]:
+                _c["picked"] = True
+                break
         out["why"] = ("the golfer standing furthest up the tee (%d in a "
                       "zone; ground line y=%d, from the zone they are "
                       "standing in)" % (len(standing), int(lead_floor)))

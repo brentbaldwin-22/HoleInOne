@@ -14991,6 +14991,11 @@ def test_cut_long_upload(
                 cut_entry["gate"] = _gate["why"]
                 if _chk.get("picked_front"):
                     cut_entry["picked_front"] = _chk["picked_front"]
+                    # AND WHAT IT MEASURED ON EACH BLOB, so a wrong
+                    # pick can be read off the page instead of guessed
+                    # at from the crop that came out.
+                    cut_entry["front_candidates"] = _chk.get(
+                        "front_candidates")
                 if (_chk.get("image_clean")
                         and os.environ.get("ANTHROPIC_API_KEY")):
                     # WHICH GOLFER FIRST, THEN THE FRAMES. The heat
@@ -15139,7 +15144,9 @@ def test_cut_long_upload(
                                 _strip, _heat_img,
                                 ratio=cut_entry.get("ratio"),
                                 attack_ms=cut_entry.get("attack_ms"),
-                                offsets=(_used or _A2))
+                                offsets=([u[0] for u in _used]
+                                         if _used else _A2),
+                                frames=[u[1] for u in _used])
                             for _k in ("classification", "golfer_visible",
                                        "swing_motion_visible",
                                        "impact_alignment",
