@@ -388,19 +388,32 @@ def _on_a_person(x, y, people) -> bool:
 def classify_balls(good, tail_live, jitter_px=ADDRESS_JITTER_PX):
     """Split the balls found before the strike into gone and stayed.
 
-    THE +0.00 FRAME IS THE STRIKE ITSELF and says nothing: the ball is
-    being hit in it and can be still sitting at the tee or already a
-    blur an inch away. Only the frames AFTER it answer the question,
+    THE +0.00 FRAME IS THE STRIKE ITSELF and says nothing. The
+    operator's reason is better than the one first written here: the
+    audio trigger LAGS, so +0.00 is usually a little after the sound
+    and typically still shows the ball sitting there. On the 8 Nov
+    clip it is already gone by then. Either way the frame cannot be
+    read, which is why it is excluded rather than weighed.
+
+    Only the frames AFTER it answer the question,
     and they have to agree -- present in all of them is a ball nobody
     touched, absent from all of them is a ball that left, anything
     else is not an answer.
 
-    EVERY BALL, NOT THE BEST ONE. There is rarely just one ball on a
-    tee; the 8 Nov frames have three on the turf at once. Judging the
-    brightest or steadiest alone would call a real swing "not a
-    swing" because some other ball, never touched, sat exactly where
-    it was the whole time. Each entry gains `still`, how many of the
-    frames after the strike still show it.
+    EVERY BALL, NOT THE BEST ONE. Judging the brightest or steadiest
+    alone would call a real swing "not a swing" because some other
+    ball, never touched, sat exactly where it was the whole time.
+    Each entry gains `still`, how many of the frames after the strike
+    still show it.
+
+    I FIRST JUSTIFIED THIS BY SAYING THE 8 NOV FRAMES HAD THREE BALLS
+    ON THE TURF. They do not. Asked to point them out, I found two
+    bright things at -1.20s and only one of them -- the ball the
+    golfer then struck -- is a ball in every frame before the strike;
+    the other appears once and is gone. The rule still earns its
+    place on a range tee or a practice green, where several balls
+    genuinely do sit together, but it was argued from a count I had
+    not checked.
     """
     def _there(c, dets):
         return any(((x - c["x"]) ** 2 + (y - c["y"]) ** 2) ** 0.5
@@ -525,12 +538,8 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
                           "first %d frames — no judgement from the ball"
                           % len(head))
             return out
-        # EVERY BALL, NOT THE BEST ONE. There is rarely just one ball
-        # on a tee -- the frames from 8 Nov have three on the turf at
-        # once -- and the one that matters is whichever LEFT. Judging
-        # the brightest or steadiest ball alone would call a swing
-        # "not a swing" because some other ball, never touched, sat
-        # exactly where it was the whole time.
+        # EVERY BALL, NOT THE BEST ONE: the one that matters is
+        # whichever LEFT. See classify_balls.
         tail_live = [d for d in tail if d is not None]
         gone, stayed = classify_balls(good, tail_live, jitter_px)
         out["balls"] = len(good)
