@@ -207,6 +207,27 @@ def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
                     _m["frame_base"] = (_m["base"][0] + ox,
                                         _m["base"][1] + oy)
                 meta["geo"] = _geo
+                # AND ZOOM TO THE GOLFER, exactly as
+                # tracer.swing_heat_check does. The zone crop is only
+                # as tight as the zones are, and on a hole whose
+                # trigger boxes are wide flat strips that leaves a
+                # 70 px golfer in a 1920 px landscape. Headroom is not
+                # symmetric: the club plume rises ABOVE the head and
+                # is the single most important thing in the picture,
+                # so a full blob height above and a third below.
+                _mz = _geo.get("main")
+                if _mz and _mz["w"] >= 8 and _mz["h"] >= 8:
+                    _zh, _zw = img.shape[:2]
+                    _px = int(_mz["w"] * 0.75)
+                    _zx0 = max(0, _mz["x"] - _px)
+                    _zx1 = min(_zw, _mz["x"] + _mz["w"] + _px)
+                    _zy0 = max(0, _mz["y"] - int(_mz["h"] * 1.0))
+                    _zy1 = min(_zh, _mz["y"] + _mz["h"]
+                               + int(_mz["h"] * 0.33))
+                    if (_zx1 - _zx0) >= 160 and (_zy1 - _zy0) >= 160:
+                        img = img[_zy0:_zy1, _zx0:_zx1].copy()
+                        meta["zoom"] = [_zx0 + ox, _zy0 + oy,
+                                        _zx1 - _zx0, _zy1 - _zy0]
             except Exception as exc:  # noqa: BLE001
                 log.debug("swingheat: could not measure the heat (%s)", exc)
 

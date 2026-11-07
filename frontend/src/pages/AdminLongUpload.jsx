@@ -1505,6 +1505,31 @@ export default function AdminLongUpload() {
                                              }} />
                                       </a>
                                     )}
+                                    {/* AND THE FRAMES, when the judge was
+                                        shown them. The checkbox changed what
+                                        the MODEL saw and nothing changed what
+                                        the operator saw, which makes a
+                                        verdict from them unarguable. */}
+                                    {c.frames_image_url && (
+                                      <a href={c.frames_image_url}
+                                         target="_blank" rel="noreferrer"
+                                         title="Open the four frames the judge was shown: -0.25s, 0.00s, +0.15s, +0.40s around the impact">
+                                        <img src={c.frames_image_url}
+                                             alt={`frames around ${
+                                               c.peak_time_sec}s`}
+                                             style={{
+                                               width: 200, display: "block",
+                                               marginTop: 3, borderRadius: 4,
+                                               border: "1px solid var(--border, #333)",
+                                             }} />
+                                      </a>
+                                    )}
+                                    {c.verify_saw && (
+                                      <div className="tiny muted"
+                                           style={{ marginTop: 2 }}>
+                                        judged from {c.verify_saw}
+                                      </div>
+                                    )}
                                     {c.verify_reason && (
                                       <div className="muted" style={{
                                         maxWidth: 200, marginTop: 2,

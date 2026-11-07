@@ -3613,6 +3613,37 @@ def swing_heat_check(
                         _psp = (float(_psp[0]) - _ox, float(_psp[1]) - _ox)
                     _geo = _sj.measure_heat(_hmj, prefer_xy=_pxy,
                                             prefer_span=_psp)
+                    # AND NOW ZOOM TO THE GOLFER. The zone crop above
+                    # is as tight as the zones are, and on a hole whose
+                    # trigger boxes are two wide flat strips that is
+                    # the whole picture -- a 70 px golfer in a 1920 px
+                    # landscape, which is what the judge has been
+                    # squinting at. The measurement has just said which
+                    # blob is theirs, so the crop can follow it.
+                    #
+                    # HEADROOM IS NOT SYMMETRIC. The club plume rises
+                    # ABOVE the head and is the single most important
+                    # thing in the frame, so there is a full blob
+                    # height above and only a third below.
+                    _mz = _geo.get("main")
+                    if _mz and _mz["w"] >= 8 and _mz["h"] >= 8:
+                        _zh, _zw = judged.shape[:2]
+                        _px = int(_mz["w"] * 0.75)
+                        _ax, _ay = _mz["x"], _mz["y"]
+                        _zx0 = max(0, _ax - _px)
+                        _zx1 = min(_zw, _ax + _mz["w"] + _px)
+                        _zy0 = max(0, _ay - int(_mz["h"] * 1.0))
+                        _zy1 = min(_zh, _ay + _mz["h"] + int(_mz["h"] * 0.33))
+                        # A crop smaller than this is harder to read
+                        # than the wide shot, not easier.
+                        if (_zx1 - _zx0) >= 160 and (_zy1 - _zy0) >= 160:
+                            judged = judged[_zy0:_zy1, _zx0:_zx1].copy()
+                            out["zoom"] = [int(_zx0 + _ox), int(_zy0 + _oy),
+                                           int(_zx1 - _zx0), int(_zy1 - _zy0)]
+                            cv2.imwrite(
+                                str(Path(debug_dir) / clean_name), judged,
+                                [int(cv2.IMWRITE_JPEG_QUALITY), 80],
+                            )
                     _mm = _geo.get("main")
                     if _mm:
                         _mm["frame_x"] = _mm["x"] + _ox

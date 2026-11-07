@@ -8675,6 +8675,25 @@ _JUDGE_SWING_HEAT_PROMPT = (
     # The bullets above still describe the plume and still say the
     # fan is not required, so the thing it was added for survives;
     # what goes is the instruction to treat the plume as proof.
+    # THE PLUME IS REQUIRED. Note what this is NOT: the line removed
+    # above said a plume was SUFFICIENT ("a figure with a plume IS a
+    # swing"), which let any blob with an edge through. This says it
+    # is NECESSARY, which is the operator's own rule after looking at
+    # a day of them: "it doesn't have the club plume above the
+    # golfer's head. that is key."
+    #
+    # WATCH THIS ONE. Clip 1735 is a swing they confirmed, and its
+    # heat is a fan spreading SIDEWAYS from the body rather than an
+    # obvious spike above the head. If this wording starts refusing
+    # real swings that is where it will show first.
+    "THE CLUB HAS TO SHOW ABOVE THE HEAD. The one reliable mark of a "
+    "swing from this angle is a thin cooler extension rising ABOVE the "
+    "top of the golfer's head - the club at the top of the backswing or "
+    "coming through. Heat that stays at or below shoulder height, or "
+    "spreads sideways from the body without rising above the head, is "
+    "NOT a swing: that is a waggle, a practice stroke, a bag being "
+    "lifted, or somebody turning round. Answer false when nothing "
+    "rises above the head.\n"
     "Answer false for: a person WALKING (a smeared blob strung out along "
     "the direction of travel, with no vertical extension above it), "
     "someone bending to tee up or pick up a ball (heat low down, nothing "
