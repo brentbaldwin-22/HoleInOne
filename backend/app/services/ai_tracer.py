@@ -8882,7 +8882,7 @@ _JUDGE_SWING_AUDIO2_PROMPT = (
     "You will receive:\n"
     "\n"
     "* One MOG2 motion heatmap.\n"
-    "* Five chronological video frames captured around the audio peak.\n"
+    "* Six chronological video frames captured around the audio peak.\n"
     "* The time offset of each frame relative to the audio peak.\n"
     "* The audio peak's signal-to-noise ratio and attack duration.\n"
     "\n"
@@ -8915,6 +8915,35 @@ _JUDGE_SWING_AUDIO2_PROMPT = (
     "clearly represents another activity.\n"
     "* UNCERTAIN: Insufficient visual information to make a reliable "
     "determination.\n"
+    "\n"
+    "A complete backswing, downswing and follow-through do not all "
+    "need to be visible. Golf swings happen rapidly, and sampled "
+    "frames may miss individual phases. Look for meaningful changes "
+    "in the golfer's hands, arms, club position, body rotation or "
+    "posture between frames. Use the MOG2 motion pattern as "
+    "supporting evidence. If the audio has a sharp impact signature "
+    "and the visual evidence is consistent with a swing, classify as "
+    "PROBABLE_SWING even when individual phases are not clearly "
+    "captured.\n"
+    "\n"
+    "OCCLUSION HANDLING\n"
+    "Multiple golfers may be visible, and a playing partner may "
+    "partially block the golfer hitting the ball.\n"
+    "\n"
+    "* Identify all visible people in the tee area.\n"
+    "* Determine which person is most likely performing the swing.\n"
+    "* Do not assume the most visible or closest person is the golfer "
+    "hitting.\n"
+    "* Evaluate changes in the hands, arms, club, torso and posture of "
+    "the swinging golfer, even if partially obscured.\n"
+    "* Do not classify NOT_SWING solely because a playing partner "
+    "blocks portions of the swing.\n"
+    "* A complete swing does not need to be visible in every frame.\n"
+    "* When a strong audio impact coincides with visible motion "
+    "consistent with a swing, partial occlusion should not "
+    "automatically prevent a PROBABLE_SWING classification.\n"
+    "* If the golfer is too obscured to establish meaningful motion, "
+    "return UNCERTAIN rather than NOT_SWING.\n"
     "\n"
     "Return structured JSON containing:\n"
     "\n"
@@ -8979,9 +9008,14 @@ def judge_swing_audio2(frames_path, image_path, *, ratio=None,
     # receive the frame offsets and the audio numbers, so they have to
     # actually arrive -- a prompt that lists evidence it is not given
     # invites the model to imagine it.
-    _offs = list(offsets or (-0.60, -0.20, 0.0, 0.20, 0.60))
-    _facts = ["The five frames are in reading order, left to right and "
+    _offs = list(offsets or (-1.20, -0.60, -0.20, 0.0, 0.20, 0.60))
+    # SAY HOW MANY THERE ARE rather than hardcoding "six": a clip that
+    # starts less than 1.2s before the peak has no address frame, and
+    # telling the model to look for one that is not there is how a
+    # judge comes to describe a picture it was never sent.
+    _facts = ["The %d frames are in reading order, left to right and "
               "top to bottom, at these offsets from the audio peak: "
+              % len(_offs)
               + ", ".join("%+.2fs" % o for o in _offs) + "."]
     _facts.append("Audio signal-to-noise ratio: %s."
                   % ("x%.1f" % float(ratio) if ratio else "not measured"))

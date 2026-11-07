@@ -3242,7 +3242,13 @@ FRAME_OFFSETS_SEC = (-0.25, 0.0, 0.15, 0.40)
 # waggle, because a waggle also moves a club near the ball; a finish
 # position 0.6s later is the thing a waggle does not have. It costs a
 # longer read either side of the peak and one more tile.
-AUDIO2_OFFSETS_SEC = (-0.60, -0.20, 0.0, 0.20, 0.60)
+# AND A SIXTH AT THE FRONT, 8 Nov: -1.20s, which is ADDRESS. The
+# grid had a blank cell at five and this fills it exactly -- 3x2 with
+# nothing wasted -- but the reason is not the spare cell. A swing is a
+# change FROM something, and at -0.60 a golfer may already be halfway
+# into the backswing; address is the still posture the rest is read
+# against.
+AUDIO2_OFFSETS_SEC = (-1.20, -0.60, -0.20, 0.0, 0.20, 0.60)
 
 
 # The trigger zones, drawn in a colour COLORMAP_TURBO does not
@@ -3307,7 +3313,7 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
 def frames_strip(input_path, at_sec: float, out_path, *, box=None,
                  rect=None, offsets=FRAME_OFFSETS_SEC,
                  tile_px: int = 640, pad_frac: float = 1.0,
-                 zones=None, zones_out=None):
+                 zones=None, zones_out=None, used=None):
     """Four ordinary frames around the impact, as one 2x2 tile. Bool.
 
     THE COMPANION TO THE HEAT COMPOSITE, and the thing it cannot be.
@@ -3386,6 +3392,14 @@ def frames_strip(input_path, at_sec: float, out_path, *, box=None,
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, wid,
                             cv2.LINE_AA)
             tiles.append(t)
+            # WHICH MOMENTS ACTUALLY MADE IT. A clip that starts less
+            # than 1.2s before the peak has no address frame, and the
+            # offset is skipped above. The audio-2 prompt TELLS the
+            # model what it is being shown, so it has to be told what
+            # it was actually sent -- a prompt that lists evidence
+            # which is not there invites the model to imagine it.
+            if used is not None:
+                used.append(off)
             # THE SAME TILE WITH THE ZONES ON IT, for the operator.
             # Built from the already-resized tile so the scale is the
             # one actually on screen. See draw_zones for why this is a
@@ -3860,7 +3874,14 @@ def swing_heat_check(
                         # either side is "a little outside the body",
                         # and a twelfth of a body height below the
                         # feet is "just below".
-                        _fw2 = max(12, int(_front["w"] * 0.35))
+                        # 20% WIDER ON EACH SIDE, 8 Nov. The pad was
+                        # 0.35 of a body width, making the crop 1.70
+                        # bodies across; widening each edge by 20% of
+                        # THAT adds 0.34 more per side, so the pad is
+                        # 0.69 and the crop is 2.38 bodies -- 40%
+                        # wider overall. One number to turn if it
+                        # wants turning again.
+                        _fw2 = max(12, int(_front["w"] * 0.69))
                         # THE FEET ARE THE ZONE'S BOTTOM EDGE, NOT THE
                         # BLOB'S. The blob is MOTION: on a golfer
                         # whose legs barely move it stops around the

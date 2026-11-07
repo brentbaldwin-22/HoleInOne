@@ -15087,6 +15087,12 @@ def test_cut_long_upload(
                         # prompt that lists evidence it is not given
                         # invites the model to imagine it.
                         _strip = None
+                        # WHICH MOMENTS THE STRIP ACTUALLY HOLDS, so
+                        # audio 2 can tell the model what it was sent
+                        # rather than what was asked for. A peak less
+                        # than 1.2s into the upload has no address
+                        # frame.
+                        _used: list = []
                         if judge_with_frames or _audio2:
                             try:
                                 from ..services.tracer import (
@@ -15110,6 +15116,7 @@ def test_cut_long_upload(
                                                 box=_heat_box,
                                                 offsets=_offs,
                                                 zones=_zbox,
+                                                used=_used,
                                                 zones_out=(_zp if _zbox
                                                            else None)):
                                     _strip = _sp
@@ -15132,7 +15139,7 @@ def test_cut_long_upload(
                                 _strip, _heat_img,
                                 ratio=cut_entry.get("ratio"),
                                 attack_ms=cut_entry.get("attack_ms"),
-                                offsets=_A2)
+                                offsets=(_used or _A2))
                             for _k in ("classification", "golfer_visible",
                                        "swing_motion_visible",
                                        "impact_alignment",
