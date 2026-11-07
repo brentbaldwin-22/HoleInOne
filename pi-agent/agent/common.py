@@ -594,7 +594,21 @@ class BackendClient:
                # composite and names it back; carrying the name onto
                # the event is what lets the picture be found again when
                # a verdict is argued with.
-               "image": None}
+               "image": None,
+               # AND THE TWO ANSWERS SEPARATELY, when the backend sent
+               # frames as well and asked both questions. `is_swing`
+               # above is still the headline -- the frames answer --
+               # so a rig reading only that behaves exactly as it did.
+               # These let the caller see a SPLIT and break it on the
+               # x-ratio, which never leaves the rig. A backend too old
+               # to send them leaves them None, and
+               # swingjudge.tiebreak treats a None as "no opinion"
+               # rather than a contradiction, so the old behaviour
+               # survives an upgrade in either order.
+               "heat_is_swing": None, "heat_confidence": None,
+               "heat_reason": None,
+               "frames_is_swing": None, "frames_confidence": None,
+               "frames_reason": None}
         # THE FRAMES AS WELL, WHEN THERE ARE ANY. The composite is a
         # one-second projection of motion: it says where something
         # moved and throws away both when and what. Four real frames

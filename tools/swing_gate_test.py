@@ -286,6 +286,49 @@ def main() -> int:
     check("postjudge leaves a tie-break alone",
           postjudge(True, "tiebreak", 10.4, 4.0)["keep"], True)
 
+    # ---- the rig's wire shape --------------------------------------
+    # THE RIG BREAKS THE TIE, NOT THE BACKEND, because the x-ratio
+    # never leaves the rig. What arrives is /verify-swing's response
+    # dict, so exercise THAT shape rather than the arguments.
+    def rig(resp, ratio):
+        """What copyengine does with a /verify-swing reply."""
+        v, conf = resp.get("is_swing"), resp.get("confidence")
+        t = tiebreak(resp.get("heat_is_swing"),
+                     resp.get("frames_is_swing"), ratio)
+        if t["split"]:
+            v, conf = t["is_swing"], "tiebreak"
+        return postjudge(v, conf, ratio, 4.0)["keep"] and v
+
+    # A BACKEND TOO OLD TO SEND THE PAIR. Both keys absent -> no
+    # split -> the frames answer stands, exactly as it did before.
+    check("an old backend's reply is unchanged",
+          rig({"is_swing": True, "confidence": "high"}, 12.0), True)
+    check("  including its noes",
+          rig({"is_swing": False, "confidence": "high"}, 12.0), False)
+    # AGREEMENT: nothing to settle, the headline answer stands.
+    check("agreement passes straight through",
+          rig({"is_swing": True, "confidence": "high",
+               "heat_is_swing": True, "frames_is_swing": True}, 12.0), True)
+    # A SPLIT, LOUD. The frames said no; x12 overrides them.
+    check("a loud split becomes a swing",
+          rig({"is_swing": False, "confidence": "high",
+               "heat_is_swing": True, "frames_is_swing": False}, 12.0), True)
+    # A SPLIT, QUIET. The frames said yes; x5 refuses it.
+    check("a quiet split is refused",
+          rig({"is_swing": True, "confidence": "high",
+               "heat_is_swing": False, "frames_is_swing": True}, 5.0), False)
+    # AND THE TIE-BREAK SURVIVES postjudge AT THE EDGE. x10.1 against
+    # a x4.0 gate is 2.5x -- over the medium bar anyway -- but a
+    # tie-break must not be re-weighed whatever the arithmetic says.
+    check("a tie-break is not re-weighed by postjudge",
+          rig({"is_swing": False, "confidence": "medium",
+               "heat_is_swing": True, "frames_is_swing": False}, 10.1), True)
+    # ONE JUDGE FAILED on the server: its keys come back None. Not a
+    # contradiction -- the headline answer stands.
+    check("a failed judge is not a contradiction",
+          rig({"is_swing": True, "confidence": "high",
+               "heat_is_swing": None, "frames_is_swing": True}, 12.0), True)
+
     print()
     if FAIL:
         print(f"FAILED {len(FAIL)}: " + ", ".join(FAIL))

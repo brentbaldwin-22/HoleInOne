@@ -1568,8 +1568,43 @@ async def verify_swing(
         # was missed, and it is the one that blocks for seconds rather
         # than milliseconds.
         if _fdest is not None:
-            j = await asyncio.to_thread(
-                judge_swing_with_frames, _fdest, _dest)
+            # BOTH QUESTIONS, NOT ONE -- the same pair Test Cut asks.
+            # The heat map says where motion was; the frames say what
+            # the thing was and whether it moved like a swing. A single
+            # call that sees both pictures returns one answer and
+            # buries the disagreement, and the disagreement is the
+            # informative part: the rig breaks the tie on the x-ratio,
+            # which is the one piece of evidence neither judge has.
+            # See swingjudge.tiebreak.
+            #
+            # CONCURRENTLY, which is what makes this affordable. The
+            # rig allows 25s for the whole round trip and one judge
+            # call costs ~13s over a modem, so running these in
+            # sequence would time the rig out and cost the verdict
+            # entirely -- it uploads unjudged on a null. Two threads
+            # means wall time is the slower call, not the sum.
+            _r = await asyncio.gather(
+                asyncio.to_thread(judge_swing_heat_image, _dest),
+                asyncio.to_thread(judge_swing_with_frames, _fdest, _dest),
+                return_exceptions=True,
+            )
+            _jh = _r[0] if isinstance(_r[0], dict) else None
+            _jf = _r[1] if isinstance(_r[1], dict) else None
+            if _jh is None and _jf is None:
+                # Both failed; report it as the single-call path would.
+                raise _r[1] if isinstance(_r[1], BaseException) else _r[0]
+            for _k, _src in (("heat", _jh), ("frames", _jf)):
+                out["%s_is_swing" % _k] = (
+                    _src.get("is_swing") if _src else None)
+                out["%s_confidence" % _k] = (
+                    _src.get("confidence") if _src else None)
+                out["%s_reason" % _k] = _src.get("reason") if _src else None
+            # THE FRAMES REMAIN THE HEADLINE ANSWER. An older rig does
+            # not know about the pair and reads `is_swing` alone, and
+            # it must keep getting exactly what it got before. A rig
+            # that does know overrides this with the tie-break; the
+            # backend cannot, because the x-ratio lives on the rig.
+            j = _jf or _jh
         else:
             j = await asyncio.to_thread(judge_swing_heat_image, _dest)
         out["is_swing"] = j.get("is_swing")

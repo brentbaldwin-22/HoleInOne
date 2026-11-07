@@ -890,6 +890,37 @@ class CopyEngine:
                                            else None))
                     _verdict = _v.get("is_swing")
                     _vconf, _vreason = _v.get("confidence"), _v.get("reason")
+                    # WHEN THE TWO JUDGES CONTRADICT EACH OTHER, THE
+                    # MICROPHONE DECIDES. The backend asks both the
+                    # heat map and the four frames and returns both
+                    # answers; `is_swing` is the frames one, which is
+                    # what a rig that knows nothing about the pair
+                    # keeps using. A split is the informative case and
+                    # the x-ratio is the one piece of evidence neither
+                    # judge can see -- and it never leaves this
+                    # machine, which is why the tie is broken here and
+                    # not on the server. See swingjudge.tiebreak.
+                    #
+                    # A backend too old to send the pair leaves both
+                    # None, which tiebreak reads as "no opinion" rather
+                    # than a contradiction, so nothing changes.
+                    _tb = swingjudge.tiebreak(
+                        _v.get("heat_is_swing"), _v.get("frames_is_swing"),
+                        (detail or {}).get("ratio"))
+                    if detail is not None:
+                        detail["verdict_heat"] = _v.get("heat_is_swing")
+                        detail["verdict_frames"] = _v.get("frames_is_swing")
+                    if _tb["split"]:
+                        _verdict = _tb["is_swing"]
+                        # "tiebreak" ON PURPOSE: postjudge below
+                        # narrows HEDGED yeses on quiet strikes, and a
+                        # verdict the ratio has just decided is not a
+                        # hedge for it to second-guess.
+                        _vconf, _vreason = "tiebreak", _tb["why"]
+                        if detail is not None:
+                            detail["tiebreak"] = _tb["why"][:200]
+                        log.info("copy: the judges split on %s — %s",
+                                 session_id, _tb["why"])
                     # AND A HEDGED YES NEEDS THE MICROPHONE BEHIND IT.
                     # Eleven of those 29 accepted clips were between
                     # x4.1 and x5.0 against a x4.0 gate; a medium
