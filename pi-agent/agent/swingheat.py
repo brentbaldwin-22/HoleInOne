@@ -218,14 +218,24 @@ def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
                 _mz = _geo.get("main")
                 if _mz and _mz["w"] >= 8 and _mz["h"] >= 8:
                     _zh, _zw = img.shape[:2]
-                    _px = int(_mz["w"] * 0.75)
+                    # Same geometry as tracer.swing_heat_check: wide
+                    # sides, up to the top of the picture, down to the
+                    # feet. See there for why.
+                    _px = int(_mz["w"] * 1.25)
                     _zx0 = max(0, _mz["x"] - _px)
                     _zx1 = min(_zw, _mz["x"] + _mz["w"] + _px)
-                    _zy0 = max(0, _mz["y"] - int(_mz["h"] * 1.0))
+                    _zy0 = 0
                     _zy1 = min(_zh, _mz["y"] + _mz["h"]
-                               + int(_mz["h"] * 0.33))
-                    if (_zx1 - _zx0) >= 160 and (_zy1 - _zy0) >= 160:
+                               + int(_mz["h"] * 0.12))
+                    _zx0, _zx1 = swingjudge.grow_span(_zx0, _zx1, 160, _zw)
+                    if (_zx1 - _zx0) >= 64 and (_zy1 - _zy0) >= 64:
                         img = img[_zy0:_zy1, _zx0:_zx1].copy()
+                        _lh, _lw = img.shape[:2]
+                        if max(_lh, _lw) < 512:
+                            _sc = 512.0 / max(_lh, _lw)
+                            img = cv2.resize(
+                                img, (int(_lw * _sc), int(_lh * _sc)),
+                                interpolation=cv2.INTER_CUBIC)
                         meta["zoom"] = [_zx0 + ox, _zy0 + oy,
                                         _zx1 - _zx0, _zy1 - _zy0]
             except Exception as exc:  # noqa: BLE001

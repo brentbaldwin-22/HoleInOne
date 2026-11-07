@@ -3628,12 +3628,18 @@ def swing_heat_check(
                     _mz = _geo.get("main")
                     if _mz and _mz["w"] >= 8 and _mz["h"] >= 8:
                         _zh, _zw = judged.shape[:2]
-                        _px = int(_mz["w"] * 0.75)
+                        # WIDE SIDES, ALL THE WAY UP, DOWN TO THE FEET.
+                        # A ball leaves the top of the frame and a club
+                        # at the top of the backswing can be well above
+                        # the blob the heat found, so the crop runs to
+                        # the top of the picture rather than guessing a
+                        # headroom. Below the feet is grass.
+                        _px = int(_mz["w"] * 1.25)
                         _ax, _ay = _mz["x"], _mz["y"]
                         _zx0 = max(0, _ax - _px)
                         _zx1 = min(_zw, _ax + _mz["w"] + _px)
-                        _zy0 = max(0, _ay - int(_mz["h"] * 1.0))
-                        _zy1 = min(_zh, _ay + _mz["h"] + int(_mz["h"] * 0.33))
+                        _zy0 = 0
+                        _zy1 = min(_zh, _ay + _mz["h"] + int(_mz["h"] * 0.12))
                         # GROW A SMALL CROP, DO NOT ABANDON IT. The
                         # first version skipped the zoom when the crop
                         # came out under 160 px either way -- which

@@ -8694,6 +8694,20 @@ _JUDGE_SWING_HEAT_PROMPT = (
     "NOT a swing: that is a waggle, a practice stroke, a bag being "
     "lifted, or somebody turning round. Answer false when nothing "
     "rises above the head.\n"
+    # MAKE IT COMMIT. The judge kept reporting "a cooler plume
+    # extending upward consistent with a club arc" about pictures
+    # whose heat stops at waist height -- an impression of the right
+    # shape rather than something it had located. Being made to name
+    # the height is harder to do vaguely, and it makes the `reason`
+    # auditable: the operator can look at the picture and see
+    # immediately whether the sentence is true of it.
+    "SAY WHERE THE HIGHEST HEAT IS, and do not report a club above the "
+    "head unless you can actually trace a narrow extension that is "
+    "clearly HIGHER than the top of the figure. A fan or smear beside "
+    "the body is not above the head however far it spreads. In "
+    "`reason`, name the height of the highest heat relative to the "
+    "golfer - 'above the head', 'at shoulder height' or 'at waist "
+    "height' - and answer FALSE for the last two.\n"
     "Answer false for: a person WALKING (a smeared blob strung out along "
     "the direction of travel, with no vertical extension above it), "
     "someone bending to tee up or pick up a ball (heat low down, nothing "
