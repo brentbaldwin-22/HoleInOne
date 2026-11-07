@@ -144,26 +144,34 @@ def measure_heat(heat8, hot_level: int = HOT_LEVEL,
             by = int(stats[i, cv2.CC_STAT_TOP])
             bw = max(1, int(stats[i, cv2.CC_STAT_WIDTH]))
             bh = max(1, int(stats[i, cv2.CC_STAT_HEIGHT]))
-            # WHERE THE FEET ARE, which is NOT the bottom of the
-            # bounding box. That bottom is the lowest pixel of ANY
-            # part of the blob, so a shadow stretching sideways
-            # across the grass, a club lying down, or a streak of
-            # wind-moved turf drags it well below the golfer -- and
-            # everything that reads a stance off a blob then reads it
-            # off that streak instead.
+            # WHERE THE FEET ARE. Two things this must survive, and
+            # they pull in opposite directions:
             #
-            # The lowest row of the blob within the MIDDLE HALF of
-            # its width. On a standing person that band is their
-            # legs; on one bending over it is their body; in neither
-            # case is it the far end of a sideways smear. `base` is
-            # kept as it was because callers display it and compare
-            # against it, but `foot` is what a stance rule should
-            # use.
+            #   A SIDEWAYS SMEAR. A shadow across the grass, a club
+            #   lying down, a streak of wind-moved turf -- all join
+            #   the blob and drag the bounding box's BOTTOM below the
+            #   golfer. That bottom was the first attempt.
+            #
+            #   A GAP DOWN THE MIDDLE. Two golfers standing close
+            #   come back as one wide blob with very little between
+            #   them, so the lowest row of the middle half of the
+            #   width sits at CHEST height. That was the second
+            #   attempt, and on the 8 Nov screenshot it put the foot
+            #   marker 135 px above the stance -- worse than what it
+            #   replaced.
+            #
+            # Neither extreme of the box works, so use the
+            # DISTRIBUTION: the row by which 97% of the blob's pixels
+            # are above. A thin smear is few pixels and barely moves
+            # it; a gap in the middle does not move it at all,
+            # because every pixel counts wherever it sits. `base` is
+            # kept as it was for the callers that display it.
             _sub = _lab[by:by + bh, bx:bx + bw] == i
-            _lo = int(bw * 0.25)
-            _hi = max(_lo + 1, int(bw * 0.75))
-            _rows = np.where(_sub[:, _lo:_hi].any(axis=1))[0]
-            _fy = by + (int(_rows[-1]) if len(_rows) else bh - 1)
+            _cum = np.cumsum(_sub.sum(axis=1))
+            _tot = float(_cum[-1]) if len(_cum) else 0.0
+            _fy = by + (min(bh - 1,
+                            int(np.searchsorted(_cum, _tot * 0.97)))
+                        if _tot > 0 else bh - 1)
             blobs.append({
                 "x": bx, "y": by, "w": bw, "h": bh, "area": area,
                 "aspect": round(bh / float(bw), 3),
@@ -569,13 +577,41 @@ FEET_ZONE_SLACK = 1.0
 # real clips once there are some.
 FRONT_GOLFER_MARGIN_FRAC = 0.25
 
+# AND A MUCH TIGHTER ONE WHEN THE FEET ARE REAL. 0.25 of a body
+# height was sized for the noise in a motion blob's bottom, which
+# could be a shadow, a club, or the waist of a golfer whose legs did
+# not move -- tens of pixels of slop in any direction. A person
+# detector's foot point is the bottom edge of its box, which is
+# steady to a few pixels frame to frame. Keeping the blob's margin
+# would throw away the precision that was the whole reason for
+# detecting people.
+#
+# UNMEASURED, like its larger sibling. 0.08 of a body height is about
+# a shoe length: enough that two players genuinely abreast still read
+# as level, small enough that one step toward the markers separates
+# them.
+FRONT_GOLFER_MARGIN_DETECTED = 0.08
+
 
 def pick_front_golfer(blobs, zones, *, offset=(0, 0),
                       slack=FEET_ZONE_SLACK,
-                      margin_frac=FRONT_GOLFER_MARGIN_FRAC) -> dict:
+                      margin_frac=None,
+                      people=None) -> dict:
     """The golfer standing in a zone whose feet are furthest up.
 
-    `blobs` are measure_heat's person-shaped blobs, in CROP pixels;
+    `people` are a person detector's boxes -- {"box": [x,y,w,h],
+    "feet": [x,y]} in FRAME pixels -- and when any are given they are
+    used INSTEAD of the blobs. That is not a preference, it is the
+    only thing that works: the blob is MOTION, and a golfer at
+    address or at the top of a backswing is not moving their legs, so
+    the heat stops at the waist and there are no pixels down there to
+    measure. Three different statistics were tried on those pixels --
+    the box's bottom, the bottom of its middle half, the 97th
+    percentile -- and all three reported a stance at chest height,
+    because that is genuinely where the motion ended.
+
+    `blobs` are measure_heat's person-shaped blobs, in CROP pixels,
+    and remain the fallback for a backend with no model on disk.
     `offset` is where that crop sits in the original frame, because
     `zones` are (x, y, w, h) in frame pixels as the operator drew
     them.
@@ -596,7 +632,10 @@ def pick_front_golfer(blobs, zones, *, offset=(0, 0),
     second zone further down the frame would put the ground line
     somewhere they are not standing.
     """
-    out = {"pick": None, "floor": None, "close": False,
+    if margin_frac is None:
+        margin_frac = (FRONT_GOLFER_MARGIN_DETECTED if people
+                       else FRONT_GOLFER_MARGIN_FRAC)
+    out = {"pick": None, "floor": None, "close": False, "from": None,
            # EVERY BLOB IT LOOKED AT AND WHAT IT MEASURED. The rule
            # reads a FOOT POINT off each blob -- the bottom-centre of
            # its bounding box -- and when it picks the wrong golfer
@@ -611,17 +650,27 @@ def pick_front_golfer(blobs, zones, *, offset=(0, 0),
         return out
     try:
         ox, oy = float(offset[0]), float(offset[1])
+        # THE DETECTOR'S PEOPLE WHEN THERE ARE ANY, in frame pixels
+        # already; the heat blobs otherwise, which need the crop
+        # offset adding. Everything downstream works on (fx, fy) and
+        # a box, so the two sources meet here and nowhere else.
+        if people:
+            _src = [(float(p["feet"][0]), float(p["feet"][1]),
+                     dict(p, x=p["box"][0], y=p["box"][1],
+                          w=p["box"][2], h=p["box"][3],
+                          area=p["box"][2] * p["box"][3]))
+                    for p in people if p and p.get("feet")]
+            out["from"] = "the person detector"
+        else:
+            _src = []
+            for b in blobs or []:
+                if not b:
+                    continue
+                _ft = b.get("foot") or b.get("base") or (0, 0)
+                _src.append((float(_ft[0]) + ox, float(_ft[1]) + oy, b))
+            out["from"] = "the motion heat (no person detector)"
         standing = []
-        for b in blobs or []:
-            if not b:
-                continue
-            # `foot` over `base`: see measure_heat. The bounding
-            # box's bottom follows a sideways shadow or a streak of
-            # grass to wherever it ends, which is not where anybody
-            # is standing.
-            _ft = b.get("foot") or b.get("base") or (0, 0)
-            fx = float(_ft[0]) + ox
-            fy = float(_ft[1]) + oy
+        for fx, fy, b in _src:
             # THE ZONE THEY ARE ACTUALLY IN, not the first one in the
             # list that the slack happens to reach. Taking the first
             # match put a golfer standing in the upper box on the
@@ -649,9 +698,11 @@ def pick_front_golfer(blobs, zones, *, offset=(0, 0),
                     continue
                 if best_d is None or d < best_d:
                     best_d, best_floor = d, zy + zh
+            _bo = 0 if people else int(ox)
+            _byo = 0 if people else int(oy)
             out["considered"].append({
                 "feet": [int(fx), int(fy)],
-                "box": [int(b["x"]) + int(ox), int(b["y"]) + int(oy),
+                "box": [int(b["x"]) + _bo, int(b["y"]) + _byo,
                         int(b["w"]), int(b["h"])],
                 "area": int(b.get("area") or 0),
                 "zone": best_floor is not None,

@@ -3511,6 +3511,7 @@ def swing_heat_check(
     prefer_span=None,
     zones=None,
     style: str = "zone",
+    people=None,
     # THE GROUND LINE, in frame pixels: the golfer's feet, or the
     # bottom of the trigger zones, which are drawn round feet. The
     # heat blob's own bottom is NOT the feet -- a golfer's legs barely
@@ -3904,12 +3905,24 @@ def swing_heat_check(
                     _front_floor = None
                     if str(style) == "golfer" and zones:
                         _pf = _sj.pick_front_golfer(
-                            _cands_all, zones, offset=(_ox, _oy))
-                        out["picked_front"] = _pf["why"]
+                            _cands_all, zones, offset=(_ox, _oy),
+                            people=people)
+                        out["picked_front"] = "%s — %s" % (
+                            _pf.get("from") or "?", _pf["why"])
                         out["front_candidates"] = _pf.get("considered")
                         _front = _pf.get("pick")
                         _front_floor = _pf.get("floor")
                     if _front is not None:
+                        # BACK INTO CROP PIXELS. The heat blobs were
+                        # measured on the crop; a detector box is in
+                        # the original frame. Everything below works
+                        # in crop pixels, so a detector pick is
+                        # shifted once, here.
+                        if people:
+                            _front = dict(
+                                _front,
+                                x=int(_front["x"]) - _ox,
+                                y=int(_front["y"]) - _oy)
                         # ONE GOLFER IS THE CROP. Pads named here
                         # rather than buried: a third of a body width
                         # either side is "a little outside the body",
@@ -3953,7 +3966,12 @@ def swing_heat_check(
                         # blob whose centre falls inside the crop is
                         # somebody who is IN the picture and whose
                         # head has to be in it too.
-                        _fh2 = [p for p in _cands_all
+                        _heads = ([dict(p, x=p["box"][0] - _ox,
+                                        y=p["box"][1] - _oy,
+                                        w=p["box"][2], h=p["box"][3])
+                                   for p in people] if people
+                                  else _cands_all)
+                        _fh2 = [p for p in _heads
                                 if _zone[0] <= p["x"] + p["w"] / 2.0
                                 <= _zone[1]] or [_front]
                         _ftop = min(p["y"] for p in _fh2)

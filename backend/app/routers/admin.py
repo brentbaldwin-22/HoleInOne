@@ -14928,6 +14928,15 @@ def test_cut_long_upload(
                     _zspan = None
                     _zfloor = None
                     _zbox = None
+                _people2 = None
+                if detector == "audio2":
+                    try:
+                        from ..services.people import find_people, frame_at
+                        _fr2 = frame_at(src_path, peak_time_sec)
+                        _people2 = find_people(_fr2) if _fr2 is not None else []
+                    except Exception as _px:  # noqa: BLE001
+                        log.debug("test-cut: person detect failed: %s", _px)
+                        _people2 = None
                 from ..services.tracer import swing_heat_check
                 _chk = swing_heat_check(
                     src_path, peak_time_sec, tee_fps,
@@ -14936,6 +14945,15 @@ def test_cut_long_upload(
                     floor_y=_zfloor,
                     zones=_zbox,
                     style=("golfer" if detector == "audio2" else "zone"),
+                    # REAL FEET, FROM A REAL PERSON DETECTOR. Audio 2
+                    # chooses the golfer whose feet are furthest up,
+                    # and the motion heat cannot say where anybody's
+                    # feet are: a golfer at address is not moving
+                    # their legs, so the heat stops at the waist.
+                    # Empty list = could not tell (no model on disk,
+                    # a frame that would not decode), and
+                    # pick_front_golfer falls back to the heat.
+                    people=(_people2 if detector == "audio2" else None),
                     # ASK ABOUT EVERY GOLFER, because nothing in the
                     # heat map says which of them swung -- two people
                     # measure the same to within a few percent on

@@ -416,6 +416,50 @@ def main() -> int:
     check("no zones means no pick",
           pick_front_golfer([front], None)["pick"] is None, True)
 
+    # ---- and with a real person detector ---------------------------
+    # THE FEET COME FROM A BOX, NOT FROM MOTION. A golfer at address
+    # is not moving their legs, so the heat stops at the waist and
+    # every statistic over those pixels reports a stance at chest
+    # height. The detector finds a body whether or not it moved.
+    PZ = [(300, 720, 900, 110)]                   # one zone, floor 830
+    def person(x, y, w, h, c=0.9):
+        return {"box": [x, y, w, h], "feet": [x + w // 2, y + h],
+                "conf": c}
+    stand = person(840, 400, 90, 400)             # feet y=800
+    bend = person(1070, 380, 150, 320)            # feet y=700, further up
+    r = pick_front_golfer([], PZ, people=[stand, bend])
+    check("the detector's people are used over the blobs",
+          r["from"], "the person detector")
+    check("  and the golfer further up wins",
+          r["pick"]["feet"], [1145, 700])
+    check("  with the zone's floor, not the box's bottom",
+          r["floor"], 830)
+    # THE FEET IT REPORTS ARE THE BOX BOTTOM, every time.
+    check("  feet are the bottom of the box",
+          all(c["feet"][1] == c["box"][1] + c["box"][3]
+              for c in r["considered"]), True)
+    # BLOBS ARE IGNORED WHEN PEOPLE ARE GIVEN -- a decoy blob whose
+    # "feet" sit higher than anybody must not win.
+    decoy = blob(900, 300, 120, 200)              # blob feet y=500
+    r2 = pick_front_golfer([decoy], PZ, people=[stand, bend])
+    check("a heat blob cannot outvote a detected person",
+          r2["pick"]["feet"], [1145, 700])
+    # NO PEOPLE -> the blobs are still the fallback, and it says so.
+    r3 = pick_front_golfer([front], ZONES, people=[])
+    check("no detections falls back to the heat",
+          r3["from"], "the motion heat (no person detector)")
+    # THE TIGHTER MARGIN. Real feet are steady to a few pixels, so
+    # one step toward the markers separates two players; two abreast
+    # still read as level.
+    _step = person(1070, 330, 150, 400)           # feet y=730: 70 px up
+    check("one step forward separates them",
+          pick_front_golfer([], PZ, people=[stand, _step])["pick"] is not None,
+          True)
+    _abreast = person(1070, 410, 150, 380)        # feet y=790: 10 px up
+    check("  but two abreast are still too close",
+          pick_front_golfer([], PZ,
+                            people=[stand, _abreast])["close"], True)
+
     print()
     if FAIL:
         print(f"FAILED {len(FAIL)}: " + ", ".join(FAIL))

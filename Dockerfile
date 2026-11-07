@@ -49,6 +49,12 @@ COPY backend/ backend/
 # Only `agent/` goes in: pi-agent/models is 13 MB of detector weights
 # that nothing on the server loads.
 COPY pi-agent/agent/ pi-agent/agent/
+# AND THE PERSON DETECTOR'S WEIGHTS. 12.7 MB, already in the repo for
+# the rig. Audio 2 needs real feet to choose which golfer is hitting,
+# and the motion heat cannot give them -- a golfer at address is not
+# moving their legs, so the heat stops at the waist and there is
+# nothing down there to measure. See backend/app/services/people.py.
+COPY pi-agent/models/ pi-agent/models/
 # main.py resolves FRONTEND_DIST as parents[2]/frontend/dist, which from
 # /app/backend/app/main.py is /app/frontend/dist — exactly here.
 COPY --from=web /web/dist frontend/dist
