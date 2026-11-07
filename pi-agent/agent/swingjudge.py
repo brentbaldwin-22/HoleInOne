@@ -509,6 +509,64 @@ def confidence_verdict(is_swing, confidence, ratio, gate_ratio, *,
             % (band, r, over)}
 
 
+# ---- when the two judges disagree ----------------------------------
+
+# THE OPERATOR'S TIE-BREAK, 7 Nov. The heat map and the four frames
+# answer different questions about the same moment, and when they
+# contradict each other somebody has to choose. Until now the frames
+# always won -- a reasonable default, never measured, and it buried
+# the disagreement rather than resolving it.
+#
+# The microphone is the third opinion, and it is the one piece of
+# evidence neither judge can see. A strike loud enough is a strike:
+# "if it's over 10, call it a swing. if not, no swing."
+#
+# ABSOLUTE, not a multiple of the rig's gate. The gate is a trigger
+# threshold that moves per rig and per hole; this is a statement about
+# how loud a struck ball is, and it should not drift when somebody
+# retunes a microphone.
+TIEBREAK_RATIO = 10.0
+
+
+def tiebreak(heat_is_swing, frames_is_swing, ratio, *,
+             over=TIEBREAK_RATIO) -> dict:
+    """Settle a contradiction between the heat and the frames.
+
+    Returns {"split": bool, "is_swing": bool|None, "why": str}. When
+    the two agree, or either could not answer, there is nothing to
+    settle and `split` is false -- the caller keeps whatever it was
+    going to use. A null from one of them is NOT a contradiction: it
+    is "could not tell", and the one that did answer stands.
+    """
+    if heat_is_swing is None or frames_is_swing is None:
+        return {"split": False, "is_swing": None,
+                "why": "one judge had no opinion; nothing to settle"}
+    if bool(heat_is_swing) == bool(frames_is_swing):
+        return {"split": False, "is_swing": bool(heat_is_swing),
+                "why": "both judges agree"}
+    try:
+        r = float(ratio or 0.0)
+    except Exception:  # noqa: BLE001
+        r = 0.0
+    if r <= 0:
+        # NO SOUND TO ASK. Falls back to the frames, which is what
+        # this did before the tie-break went in: the frames at least
+        # show a club and a body through time.
+        return {"split": True, "is_swing": bool(frames_is_swing),
+                "why": ("heat says %s and the frames say %s, and there "
+                        "is no x-ratio to break the tie — the frames "
+                        "stand" % ("swing" if heat_is_swing else "not",
+                                   "swing" if frames_is_swing else "not"))}
+    _win = r > float(over)
+    return {"split": True, "is_swing": _win,
+            "why": ("heat says %s and the frames say %s; the strike is "
+                    "x%.1f, %s the x%.1f tie-break, so: %s"
+                    % ("swing" if heat_is_swing else "not",
+                       "swing" if frames_is_swing else "not",
+                       r, "over" if _win else "under", float(over),
+                       "swing" if _win else "not a swing"))}
+
+
 # ---- where the ball left from --------------------------------------
 
 # How far from the golfer who swung a chain's launch point may sit,

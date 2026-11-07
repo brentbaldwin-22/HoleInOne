@@ -15065,6 +15065,30 @@ def test_cut_long_upload(
                                 "confidence": _jf.get("confidence"),
                                 "reason": _jf.get("reason"),
                             }
+                            # AND THE MICROPHONE BREAKS THE TIE. See
+                            # swingjudge.tiebreak: when the two judges
+                            # contradict each other the frames used to
+                            # win by default, which settled nothing and
+                            # hid the split. The x-ratio is the one
+                            # piece of evidence neither of them can
+                            # see.
+                            _tb = _sj.tiebreak(
+                                _heat["is_swing"], _jf.get("is_swing"),
+                                cut_entry.get("ratio"))
+                            cut_entry["tiebreak"] = _tb["why"]
+                            if _tb["split"]:
+                                _final = {
+                                    "is_swing": _tb["is_swing"],
+                                    # THE TIE-BREAK IS THE VERDICT NOW,
+                                    # so neither judge's confidence
+                                    # describes it. Saying so keeps
+                                    # postjudge -- which narrows hedged
+                                    # yeses on quiet strikes -- from
+                                    # second-guessing a decision the
+                                    # ratio has already made.
+                                    "confidence": "tiebreak",
+                                    "reason": _tb["why"],
+                                }
                             _saw = _saw + " + 4 frames"
                         elif judge_with_frames:
                             # ASKED FOR AND NOT DELIVERED is a third

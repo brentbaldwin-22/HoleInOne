@@ -38,7 +38,7 @@ import numpy as np                                    # noqa: E402
 
 from agent.swingjudge import (                        # noqa: E402
     aim_verdict, confidence_verdict, measure_heat, pick_stance, postjudge,
-    prejudge, shape_verdict, stance_verdict, MIN_ASPECT,
+    prejudge, shape_verdict, stance_verdict, tiebreak, MIN_ASPECT,
 )
 
 FAIL: list[str] = []
@@ -246,6 +246,45 @@ def main() -> int:
           True)
     check("no run-back is not a rejection", aim_verdict(None, 1790, 1920)
           ["ok"], True)
+
+    # ---- the operator's tie-break ----------------------------------
+    # THE RULE, 7 Nov: when the heat and the frames contradict each
+    # other, a strike over x10 is a swing and anything quieter is not.
+    check("agreement is not a split", tiebreak(True, True, 3.0)["split"],
+          False)
+    check("  and the agreed answer stands", tiebreak(True, True, 3.0)
+          ["is_swing"], True)
+    check("  so does an agreed no", tiebreak(False, False, 99.0)["is_swing"],
+          False)
+    # A NULL IS "COULD NOT TELL", not a contradiction.
+    check("a null from one judge is not a split",
+          tiebreak(None, True, 3.0)["split"], False)
+    check("  either way round", tiebreak(True, None, 3.0)["split"], False)
+    # THE SPLIT ITSELF, both directions, either side of x10.
+    check("heat yes, frames no, loud -> swing",
+          tiebreak(True, False, 12.4)["is_swing"], True)
+    check("heat yes, frames no, quiet -> not",
+          tiebreak(True, False, 5.2)["is_swing"], False)
+    check("heat no, frames yes, loud -> swing",
+          tiebreak(False, True, 103.7)["is_swing"], True)
+    check("heat no, frames yes, quiet -> not",
+          tiebreak(False, True, 9.9)["is_swing"], False)
+    # EXACTLY x10 IS NOT OVER x10. "if it's over 10, call it a swing."
+    check("  x10.0 exactly is under the bar",
+          tiebreak(True, False, 10.0)["is_swing"], False)
+    check("  and x10.1 is over it", tiebreak(True, False, 10.1)["is_swing"],
+          True)
+    # NO SOUND TO ASK -- a long upload with no ratio recorded. Falls
+    # back to the frames, which is what this did before the rule.
+    check("no ratio falls back to the frames",
+          tiebreak(True, False, None)["is_swing"], False)
+    check("  and still reports the split",
+          tiebreak(True, False, None)["split"], True)
+    # AND THE TIE-BREAK SURVIVES postjudge. The confidence gate
+    # narrows hedged yeses on quiet strikes; a verdict the ratio has
+    # already decided is not the judge's hedge to second-guess.
+    check("postjudge leaves a tie-break alone",
+          postjudge(True, "tiebreak", 10.4, 4.0)["keep"], True)
 
     print()
     if FAIL:

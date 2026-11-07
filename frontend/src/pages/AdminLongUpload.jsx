@@ -1634,6 +1634,19 @@ export default function AdminLongUpload() {
                                           </b>
                                           {c.overruled ? " (overruled by ×ratio)" : ""}
                                         </div>
+                                        {/* AND HOW THE SPLIT WAS
+                                            SETTLED. The ×ratio decides
+                                            it, and the number it
+                                            turned on is the thing the
+                                            operator will want to argue
+                                            with. */}
+                                        {c.tiebreak
+                                          && c.heat_is_swing !== c.frames_is_swing && (
+                                          <div className="muted"
+                                               style={{ marginTop: 2 }}>
+                                            {c.tiebreak}
+                                          </div>
+                                        )}
                                       </div>
                                     )}
                                     {c.verify_saw && c.heat_is_swing === undefined && (
