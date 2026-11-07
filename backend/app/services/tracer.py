@@ -3847,11 +3847,13 @@ def swing_heat_check(
                     # so in `picked_front` so the page can report it
                     # rather than leaving the crop unexplained.
                     _front = None
+                    _front_floor = None
                     if str(style) == "golfer" and zones:
                         _pf = _sj.pick_front_golfer(
                             _cands_all, zones, offset=(_ox, _oy))
                         out["picked_front"] = _pf["why"]
                         _front = _pf.get("pick")
+                        _front_floor = _pf.get("floor")
                     if _front is not None:
                         # ONE GOLFER IS THE CROP. Pads named here
                         # rather than buried: a third of a body width
@@ -3859,8 +3861,20 @@ def swing_heat_check(
                         # and a twelfth of a body height below the
                         # feet is "just below".
                         _fw2 = max(12, int(_front["w"] * 0.35))
-                        _fb = _front["y"] + _front["h"] + max(
-                            6, int(_front["h"] * 0.08))
+                        # THE FEET ARE THE ZONE'S BOTTOM EDGE, NOT THE
+                        # BLOB'S. The blob is MOTION: on a golfer
+                        # whose legs barely move it stops around the
+                        # waist, and the first version of this cropped
+                        # exactly there -- cutting the player off at
+                        # the belt in both pictures. The zone is drawn
+                        # round feet. Still max()'d with the blob, so
+                        # a follow-through that reaches below the zone
+                        # is not clipped.
+                        _fground = _front["y"] + _front["h"]
+                        if _front_floor is not None:
+                            _fground = max(_fground,
+                                           int(_front_floor) - _oy)
+                        _fb = _fground + max(6, int(_front["h"] * 0.08))
                         _zone = (_front["x"] - _fw2,
                                  _front["x"] + _front["w"] + _fw2,
                                  _fb)

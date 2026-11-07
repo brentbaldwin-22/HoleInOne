@@ -349,6 +349,11 @@ def main() -> int:
     check("picks the golfer furthest up the tee",
           r["pick"] is front, True)
     check("  and says which", "furthest up" in r["why"], True)
+    # THE GROUND LINE IS THE ZONE'S BOTTOM, NOT THE BLOB'S. Zone 1 is
+    # (700, 800, 220, 90), so its floor is y=890. The front golfer's
+    # blob ends at y=840 -- 50 px higher, which is where the first
+    # version cropped and why the player came out cut off at the belt.
+    check("the floor is the zone's bottom edge", r["floor"], 890)
     # Order must not decide it.
     check("  whichever order they arrive in",
           pick_front_golfer([front, back], ZONES)["pick"] is front, True)
@@ -359,6 +364,11 @@ def main() -> int:
           r["pick"] is None and r["close"], True)
     check("  which is not the same as nobody there",
           "too close" in r["why"], True)
+    # THE ZONE THEY ARE IN, not the union. Standing in zone 2
+    # (960, 820, 200, 80) must give 900, not zone 1's 890.
+    _z2 = blob(1000, 660, 130, 200)         # feet (1065, 860) in zone 2
+    check("the floor comes from the zone they stand in",
+          pick_front_golfer([_z2], ZONES)["floor"], 900)
     # FEET OUTSIDE EVERY ZONE -> no pick, and a different reason.
     _off = blob(100, 640, 140, 200)         # feet (170, 840)
     r = pick_front_golfer([_off], ZONES)
@@ -369,8 +379,13 @@ def main() -> int:
     # well above the real stance; one zone height of slack keeps that
     # golfer eligible.
     _waist = blob(740, 600, 140, 130)       # feet (810, 730), zone top 800
+    _rw = pick_front_golfer([_waist], ZONES)
     check("heat stopping above the zone still counts",
-          pick_front_golfer([_waist], ZONES)["pick"] is _waist, True)
+          _rw["pick"] is _waist, True)
+    # AND THIS IS THE CASE THAT MATTERS: motion that stops at the
+    # waist still gets the real ground line, 160 px below the blob.
+    check("  and still gets the ground line from the zone",
+          _rw["floor"], 890)
     _high = blob(740, 300, 140, 130)        # feet (810, 430) -- far above
     check("  but not a blob in the sky",
           pick_front_golfer([_high], ZONES)["pick"] is None, True)

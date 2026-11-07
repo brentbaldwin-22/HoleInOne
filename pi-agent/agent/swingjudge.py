@@ -559,13 +559,24 @@ def pick_front_golfer(blobs, zones, *, offset=(0, 0),
     `zones` are (x, y, w, h) in frame pixels as the operator drew
     them.
 
-    Returns {"pick": blob|None, "close": bool, "why": str}. `pick` is
-    None when no blob's feet are in any zone, and `close` is true when
-    the leader and the runner-up are too near to separate -- both mean
-    "use the ordinary crop", and the caller is told which so the page
-    can say why.
+    Returns {"pick": blob|None, "floor": int|None, "close": bool,
+    "why": str}. `pick` is None when no blob's feet are in any zone,
+    and `close` is true when the leader and the runner-up are too near
+    to separate -- both mean "use the ordinary crop", and the caller
+    is told which so the page can say why.
+
+    `floor` is the BOTTOM EDGE of the zone that golfer is standing in,
+    in frame pixels, and it is the ground line a crop should stop at.
+    NOT the bottom of their blob: the blob is motion, and on a golfer
+    whose legs barely move the motion stops around the waist -- which
+    is exactly where the first version of this cropped, cutting them
+    off at the belt. The zone is drawn round feet and does not move.
+    Of the zone they are IN, not the union of all of them, because a
+    second zone further down the frame would put the ground line
+    somewhere they are not standing.
     """
-    out = {"pick": None, "close": False, "why": "no zones drawn"}
+    out = {"pick": None, "floor": None, "close": False,
+           "why": "no zones drawn"}
     if not zones:
         return out
     try:
@@ -582,13 +593,13 @@ def pick_front_golfer(blobs, zones, *, offset=(0, 0),
                 _s = float(slack) * zh
                 if (zx <= fx <= zx + zw
                         and zy - _s <= fy <= zy + zh + _s):
-                    standing.append((fy, b))
+                    standing.append((fy, b, zy + zh))
                     break
         if not standing:
             out["why"] = "nobody's feet are in a trigger zone"
             return out
         standing.sort(key=lambda t: t[0])
-        lead_y, lead = standing[0]
+        lead_y, lead, lead_floor = standing[0]
         if len(standing) > 1:
             gap = standing[1][0] - lead_y
             need = float(margin_frac) * float(lead.get("h") or 1)
@@ -601,8 +612,10 @@ def pick_front_golfer(blobs, zones, *, offset=(0, 0),
                     % (gap, need))
                 return out
         out["pick"] = lead
-        out["why"] = ("the golfer standing furthest up the tee (feet at "
-                      "y=%.0f of %d in a zone)" % (lead_y, len(standing)))
+        out["floor"] = int(lead_floor)
+        out["why"] = ("the golfer standing furthest up the tee (%d in a "
+                      "zone; ground line y=%d, from the zone they are "
+                      "standing in)" % (len(standing), int(lead_floor)))
         return out
     except Exception:  # noqa: BLE001
         out["why"] = "could not read the blobs"
