@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
+import useAuth from "../hooks/useAuth.js";
 
 function StatTile({ label, value, unit }) {
   return (
@@ -16,6 +17,10 @@ function StatTile({ label, value, unit }) {
 
 export default function PlayerProfile() {
   const { userId } = useParams();
+  // This page is public and gets shared, so a stranger reaching it is the
+  // whole point of the sign-up card at the bottom. Somebody signed in is
+  // not that stranger.
+  const { user, loading: authLoading } = useAuth();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -204,13 +209,21 @@ export default function PlayerProfile() {
         </div>
       )}
 
-      <div className="card" style={{ background: "var(--primary-soft)", border: "1px solid var(--emerald-200)" }}>
-        <h3 style={{ color: "var(--emerald-800)" }}>Want a profile?</h3>
-        <p className="small" style={{ color: "var(--emerald-800)", marginBottom: 12 }}>
-          Sign up + register a round, every round you play stacks here automatically.
-        </p>
-        <Link to="/courses" className="btn small" style={{ width: "auto" }}>Pick a course — $20</Link>
-      </div>
+      {/* "Want a profile?" is for a visitor who followed a shared link,
+          and it was being shown to everybody -- including the golfer
+          whose profile this is, who plainly has one. Anyone signed in
+          has an account, so this is for signed-out visitors only.
+          Waiting on authLoading keeps it from flashing up on a cold load
+          while useAuth is still fetching the user it has a token for. */}
+      {!authLoading && !user && (
+        <div className="card" style={{ background: "var(--primary-soft)", border: "1px solid var(--emerald-200)" }}>
+          <h3 style={{ color: "var(--emerald-800)" }}>Want a profile?</h3>
+          <p className="small" style={{ color: "var(--emerald-800)", marginBottom: 12 }}>
+            Sign up + register a round, every round you play stacks here automatically.
+          </p>
+          <Link to="/courses" className="btn small" style={{ width: "auto" }}>Pick a course — $20</Link>
+        </div>
+      )}
     </div>
   );
 }
