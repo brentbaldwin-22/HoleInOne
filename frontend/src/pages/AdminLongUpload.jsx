@@ -1524,6 +1524,48 @@ export default function AdminLongUpload() {
                                              }} />
                                       </a>
                                     )}
+                                    {/* EACH GOLFER THAT MOVED, when more
+                                        than one did. Nothing in the heat
+                                        map says which of them swung, so
+                                        each was asked about separately and
+                                        this shows what each answered. */}
+                                    {Array.isArray(c.candidates)
+                                      && c.candidates.length > 1 && (
+                                      <div className="tiny" style={{
+                                        marginTop: 4, maxWidth: 200,
+                                        whiteSpace: "normal", lineHeight: 1.35,
+                                      }}>
+                                        <div className="muted">
+                                          {c.candidates.length} golfers moved —
+                                          each asked about separately:
+                                        </div>
+                                        {c.candidates.map((a, ai) => (
+                                          <div key={ai} style={{ marginTop: 3 }}>
+                                            <a href={a.image_url}
+                                               target="_blank" rel="noreferrer">
+                                              <img src={a.image_url} alt=""
+                                                   style={{
+                                                     width: 92, display: "block",
+                                                     borderRadius: 3,
+                                                     border: "1px solid var(--border, #333)",
+                                                   }} />
+                                            </a>
+                                            <span style={{
+                                              color: a.is_swing
+                                                ? "#1a7f37" : "#c0392b",
+                                            }}>
+                                              {a.is_swing === true ? "swing"
+                                                : a.is_swing === false ? "not" : "?"}
+                                            </span>{" "}
+                                            <span className="muted">
+                                              ({a.confidence || "-"}) at x=
+                                              {a.box && a.box[0]}
+                                            </span>
+                                            <div className="muted">{a.reason}</div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
                                     {/* BOTH VERDICTS, SIDE BY SIDE, when
                                         the frames were asked for. Which
                                         question to keep is the decision in

@@ -14928,6 +14928,13 @@ def test_cut_long_upload(
                     crop=_crop,
                     prefer_span=_zspan,
                     floor_y=_zfloor,
+                    # ASK ABOUT EVERY GOLFER, because nothing in the
+                    # heat map says which of them swung -- two people
+                    # measure the same to within a few percent on
+                    # every statistic there is. Two is the bound: a
+                    # tee has a player and a playing partner on it,
+                    # and each extra candidate is another vision call.
+                    max_candidates=2,
                     debug_dir=CLIPS_DIR,
                     debug_prefix=f"verify-{upload_id}-{idx:02d}-"
                                  f"{secrets.token_hex(3)}",
@@ -14985,6 +14992,35 @@ def test_cut_long_upload(
                         cut_entry["is_swing"] = False
                         cut_entry["verify_confidence"] = "gate"
                         cut_entry["verify_reason"] = _gate["why"]
+                    elif len(_chk.get("candidates") or []) > 1:
+                        # MORE THAN ONE GOLFER MOVED. Ask about each
+                        # and keep the first yes: the swing is a swing
+                        # whichever of them made it, and a no on the
+                        # player standing still says nothing about the
+                        # one who hit. Costs one call per candidate.
+                        _alts = []
+                        for _k in _chk["candidates"]:
+                            _ja = judge_swing_heat_image(
+                                CLIPS_DIR / _k["image"])
+                            _alts.append({
+                                "image_url": _clip_url_for(_k["image"]),
+                                "box": _k["box"],
+                                "is_swing": _ja.get("is_swing"),
+                                "confidence": _ja.get("confidence"),
+                                "reason": _ja.get("reason"),
+                            })
+                            if _ja.get("is_swing") is True:
+                                break
+                        cut_entry["candidates"] = _alts
+                        _win = next((a for a in _alts
+                                     if a["is_swing"] is True), None) or _alts[0]
+                        cut_entry["is_swing"] = _win["is_swing"]
+                        cut_entry["verify_confidence"] = _win["confidence"]
+                        cut_entry["verify_reason"] = _win["reason"]
+                        cut_entry["heat_image_url"] = _win["image_url"]
+                        cut_entry["verify_saw"] = (
+                            "heat, %d golfer(s) asked about"
+                            % len(_alts))
                     else:
                         if _strip is not None:
                             # BOTH ANSWERS, NOT ONE. The operator is

@@ -3333,6 +3333,23 @@ def swing_heat_check(
     # move through a swing, so the motion stops around the waist and a
     # crop that ends there cuts the player off at the knees.
     floor_y=None,
+    # HOW MANY GOLFERS TO OFFER UP, when more than one person-shaped
+    # thing moved. 1 keeps the old behaviour exactly.
+    #
+    # WHY THIS EXISTS: nothing in the heat map says which of two
+    # people swung. Measured on clip 1734, the bystander rummaging in
+    # a bag beside a cart against the golfer who actually hit:
+    #
+    #     area 2379 / 1551   mean heat 192 / 181   peak 255 / 241
+    #     cool fraction 35% / 39%   aspect 1.85 / 1.93
+    #
+    # Statistically the same object twice. The ball's own launch
+    # point would settle it and is computed above, but the chain is
+    # empty at the short windows the judge runs on -- 1 of 3 clips
+    # tried, and no tee_spot even then. So there is nothing to pick
+    # WITH, and picking anyway is how a swing got zoomed past on
+    # 7 Nov. The caller asks about each of them instead.
+    max_candidates: int = 1,
 ) -> dict:
     """Confirm a suspected swing with MOG2 physics.
 
@@ -3611,7 +3628,34 @@ def swing_heat_check(
                         _ox, _oy = _cx, _cy
                     # The golfer's blob, not the biggest one -- see
                     # swingjudge.measure_heat on clip 1734.
+                    # WHO SWUNG? ASK THE BALL FIRST.
+                    #
+                    # The caller's anchor is the best it has: a
+                    # detected stance on the rig, the pose stage's
+                    # feet in debug3, and in Test Cut only a SPAN --
+                    # the union of the trigger zones. On a hole whose
+                    # zones are two wide flat strips that span is most
+                    # of the frame, so every golfer is "inside" it,
+                    # the distance term is zero for all of them and
+                    # the tiebreak falls through to largest-blob. A
+                    # player standing nearer the camera then beats the
+                    # one actually swinging, which is how a swing got
+                    # zoomed past entirely on 7 Nov.
+                    #
+                    # `tee_spot` is better evidence than any of them
+                    # and it is already computed above: it is the
+                    # ball's own flight run back to where it was
+                    # sitting. A ball left from there, so the golfer
+                    # who hit it was there. It is only used when the
+                    # caller has no POINT of its own -- the rig's
+                    # detected stance is about the person the audio
+                    # trigger confirmed and stays primary -- and a
+                    # chain can be a bird, so it never overrides
+                    # something that saw an actual human.
                     _pxy = prefer_xy
+                    if _pxy is None and out.get("tee_spot"):
+                        _pxy = out["tee_spot"]
+                        out["picked_from"] = "the ball's launch point"
                     if _pxy is not None and (_ox or _oy):
                         _pxy = (float(_pxy[0]) - _ox, float(_pxy[1]) - _oy)
                     _psp = prefer_span
@@ -3631,8 +3675,17 @@ def swing_heat_check(
                     # ABOVE the head and is the single most important
                     # thing in the frame, so there is a full blob
                     # height above and only a third below.
-                    _mz = _geo.get("main")
-                    if _mz and _mz["w"] >= 8 and _mz["h"] >= 8:
+                    # EVERY PERSON-SHAPED CANDIDATE, best first. The
+                    # ranking is unchanged -- the caller's anchor, then
+                    # size -- this just stops throwing the rest away.
+                    _cands = [_geo.get("main")] + list(_geo.get("others") or [])
+                    _cands = [c for c in _cands
+                              if c and c["w"] >= 8 and c["h"] >= 8][
+                                  :max(1, int(max_candidates))]
+                    out["candidates"] = []
+                    _base_img = judged
+                    for _ci, _mz in enumerate(_cands):
+                        judged = _base_img
                         _zh, _zw = judged.shape[:2]
                         # WIDE SIDES, ALL THE WAY UP, DOWN TO THE FEET.
                         # A ball leaves the top of the frame and a club
@@ -3674,12 +3727,21 @@ def swing_heat_check(
                                     judged,
                                     (int(_lw * _sc), int(_lh * _sc)),
                                     interpolation=cv2.INTER_CUBIC)
-                            out["zoom"] = [int(_zx0 + _ox), int(_zy0 + _oy),
-                                           int(_zx1 - _zx0), int(_zy1 - _zy0)]
+                            _nm = (clean_name if _ci == 0 else
+                                   f"{debug_prefix}-clean{_ci + 1}.jpg")
                             cv2.imwrite(
-                                str(Path(debug_dir) / clean_name), judged,
+                                str(Path(debug_dir) / _nm), judged,
                                 [int(cv2.IMWRITE_JPEG_QUALITY), 80],
                             )
+                            _box = [int(_mz["x"] + _ox), int(_mz["y"] + _oy),
+                                    int(_mz["w"]), int(_mz["h"])]
+                            out["candidates"].append(
+                                {"image": _nm, "box": _box,
+                                 "zoom": [int(_zx0 + _ox), int(_zy0 + _oy),
+                                          int(_zx1 - _zx0),
+                                          int(_zy1 - _zy0)]})
+                            if _ci == 0:
+                                out["zoom"] = out["candidates"][0]["zoom"]
                     _mm = _geo.get("main")
                     if _mm:
                         _mm["frame_x"] = _mm["x"] + _ox
