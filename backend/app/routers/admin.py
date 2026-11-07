@@ -8239,6 +8239,8 @@ def swing_audit(limit: int = 30, refresh: bool = False,
                     # the audit measures the golfer and not whoever
                     # moved most. Older events have none.
                     prefer_xy=(ev.trigger_detail or {}).get("stance"),
+                    floor_y=(((ev.trigger_detail or {}).get("stance")
+                              or [None, None])[1]),
                 ) or {}
                 geo = _chk.get("geo") or {}
                 geo["server_heat"] = _chk.get("image_clean")
@@ -14894,6 +14896,7 @@ def test_cut_long_upload(
             try:
                 _crop = None
                 _zspan = None
+                _zfloor = None
                 try:
                     _zs = _tee_trigger_zones(db, row) or []
                     if _zs:
@@ -14911,14 +14914,20 @@ def test_cut_long_upload(
                         # On clip 1734 that was a bystander at a cart
                         # who beat the actual swing by 27% of area.
                         _zspan = (_x0, _x1)
+                        # The zones are drawn round FEET, so their
+                        # bottom edge is the ground line the crop
+                        # should reach down to.
+                        _zfloor = _y1
                 except Exception:  # noqa: BLE001
                     _crop = None
                     _zspan = None
+                    _zfloor = None
                 from ..services.tracer import swing_heat_check
                 _chk = swing_heat_check(
                     src_path, peak_time_sec, tee_fps,
                     crop=_crop,
                     prefer_span=_zspan,
+                    floor_y=_zfloor,
                     debug_dir=CLIPS_DIR,
                     debug_prefix=f"verify-{upload_id}-{idx:02d}-"
                                  f"{secrets.token_hex(3)}",
@@ -31760,6 +31769,7 @@ def _debug3_run(row, src_path, db, progress=None, debug_artifacts=True,
                     # mover, which on clip 1734 was a bystander at a
                     # cart who beat the actual swing by 27% of area.
                     prefer_xy=c.get("impact_feet_xy") or _rest_xy,
+                    floor_y=((c.get("impact_feet_xy") or [None, None])[1]),
                     debug_dir=_heat_dir,
                     debug_prefix=f"d3heat-{upload_id}-{tok}-{i}",
                 ) or {}

@@ -225,8 +225,17 @@ def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
                     _zx0 = max(0, _mz["x"] - _px)
                     _zx1 = min(_zw, _mz["x"] + _mz["w"] + _px)
                     _zy0 = 0
-                    _zy1 = min(_zh, _mz["y"] + _mz["h"]
-                               + int(_mz["h"] * 0.12))
+                    # Down to the feet, not to the bottom of the heat:
+                    # a golfer's legs barely move, so the motion stops
+                    # around the waist. See tracer.swing_heat_check.
+                    _zy1 = _mz["y"] + _mz["h"] + int(_mz["h"] * 0.35)
+                    if prefer_xy is not None:
+                        try:
+                            _fy = float(prefer_xy[1]) - oy
+                            _zy1 = max(_zy1, int(_fy) + int(_mz["h"] * 0.15))
+                        except Exception:  # noqa: BLE001
+                            pass
+                    _zy1 = min(_zh, _zy1)
                     _zx0, _zx1 = swingjudge.grow_span(_zx0, _zx1, 160, _zw)
                     if (_zx1 - _zx0) >= 64 and (_zy1 - _zy0) >= 64:
                         img = img[_zy0:_zy1, _zx0:_zx1].copy()

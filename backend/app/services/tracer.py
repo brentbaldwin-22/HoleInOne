@@ -3327,6 +3327,12 @@ def swing_heat_check(
     # which a long upload has even though it has no person detector.
     prefer_xy=None,
     prefer_span=None,
+    # THE GROUND LINE, in frame pixels: the golfer's feet, or the
+    # bottom of the trigger zones, which are drawn round feet. The
+    # heat blob's own bottom is NOT the feet -- a golfer's legs barely
+    # move through a swing, so the motion stops around the waist and a
+    # crop that ends there cuts the player off at the knees.
+    floor_y=None,
 ) -> dict:
     """Confirm a suspected swing with MOG2 physics.
 
@@ -3639,7 +3645,13 @@ def swing_heat_check(
                         _zx0 = max(0, _ax - _px)
                         _zx1 = min(_zw, _ax + _mz["w"] + _px)
                         _zy0 = 0
-                        _zy1 = min(_zh, _ay + _mz["h"] + int(_mz["h"] * 0.12))
+                        _zy1 = _ay + _mz["h"] + int(_mz["h"] * 0.35)
+                        if floor_y is not None:
+                            # Below the feet by a little, so the stance
+                            # and the turf are both in the picture.
+                            _zy1 = max(_zy1, int(float(floor_y) - _oy)
+                                       + int(_mz["h"] * 0.15))
+                        _zy1 = min(_zh, _zy1)
                         # GROW A SMALL CROP, DO NOT ABANDON IT. The
                         # first version skipped the zoom when the crop
                         # came out under 160 px either way -- which
