@@ -15032,7 +15032,13 @@ def test_cut_long_upload(
                                 _sp = CLIPS_DIR / (
                                     f"verifyframes-{upload_id}-{idx:02d}-"
                                     f"{secrets.token_hex(3)}.jpg")
+                                # THE ZONE RECTANGLE, SAME AS THE HEAT
+                                # MAP, cut off just above the heads.
+                                # See tracer.swing_heat_check's
+                                # frames_rect. Falls back to the blob
+                                # box on a camera with no zones drawn.
                                 if frames_strip(src_path, peak_time_sec, _sp,
+                                                rect=_chk.get("frames_rect"),
                                                 box=_heat_box):
                                     _strip = _sp
                                     cut_entry["frames_image_url"] = (

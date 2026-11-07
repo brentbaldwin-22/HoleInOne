@@ -3223,8 +3223,8 @@ def golfer_and_ball_box(constant, det_scale: float, width: int, height: int,
 
 
 def frames_strip(input_path, at_sec: float, out_path, *, box=None,
-                 offsets=(-0.25, 0.0, 0.15, 0.40), tile_px: int = 640,
-                 pad_frac: float = 1.0):
+                 rect=None, offsets=(-0.25, 0.0, 0.15, 0.40),
+                 tile_px: int = 640, pad_frac: float = 1.0):
     """Four ordinary frames around the impact, as one 2x2 tile. Bool.
 
     THE COMPANION TO THE HEAT COMPOSITE, and the thing it cannot be.
@@ -3235,10 +3235,16 @@ def frames_strip(input_path, at_sec: float, out_path, *, box=None,
     real frames say what the thing was, and whether it moved like a
     swing, which is a question a vision model is good at.
 
-    `box` is (x, y, w, h) of whatever moved -- normally the measured
-    heat blob -- and the tiles are cropped around it with padding, so
-    the candidate fills the frame instead of being forty pixels of a
-    whole golf hole. Without one the full frame is used.
+    `rect` is (x0, y0, x1, y1) in frame pixels, used VERBATIM. That is
+    how the zone crop arrives: the same rectangle the heat map is cut
+    to, so the two pictures the judge is handed line up and a sentence
+    about one can be checked against the other. See
+    swing_heat_check's `frames_rect`.
+
+    `box` is the older way in -- (x, y, w, h) of whatever moved,
+    normally the measured heat blob, padded by `pad_frac` each side.
+    It still serves callers that have no zones drawn. `rect` wins when
+    both are given; without either, the full frame is used.
 
     A MIRROR OF agent/swingheat._frame_strip, deliberately: the rig
     and Test Cut must hand the judge the same KIND of picture or
@@ -3255,16 +3261,24 @@ def frames_strip(input_path, at_sec: float, out_path, *, box=None,
         H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         if W <= 0 or H <= 0:
             return False
-        if box:
+        x0, y0, x1, y1 = 0, 0, W, H
+        if rect:
+            try:
+                _r = [int(v) for v in rect]
+                _a, _b = max(0, _r[0]), max(0, _r[1])
+                _c, _d = min(W, _r[2]), min(H, _r[3])
+                if _c - _a >= 64 and _d - _b >= 64:
+                    x0, y0, x1, y1 = _a, _b, _c, _d
+            except Exception:  # noqa: BLE001
+                pass
+        elif box:
             bx, by, bw, bh = (int(box[0]), int(box[1]),
                               int(box[2]), int(box[3]))
             px, py = int(bw * pad_frac), int(bh * pad_frac)
-            x0, y0 = max(0, bx - px), max(0, by - py)
-            x1, y1 = min(W, bx + bw + px), min(H, by + bh + py)
-            if x1 - x0 < 64 or y1 - y0 < 64:
-                x0, y0, x1, y1 = 0, 0, W, H
-        else:
-            x0, y0, x1, y1 = 0, 0, W, H
+            _a, _b = max(0, bx - px), max(0, by - py)
+            _c, _d = min(W, bx + bw + px), min(H, by + bh + py)
+            if _c - _a >= 64 and _d - _b >= 64:
+                x0, y0, x1, y1 = _a, _b, _c, _d
 
         tiles = []
         for off in offsets:
@@ -3669,6 +3683,10 @@ def swing_heat_check(
                     _cands = [_geo.get("main")] + list(_geo.get("others") or [])
                     _cands = [c for c in _cands
                               if c and c["w"] >= 8 and c["h"] >= 8]
+                    # KEPT WHOLE for the frames rect below, which wants
+                    # every head in the zone and not just the ones that
+                    # get asked about.
+                    _cands_all = list(_cands)
                     # THE TRIGGER ZONE IS THE CROP, 7 Nov. Every
                     # people-aware rule that was here is gone: the
                     # golfer-extent narrowing, the stop-short-of-the-
@@ -3696,6 +3714,34 @@ def swing_heat_check(
                         except Exception:  # noqa: BLE001
                             _zone = None
                     if _zone is not None:
+                        # AND THE SAME RECTANGLE FOR THE FOUR FRAMES,
+                        # except at the top. The heat map runs to the
+                        # top of the picture because a club at the top
+                        # of a backswing leaves any box drawn round a
+                        # stance -- but the heat map is a drawing of
+                        # where motion WAS, so the sky it includes is
+                        # where the club went. The frames are ordinary
+                        # video: that same sky is just sky in four
+                        # tiles, and it costs the golfers their size in
+                        # a 640 px tile.
+                        #
+                        # SO: just above the heads. The top of the
+                        # highest person-shaped blob in the zone is the
+                        # best head line available here -- a long
+                        # upload has no person detector. For a golfer
+                        # standing still that blob top IS the head; for
+                        # one mid-swing it is the club above the head,
+                        # so the rect errs upward, which is the right
+                        # way to err in a picture whose job is showing
+                        # the club move.
+                        _fh = [p for p in _cands_all
+                               if _zone[0] <= p["x"] + p["w"] / 2.0
+                               <= _zone[1]] or _cands_all
+                        _ft = min(p["y"] for p in _fh)
+                        _fp = max(8, int((_zone[2] - _ft) * 0.08))
+                        out["frames_rect"] = [
+                            int(_zone[0] + _ox), int(max(0, _ft - _fp) + _oy),
+                            int(_zone[1] + _ox), int(_zone[2] + _oy)]
                         # ONE PICTURE, ONE QUESTION. The crop no longer
                         # depends on which blob is being asked about,
                         # so a second candidate would be a second

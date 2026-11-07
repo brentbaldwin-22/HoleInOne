@@ -238,6 +238,20 @@ def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
                         _zx1 = max(_zx0 + 1, min(_zw, _zone[1]))
                         _zy0 = 0
                         _zy1 = max(1, min(_zh, _zone[2]))
+                        # AND THE SAME RECTANGLE FOR THE FOUR FRAMES,
+                        # cut off just above the heads. See
+                        # _frame_strip and tracer.swing_heat_check.
+                        _pp = [p for p in ([_mz] + list(
+                            _geo.get("others") or []))
+                            if p and p["w"] >= 8 and p["h"] >= 8]
+                        _ph = [p for p in _pp
+                               if _zone[0] <= p["x"] + p["w"] / 2.0
+                               <= _zone[1]] or _pp
+                        _ft = min(p["y"] for p in _ph)
+                        _fp = max(8, int((_zone[2] - _ft) * 0.08))
+                        meta["frames_rect"] = [
+                            int(_zx0 + ox), int(max(0, _ft - _fp) + oy),
+                            int(_zx1 + ox), int(_zy1 + oy)]
                     else:
                         # NO ZONES DRAWN -- crop to the blob, which is
                         # what this did before the zone crop went in.
@@ -274,7 +288,8 @@ def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
                 if _m:
                     _box = (_m.get("frame_x", _m["x"]),
                             _m.get("frame_y", _m["y"]), _m["w"], _m["h"])
-                if _frame_strip(kept, _box, width, height, frames_out):
+                if _frame_strip(kept, _box, width, height, frames_out,
+                                rect=(meta or {}).get("frames_rect")):
                     (meta if meta is not None else {})["frames"] = str(
                         frames_out)
             except Exception as exc:  # noqa: BLE001
@@ -291,7 +306,8 @@ def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
         return None
 
 
-def _frame_strip(kept: dict, box, width: int, height: int, out_path):
+def _frame_strip(kept: dict, box, width: int, height: int, out_path,
+                 rect=None):
     """Write the original frames around impact as one 2x2 tile. Bool.
 
     WHY REAL FRAMES AT ALL. The composite is a one-second projection
@@ -303,12 +319,18 @@ def _frame_strip(kept: dict, box, width: int, height: int, out_path):
     called a 150x199 near-square mass a golfer with a club, from a
     picture in which no club could be seen because no club was in it.
 
-    CROPPED TO WHAT MOVED, not to the trigger zone. The zones on hole
-    8 are wide flat strips, so zone_crop's 3x width overruns the frame
-    and the composite still spans the whole hole -- a golfer 45 px
-    tall in a 1920 px picture. Cropping to the blob puts the candidate
-    across the tile instead, which also hands the model the scale the
-    heat map never carried.
+    CROPPED TO THE TRIGGER ZONE, cut off just above the heads. That
+    is the same rectangle the heat composite gets, minus the sky: the
+    heat map runs to the top of the picture because a club at the top
+    of a backswing leaves any box drawn round a stance, but the heat
+    map is a DRAWING of where motion was, so that sky is where the
+    club went. In ordinary video the same sky is just sky, and it
+    costs the golfers their size in a 640 px tile.
+
+    `rect` is (x0, y0, x1, y1) in frame pixels and is used verbatim.
+    `box` is the older way in -- the measured blob, padded -- and
+    still serves a camera nobody has drawn zones for. See
+    tracer.frames_strip, which this mirrors.
 
     One image rather than four because /verify-swing takes one file
     and a protocol change costs a coordinated rig update; four tiles
@@ -316,16 +338,24 @@ def _frame_strip(kept: dict, box, width: int, height: int, out_path):
     """
     if not kept:
         return False
-    if box:
+    x0, y0, x1, y1 = 0, 0, width, height
+    if rect:
+        try:
+            _r = [int(v) for v in rect]
+            _a, _b = max(0, _r[0]), max(0, _r[1])
+            _c, _d = min(width, _r[2]), min(height, _r[3])
+            if _c - _a >= 64 and _d - _b >= 64:
+                x0, y0, x1, y1 = _a, _b, _c, _d
+        except Exception:  # noqa: BLE001
+            pass
+    elif box:
         bx, by, bw, bh = (int(box[0]), int(box[1]),
                           int(box[2]), int(box[3]))
         px, py = int(bw * FRAME_PAD_FRAC), int(bh * FRAME_PAD_FRAC)
-        x0, y0 = max(0, bx - px), max(0, by - py)
-        x1, y1 = min(width, bx + bw + px), min(height, by + bh + py)
-        if x1 - x0 < 64 or y1 - y0 < 64:
-            x0, y0, x1, y1 = 0, 0, width, height
-    else:
-        x0, y0, x1, y1 = 0, 0, width, height
+        _a, _b = max(0, bx - px), max(0, by - py)
+        _c, _d = min(width, bx + bw + px), min(height, by + bh + py)
+        if _c - _a >= 64 and _d - _b >= 64:
+            x0, y0, x1, y1 = _a, _b, _c, _d
 
     tiles = []
     for off in FRAME_OFFSETS_SEC:
