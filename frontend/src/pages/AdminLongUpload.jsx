@@ -1524,7 +1524,62 @@ export default function AdminLongUpload() {
                                              }} />
                                       </a>
                                     )}
-                                    {c.verify_saw && (
+                                    {/* BOTH VERDICTS, SIDE BY SIDE, when
+                                        the frames were asked for. Which
+                                        question to keep is the decision in
+                                        front of the operator, and one
+                                        merged answer hides the
+                                        disagreement that would settle it. */}
+                                    {c.heat_is_swing !== undefined && (
+                                      <div className="tiny" style={{
+                                        marginTop: 4, maxWidth: 200,
+                                        whiteSpace: "normal", lineHeight: 1.35,
+                                      }}>
+                                        <div>
+                                          <b>heat only:</b>{" "}
+                                          <span style={{
+                                            color: c.heat_is_swing
+                                              ? "#1a7f37" : "#c0392b",
+                                          }}>
+                                            {c.heat_is_swing === true
+                                              ? "swing" : c.heat_is_swing === false
+                                              ? "not" : "?"}
+                                          </span>{" "}
+                                          <span className="muted">
+                                            ({c.heat_confidence || "-"})
+                                          </span>
+                                        </div>
+                                        <div className="muted">
+                                          {c.heat_reason}
+                                        </div>
+                                        <div style={{ marginTop: 3 }}>
+                                          <b>+ frames:</b>{" "}
+                                          <span style={{
+                                            color: c.frames_is_swing
+                                              ? "#1a7f37" : "#c0392b",
+                                          }}>
+                                            {c.frames_is_swing === true
+                                              ? "swing" : c.frames_is_swing === false
+                                              ? "not" : "?"}
+                                          </span>{" "}
+                                          <span className="muted">
+                                            ({c.frames_confidence || "-"})
+                                          </span>
+                                        </div>
+                                        <div className="muted">
+                                          {c.frames_reason}
+                                        </div>
+                                        {c.heat_is_swing !== c.frames_is_swing && (
+                                          <div style={{
+                                            color: "#b45309", marginTop: 3,
+                                          }}>
+                                            they disagree — the frames answer
+                                            is the one used
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                    {c.verify_saw && c.heat_is_swing === undefined && (
                                       <div className="tiny muted"
                                            style={{ marginTop: 2 }}>
                                         judged from {c.verify_saw}

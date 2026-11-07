@@ -14978,8 +14978,27 @@ def test_cut_long_upload(
                         cut_entry["verify_reason"] = _gate["why"]
                     else:
                         if _strip is not None:
+                            # BOTH ANSWERS, NOT ONE. The operator is
+                            # choosing between two questions, and a
+                            # single verdict makes that choice on a
+                            # hunch. The heat-only call is the one the
+                            # page has always shown; the frames call
+                            # is the challenger. Two vision calls on
+                            # this row instead of one, which is the
+                            # price of being able to see the
+                            # disagreement rather than argue about it.
+                            _jh = judge_swing_heat_image(
+                                CLIPS_DIR / _chk["image_clean"])
+                            cut_entry["heat_is_swing"] = _jh.get("is_swing")
+                            cut_entry["heat_confidence"] = _jh.get(
+                                "confidence")
+                            cut_entry["heat_reason"] = _jh.get("reason")
                             _j = judge_swing_with_frames(
                                 _strip, CLIPS_DIR / _chk["image_clean"])
+                            cut_entry["frames_is_swing"] = _j.get("is_swing")
+                            cut_entry["frames_confidence"] = _j.get(
+                                "confidence")
+                            cut_entry["frames_reason"] = _j.get("reason")
                         else:
                             _j = judge_swing_heat_image(
                                 CLIPS_DIR / _chk["image_clean"])

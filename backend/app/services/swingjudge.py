@@ -191,6 +191,37 @@ def measure_heat(heat8, hot_level: int = HOT_LEVEL,
         return out
 
 
+def grow_span(lo, hi, want, limit):
+    """Widen (lo, hi) to at least `want`, staying inside 0..limit.
+
+    FOR CROPS THAT COME OUT TOO SMALL TO READ. The alternative --
+    skipping the crop when it is under some floor -- throws the zoom
+    away for exactly the small, distant golfers that need it most: a
+    60 px golfer makes a 150 px crop, fails a 160 px floor, and gets
+    handed the whole 1920 px hole instead.
+
+    Grows both ways from the centre, then slides rather than spills
+    when it meets an edge, so a golfer at the frame boundary still
+    gets a full-width crop.
+    """
+    lo, hi, want, limit = int(lo), int(hi), int(want), int(limit)
+    if limit <= 0:
+        return lo, hi
+    want = min(want, limit)
+    if hi - lo >= want:
+        return max(0, lo), min(limit, hi)
+    pad = (want - (hi - lo)) / 2.0
+    lo -= int(pad)
+    hi += int(pad + 0.5)
+    if lo < 0:
+        hi -= lo
+        lo = 0
+    if hi > limit:
+        lo -= (hi - limit)
+        hi = limit
+    return max(0, lo), min(limit, hi)
+
+
 # ---- the shape gate ---------------------------------------------------
 
 # OFF, AND THE HARNESS IS WHY. Measured on the 5 Nov composite, with

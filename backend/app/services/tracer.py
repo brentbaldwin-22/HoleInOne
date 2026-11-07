@@ -3634,10 +3634,28 @@ def swing_heat_check(
                         _zx1 = min(_zw, _ax + _mz["w"] + _px)
                         _zy0 = max(0, _ay - int(_mz["h"] * 1.0))
                         _zy1 = min(_zh, _ay + _mz["h"] + int(_mz["h"] * 0.33))
-                        # A crop smaller than this is harder to read
-                        # than the wide shot, not easier.
-                        if (_zx1 - _zx0) >= 160 and (_zy1 - _zy0) >= 160:
+                        # GROW A SMALL CROP, DO NOT ABANDON IT. The
+                        # first version skipped the zoom when the crop
+                        # came out under 160 px either way -- which
+                        # threw it away for exactly the small, distant
+                        # golfers that most needed it. A 60 px golfer
+                        # makes a 150 px crop and got the full 1920 px
+                        # landscape instead.
+                        _zx0, _zx1 = _sj.grow_span(_zx0, _zx1, 160, _zw)
+                        _zy0, _zy1 = _sj.grow_span(_zy0, _zy1, 160, _zh)
+                        if (_zx1 - _zx0) >= 64 and (_zy1 - _zy0) >= 64:
                             judged = judged[_zy0:_zy1, _zx0:_zx1].copy()
+                            # AND UPSCALE IT. A 160x330 thumbnail of a
+                            # golfer is not easier to read than the
+                            # wide shot just because it is cropped;
+                            # the point is apparent size.
+                            _lh, _lw = judged.shape[:2]
+                            if max(_lh, _lw) < 512:
+                                _sc = 512.0 / max(_lh, _lw)
+                                judged = cv2.resize(
+                                    judged,
+                                    (int(_lw * _sc), int(_lh * _sc)),
+                                    interpolation=cv2.INTER_CUBIC)
                             out["zoom"] = [int(_zx0 + _ox), int(_zy0 + _oy),
                                            int(_zx1 - _zx0), int(_zy1 - _zy0)]
                             cv2.imwrite(
