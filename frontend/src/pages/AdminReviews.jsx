@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import BackLink from "../components/BackLink.jsx";
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
 
@@ -41,6 +42,7 @@ export default function AdminReviews() {
 
   return (
     <div className="wrap">
+      <BackLink />
       <div className="nav">
         <Link to="/admin">Dashboard</Link>
         <Link to="/admin/participants">Players</Link>

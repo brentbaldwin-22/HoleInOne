@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import BackLink from "./BackLink.jsx";
 import useAuth from "../hooks/useAuth.js";
 import useSiteTheme from "../hooks/useSiteTheme.js";
 import { logoUrl } from "../theme.js";
@@ -15,6 +16,7 @@ export function Brand({ subtitle, hideAccount }) {
   const { user, logout } = useAuth();
   const theme = useSiteTheme();
   return (
+    <>
     <div className="brand" style={{ justifyContent: "space-between", width: "100%" }}>
       <Link
         to="/"
@@ -47,6 +49,11 @@ export function Brand({ subtitle, hideAccount }) {
         </div>
       )}
     </div>
+    {/* Under the header rather than in it: the brand row is the logo and
+        the account controls, and a third thing wedged between them moves
+        the logo on every page. */}
+    <BackLink />
+    </>
   );
 }
 

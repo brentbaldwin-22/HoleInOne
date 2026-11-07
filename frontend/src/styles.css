@@ -500,6 +500,17 @@ code {
 .nav-badge.waiting { background: var(--danger); }
 .nav-badge.clear { background: var(--ok); }
 
+/* "← Back", under the header on every page. Left-aligned and quiet: it
+   is a way out, not an action anyone came to the page to take. */
+.back-link {
+  width: auto;
+  align-self: flex-start;
+  margin: -6px 0 14px;
+  padding-left: 0;
+  padding-right: 10px;
+  letter-spacing: 0.04em;
+}
+
 /* ---- Controls --------------------------------------------------- */
 
 .btn, button.btn, a.btn {

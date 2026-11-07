@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import BackLink from "../components/BackLink.jsx";
 import { api } from "../api.js";
 
 // A SEPARATE PAGE ON PURPOSE. Two capture engines now exist and the
@@ -98,6 +99,7 @@ export default function AdminCaptureLab() {
                     flexWrap: "wrap" }}>
         <h2 style={{ marginBottom: 0 }}>Capture lab</h2>
         <Link to="/admin/cameras" className="small">← Cameras</Link>
+        <BackLink />
       </div>
 
       <p className="small muted" style={{ maxWidth: 760 }}>
