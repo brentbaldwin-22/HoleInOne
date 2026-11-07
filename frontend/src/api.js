@@ -1275,6 +1275,12 @@ export const api = {
         fd.append("verify_swings", "true");
         fd.append("verify_window_sec",
           String(opts.verifyWindowSec != null ? opts.verifyWindowSec : 0.5));
+        // Only send it when it is OFF: the server defaults to on, and
+        // an older server that has never heard of the field keeps
+        // behaving the way it already does.
+        if (opts.judgeWithFrames === false) {
+          fd.append("judge_with_frames", "false");
+        }
       }
       if (opts.audioMaxAttackMs != null) {
         fd.append("audio_max_attack_ms", String(opts.audioMaxAttackMs));

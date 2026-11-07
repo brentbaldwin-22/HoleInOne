@@ -71,6 +71,11 @@ export default function AdminLongUpload() {
   const [queuedUploadId, setQueuedUploadId] = useState(null);
   const [error, setError] = useState(null);
   const [priorUploads, setPriorUploads] = useState(null);
+  // WHAT MADE THE CLIP. Same control and same values as the Production
+  // page, and filtered the same way: on the SERVER. The list is
+  // paginated, so filtering the rows already loaded would answer
+  // "audio" with however many of those happened to be audio.
+  const [triggerKind, setTriggerKind] = useState("");
   const [reprocessing, setReprocessing] = useState({}); // {id: true}
   const [testCutting, setTestCutting] = useState({}); // {id: true}
   const [testCutResults, setTestCutResults] = useState({}); // {id: {detector, cuts, ...}}
@@ -94,6 +99,13 @@ export default function AdminLongUpload() {
   // that reads a swing as a shape: a half-second of motion heat
   // around the impact, judged for the club's fan.
   const [verifySwings, setVerifySwings] = useState({});
+  // SHOW THE JUDGE FOUR REAL FRAMES, or ask the old heat-only
+  // question. Per upload, and ON by default to match the server.
+  // Measured on 17 labelled clips, 6 Nov: heat alone kept 7 of 8
+  // swings with 4 false positives, heat plus frames kept 7 of 8
+  // with 0 -- but the heat-only wording is the one tuned over weeks,
+  // so it stays one click away rather than being deleted.
+  const [judgeFrames, setJudgeFrames] = useState({});
   // HOW CLOSE TWO ACCEPTED PEAKS MAY BE. It collapses the several
   // detections one strike produces -- one impact came back seven
   // times at the same timestamp on a 126s clip -- but at 6s it also
@@ -131,6 +143,15 @@ export default function AdminLongUpload() {
   // Poll the long-uploads listing while any row is pending/processing so the
   // UI flips to "completed" without a manual refresh. Polling stops once
   // everything has settled.
+  // RELOAD WHEN THE FILTER CHANGES, because the filtering happens on
+  // the server: without this the control would move and the list
+  // would not.
+  useEffect(() => {
+    if (!adminPassword) return;
+    refreshPriorUploads();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triggerKind]);
+
   useEffect(() => {
     if (!adminPassword || !anyProcessing) return;
     const id = setInterval(refreshPriorUploads, 4000);
@@ -140,7 +161,9 @@ export default function AdminLongUpload() {
 
   async function refreshPriorUploads() {
     try {
-      const list = await api.listLongUploads(adminPassword);
+      const list = await api.listLongUploads(adminPassword, 100, 0, {
+        trigger: triggerKind,
+      });
       setPriorUploads(list);
     } catch (e) {
       // Non-fatal — fall back to the upload form alone.
@@ -251,6 +274,8 @@ export default function AdminLongUpload() {
     if (verifySwings[uploadId]) {
       opts.verifySwings = true;
       opts.verifyWindowSec = 0.5;
+      // undefined means "not set" -> the server's default (on).
+      opts.judgeWithFrames = judgeFrames[uploadId] !== false;
     }
     setTestCutting((t) => ({ ...t, [uploadId]: true }));
     setError(null);
@@ -429,7 +454,7 @@ export default function AdminLongUpload() {
         </div>
       )}
 
-      {priorUploads && priorUploads.length > 0 && (
+      {priorUploads && (priorUploads.length > 0 || triggerKind) && (
         <div className="card">
           <h3 style={{ marginBottom: 6 }}>Previous long uploads</h3>
           <p className="small muted" style={{ marginBottom: 10 }}>
@@ -437,6 +462,39 @@ export default function AdminLongUpload() {
             Reprocess uses the current <b>Auto-detect</b>, <b>Starting hole</b>,
             and <b>AI tracer model</b> settings from the form below.
           </p>
+          <label
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 6,
+              marginBottom: 10,
+            }}
+          >
+            <span className="tiny upper muted">Trigger</span>
+            <select
+              value={triggerKind}
+              onChange={(e) => setTriggerKind(e.target.value)}
+              className="small"
+              style={{ width: "auto" }}
+              title="What made the rig cut this clip"
+            >
+              <option value="">All triggers</option>
+              <option value="audio">Audio — impact heard</option>
+              <option value="dwell">Motion dwell</option>
+              <option value="capture">Operator capture</option>
+              <option value="manual">Manual trigger</option>
+            </select>
+          </label>
+          {triggerKind && (
+            <p className="small muted" style={{ marginBottom: 10 }}>
+              Showing only {triggerKind}-triggered clips. An upload with no
+              recorded trigger — anything put here by hand — is not in this
+              list.
+            </p>
+          )}
+          {priorUploads.length === 0 && (
+            <p className="small muted">
+              No {triggerKind}-triggered uploads.
+            </p>
+          )}
           <div className="stack" style={{ gap: 8 }}>
             {priorUploads.map((u) => {
               const missing = u.tee_missing || u.green_missing;
@@ -769,6 +827,40 @@ export default function AdminLongUpload() {
                         />
                         verify ±0.5s
                       </label>
+                      {verifySwings[u.id] && (
+                        <label
+                          className="tiny"
+                          style={{
+                            display: "inline-flex", alignItems: "center",
+                            gap: 4,
+                          }}
+                          title={
+                            "ON: the judge sees four real frames around the "
+                            + "impact (-0.25s, 0.00s, +0.15s, +0.40s) cropped "
+                            + "to whatever moved, alongside the heat map, and "
+                            + "is asked whether a person is holding a club "
+                            + "and moving it.\n\nOFF: the old question — the "
+                            + "heat composite alone, judged on whether it "
+                            + "shows a compact bright figure with a thin "
+                            + "cooler plume.\n\nOn 17 labelled clips (6 Nov) "
+                            + "frames kept the same 7 of 8 swings and took "
+                            + "false positives from 4 to 0."
+                          }
+                        >
+                          <input
+                            type="checkbox"
+                            checked={judgeFrames[u.id] !== false}
+                            onChange={(e) =>
+                              setJudgeFrames((d) => ({
+                                ...d, [u.id]: e.target.checked,
+                              }))
+                            }
+                            disabled={!!testCutting[u.id] || missing || busy}
+                            style={{ margin: 0 }}
+                          />
+                          show frames
+                        </label>
+                      )}
                       <button
                         type="button"
                         className="secondary small"

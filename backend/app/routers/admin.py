@@ -4260,6 +4260,15 @@ def _swing_strength(cut: dict) -> tuple:
     return (_conf, _ratio)
 
 
+class _SkipFrames(Exception):
+    """The operator asked for the heat-only judge on this run.
+
+    An exception rather than a branch because the strip is built
+    inside a try that already swallows everything -- one more nested
+    `if` around four statements reads worse than saying so once.
+    """
+
+
 def resolve_swing_refractory(cuts: list, refractory_sec: float) -> int:
     """Within one quiet period, keep the BEST swing rather than the first.
 
@@ -14583,6 +14592,16 @@ def test_cut_long_upload(
     # at that width a golfer walking up, a practice waggle and the
     # swing itself all land in one composite and the fan is buried.
     verify_window_sec: float = Form(0.5),
+    # SHOW THE JUDGE FOUR REAL FRAMES, or only the heat composite.
+    #
+    # A SWITCH RATHER THAN A DECISION, because the two ask genuinely
+    # different questions and the operator wants to compare them on
+    # the same upload without a deploy. Measured on 17 clips the
+    # operator labelled, 6 Nov: heat alone kept 7 of 8 swings with 4
+    # false positives; heat plus frames kept 7 of 8 with 0. But the
+    # heat-only wording is what was tuned over weeks, and a number
+    # off one afternoon is not a reason to make it unreachable.
+    judge_with_frames: bool = Form(True),
     # ZONES FOR THIS RUN ONLY, as JSON [{x,y,w,h}] in 0-1 fractions of
     # the frame. NOTHING IS SAVED: the camera's own boxes are what the
     # rig records against, and a tester that quietly rewrote them could
@@ -14923,9 +14942,13 @@ def test_cut_long_upload(
                 cut_entry["gate"] = _gate["why"]
                 if (_chk.get("image_clean")
                         and os.environ.get("ANTHROPIC_API_KEY")):
-                    # FOUR REAL FRAMES TOO. See tracer.frames_strip.
+                    # FOUR REAL FRAMES TOO, unless the operator has
+                    # asked for the old heat-only question. See
+                    # tracer.frames_strip.
                     _strip = None
                     try:
+                        if not judge_with_frames:
+                            raise _SkipFrames()
                         from ..services.tracer import frames_strip
                         _sp = CLIPS_DIR / (
                             f"verifyframes-{upload_id}-{idx:02d}-"
@@ -14939,6 +14962,8 @@ def test_cut_long_upload(
                             _strip = _sp
                             cut_entry["frames_image_url"] = _clip_url_for(
                                 _sp.name)
+                    except _SkipFrames:
+                        cut_entry["verify_saw"] = "heat only (asked for)"
                     except Exception as _fx:  # noqa: BLE001
                         log.debug("test-cut frame strip failed: %s", _fx)
                     if not _gate["ask"]:
