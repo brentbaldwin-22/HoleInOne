@@ -450,25 +450,30 @@ def main() -> int:
     r3 = pick_front_golfer([front], ZONES, people=[])
     check("no detections falls back to the heat",
           r3["from"], "the motion heat (no person detector)")
-    # THE MARGIN, LOWERED TO 0.02 ON 8 NOV. The operator's reading of
-    # the hole is that the golfer furthest up is almost always the
-    # one hitting, which makes DECLINING the expensive mistake. What
-    # is left of the bar is detector jitter: ~7 px on a 380 px
-    # golfer. `stand` has feet at y=800.
-    _step = person(1070, 330, 150, 400)           # feet y=730: 70 px up
-    check("one step forward separates them",
+    # THE MARGIN IS 0.15, AND IT IS SET WIDE ON PURPOSE. Two measured
+    # clips sit 5% apart and want opposite answers -- 0.067 must
+    # decline, 0.071 must separate -- so no value of this gets both
+    # right. It is set above both, and everything inside it goes to
+    # break_tie_on_motion. `stand` has feet at y=800.
+    #
+    # A CLEAR DIFFERENCE IN DEPTH still belongs to the feet: a golfer
+    # at the markers against one standing well back.
+    _step = person(1070, 290, 150, 440)           # feet y=730: 70 px up
+    check("a clear step forward is still settled by the feet",
           pick_front_golfer([], PZ, people=[stand, _step])["pick"] is not None,
           True)
-    # THE 8 NOV CLIP: two players on a tee, the hitter 24 px further
-    # up in the frame. The old 0.08 bar wanted 27 and declined,
-    # losing the zoom on a clip the rule had right.
+    # AND EVERYTHING NEARER THAN THAT IS HANDED ON, including the
+    # 24 px gap an earlier margin was tuned to separate. The feet
+    # decline; the heat is asked.
     _close = person(1070, 400, 150, 376)          # feet y=776: 24 px up
-    check("  and so does the 24 px gap that used to decline",
-          pick_front_golfer([], PZ,
-                            people=[stand, _close])["pick"] is not None, True)
-    # BUT A DIFFERENCE OF NOISE IS STILL NO DIFFERENCE.
+    _rc = pick_front_golfer([], PZ, people=[stand, _close])
+    check("  but a 24 px gap is now handed to the heat",
+          _rc["pick"] is None and _rc["close"], True)
+    # ...which is not the same as nobody being there.
+    check("  and reported as too close, not as nobody found",
+          "too close" in _rc["why"], True)
     _abreast = person(1070, 416, 150, 380)        # feet y=796: 4 px up
-    check("  while four pixels is still too close to call",
+    check("  as is four pixels",
           pick_front_golfer([], PZ,
                             people=[stand, _abreast])["close"], True)
     # THE TREE, 8 Nov. The detector offered a palm as a person; its

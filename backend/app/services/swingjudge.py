@@ -612,20 +612,27 @@ FRONT_GOLFER_MARGIN_FRAC = 0.25
 # to the markers and the rest stand back. If that is nearly always
 # true then declining is the expensive mistake, not picking.
 #
-# RAISED 0.02 -> 0.06 ON 8 NOV, against two measured clips that
-# bracket it:
+# 0.02 -> 0.06 -> 0.15, and the last step is an admission that this
+# number cannot do the job alone. Two clips, measured:
 #
-#   two players level on a tee, feet 6 px apart, leader 107 px tall
-#     -> needs a margin over 0.056 to decline, and it should: the
-#        crop went to the pair on the left while the golfer was on
-#        the right
-#   the hitter one step forward, feet 24 px apart, leader 340 px
-#     -> needs a margin under 0.070 to separate, and it should
+#   1406: the hitter is mid-swing and the man watching him stands
+#         3 px higher in the frame. Feet 18 px apart, golfer 266 px
+#         -> 0.067, and it MUST decline, because feet pick the wrong
+#         man
+#   the step-forward clip: the hitter has walked to the markers,
+#         24 px apart, golfer 340 px -> 0.071, and it MUST separate
 #
-# 0.06 sits between them. That is a narrow window and it is fitted to
-# two clips, so treat it as provisional: it will want re-measuring
-# against a batch rather than a pair.
-FRONT_GOLFER_MARGIN_DETECTED = 0.06
+# 0.067 against 0.071. Five percent apart, opposite answers. There is
+# no value of this constant that gets both right, and chasing one
+# breaks the other -- which is what the first two steps were.
+#
+# So it is set well ABOVE both, and anything inside a seventh of a
+# body height is handed to break_tie_on_motion instead. Feet keep
+# the cases they are actually good at -- a golfer at the markers
+# against one standing ten yards back -- and the heat takes the
+# cases they were never going to settle: one golfer swung a club and
+# the other did not, which is a question about motion, not position.
+FRONT_GOLFER_MARGIN_DETECTED = 0.15
 
 
 def break_tie_on_motion(people, blobs, offset=(0, 0)) -> dict:
