@@ -667,3 +667,154 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
         log.debug("ball_in_frames failed (%s)", exc)
         out["why"] = "ball check failed"
         return out
+
+
+# ---- nailing the impact frame ---------------------------------------
+
+# How far either side of the audio peak to look for the frame the ball
+# actually leaves. The trigger LAGS -- the operator's own observation,
+# and the reason the +0.00 frame is excluded from the hit/not-hit
+# rule -- so the search runs mostly after the peak, with a little
+# before it in case a rig ever runs the other way.
+DEPART_BEFORE_SEC = 0.20
+DEPART_AFTER_SEC = 0.50
+
+
+def ball_departure(video_path, at_sec: float, *, rect=None, people=None,
+                   anchor=None, spot=None,
+                   before_sec: float = DEPART_BEFORE_SEC,
+                   after_sec: float = DEPART_AFTER_SEC,
+                   jitter_px: float = ADDRESS_JITTER_PX) -> dict:
+    """Where the ball sat, and the frame it left. Never raises.
+
+    THE AUDIO PEAK IS NOT THE IMPACT. It is the impact plus whatever
+    the microphone, the encoder and the ring buffer add, and that lag
+    is the reason everything downstream of it has to be given a
+    window rather than a frame. But the BALL knows: it sits
+    motionless on the turf for as long as anybody looks at it, and
+    then in one frame it is gone. That frame is the impact, to the
+    frame, measured rather than assumed.
+
+    `spot` is the resting position if the six-frame check already
+    found one -- it is the same ball and there is no sense looking
+    twice. Without it this finds the ball itself, from the frames
+    BEFORE the peak, where it is by definition still there.
+
+    Returns {spot, impact_frame, impact_sec, checked, last_seen,
+    why}. `impact_frame` is None when the ball could not be found or
+    never left, which are different answers and `why` says which.
+    """
+    import cv2
+
+    out = {"spot": list(spot) if spot else None, "impact_frame": None,
+           "impact_sec": None, "checked": 0, "last_seen": None,
+           "why": "not checked"}
+    cap = None
+    try:
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            out["why"] = "could not open the clip"
+            return out
+        fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
+        W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if rect:
+            x0 = max(0, min(W - 1, int(rect[0])))
+            y0 = max(0, min(H - 1, int(rect[1])))
+            x1 = max(x0 + 1, min(W, int(rect[2])))
+            y1 = max(y0 + 1, min(H, int(rect[3])))
+        else:
+            x0, y0, x1, y1 = 0, 0, W, H
+        boxes = [(x0, y0, x1, y1)]
+        cap_area = ADDRESS_MAX_AREA
+        _hs = [p["box"][3] for p in (people or [])
+               if isinstance(p, dict) and p.get("box")]
+        if _hs:
+            _d = BALL_MAX_DIAM_OVER_GOLFER * (sum(_hs) / float(len(_hs)))
+            cap_area = max(4, int(_d * _d))
+
+        f_lo = max(0, int(round((float(at_sec) - float(before_sec)) * fps)))
+        f_hi = int(round((float(at_sec) + float(after_sec)) * fps))
+
+        def _balls(f):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, float(f))
+            ok, fr = cap.read()
+            if not ok or fr is None:
+                return None
+            gray = cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY)
+            return [d for d in _detections(gray, boxes, rel=0.0)
+                    if d[2] <= cap_area and d[3] >= ADDRESS_MIN_CONTRAST
+                    and not _on_a_person(d[0], d[1], people)
+                    and _on_the_ground(d[1], anchor)]
+
+        # WHERE IT SAT, if nobody has already said. Taken from the
+        # frames BEFORE the peak, where a ball that is about to be
+        # struck is by definition still there.
+        if out["spot"] is None:
+            seen = {}
+            for f in range(f_lo, min(f_hi, int(round(at_sec * fps))) + 1, 2):
+                for (bx, by, _a, _c) in (_balls(f) or []):
+                    key = None
+                    for k in seen:
+                        if ((bx - k[0]) ** 2 + (by - k[1]) ** 2) ** 0.5 \
+                                <= float(jitter_px):
+                            key = k
+                            break
+                    if key is None:
+                        seen[(bx, by)] = 1
+                    else:
+                        seen[key] += 1
+            if not seen:
+                out["why"] = "no ball at rest before the strike"
+                return out
+            best = max(seen, key=lambda k: seen[k])
+            out["spot"] = [int(round(best[0])), int(round(best[1]))]
+
+        sx, sy = float(out["spot"][0]), float(out["spot"][1])
+
+        # AND THE FRAME IT LEFT: the first one, scanned forward, with
+        # nothing at that spot and nothing at it after either. One
+        # missed detection is not a departure -- the ADDRESS check
+        # lost a ball in 1 frame of 3 when a club head passed it --
+        # so a frame only counts as gone if the NEXT one agrees.
+        gone_at = None
+        for f in range(f_lo, f_hi + 1):
+            dets = _balls(f)
+            if dets is None:
+                continue
+            out["checked"] += 1
+            here = any(((bx - sx) ** 2 + (by - sy) ** 2) ** 0.5
+                       <= float(jitter_px) for (bx, by, _a, _c) in dets)
+            if here:
+                out["last_seen"] = int(f)
+                gone_at = None
+                continue
+            if gone_at is None:
+                gone_at = int(f)
+            elif f - gone_at >= 1:
+                out["impact_frame"] = gone_at
+                out["impact_sec"] = round(gone_at / fps, 3)
+                out["why"] = (
+                    "the ball sat at (%d, %d) and is gone from f%d onward; "
+                    "last seen f%s" % (out["spot"][0], out["spot"][1],
+                                       gone_at, out["last_seen"]))
+                return out
+        if out["last_seen"] is not None:
+            out["why"] = ("the ball sat at (%d, %d) and is still there at "
+                          "the end of the window (f%d)"
+                          % (out["spot"][0], out["spot"][1],
+                             out["last_seen"]))
+        else:
+            out["why"] = ("nothing was at (%d, %d) in any frame checked"
+                          % (out["spot"][0], out["spot"][1]))
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.debug("ball_departure failed (%s)", exc)
+        out["why"] = "the departure search failed"
+        return out
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:  # noqa: BLE001
+                pass

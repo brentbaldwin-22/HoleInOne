@@ -24024,7 +24024,12 @@ def _ball_scan_ascent_image(row, src_path, spots, tok, rep) -> None:
                     "ascent_considered") or []
                 if not _all and not _asc.get("points"):
                     continue
-                _f = int(sp.get("gone_frame") or 0)
+                # THE MEASURED IMPACT FRAME when the departure
+                # search found one, so the picture is the frame the
+                # ball actually left rather than the one the coarse
+                # scan guessed.
+                _f = int(sp.get("impact_frame")
+                         or sp.get("gone_frame") or 0)
                 cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, _f))
                 ok, im = cap.read()
                 if not ok or im is None:
@@ -24061,11 +24066,46 @@ def _ball_scan_ascent_image(row, src_path, spots, tok, rep) -> None:
                     cv2.rectangle(im, (0, 0), (int(_band[2]) - 1,
                                                int(_band[3])),
                                   (80, 200, 255), 2)
+                # AND THE ZOOMED WALK'S WORKING: every window it
+                # looked at, numbered, with what it found written on
+                # it, and the chain it followed in magenta. A walk
+                # that stops is the interesting case -- "no ascent"
+                # covers nothing moved, something moved but did not
+                # climb, and the ball left the column, and they want
+                # opposite fixes -- so the window it stopped in is
+                # drawn too, with the reason.
+                for _tl in (sp.get("ascent_zoom_tiles") or []):
+                    _bx, _by, _bw, _bh = [int(v) for v in _tl["box"]]
+                    _got = bool(_tl.get("points"))
+                    _c = (200, 90, 220) if _got else (110, 110, 110)
+                    cv2.rectangle(im, (_bx, _by), (_bx + _bw, _by + _bh),
+                                  _c, 2 if _got else 1)
+                    cv2.putText(im, "%d: %s" % (_tl.get("i", 0),
+                                                _tl.get("why") or ""),
+                                (_bx + 6, _by + 18),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.42, _c, 1,
+                                cv2.LINE_AA)
+                    _tp = _tl.get("points") or []
+                    for a_, b_ in zip(_tp, _tp[1:]):
+                        cv2.line(im, (a_["x"], a_["y"]),
+                                 (b_["x"], b_["y"]), (200, 90, 220), 2,
+                                 cv2.LINE_AA)
+                _col = sp.get("ascent_zoom_column")
+                if _col:
+                    cv2.line(im, (int(_col[0]), 0),
+                             (int(_col[0]), int(_col[3])),
+                             (200, 90, 220), 1, cv2.LINE_AA)
+                    cv2.line(im, (int(_col[0] + _col[2]), 0),
+                             (int(_col[0] + _col[2]), int(_col[3])),
+                             (200, 90, 220), 1, cv2.LINE_AA)
                 cv2.putText(
                     im,
                     f"after f{_f}: {len(_all)} chain(s) - green = taken, "
                     f"grey = rejected; the ring is the ball and the wide "
-                    f"circle is how close a chain must start",
+                    f"circle is how close a chain must start. magenta = "
+                    f"the zoomed walk up the column "
+                    f"({len(sp.get('ascent_zoom_tiles') or [])} window(s), "
+                    f"{sp.get('ascent_zoom_reason') or 'not run'})",
                     (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.52,
                     (255, 255, 255), 1, cv2.LINE_AA)
                 nm = f"ballscan-{row.id}-{tok}-{i}-ascent.jpg"
@@ -24285,6 +24325,32 @@ def _ball_scan_run(row, src_path, db, progress=None) -> dict:
             _sp["ascent"] = None
             _sp["ascent_reason"] = "never seen to go — nothing to rise from"
             continue
+        # NAIL THE IMPACT FRAME FIRST. `gone_frame` comes off the
+        # coarse scan that found the spot; the departure search looks
+        # at every frame in a window round it and reports the first
+        # one with nothing at the spot and nothing at it after
+        # either. The audio peak is the impact plus whatever the
+        # microphone, the encoder and the ring buffer add -- the ball
+        # is the only thing in the picture that knows when the strike
+        # actually was.
+        #
+        # ONLY EVER MOVES IT A LITTLE: a departure more than half a
+        # second from where the scan put it is a different event, not
+        # a correction, and is left alone.
+        try:
+            from ..services.ball_vanish import ball_departure
+            _dep = ball_departure(
+                src_path, float(_imp) / float(fps or 30.0),
+                spot=[_sp["x"], _sp["y"]])
+            _sp["departure_why"] = _dep.get("why")
+            _df = _dep.get("impact_frame")
+            if _df is not None and abs(int(_df) - int(_imp)) <= int(
+                    (fps or 30.0) * 0.5):
+                _sp["impact_frame_scan"] = int(_imp)
+                _sp["impact_frame"] = int(_df)
+                _imp = int(_df)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("ball scan: departure search failed: %s", exc)
         try:
             _asc = _d3.find_ascents(src_path, fps, int(_imp),
                                     (_sp["x"], _sp["y"]),
@@ -24298,9 +24364,48 @@ def _ball_scan_run(row, src_path, db, progress=None) -> dict:
         _sp["ascent_reason"] = _asc.get("reason")
         _sp["ascent_considered"] = _asc.get("considered") or []
         _sp["ascent_band"] = _asc.get("band")
+        # AND THE ZOOMED WALK UP THE COLUMN, which asks a far
+        # narrower question than the band above: by the time an
+        # audio-triggered clip is here the golfer has been found and
+        # the ball's resting spot is known to the pixel, so the sky
+        # worth searching is a column over that spot rather than the
+        # full width of the frame -- and at 3.7x a three-pixel ball
+        # survives the blur that loses it at native resolution.
+        #
+        # BOTH RUN, and both are reported. The band search is the one
+        # every verdict so far was measured against; this is new, it
+        # has never been scored on a corpus, and replacing the
+        # measured thing with the unmeasured one on the strength of
+        # an argument is how the last fortnight's bugs got in.
+        try:
+            _tz = _d3.find_ascents_tiled(
+                src_path, fps, int(_imp), (_sp["x"], _sp["y"]),
+                golfer_box=_sp.get("golfer_box"))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ball scan: zoomed ascent failed on %s: %s",
+                        row.id, exc)
+            _tz = {"ok": False, "reason": f"failed: {exc}", "tiles": []}
+        _sp["ascent_zoom"] = _tz if _tz.get("ok") else None
+        _sp["ascent_zoom_reason"] = _tz.get("reason")
+        _sp["ascent_zoom_tiles"] = _tz.get("tiles") or []
+        _sp["ascent_zoom_column"] = _tz.get("column")
     _t_asc = time.perf_counter() - _t
     _n_asc = sum(1 for _sp in spots if _sp.get("ascent"))
     rep["n_ascents"] = _n_asc
+    # THE WORK, NOT JUST THE ANSWER. Every window the zoomed walk
+    # looked at, where it was and what it found, so "no ascent" can
+    # be read as the four different failures it actually covers:
+    # nothing moved at all, something moved but did not climb, it
+    # climbed out of the column, or the sky ran out.
+    rep["n_ascents_zoom"] = sum(1 for _sp in spots
+                                if _sp.get("ascent_zoom"))
+    rep["ascent_zoom"] = [
+        {"spot": [_sp.get("x"), _sp.get("y")],
+         "ok": bool(_sp.get("ascent_zoom")),
+         "column": _sp.get("ascent_zoom_column"),
+         "reason": _sp.get("ascent_zoom_reason"),
+         "tiles": _sp.get("ascent_zoom_tiles") or []}
+        for _sp in spots if _sp.get("ascent_zoom_tiles") is not None]
 
     _ball_scan_ascent_image(row, src_path, spots, tok, rep)
 

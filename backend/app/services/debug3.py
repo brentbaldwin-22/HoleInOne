@@ -2145,6 +2145,15 @@ def detect_movers_by_diff(
     # which is what they are for and what a size ranking is only ever a
     # proxy for.
     per_frame: int | None = None,
+    # ZOOM THE ROI BEFORE DIFFERENCING. A ball fifty feet up is two or
+    # three pixels across and its frame-to-frame difference is a
+    # handful of grey levels spread over them; the blur and the
+    # threshold below are sized for something bigger and quietly
+    # dissolve it. Upscaling the crop first spreads the same signal
+    # over 3.7x3.7 pixels, which survives both. Coordinates come back
+    # in ORIGINAL frame pixels whatever this is set to, so no caller
+    # has to undo it.
+    scale: float = 1.0,
     # THREE-FRAME DIFFERENCE INSTEAD OF TWO.
     #
     # A difference against the previous frame lights a moving thing
@@ -2292,6 +2301,11 @@ def detect_movers_by_diff(
                     break
                 if roi:
                     frame = frame[y0:y0 + int(roi[3]), x0:x0 + int(roi[2])]
+                if scale and float(scale) != 1.0 and frame.size:
+                    frame = cv2.resize(
+                        frame, (max(1, int(frame.shape[1] * float(scale))),
+                                max(1, int(frame.shape[0] * float(scale)))),
+                        interpolation=cv2.INTER_LINEAR)
                 gray = cv2.GaussianBlur(
                     cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (3, 3), 0)
 
@@ -2356,7 +2370,9 @@ def detect_movers_by_diff(
                                                 + len(hits) - per_frame)
                     _kept = []
                     for a, cx, cy in _picked:
-                        _x, _y = int(round(x0 + cx)), int(round(y0 + cy))
+                        _sc = float(scale) or 1.0
+                        _x = int(round(x0 + cx / _sc))
+                        _y = int(round(y0 + cy / _sc))
                         if ghost_px > 0 and any(
                                 abs(_x - px) <= ghost_px
                                 and abs(_y - py) <= ghost_px
@@ -2370,7 +2386,8 @@ def detect_movers_by_diff(
                     # would have thrown some away: a ghost whose
                     # original lost the cut is still a ghost.
                     _last_emitted[0] = [
-                        (int(round(x0 + cx)), int(round(y0 + cy)))
+                        (int(round(x0 + cx / (float(scale) or 1.0))),
+                         int(round(y0 + cy / (float(scale) or 1.0))))
                         for _a, cx, cy in _picked
                     ] if ghost_px > 0 else []
 
@@ -4212,6 +4229,166 @@ def _band_too_thin(band_h: int, frame_h: int, min_rise_frac: float,
         f"hitting area on the grass at the tee, or lower "
         f"ascent_min_rise_frac for this hole. "
     )
+
+
+# ---- the zoomed walk up ---------------------------------------------
+
+# HOW FAR IN TO ZOOM. The operator's number: a ball fifty feet up is
+# two or three pixels across, and the blur and threshold in
+# detect_movers_by_diff are sized for something bigger. 3.7x spreads
+# the same signal over thirteen times the area, which survives both.
+ASCENT_ZOOM = 3.7
+
+# HOW WIDE THE COLUMN IS, in golfer widths. A ball leaves the clubface
+# within a few feet of where the golfer is standing and climbs very
+# nearly straight up from the camera's point of view -- that is what
+# "behind the hitting area, looking down the hole" buys. Six widths is
+# generous for a fade and still a fraction of the sky the old band
+# searched.
+ASCENT_COLUMN_GOLFERS = 6.0
+
+# How much each window overlaps the one below it, so a ball on a seam
+# is whole in one of them.
+ASCENT_STEP_FRAC = 0.75
+
+
+def find_ascents_tiled(
+    input_path: Path,
+    fps: float,
+    impact_frame: int,
+    ball_xy,
+    golfer_box=None,
+    window_frames: int = ASCENT_WINDOW_FRAMES,
+    min_points: int = 2,
+    zoom: float = ASCENT_ZOOM,
+    max_tiles: int = 12,
+) -> dict:
+    """Walk up the sky above the golfer, zoomed, looking for the ball.
+
+    WHY THIS AND NOT find_ascents. That one searches a band -- the
+    full width of the frame, from the top down to a golfer's height
+    above the tee -- at native resolution, in one pass. Two things go
+    wrong with it. The band is nearly all sky the ball never crosses,
+    so every bird, every lens flare and every wind-moved branch in a
+    1920-wide strip competes with a three-pixel ball. And the ball is
+    three pixels: at native resolution its frame-to-frame difference
+    does not survive the blur.
+
+    By the time an audio-triggered clip reaches production we know
+    things that make a far smaller question possible: the strike was
+    confirmed, the golfer was found, cropped and measured, and the
+    ball's resting spot is known to the pixel. A ball leaves from
+    there and climbs very nearly straight up. So: take a column above
+    the golfer, a window at a time, zoom it, look, label what was
+    found, move up, repeat until a window comes back empty or the
+    sky runs out.
+
+    Returns {ok, points, tiles, n_tiles, rise_px, reason}. `tiles` is
+    the work: every window looked at, where it was, what it found and
+    why it stopped. Never raises.
+    """
+    out = {"ok": False, "points": [], "tiles": [], "n_tiles": 0,
+           "rise_px": 0, "zoom": float(zoom), "column": None,
+           "reason": None}
+    if not HAS_CV:
+        out["reason"] = "opencv not installed"
+        return out
+    try:
+        cap = cv2.VideoCapture(str(input_path))
+        if not cap.isOpened():
+            out["reason"] = "could not open the tee video"
+            return out
+        frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        cap.release()
+        if frame_h <= 0 or frame_w <= 0:
+            out["reason"] = "the tee video reports no frames"
+            return out
+
+        bx, by = int(ball_xy[0]), int(ball_xy[1])
+        gw = int(golfer_box[2]) if golfer_box else max(40, frame_w // 24)
+        half = max(60, int(gw * ASCENT_COLUMN_GOLFERS / 2.0))
+        cx0 = max(0, bx - half)
+        cx1 = min(frame_w, bx + half)
+        out["column"] = [cx0, 0, cx1 - cx0, by]
+
+        f0 = max(0, int(impact_frame) - 1)
+        f1 = int(impact_frame) + int(window_frames)
+        if n_frames:
+            f1 = min(f1, n_frames - 1)
+        if f1 <= f0:
+            out["reason"] = "no footage after the strike"
+            return out
+
+        # A window is as tall as the zoomed crop can usefully be: at
+        # 3.7x, a 1080-tall frame of window would be 4000 px of
+        # upscaled pixels for nothing. Keep each window about a
+        # third of the frame and step up by three quarters of it.
+        win_h = max(80, int(frame_h / float(zoom)))
+        step = max(40, int(win_h * ASCENT_STEP_FRAC))
+
+        pts: list = []
+        top = by
+        for i in range(int(max_tiles)):
+            y1 = max(0, top)
+            y0 = max(0, y1 - win_h)
+            if y1 - y0 < 40:
+                out["reason"] = "reached the top of the picture"
+                break
+            dets = detect_movers_by_diff(
+                input_path, f0, f1, sens=2,
+                per_frame=DESCENT_DIFF_PER_FRAME,
+                roi=(cx0, y0, cx1 - cx0, y1 - y0),
+                three_frame=True, scale=float(zoom))
+            tracks = build_tracks(dets, 14.0, min_len=int(min_points),
+                                  max_gap=DESCENT_MAX_GAP) if dets else []
+            best, best_n = None, 0
+            for tk in tracks:
+                q = tk.get("points") or []
+                if len(q) > best_n:
+                    best, best_n = q, len(q)
+            tile = {
+                "i": i, "box": [cx0, y0, cx1 - cx0, y1 - y0],
+                "frames": [f0, f1], "n_movers": len(dets or []),
+                "n_tracks": len(tracks), "n_points": best_n,
+                "points": [{"frame": int(q["frame"]), "x": int(q["x"]),
+                            "y": int(q["y"])} for q in (best or [])],
+            }
+            out["tiles"].append(tile)
+            if not best:
+                tile["why"] = ("nothing climbed through this window"
+                               if dets else "nothing moved in it at all")
+                out["reason"] = (
+                    "the chain stops after %d window(s): %s"
+                    % (i, tile["why"]))
+                break
+            tile["why"] = "%d point(s) of a climbing track" % best_n
+            pts.extend(tile["points"])
+            # FOLLOW IT UP. The next window starts where this one's
+            # highest point was, not at a fixed stride: a ball that
+            # crossed the whole window is climbing fast and the next
+            # one should start where it actually got to.
+            top = min(y0 + step, min(q["y"] for q in best))                 if best else (y1 - step)
+            if top <= 0:
+                out["reason"] = "followed it to the top of the picture"
+                break
+        out["n_tiles"] = len(out["tiles"])
+        if pts:
+            pts.sort(key=lambda q: q["frame"])
+            out["points"] = pts
+            out["rise_px"] = int(max(q["y"] for q in pts)
+                                 - min(q["y"] for q in pts))
+            out["ok"] = len(pts) >= int(min_points)
+            if not out["reason"]:
+                out["reason"] = "walked %d window(s)" % out["n_tiles"]
+        elif not out["reason"]:
+            out["reason"] = "nothing rose out of the column"
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.warning("find_ascents_tiled: %s", exc)
+        out["reason"] = "the zoomed ascent walk failed: %s" % exc
+        return out
 
 
 def find_ascents(

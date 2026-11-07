@@ -168,6 +168,70 @@ def main() -> int:
     check("no frames after the strike is no answer",
           verdict([ball(200, 204)], []), None)
 
+    # ---- nailing the impact frame, and the walk up -----------------
+    # Built as a real clip, because both of these read video: a ball
+    # sitting on turf, struck at a known frame, climbing away.
+    import tempfile
+    import cv2
+    import numpy as np
+    from app.services.ball_vanish import ball_departure
+    from app.services.debug3 import find_ascents_tiled
+
+    W, H, FPS, IMPACT, BALL = 960, 720, 30, 60, (480, 600)
+    d = tempfile.mkdtemp()
+    vid = f"{d}/t.mp4"
+    vw = cv2.VideoWriter(vid, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (W, H))
+    rng = np.random.default_rng(1)
+    for f in range(140):
+        img = np.full((H, W, 3), (120, 150, 120), np.uint8)
+        img[:430] = (175, 165, 150)
+        img += rng.integers(0, 10, img.shape, dtype=np.uint8)
+        cv2.rectangle(img, (430, 420), (470, 605), (60, 60, 80), -1)
+        if f < IMPACT:
+            cv2.circle(img, BALL, 4, (250, 250, 250), -1)
+        else:
+            t = f - IMPACT
+            y, x = BALL[1] - 16 * t, BALL[0] + int(1.5 * t)
+            if y > -10:
+                cv2.circle(img, (x, y), 3, (250, 250, 250), -1)
+        vw.write(img)
+    vw.release()
+
+    dep = ball_departure(vid, IMPACT / FPS, spot=list(BALL))
+    # WITHIN A FRAME, not to the frame. Seeking a compressed clip by
+    # index is not exact, and claiming better than that would be a
+    # claim about the container rather than the ball.
+    check("the departure lands within a frame of the strike",
+          dep["impact_frame"] is not None
+          and abs(dep["impact_frame"] - IMPACT) <= 1, True)
+    check("  and says where the ball sat", dep["spot"], list(BALL))
+    # A BALL THAT NEVER LEAVES has no impact frame, and that is an
+    # answer rather than a failure.
+    vw = cv2.VideoWriter(f"{d}/s.mp4", cv2.VideoWriter_fourcc(*"mp4v"),
+                         FPS, (W, H))
+    for f in range(140):
+        img = np.full((H, W, 3), (120, 150, 120), np.uint8)
+        img[:430] = (175, 165, 150)
+        img += rng.integers(0, 10, img.shape, dtype=np.uint8)
+        cv2.circle(img, BALL, 4, (250, 250, 250), -1)
+        vw.write(img)
+    vw.release()
+    st = ball_departure(f"{d}/s.mp4", IMPACT / FPS, spot=list(BALL))
+    check("a ball that never leaves has no impact frame",
+          st["impact_frame"], None)
+    check("  and says so", "still there" in (st["why"] or ""), True)
+
+    asc = find_ascents_tiled(vid, FPS, IMPACT, BALL,
+                             golfer_box=[430, 420, 40, 185])
+    check("the zoomed walk follows the ball up", asc["ok"], True)
+    check("  across more than one window", asc["n_tiles"] > 1, True)
+    check("  and shows its working for every one",
+          all("why" in t and "box" in t for t in asc["tiles"]), True)
+    check("  in a column over the ball, not the whole frame",
+          asc["column"][2] < W // 2, True)
+    # AND IT STOPS, with a reason, rather than running to max_tiles.
+    check("  stopping with a reason", bool(asc["reason"]), True)
+
     print()
     if FAIL:
         print(f"FAILED {len(FAIL)}: " + ", ".join(FAIL))
