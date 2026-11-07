@@ -1451,6 +1451,53 @@ def _sweep_rig_heat() -> None:
         log.debug("verify-swing: sweep failed (%s)", exc)
 
 
+def _analyse_posted_frames(shots, heat_path, crop, zones, geo, offsets,
+                           ratio, attack_ms, cam_id) -> dict:
+    """Decode what the rig posted and run the whole pipeline on it.
+
+    Synchronous and blocking on purpose -- the caller hands it to a
+    thread. It decodes six JPEGs, runs a person detector over them
+    and makes up to two vision calls, which is seconds of work that
+    must not sit on the event loop. See the note on the judge call
+    below for what happened the last time something here did.
+    """
+    import cv2
+    import numpy as np
+
+    from ..services.swinganalysis import analyse
+
+    _c = [int(v) for v in str(crop).split(",")]
+    _z = [tuple(int(v) for v in b) for b in json.loads(zones or "[]")]
+    _g = json.loads(geo or "{}")
+    _o = json.loads(offsets or "[]") or None
+    imgs = []
+    for f in shots:
+        try:
+            f.file.seek(0)
+            buf = np.frombuffer(f.file.read(), np.uint8)
+            imgs.append(cv2.imdecode(buf, cv2.IMREAD_COLOR))
+        except Exception:  # noqa: BLE001
+            imgs.append(None)
+    heat = cv2.imread(str(heat_path)) if heat_path else None
+    tok = secrets.token_hex(4)
+    r = analyse(imgs, heat, _g, crop=_c, zones=_z, offsets=_o,
+                ratio=ratio or None, attack_ms=attack_ms or None,
+                out_dir=CLIPS_DIR, prefix=f"rigverify-{cam_id}-{tok}")
+    # ONLY WHAT THE RIG CAN USE, plus the names of the pictures so a
+    # verdict can be found and argued with later.
+    keep = ("is_swing", "confidence", "reason", "heat_is_swing",
+            "heat_confidence", "heat_reason", "frames_is_swing",
+            "frames_confidence", "frames_reason", "ball_left",
+            "ball_why", "picked_front", "golfer_crop", "decided_by")
+    out = {k: r.get(k) for k in keep}
+    out["saw"] = "analysed on the server: heat + %d frames" % len(
+        [i for i in imgs if i is not None])
+    out["image"] = r.get("image_zones") or r.get("image")
+    out["frames_image"] = (r.get("frames_image_zones")
+                           or r.get("frames_image"))
+    return out
+
+
 @router.post("/{token}/verify-swing")
 async def verify_swing(
     token: str,
@@ -1460,6 +1507,23 @@ async def verify_swing(
     # and in either order, and an older rig that sends only the
     # composite must keep getting judged exactly as it did.
     frames: UploadFile | None = File(default=None),
+    # SIX RAW FRAMES AND THE GEOMETRY THEY SIT IN -- the new shape.
+    # When these arrive the rig has stopped deciding anything: it
+    # cut, it accumulated the heat, it cropped both to the trigger
+    # zone, and everything after that happens here. See
+    # services/swinganalysis.
+    #
+    # Optional, like `frames` before it, because a rig and a backend
+    # are updated separately and in either order. An older rig
+    # sending only its finished pictures must keep getting judged
+    # exactly as it did.
+    shots: list[UploadFile] = File(default=[]),
+    crop: str = Form(""),        # "x,y,w,h" of the zone crop
+    zones: str = Form(""),       # JSON [[x,y,w,h], ...], frame pixels
+    geo: str = Form(""),         # measure_heat's reading, crop pixels
+    offsets: str = Form(""),     # JSON [-1.2, ...], seconds
+    ratio: float = Form(0.0),
+    attack_ms: float = Form(0.0),
     db: Session = Depends(get_db),
 ):
     """Judge a motion-heat composite the rig built: swing, or not?
@@ -1545,6 +1609,24 @@ async def verify_swing(
     except Exception as exc:  # noqa: BLE001
         log.warning("verify-swing: could not keep the frame strip (%s)", exc)
         _fdest = None
+
+    # ---- the new shape: six raw frames, all thinking done here ----
+    if shots and crop:
+        try:
+            _r = await asyncio.to_thread(
+                _analyse_posted_frames, shots, _dest, crop, zones, geo,
+                offsets, ratio, attack_ms, cam.id)
+            out.update(_r)
+            log.info("verify-swing: camera=%s -> %s (%s) [analysed here]",
+                     cam.id, out["is_swing"], out.get("reason"))
+            await asyncio.to_thread(_sweep_rig_heat)
+            return out
+        except Exception as exc:  # noqa: BLE001
+            log.warning("verify-swing: analysis failed for camera %s: %s",
+                        cam.id, exc)
+            out["reason"] = f"analysis failed: {exc}"
+            # ...and fall through to the old path, which at least has
+            # the composite the rig sent.
 
     try:
         from ..services.ai_tracer import (

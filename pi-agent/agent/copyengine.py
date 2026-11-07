@@ -885,9 +885,33 @@ class CopyEngine:
                     _img.unlink(missing_ok=True)
                     _strip.unlink(missing_ok=True)
                 elif _img is not None:
+                    # THE SIX RAW FRAMES, AND THE SERVER DOES THE
+                    # REST. This agent no longer decides who is on the
+                    # tee, which of them is hitting, where to crop or
+                    # what the ball did -- all of that lived here AND
+                    # in tracer.swing_heat_check, held in step by
+                    # hand, and drifted anyway. Now it cuts, it
+                    # accumulates the heat, and it posts both cropped
+                    # to the trigger zone. See
+                    # backend/app/services/swinganalysis.
+                    _shots = []
+                    try:
+                        if _crop:
+                            _shots = swingheat.zone_frames(
+                                clip_path,
+                                float(impact_ts) - float(res["start"]),
+                                _crop, swingheat.AUDIO2_OFFSETS_SEC)
+                    except Exception as _sx:  # noqa: BLE001
+                        log.debug("copy: could not cut raw frames (%s)", _sx)
                     _v = runner.client.verify_swing(
                         _img, frames_path=(_strip if _strip.exists()
-                                           else None))
+                                           else None),
+                        shots=_shots, crop=_crop,
+                        zones=swingheat.zone_boxes(
+                            getattr(runner, "roi", None), tee_roi.boxes),
+                        geo=_meta.get("geo"),
+                        ratio=(detail or {}).get("ratio"),
+                        attack_ms=(detail or {}).get("attack_ms"))
                     _verdict = _v.get("is_swing")
                     _vconf, _vreason = _v.get("confidence"), _v.get("reason")
                     # WHEN THE TWO JUDGES CONTRADICT EACH OTHER, THE
@@ -910,6 +934,15 @@ class CopyEngine:
                     if detail is not None:
                         detail["verdict_heat"] = _v.get("heat_is_swing")
                         detail["verdict_frames"] = _v.get("frames_is_swing")
+                        # WHAT THE SERVER SAW AND HOW IT DECIDED, so a
+                        # verdict can be argued with from the event
+                        # alone, without going back for the pictures.
+                        for _k in ("ball_left", "ball_why",
+                                   "picked_front", "decided_by"):
+                            if _v.get(_k) is not None:
+                                detail[_k] = (str(_v[_k])[:200]
+                                              if isinstance(_v[_k], str)
+                                              else _v[_k])
                     if _tb["split"]:
                         _verdict = _tb["is_swing"]
                         # "tiebreak" ON PURPOSE: postjudge below

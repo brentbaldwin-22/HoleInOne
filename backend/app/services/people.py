@@ -297,6 +297,29 @@ def _overlaps(a, b, *, iou=0.30, cover=0.60) -> bool:
     return max(inter / aa, inter / ba) >= cover
 
 
+def find_people_in_frames(frames, *, region=None, **kw) -> list:
+    """Everybody seen in ANY of these frames, merged. Never raises.
+
+    `frames` is [(label, image), ...] nearest the strike FIRST -- the
+    caller decides what "nearest" means, because this does not know
+    what the images are of. The first frame defines the cast wherever
+    it can see; later ones only ADD people it could not, so a golfer
+    who merely walked between frames is not counted twice.
+
+    The core of find_people_over_time, split out so the same code
+    serves a video on disk and a handful of JPEGs posted by a rig.
+    """
+    found: list = []
+    for label, fr in frames or []:
+        if fr is None:
+            continue
+        for p in find_people(fr, region=region, **kw):
+            if any(_overlaps(p["box"], q["box"]) for q in found):
+                continue
+            found.append(dict(p, seen_at=label))
+    return found
+
+
 def find_people_over_time(video_path, at_sec: float, offsets=(0.0,), *,
                           region=None, **kw) -> list:
     """Everybody seen at ANY of these moments, merged. Never raises.
@@ -320,29 +343,34 @@ def find_people_over_time(video_path, at_sec: float, offsets=(0.0,), *,
     """
     order = sorted({round(float(o), 3) for o in (offsets or (0.0,))},
                    key=lambda o: (abs(o), o))
-    found: list = []
     cap = None
     try:
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             return []
         fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
+        shots = []
         for off in order:
             f = int(round((float(at_sec) + off) * fps))
             if f < 0:
                 continue
             cap.set(cv2.CAP_PROP_POS_FRAMES, f)
             ok, fr = cap.read()
-            if not ok or fr is None:
-                continue
-            for p in find_people(fr, region=region, **kw):
-                if any(_overlaps(p["box"], q["box"]) for q in found):
-                    continue
-                found.append(dict(p, seen_at=off, frame=f))
-        return found
+            if ok and fr is not None:
+                shots.append((off, fr))
+        out = find_people_in_frames(shots, region=region, **kw)
+        # The video wrapper also knows the frame number each came
+        # from, which a bare list of images cannot.
+        for p in out:
+            try:
+                p["frame"] = int(round(
+                    (float(at_sec) + float(p["seen_at"])) * fps))
+            except Exception:  # noqa: BLE001
+                pass
+        return out
     except Exception as exc:  # noqa: BLE001
         log.debug("people: multi-frame detection failed (%s)", exc)
-        return found
+        return []
     finally:
         if cap is not None:
             try:

@@ -507,21 +507,62 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
     """
     import cv2
 
-    out = {"left": None, "spot": None, "seen_before": 0, "seen_after": 0,
-           "balls": 0, "why": "not checked"}
+    offs = list(offsets or ())
+    if len(offs) < 4:
+        return {"left": None, "spot": None, "seen_before": 0,
+                "seen_after": 0, "balls": 0, "why": "needs the six frames"}
     cap = None
     try:
-        offs = list(offsets or ())
-        if len(offs) < 4:
-            out["why"] = "needs the six frames"
-            return out
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
-            out["why"] = "could not open the clip"
-            return out
+            return {"left": None, "spot": None, "seen_before": 0,
+                    "seen_after": 0, "balls": 0,
+                    "why": "could not open the clip"}
         fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
-        W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        shots = []
+        for off in offs:
+            f = int(round((float(at_sec) + float(off)) * fps))
+            if f < 0:
+                shots.append(None)
+                continue
+            cap.set(cv2.CAP_PROP_POS_FRAMES, f)
+            ok, fr = cap.read()
+            shots.append(fr if ok else None)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("ball_at_address failed (%s)", exc)
+        return {"left": None, "spot": None, "seen_before": 0,
+                "seen_after": 0, "balls": 0, "why": "ball check failed"}
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:  # noqa: BLE001
+                pass
+    return ball_in_frames(shots, rect=rect, people=people, anchor=anchor,
+                          before=before, jitter_px=jitter_px,
+                          min_contrast=min_contrast, max_area=max_area)
+
+
+def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
+                   before: int = 3, jitter_px: float = ADDRESS_JITTER_PX,
+                   min_contrast: float = ADDRESS_MIN_CONTRAST,
+                   max_area: int = ADDRESS_MAX_AREA) -> dict:
+    """The same rule over frames already in hand. Never raises.
+
+    `shots` are the six images in chronological order, None where a
+    frame could not be had. The core of ball_at_address, split out so
+    one rule serves a clip on disk and the JPEGs a rig posts up.
+    """
+    import cv2
+
+    out = {"left": None, "spot": None, "seen_before": 0, "seen_after": 0,
+           "balls": 0, "why": "not checked"}
+    try:
+        _live = [f for f in (shots or []) if f is not None]
+        if len(_live) < 4:
+            out["why"] = "needs the six frames"
+            return out
+        H, W = _live[0].shape[:2]
         if rect:
             x0 = max(0, min(W - 1, int(rect[0])))
             y0 = max(0, min(H - 1, int(rect[1])))
@@ -539,14 +580,8 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
             cap_area = max(4, int(_d * _d))
 
         per_frame = []
-        for off in offs:
-            f = int(round((float(at_sec) + float(off)) * fps))
-            if f < 0:
-                per_frame.append(None)
-                continue
-            cap.set(cv2.CAP_PROP_POS_FRAMES, f)
-            ok, fr = cap.read()
-            if not ok or fr is None:
+        for fr in shots:
+            if fr is None:
                 per_frame.append(None)
                 continue
             gray = cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY)
@@ -629,12 +664,6 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
                       % (out["spot"][0], out["spot"][1]))
         return out
     except Exception as exc:  # noqa: BLE001
-        log.debug("ball_at_address failed (%s)", exc)
+        log.debug("ball_in_frames failed (%s)", exc)
         out["why"] = "ball check failed"
         return out
-    finally:
-        if cap is not None:
-            try:
-                cap.release()
-            except Exception:  # noqa: BLE001
-                pass

@@ -3250,6 +3250,37 @@ FRAME_OFFSETS_SEC = (-0.25, 0.0, 0.15, 0.40)
 # against.
 AUDIO2_OFFSETS_SEC = (-1.20, -0.60, -0.20, 0.0, 0.20, 0.60)
 
+# How big a tile may get before it is scaled down. Four or six of
+# these go in a grid and the whole thing is handed to a model, which
+# downsamples anything much larger anyway.
+FRAME_TILE_PX = 640
+
+
+def grid_of_tiles(tiles):
+    """Lay tiles out in reading order, left to right, top to bottom.
+
+    Columns are ceil(sqrt(n)), so four come back as the 2x2 this
+    always was and six as 3x2 with nothing wasted. Short rows are
+    padded with black rather than stretched, because a tile that is
+    not the same size as its neighbours makes the sequence harder to
+    read, which is the one thing the grid is for.
+    """
+    if not tiles:
+        return None
+    th = max(t.shape[0] for t in tiles)
+    tw = max(t.shape[1] for t in tiles)
+    cols = max(1, int(math.ceil(math.sqrt(len(tiles)))))
+    rows = max(1, int(math.ceil(len(tiles) / float(cols))))
+    cells = []
+    for t in tiles:
+        pad = np.zeros((th, tw, 3), np.uint8)
+        pad[:t.shape[0], :t.shape[1]] = t
+        cells.append(pad)
+    while len(cells) < cols * rows:
+        cells.append(np.zeros((th, tw, 3), np.uint8))
+    return np.vstack([np.hstack(cells[r * cols:(r + 1) * cols])
+                      for r in range(rows)])
+
 
 # The trigger zones, drawn in a colour COLORMAP_TURBO does not
 # contain. Turbo runs dark blue -> cyan -> green -> yellow -> red, so
@@ -3491,26 +3522,7 @@ def frames_strip(input_path, at_sec: float, out_path, *, box=None,
         th = max(t.shape[0] for t in tiles)
         tw = max(t.shape[1] for t in tiles)
 
-        # AS MANY TILES AS THERE ARE, in reading order. This was a
-        # hardcoded 2x2 and audio 2 asks for FIVE frames, which it
-        # silently truncated to the first four -- losing the finish,
-        # which is half of what five frames were for. Columns are
-        # ceil(sqrt(n)), so 4 stays 2x2 exactly as before and 5 is
-        # 3x2 with one blank cell; chronological order still reads
-        # left to right, top to bottom.
-        _cols = max(1, int(math.ceil(math.sqrt(len(tiles)))))
-        _rows = max(1, int(math.ceil(len(tiles) / float(_cols))))
-
-        def _grid(ts):
-            cs = []
-            for _t in ts:
-                _pad = np.zeros((th, tw, 3), np.uint8)
-                _pad[:_t.shape[0], :_t.shape[1]] = _t
-                cs.append(_pad)
-            while len(cs) < _cols * _rows:
-                cs.append(np.zeros((th, tw, 3), np.uint8))
-            return np.vstack([np.hstack(cs[_r * _cols:(_r + 1) * _cols])
-                              for _r in range(_rows)])
+        _grid = grid_of_tiles
 
         if zones_out is not None and ztiles:
             try:

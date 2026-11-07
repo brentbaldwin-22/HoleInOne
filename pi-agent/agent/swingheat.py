@@ -53,6 +53,72 @@ FRAME_PAD_FRAC = 1.0
 # against sky, small enough that four of them are ~150-250 KB.
 FRAME_TILE_PX = 640
 
+# The six moments the server wants raw, kept here only so the rig can
+# cut them. What they MEAN -- address, backswing, impact, finish --
+# is the server's business now. Must match
+# tracer.AUDIO2_OFFSETS_SEC; there is a test for that.
+AUDIO2_OFFSETS_SEC = (-1.20, -0.60, -0.20, 0.0, 0.20, 0.60)
+
+
+def zone_frames(clip_path, at_sec: float, crop, offsets):
+    """The raw frames at `offsets`, cropped to `crop`. Never raises.
+
+    THE RIG'S WHOLE CONTRIBUTION TO JUDGEMENT, now, besides the heat:
+    six pictures of the tee, uncropped by any rule, in the coordinate
+    space the server is told about. Who the golfers are, which one is
+    hitting, where to crop round him, what the ball did and how to
+    weigh the answers all happen on the server -- see
+    backend/app/services/swinganalysis.
+
+    That is the point. Every one of those rules used to exist twice,
+    once here and once in tracer.swing_heat_check, held in step by
+    hand; over one week the crop geometry, the frame offsets, the
+    foot measurement and the tile grid each drifted at least once,
+    and each time the rig and the bench were judging different
+    pictures of the same strike.
+
+    Returns [(offset, jpeg_bytes), ...], skipping any frame the clip
+    is too short to reach.
+    """
+    out = []
+    cap = None
+    try:
+        cap = cv2.VideoCapture(str(clip_path))
+        if not cap.isOpened():
+            return out
+        fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
+        W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        x0 = max(0, min(W - 1, int(crop[0])))
+        y0 = max(0, min(H - 1, int(crop[1])))
+        x1 = max(x0 + 1, min(W, int(crop[0]) + int(crop[2])))
+        y1 = max(y0 + 1, min(H, int(crop[1]) + int(crop[3])))
+        for off in offsets:
+            f = int(round((float(at_sec) + float(off)) * fps))
+            if f < 0:
+                continue
+            cap.set(cv2.CAP_PROP_POS_FRAMES, f)
+            ok, fr = cap.read()
+            if not ok or fr is None:
+                continue
+            sub = fr[y0:y1, x0:x1]
+            if sub.size == 0:
+                continue
+            ok2, buf = cv2.imencode(
+                ".jpg", sub, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+            if ok2:
+                out.append((float(off), buf.tobytes()))
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.debug("swingheat: could not cut raw frames (%s)", exc)
+        return out
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:  # noqa: BLE001
+                pass
+
 
 def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
           after_sec: float = 0.5, crop=None, out_path=None,
@@ -389,6 +455,20 @@ def _frame_strip(kept: dict, box, width: int, height: int, out_path,
     grid = np.vstack([np.hstack(cells[0:2]), np.hstack(cells[2:4])])
     return bool(cv2.imwrite(str(out_path), grid,
                             [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]))
+
+
+def zone_boxes(roi, boxes_fn):
+    """The trigger zones as [(x, y, w, h), ...] in frame pixels.
+
+    What the server needs to draw them and to test a stance against
+    them. The rig reads the boxes; it no longer interprets them.
+    """
+    try:
+        zs = boxes_fn(roi) or []
+        return [(int(z["x"]), int(z["y"]), int(z["w"]), int(z["h"]))
+                for z in zs]
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def zone_span(roi, boxes_fn):

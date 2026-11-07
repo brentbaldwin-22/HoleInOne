@@ -576,7 +576,9 @@ class BackendClient:
         return self._retry("POST", "/event-trigger", data=data)
 
     def verify_swing(self, image_path, timeout: float = 25.0,
-                     frames_path=None) -> dict:
+                     frames_path=None, shots=None, crop=None,
+                     zones=None, geo=None, offsets=None,
+                     ratio=None, attack_ms=None) -> dict:
         """Ask the backend whether this composite shows a club swing.
 
         Returns {"is_swing": True|False|None, ...}. NULL IS NOT FALSE
@@ -608,7 +610,12 @@ class BackendClient:
                "heat_is_swing": None, "heat_confidence": None,
                "heat_reason": None,
                "frames_is_swing": None, "frames_confidence": None,
-               "frames_reason": None}
+               "frames_reason": None,
+               # WHAT THE SERVER DECIDED AND HOW, when it did the
+               # analysing. The rig records these on the event so a
+               # verdict can be argued with without the pictures.
+               "ball_left": None, "ball_why": None,
+               "picked_front": None, "decided_by": None}
         # THE FRAMES AS WELL, WHEN THERE ARE ANY. The composite is a
         # one-second projection of motion: it says where something
         # moved and throws away both when and what. Four real frames
@@ -619,15 +626,41 @@ class BackendClient:
         try:
             _fh2 = None
             try:
-                _files = {}
+                _files = []
+                _data = {}
                 with open(image_path, "rb") as fh:
-                    _files["image"] = ("heat.jpg", fh, "image/jpeg")
-                    if frames_path is not None:
+                    _files.append(("image", ("heat.jpg", fh, "image/jpeg")))
+                    # THE SIX RAW FRAMES, when we have them. With
+                    # these the server does ALL the judging -- who is
+                    # on the tee, which one is hitting, where to crop,
+                    # what the ball did -- and this agent stops
+                    # deciding anything. See
+                    # backend/app/services/swinganalysis.
+                    #
+                    # The old `frames` tile is still sent when there
+                    # are no raw shots, so a new agent against an old
+                    # backend is judged exactly as before.
+                    for _i, (_off, _buf) in enumerate(shots or []):
+                        _files.append(
+                            ("shots", ("f%d.jpg" % _i, _buf, "image/jpeg")))
+                    if shots and crop:
+                        _data["crop"] = ",".join(str(int(v)) for v in crop)
+                        _data["zones"] = json.dumps(
+                            [[int(v) for v in b] for b in (zones or [])])
+                        _data["geo"] = json.dumps(geo or {})
+                        _data["offsets"] = json.dumps(
+                            [o for o, _ in (shots or [])])
+                        if ratio:
+                            _data["ratio"] = str(float(ratio))
+                        if attack_ms:
+                            _data["attack_ms"] = str(float(attack_ms))
+                    elif frames_path is not None:
                         _fh2 = open(frames_path, "rb")
-                        _files["frames"] = ("frames.jpg", _fh2, "image/jpeg")
+                        _files.append(
+                            ("frames", ("frames.jpg", _fh2, "image/jpeg")))
                     r = self._retry(
                         "POST", "/verify-swing",
-                        files=_files,
+                        files=_files, data=_data or None,
                         retries=1, timeout=timeout,
                     ) or {}
             finally:
