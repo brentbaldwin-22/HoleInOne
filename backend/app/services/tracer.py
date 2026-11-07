@@ -3688,6 +3688,27 @@ def swing_heat_check(
                     # picture if the crop reaches them.
                     _people = list(_cands)
                     _cands = _cands[:max(1, int(max_candidates))]
+                    # AND THE GOLFERS STANDING IN THE ZONE. The zone
+                    # span is a width of GROUND; these are the people
+                    # on it, and the narrower of the two is the crop
+                    # the operator asked for -- a zone wider than the
+                    # players on it is buying empty fairway. Centre
+                    # inside the span, not wholly inside: the blob is
+                    # the whole body and a stance at the edge of a zone
+                    # leans out of it.
+                    _inzone = _people
+                    if _psp is not None:
+                        try:
+                            _s0, _s1 = int(min(_psp)), int(max(_psp))
+                            _hit = [p for p in _people
+                                    if _s0 <= p["x"] + p["w"] / 2.0 <= _s1]
+                            if _hit:
+                                _inzone = _hit
+                        except Exception:  # noqa: BLE001
+                            pass
+                    _gx0 = min(p["x"] for p in _inzone)
+                    _gx1 = max(p["x"] + p["w"] for p in _inzone)
+                    _gy1 = max(p["y"] + p["h"] for p in _inzone)
                     out["candidates"] = []
                     _base_img = judged
                     for _ci, _mz in enumerate(_cands):
@@ -3727,6 +3748,17 @@ def swing_heat_check(
                                     _zx1 = min(_zw, max(_zx1, _sx1))
                             except Exception:  # noqa: BLE001
                                 pass
+                        # ...BUT NEVER WIDER THAN THE GOLFERS ON IT.
+                        # Zones are drawn generously and the players
+                        # rarely fill one, so the zone width alone left
+                        # a stripe of empty fairway down one side,
+                        # which costs apparent size in the upscaled
+                        # crop for nothing. Whichever of the two is
+                        # narrower wins. Never cuts into this
+                        # candidate's own blob.
+                        _gp = max(6, int((_gx1 - _gx0) * 0.04))
+                        _zx0 = max(_zx0, min(_gx0 - _gp, _ax))
+                        _zx1 = min(_zx1, max(_gx1 + _gp, _ax + _mz["w"]))
                         # BUT ONE GOLFER PER PICTURE. Widening to the
                         # zone reached the whole tee, which put BOTH
                         # players in both candidate crops -- so the two
@@ -3749,16 +3781,30 @@ def swing_heat_check(
                                            max(_o["x"] - 4,
                                                _ax + _mz["w"]))
                         _zy0 = 0
-                        _zy1 = _ay + _mz["h"] + int(_mz["h"] * 0.35)
+                        # THE FEET, AND NOT THE FAIRWAY BEYOND THEM.
+                        # The heat runs down the legs to the shoes on
+                        # most of these, so the LOWEST heat among the
+                        # golfers in the zone is the ground line, and
+                        # it is a better one than the zone's bottom
+                        # edge: zones are drawn round feet but drawn
+                        # generously, and that edge sat well below the
+                        # stance. Taken across all of them, not just
+                        # this candidate, so one player whose legs
+                        # never moved still gets a floor from the one
+                        # standing beside him.
+                        _zy1 = max(_gy1, _ay + _mz["h"]) + max(
+                            4, int(_mz["h"] * 0.08))
                         if floor_y is not None:
-                            # THE FEET, AND NOT THE FAIRWAY BEYOND
-                            # THEM. The zones are drawn round feet, so
-                            # their bottom edge IS the ground line; the
-                            # margin that used to sit under it only
-                            # bought empty turf, which costs apparent
-                            # size in the picture for nothing.
-                            _zy1 = max(int(float(floor_y) - _oy),
-                                       _ay + _mz["h"] + 4)
+                            # The zone floor only ever RESCUES a crop
+                            # that stopped short -- a swing in which
+                            # nothing below the waist moved -- and even
+                            # then it may not add more than a sliver of
+                            # turf. It is no longer allowed to drag the
+                            # bottom down on its own.
+                            _fy = int(float(floor_y) - _oy)
+                            if _fy > _zy1:
+                                _zy1 = min(_fy, max(_gy1, _ay + _mz["h"])
+                                           + max(8, int(_mz["h"] * 0.15)))
                         _zy1 = min(_zh, _zy1)
                         # GROW A SMALL CROP, DO NOT ABANDON IT. The
                         # first version skipped the zoom when the crop
