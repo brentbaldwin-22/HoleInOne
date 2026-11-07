@@ -9016,10 +9016,15 @@ def judge_swing_audio2(frames_path, image_path, *, ratio=None,
     # starts less than 1.2s before the peak has no address frame, and
     # telling the model to look for one that is not there is how a
     # judge comes to describe a picture it was never sent.
+    # NUMBERED, AND THE NUMBERS ARE ON THE TILES. Saying "frame 3"
+    # only helps if the model and the operator reading its answer
+    # agree which tile that is; both now read it off the picture.
     _facts = ["The %d frames are in reading order, left to right and "
-              "top to bottom, at these offsets from the audio peak: "
+              "top to bottom. Each tile is labelled with its frame "
+              "number and its offset from the audio peak: "
               % len(_offs)
-              + ", ".join("%+.2fs" % o for o in _offs) + "."]
+              + ", ".join("frame %d at %+.2fs" % (_i + 1, _o)
+                          for _i, _o in enumerate(_offs)) + "."]
     _facts.append("Audio signal-to-noise ratio: %s."
                   % ("x%.1f" % float(ratio) if ratio else "not measured"))
     _facts.append("Audio attack duration: %s."

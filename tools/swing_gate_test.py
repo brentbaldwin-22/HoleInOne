@@ -369,6 +369,29 @@ def main() -> int:
     _z2 = blob(1000, 660, 130, 200)         # feet (1065, 860) in zone 2
     check("the floor comes from the zone they stand in",
           pick_front_golfer([_z2], ZONES)["floor"], 900)
+    # AND THE ZONE THEY ARE IN BEATS ONE THE SLACK MERELY REACHES.
+    # Two stacked boxes on the same x: a FAR one (up the picture) and
+    # a NEAR one below it. A golfer standing in the far box is within
+    # one near-box height of the near box too, so first-match-wins
+    # put them on the near box's ground line -- 150 px below their
+    # feet -- and the crop started there. This is the 8 Nov report.
+    STACKED = [
+        (700, 900, 220, 120),    # "zone 1", NEAR, listed first
+        (700, 700, 220, 80),     # "zone 2", FAR, where they stand
+    ]
+    _far = blob(740, 560, 140, 200)          # feet (810, 760): in zone 2
+    _r2 = pick_front_golfer([_far], STACKED)
+    check("a golfer in the far zone gets the FAR zone's floor",
+          _r2["floor"], 780)
+    check("  not the near zone's, which the slack also reaches",
+          _r2["floor"] == 1020, False)
+    # Order in the list must not decide it either.
+    check("  whichever order the zones are listed in",
+          pick_front_golfer([_far], list(reversed(STACKED)))["floor"], 780)
+    # A golfer genuinely in the NEAR box still gets the near floor.
+    _near = blob(740, 760, 140, 200)         # feet (810, 960): in zone 1
+    check("  and the near zone still wins when they are in it",
+          pick_front_golfer([_near], STACKED)["floor"], 1020)
     # FEET OUTSIDE EVERY ZONE -> no pick, and a different reason.
     _off = blob(100, 640, 140, 200)         # feet (170, 840)
     r = pick_front_golfer([_off], ZONES)

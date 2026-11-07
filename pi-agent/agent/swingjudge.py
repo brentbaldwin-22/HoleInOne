@@ -587,14 +587,35 @@ def pick_front_golfer(blobs, zones, *, offset=(0, 0),
                 continue
             fx = float(b.get("base", (0, 0))[0]) + ox
             fy = float(b.get("base", (0, 0))[1]) + oy
+            # THE ZONE THEY ARE ACTUALLY IN, not the first one in the
+            # list that the slack happens to reach. Taking the first
+            # match put a golfer standing in the upper box on the
+            # LOWER box's ground line, because one zone height of
+            # slack above a near zone easily reaches a far one, and
+            # the crop then started a long way below their feet.
+            #
+            # Scored by how far the foot point is OUTSIDE each zone:
+            # zero when it is genuinely inside, so a real containment
+            # always beats a slack reach, and the nearest zone wins
+            # among several that only reach.
+            best_d, best_floor = None, None
             for z in zones:
                 zx, zy, zw, zh = (float(z[0]), float(z[1]),
                                   float(z[2]), float(z[3]))
-                _s = float(slack) * zh
-                if (zx <= fx <= zx + zw
-                        and zy - _s <= fy <= zy + zh + _s):
-                    standing.append((fy, b, zy + zh))
-                    break
+                if not (zx <= fx <= zx + zw):
+                    continue
+                if fy < zy:
+                    d = zy - fy
+                elif fy > zy + zh:
+                    d = fy - (zy + zh)
+                else:
+                    d = 0.0
+                if d > float(slack) * zh:
+                    continue
+                if best_d is None or d < best_d:
+                    best_d, best_floor = d, zy + zh
+            if best_floor is not None:
+                standing.append((fy, b, best_floor))
         if not standing:
             out["why"] = "nobody's feet are in a trigger zone"
             return out

@@ -3385,10 +3385,15 @@ def frames_strip(input_path, at_sec: float, out_path, *, box=None,
                 sc = tile_px / float(max(th, tw))
                 t = cv2.resize(t, (max(1, int(tw * sc)),
                                    max(1, int(th * sc))))
-            # WHICH MOMENT THIS IS. Four near-identical tiles are
-            # unorderable, and the order is the evidence.
+            # WHICH MOMENT THIS IS, AND WHICH FRAME. Near-identical
+            # tiles are unorderable and the order is the evidence --
+            # but a reader comparing a verdict against the picture
+            # has to count cells to find "the third frame", and a
+            # blank cell or a dropped offset makes that count wrong.
+            # The number is on the tile, so it travels with it.
+            _lbl = "%d  %+.2fs" % (len(tiles) + 1, off)
             for col, wid in (((0, 0, 0), 3), ((255, 255, 255), 1)):
-                cv2.putText(t, "%+.2fs" % off, (6, 22),
+                cv2.putText(t, _lbl, (6, 22),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, wid,
                             cv2.LINE_AA)
             tiles.append(t)
@@ -3901,10 +3906,25 @@ def swing_heat_check(
                                  _fb)
                         # The frames stop just above the head instead
                         # of at the top of the picture.
+                        #
+                        # ABOVE EVERY HEAD IN THE CROP, not just the
+                        # top of the picked blob. The blob is motion,
+                        # and on a swing the moving part can be the
+                        # arms, the club and the legs with the torsos
+                        # standing still -- so the picked blob's top
+                        # is sometimes mid-thigh, and taking it cut
+                        # the golfers' heads off. Any person-shaped
+                        # blob whose centre falls inside the crop is
+                        # somebody who is IN the picture and whose
+                        # head has to be in it too.
+                        _fh2 = [p for p in _cands_all
+                                if _zone[0] <= p["x"] + p["w"] / 2.0
+                                <= _zone[1]] or [_front]
+                        _ftop = min(p["y"] for p in _fh2)
                         _fp = max(8, int(_front["h"] * 0.10))
                         out["frames_rect"] = [
                             int(_zone[0] + _ox),
-                            int(max(0, _front["y"] - _fp) + _oy),
+                            int(max(0, _ftop - _fp) + _oy),
                             int(_zone[1] + _ox), int(_fb + _oy)]
                         _cands = _cands[:1]
                     elif _zone is not None:
