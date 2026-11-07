@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from app.services.ball_vanish import (                 # noqa: E402
     BALL_BAND_ABOVE_FEET, BALL_BAND_BELOW_FEET, _on_a_person,
-    _on_the_ground,
+    _on_the_ground, classify_balls,
 )
 
 FAIL = []
@@ -73,6 +73,51 @@ def main() -> int:
     # the one doing the heavy lifting anyway.
     check("with nobody detected every height is allowed",
           _on_the_ground(35, []), True)
+
+    # ---- which ball left -------------------------------------------
+    def ball(x, y):
+        return {"x": x, "y": y, "frames": 3, "con": 90}
+
+    def frame(*pts):
+        return [(x, y, 6, 90) for x, y in pts]
+
+    def verdict(balls, tail):
+        gone, stayed = classify_balls([dict(b) for b in balls], tail)
+        return True if gone else False if stayed else None
+
+    # The plain cases.
+    check("a ball that goes is a swing",
+          verdict([ball(200, 204)], [frame(), frame(), frame()]), True)
+    check("a ball that stays is not",
+          verdict([ball(200, 204)], [frame((200, 204))] * 3), False)
+    # THE +0.00 FRAME IS THE STRIKE and proves nothing either way: the
+    # ball is being hit in it. Gone from the two frames after is a
+    # struck ball whether or not it was still visible at impact.
+    check("  still there AT the strike, gone after, is a swing",
+          verdict([ball(200, 204)],
+                  [frame((200, 204)), frame(), frame()]), True)
+    # THE FRAMES AFTER HAVE TO AGREE.
+    check("  gone then back again is no answer",
+          verdict([ball(200, 204)],
+                  [frame(), frame(), frame((200, 204))]), None)
+    # THREE BALLS ON THE TURF, which is the normal case on a tee and
+    # the one that makes "the ball" the wrong question. Whichever
+    # LEFT is the one that matters; the others never moved and never
+    # had anything to do with it.
+    THREE = [ball(200, 204), ball(240, 206), ball(280, 203)]
+    check("one of three balls struck is still a swing",
+          verdict(THREE, [frame((240, 206), (280, 203))] * 3), True)
+    check("  and none of three struck is not",
+          verdict(THREE,
+                  [frame((200, 204), (240, 206), (280, 203))] * 3), False)
+    # A BALL THAT MOVED A LITTLE IS THE SAME BALL. Jitter is 4 px.
+    check("a ball 3 px off is the same ball",
+          verdict([ball(200, 204)], [frame((203, 204))] * 3), False)
+    check("  one 20 px away is not, so the first one left",
+          verdict([ball(200, 204)], [frame((220, 204))] * 3), True)
+    # NOTHING AFTER THE STRIKE AT ALL -> no answer, not a verdict.
+    check("no frames after the strike is no answer",
+          verdict([ball(200, 204)], []), None)
 
     print()
     if FAIL:

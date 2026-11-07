@@ -1496,6 +1496,35 @@ export default function AdminLongUpload() {
                                         superseded
                                       </div>
                                     )}
+                                    {/* SIDE BY SIDE, AND THE WHOLE
+                                        FRAME FIRST. Stacked, the
+                                        pictures pushed the verdict off
+                                        the screen; and the full frame
+                                        is the only one that shows what
+                                        the crop LEFT OUT, which is
+                                        where every wrong crop so far
+                                        has been found. Operator's
+                                        reference only -- the judge
+                                        never saw it. */}
+                                    <div style={{
+                                      display: "flex", gap: 4,
+                                      alignItems: "flex-start",
+                                      flexWrap: "wrap", marginTop: 3,
+                                    }}>
+                                    {c.full_frame_url && (
+                                      <a href={c.full_frame_url}
+                                         target="_blank" rel="noreferrer"
+                                         title="The whole frame at the impact, uncropped, with the trigger zones and the measured feet drawn on. For your reference only — the judge was never shown this.">
+                                        <img src={c.full_frame_url}
+                                             alt={`full frame at ${
+                                               c.peak_time_sec}s`}
+                                             style={{
+                                               width: 260, display: "block",
+                                               borderRadius: 4,
+                                               border: "1px solid var(--border, #333)",
+                                             }} />
+                                      </a>
+                                    )}
                                     {c.heat_image_url && (
                                       <a href={c.heat_image_url}
                                          target="_blank" rel="noreferrer"
@@ -1505,7 +1534,7 @@ export default function AdminLongUpload() {
                                                c.peak_time_sec}s`}
                                              style={{
                                                width: 200, display: "block",
-                                               marginTop: 3, borderRadius: 4,
+                                               borderRadius: 4,
                                                border: "1px solid var(--border, #333)",
                                              }} />
                                       </a>
@@ -1524,11 +1553,12 @@ export default function AdminLongUpload() {
                                                c.peak_time_sec}s`}
                                              style={{
                                                width: 200, display: "block",
-                                               marginTop: 3, borderRadius: 4,
+                                               borderRadius: 4,
                                                border: "1px solid var(--border, #333)",
                                              }} />
                                       </a>
                                     )}
+                                    </div>
                                     {/* SAY SO ONCE, UNDER BOTH PICTURES.
                                         A magenta box in a motion heat
                                         map is not self-explanatory, and

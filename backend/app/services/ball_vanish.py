@@ -385,6 +385,41 @@ def _on_a_person(x, y, people) -> bool:
     return False
 
 
+def classify_balls(good, tail_live, jitter_px=ADDRESS_JITTER_PX):
+    """Split the balls found before the strike into gone and stayed.
+
+    THE +0.00 FRAME IS THE STRIKE ITSELF and says nothing: the ball is
+    being hit in it and can be still sitting at the tee or already a
+    blur an inch away. Only the frames AFTER it answer the question,
+    and they have to agree -- present in all of them is a ball nobody
+    touched, absent from all of them is a ball that left, anything
+    else is not an answer.
+
+    EVERY BALL, NOT THE BEST ONE. There is rarely just one ball on a
+    tee; the 8 Nov frames have three on the turf at once. Judging the
+    brightest or steadiest alone would call a real swing "not a
+    swing" because some other ball, never touched, sat exactly where
+    it was the whole time. Each entry gains `still`, how many of the
+    frames after the strike still show it.
+    """
+    def _there(c, dets):
+        return any(((x - c["x"]) ** 2 + (y - c["y"]) ** 2) ** 0.5
+                   <= float(jitter_px) for (x, y, _a, _c) in dets)
+
+    late = tail_live[1:] if len(tail_live) > 1 else tail_live
+    gone, stayed = [], []
+    for c in good:
+        c["still"] = sum(1 for d in tail_live if _there(c, d))
+        if not late:
+            continue
+        hits = sum(1 for d in late if _there(c, d))
+        if hits == 0:
+            gone.append(c)
+        elif hits == len(late):
+            stayed.append(c)
+    return gone, stayed
+
+
 def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
                     people=None,
                     before: int = 3, jitter_px: float = ADDRESS_JITTER_PX,
@@ -412,7 +447,7 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
     import cv2
 
     out = {"left": None, "spot": None, "seen_before": 0, "seen_after": 0,
-           "why": "not checked"}
+           "balls": 0, "why": "not checked"}
     cap = None
     try:
         offs = list(offsets or ())
@@ -490,43 +525,47 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
                           "first %d frames — no judgement from the ball"
                           % len(head))
             return out
-        best = max(good, key=lambda c: (c["frames"], c["con"]))
-        out["spot"] = [int(round(best["x"])), int(round(best["y"]))]
-        out["seen_before"] = int(best["frames"])
-
-        # AND GONE AFTERWARDS. Only the frames after the strike are
-        # asked, and the last two carry the answer: at +0.00s a
-        # struck ball can still be a blur at the tee.
-        still = 0
-        for dets in tail:
-            if dets is None:
-                continue
-            if any(((x - best["x"]) ** 2 + (y - best["y"]) ** 2) ** 0.5
-                   <= float(jitter_px) for (x, y, _a, _c) in dets):
-                still += 1
-        out["seen_after"] = still
-        late = [d for d in tail[1:] if d is not None]
-        gone_late = all(
-            not any(((x - best["x"]) ** 2 + (y - best["y"]) ** 2) ** 0.5
-                    <= float(jitter_px) for (x, y, _a, _c) in d)
-            for d in late) if late else False
-        if gone_late and still == 0:
+        # EVERY BALL, NOT THE BEST ONE. There is rarely just one ball
+        # on a tee -- the frames from 8 Nov have three on the turf at
+        # once -- and the one that matters is whichever LEFT. Judging
+        # the brightest or steadiest ball alone would call a swing
+        # "not a swing" because some other ball, never touched, sat
+        # exactly where it was the whole time.
+        tail_live = [d for d in tail if d is not None]
+        gone, stayed = classify_balls(good, tail_live, jitter_px)
+        out["balls"] = len(good)
+        if gone:
+            best = max(gone, key=lambda c: (c["frames"], c["con"]))
+            out["spot"] = [int(round(best["x"])), int(round(best["y"]))]
+            out["seen_before"] = int(best["frames"])
+            out["seen_after"] = int(best["still"])
             out["left"] = True
             out["why"] = ("a ball sat at (%d, %d) in %d of the first %d "
                           "frames and is gone from every frame after the "
-                          "strike" % (out["spot"][0], out["spot"][1],
-                                      out["seen_before"], len(head)))
-        elif still >= 2:
+                          "strike%s" % (out["spot"][0], out["spot"][1],
+                                        out["seen_before"], len(head),
+                                        (" (%d balls on the turf)"
+                                         % len(good)) if len(good) > 1
+                                        else ""))
+            return out
+        if stayed:
+            best = max(stayed, key=lambda c: (c["still"], c["frames"]))
+            out["spot"] = [int(round(best["x"])), int(round(best["y"]))]
+            out["seen_before"] = int(best["frames"])
+            out["seen_after"] = int(best["still"])
             out["left"] = False
             out["why"] = ("the ball is still at (%d, %d) in %d frames "
-                          "after the strike" % (out["spot"][0],
-                                                out["spot"][1], still))
-        else:
-            out["why"] = ("a ball sat at (%d, %d) before the strike but "
-                          "what happened to it is not clear "
-                          "(%d of %d frames after still show it)"
-                          % (out["spot"][0], out["spot"][1], still,
-                             len(tail)))
+                          "after the strike and no ball on the turf left "
+                          "its spot" % (out["spot"][0], out["spot"][1],
+                                        best["still"]))
+            return out
+        best = max(good, key=lambda c: (c["frames"], c["con"]))
+        out["spot"] = [int(round(best["x"])), int(round(best["y"]))]
+        out["seen_before"] = int(best["frames"])
+        out["seen_after"] = int(best.get("still") or 0)
+        out["why"] = ("a ball sat at (%d, %d) before the strike but what "
+                      "happened to it is not clear"
+                      % (out["spot"][0], out["spot"][1]))
         return out
     except Exception as exc:  # noqa: BLE001
         log.debug("ball_at_address failed (%s)", exc)

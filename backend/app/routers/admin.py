@@ -14997,6 +14997,41 @@ def test_cut_long_upload(
                     before_sec=float(verify_window_sec),
                     after_sec=float(verify_window_sec),
                 )
+                # AND THE WHOLE FRAME IT WAS CUT FROM, for QC. The
+                # crop is now chosen by a detector, a zone test and a
+                # furthest-up rule, and every one of those can be
+                # wrong in a way that is invisible once the picture
+                # has been cut -- the tree, the shoulders, the golfer
+                # behind a playing partner were all only findable by
+                # looking at what was left out. Never judged, never
+                # sent to a model.
+                if _golfer:
+                    try:
+                        import cv2   # local: admin.py must import
+                                     # on a box with no opencv
+                        from ..services.people import frame_at as _fa
+                        from ..services.tracer import draw_zones as _dz
+                        _ff = _fa(src_path, peak_time_sec)
+                        if _ff is not None:
+                            _fh, _fw = _ff.shape[:2]
+                            _fs = 1.0
+                            if _fw > 960:
+                                _fs = 960.0 / _fw
+                                _ff = cv2.resize(
+                                    _ff, (960, max(1, int(_fh * _fs))))
+                            _fz = _dz(_ff, _zbox, scale=_fs,
+                                      feet=_chk.get("front_candidates"))
+                            _fn = CLIPS_DIR / (
+                                f"verifyfull-{upload_id}-{idx:02d}-"
+                                f"{secrets.token_hex(3)}.jpg")
+                            if cv2.imwrite(str(_fn), _fz
+                                           if _fz is not None else _ff,
+                                           [int(cv2.IMWRITE_JPEG_QUALITY),
+                                            78]):
+                                cut_entry["full_frame_url"] = (
+                                    _clip_url_for(_fn.name))
+                    except Exception as _ffx:  # noqa: BLE001
+                        log.debug("test-cut full frame: %s", _ffx)
                 # THE OPERATOR'S COPY, with the zones drawn on it.
                 # `image_clean` is what the judge is handed and stays
                 # untouched; this is only what the page shows. Falls
@@ -15211,6 +15246,7 @@ def test_cut_long_upload(
                                     people=_people2)
                                 cut_entry["ball_left"] = _bl["left"]
                                 cut_entry["ball_spot"] = _bl["spot"]
+                                cut_entry["ball_balls"] = _bl.get("balls")
                                 cut_entry["ball_why"] = _bl["why"]
                             except Exception as _bx:  # noqa: BLE001
                                 log.debug("test-cut ball check: %s", _bx)
@@ -15267,9 +15303,18 @@ def test_cut_long_upload(
                             # hid the split. The x-ratio is the one
                             # piece of evidence neither of them can
                             # see.
-                            _tb = _sj.tiebreak(
-                                _heat["is_swing"], _jf.get("is_swing"),
-                                cut_entry.get("ratio"))
+                            # NOT WHEN THE BALL ALREADY ANSWERED.
+                            # The x-ratio is the third opinion for
+                            # two judges who cannot agree; a ball
+                            # that visibly left, or visibly did not,
+                            # outranks all three.
+                            _tb = ({"split": False, "is_swing": None,
+                                    "why": "the ball answered it"}
+                                   if cut_entry.get("ball_left") is not None
+                                   else _sj.tiebreak(
+                                       _heat["is_swing"],
+                                       _jf.get("is_swing"),
+                                       cut_entry.get("ratio")))
                             cut_entry["tiebreak"] = _tb["why"]
                             if _tb["split"]:
                                 _final = {
@@ -15301,26 +15346,40 @@ def test_cut_long_upload(
                         # less. This is the one endpoint on the server
                         # that HAS an audio ratio to weigh, which is
                         # why the gate can run here and not in debug3.
-                        # A BALL THAT LEFT SETTLES IT. The
-                        # operator's rule: "if it disappears as the
-                        # golfer completes his swing then its
-                        # definitely a swing." This only ever turns a
-                        # verdict INTO a swing -- a ball still sitting
-                        # there is not taken as proof of the
-                        # opposite, because the strike can simply
-                        # happen later than the audio peak, which is
-                        # exactly what one of the 8 Nov clips shows.
-                        if cut_entry.get("ball_left") is True:
-                            if cut_entry.get("is_swing") is not True:
+                        # THE BALL SETTLES IT, EITHER WAY, AND IT
+                        # SETTLES IT FIRST. A ball does not leave a
+                        # tee by itself and it does not stay on one
+                        # that was struck, so when the ball could be
+                        # read at all there is nothing left for the
+                        # judges to disagree about and nothing for the
+                        # x-ratio to break. The first version only
+                        # let it force a YES, so a clip whose ball
+                        # plainly never moved still went to a tie-
+                        # break and was decided by how loud the strike
+                        # was. That is the ball evidence being
+                        # gathered and then ignored.
+                        #
+                        # Silent when the ball could not be clearly
+                        # identified: absence of a ball is not
+                        # evidence of anything, and an obstructed one
+                        # must never read as an absent one.
+                        _bal = cut_entry.get("ball_left")
+                        if _bal is not None:
+                            if cut_entry.get("is_swing") is not _bal:
                                 cut_entry["ball_override"] = True
                                 cut_entry["verify_reason"] = (
                                     "%s — but %s"
-                                    % (cut_entry.get("verify_reason") or
-                                       "the judge was not convinced",
+                                    % (cut_entry.get("verify_reason")
+                                       or "the judges were split",
                                        cut_entry.get("ball_why")))
-                            cut_entry["is_swing"] = True
+                            else:
+                                cut_entry["verify_reason"] = (
+                                    cut_entry.get("ball_why"))
+                            cut_entry["is_swing"] = bool(_bal)
+                            cut_entry["verify_confidence"] = "ball"
                         _post = ({"keep": True, "why": "audio 2"}
-                                 if _audio2 else _sj.postjudge(
+                                 if (_audio2 or _bal is not None)
+                                 else _sj.postjudge(
                                      cut_entry.get("is_swing"),
                                      cut_entry.get("verify_confidence"),
                                      cut_entry.get("ratio"),
