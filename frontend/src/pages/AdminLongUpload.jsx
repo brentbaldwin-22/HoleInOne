@@ -1646,6 +1646,31 @@ export default function AdminLongUpload() {
                                         </div>
                                       </div>
                                     )}
+                                    {/* THE BALL. The most direct
+                                        evidence there is, so it gets
+                                        its own line: a ball does not
+                                        leave a tee by itself. Silent
+                                        when it could not be read --
+                                        an obstructed ball must not
+                                        look like an absent one. */}
+                                    {c.ball_left !== undefined
+                                      && c.ball_left !== null && (
+                                      <div className="tiny" style={{
+                                        marginTop: 2, maxWidth: 200,
+                                        whiteSpace: "normal",
+                                        lineHeight: 1.3,
+                                        color: c.ball_left
+                                          ? "#1a7f37" : "#777",
+                                      }}>
+                                        {c.ball_left ? "⛳ ball left the spot"
+                                          : "⛳ ball still there"}
+                                        {c.ball_override
+                                          ? " — overruled the judge" : ""}
+                                        <div className="muted">
+                                          {c.ball_why}
+                                        </div>
+                                      </div>
+                                    )}
                                     {/* WHICH GOLFER, AND WHY THAT ONE.
                                         OUTSIDE the audio-2 block: both
                                         audio processes crop to a single

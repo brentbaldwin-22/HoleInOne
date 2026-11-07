@@ -295,3 +295,246 @@ def find_ball_vanish(video_path, *, zones=None, zones_fractional: bool = False,
             "frames_scanned": len(frames),
         })
     return windows
+
+
+# ---- the ball on the tee, across the six judged frames ---------------
+
+# HOW STILL "the exact same spot" HAS TO BE. A ball at address does
+# not move at all; this is sampling and sub-pixel centroid noise, not
+# real travel. Tighter than MATCH_PX above, which has to survive a
+# ball rolling out after a chip.
+ADDRESS_JITTER_PX = 4.0
+
+# AND HOW MUCH BRIGHTER THAN ITS SURROUNDINGS before it is called a
+# ball at all. _detections already applies MIN_LOCAL_CONTRAST; this
+# is a second, higher bar for THIS use, because the operator's
+# requirement is explicit: "the ball needs to be clearly identified -
+# i don't want a white shoe or skin identified as a ball". A shoe is
+# large and fails on area; skin is not much brighter than sunlit
+# grass and fails here.
+ADDRESS_MIN_CONTRAST = 30.0
+
+# A ball at address is SMALL, and how small depends on how big the
+# golfer is in the picture -- an absolute pixel count means nothing
+# across crops that are scaled to fit a tile. A golf ball is 1.68
+# inches against a golfer of about 70, so a ball is ~0.024 of their
+# height across. Doubled for bloom and blur: anything wider than
+# this fraction of the golfer is not a ball.
+BALL_MAX_DIAM_OVER_GOLFER = 0.05
+
+# The fallback when nobody was detected and there is no golfer to
+# measure against.
+ADDRESS_MAX_AREA = 250
+
+# AND A BALL IS NOT ON A PERSON. This is the filter that does the
+# work the operator asked for -- "i don't want a white shoe or skin
+# identified as a ball". A glove, a shoe, a white cap, a sleeve, a
+# patch of forearm: every one of them is attached to a body and
+# lands INSIDE that body's detection box. A ball sitting on the turf
+# does not. Measured on the 8 Nov frames, where the thing it found
+# before this filter went in was a golfer's white glove at his hip,
+# an 80 px blob holding still across all six frames -- exactly the
+# shape of evidence this check is supposed to produce, and entirely
+# wrong.
+
+
+# A BALL IS ON THE GROUND, and so is the golfer. Their feet and the
+# ball are therefore at nearly the same height in the picture: a ball
+# teed further from the camera sits higher, one nearer sits lower,
+# and perspective bounds both. Without this the check reaches up into
+# the background and calls a bright leaf in a tree a ball -- which it
+# did, on the 8 Nov frames, at a fifth of the way down a crop whose
+# golfer's feet were at four fifths.
+#
+# As fractions of the golfer's height, above and below their feet.
+# Generous upward, because the tee can be well behind where they
+# stand; tight downward, because nothing is closer to the camera than
+# the near edge of the tee.
+BALL_BAND_ABOVE_FEET = 0.35
+BALL_BAND_BELOW_FEET = 0.15
+
+
+def _on_the_ground(y, people) -> bool:
+    """Is this height plausible for a ball, given where people stand?
+
+    True when nobody was detected: absence of evidence is not a
+    reason to refuse, and the person filter above is the one doing
+    the heavy lifting.
+    """
+    bands = []
+    for p in people or []:
+        b = p.get("box") if isinstance(p, dict) else p
+        if not b or b[3] <= 0:
+            continue
+        feet = b[1] + b[3]
+        bands.append((feet - BALL_BAND_ABOVE_FEET * b[3],
+                      feet + BALL_BAND_BELOW_FEET * b[3]))
+    if not bands:
+        return True
+    return any(lo <= y <= hi for lo, hi in bands)
+
+
+def _on_a_person(x, y, people) -> bool:
+    """Is this point inside somebody's detection box?"""
+    for p in people or []:
+        b = p.get("box") if isinstance(p, dict) else p
+        if not b:
+            continue
+        if b[0] <= x <= b[0] + b[2] and b[1] <= y <= b[1] + b[3]:
+            return True
+    return False
+
+
+def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
+                    people=None,
+                    before: int = 3, jitter_px: float = ADDRESS_JITTER_PX,
+                    min_contrast: float = ADDRESS_MIN_CONTRAST,
+                    max_area: int = ADDRESS_MAX_AREA) -> dict:
+    """Was a ball sitting there before the strike, and gone after?
+
+    THE OPERATOR'S RULE, 8 Nov: find the ball in at least 2 of the
+    first 3 of the six judged frames, in the same spot each time --
+    it is at address, it does not move. If it is then absent from the
+    last frames, the golfer hit it, and that is about as direct a
+    piece of evidence as this system can get: a ball does not leave a
+    tee by itself.
+
+    "If the ball cannot be clearly identified because it's obstructed
+    then don't make a judgement based on ball presence." So the
+    absence of a ball is never evidence of anything here. Only a ball
+    that was definitely THERE and then definitely GONE counts, and
+    everything else returns left=None.
+
+    Returns {"left": True|False|None, "spot": [x, y]|None,
+    "seen_before": n, "seen_after": n, "why": str}, in the frame's
+    own pixels. Never raises.
+    """
+    import cv2
+
+    out = {"left": None, "spot": None, "seen_before": 0, "seen_after": 0,
+           "why": "not checked"}
+    cap = None
+    try:
+        offs = list(offsets or ())
+        if len(offs) < 4:
+            out["why"] = "needs the six frames"
+            return out
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            out["why"] = "could not open the clip"
+            return out
+        fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
+        W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if rect:
+            x0 = max(0, min(W - 1, int(rect[0])))
+            y0 = max(0, min(H - 1, int(rect[1])))
+            x1 = max(x0 + 1, min(W, int(rect[2])))
+            y1 = max(y0 + 1, min(H, int(rect[3])))
+        else:
+            x0, y0, x1, y1 = 0, 0, W, H
+        boxes = [(x0, y0, x1, y1)]
+        # SCALED TO THE GOLFER when there is one to scale to.
+        cap_area = int(max_area)
+        _hs = [p["box"][3] for p in (people or [])
+               if isinstance(p, dict) and p.get("box")]
+        if _hs:
+            _d = BALL_MAX_DIAM_OVER_GOLFER * (sum(_hs) / float(len(_hs)))
+            cap_area = max(4, int(_d * _d))
+
+        per_frame = []
+        for off in offs:
+            f = int(round((float(at_sec) + float(off)) * fps))
+            if f < 0:
+                per_frame.append(None)
+                continue
+            cap.set(cv2.CAP_PROP_POS_FRAMES, f)
+            ok, fr = cap.read()
+            if not ok or fr is None:
+                per_frame.append(None)
+                continue
+            gray = cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY)
+            dets = [d for d in _detections(gray, boxes)
+                    if d[2] <= int(cap_area) and d[3] >= float(min_contrast)
+                    and not _on_a_person(d[0], d[1], people)
+                    and _on_the_ground(d[1], people)]
+            per_frame.append(dets)
+
+        head = per_frame[:int(before)]
+        tail = per_frame[int(before):]
+        # THE SAME SPOT IN AT LEAST TWO OF THE FIRST THREE. Cluster
+        # the pre-strike detections by position; a ball at address
+        # lands in the same few pixels every time, a flicker of
+        # sunlit grass does not.
+        clusters: list = []
+        for dets in head:
+            for (x, y, area, con) in (dets or []):
+                hit = None
+                for c in clusters:
+                    if ((x - c["x"]) ** 2 + (y - c["y"]) ** 2) ** 0.5 \
+                            <= float(jitter_px):
+                        hit = c
+                        break
+                if hit is None:
+                    clusters.append({"x": x, "y": y, "n": 1,
+                                     "con": con, "frames": 1})
+                else:
+                    hit["x"] = (hit["x"] * hit["n"] + x) / (hit["n"] + 1)
+                    hit["y"] = (hit["y"] * hit["n"] + y) / (hit["n"] + 1)
+                    hit["n"] += 1
+                    hit["con"] = max(hit["con"], con)
+                    hit["frames"] += 1
+        good = [c for c in clusters if c["frames"] >= 2]
+        if not good:
+            out["why"] = ("no ball clearly in the same spot in 2 of the "
+                          "first %d frames — no judgement from the ball"
+                          % len(head))
+            return out
+        best = max(good, key=lambda c: (c["frames"], c["con"]))
+        out["spot"] = [int(round(best["x"])), int(round(best["y"]))]
+        out["seen_before"] = int(best["frames"])
+
+        # AND GONE AFTERWARDS. Only the frames after the strike are
+        # asked, and the last two carry the answer: at +0.00s a
+        # struck ball can still be a blur at the tee.
+        still = 0
+        for dets in tail:
+            if dets is None:
+                continue
+            if any(((x - best["x"]) ** 2 + (y - best["y"]) ** 2) ** 0.5
+                   <= float(jitter_px) for (x, y, _a, _c) in dets):
+                still += 1
+        out["seen_after"] = still
+        late = [d for d in tail[1:] if d is not None]
+        gone_late = all(
+            not any(((x - best["x"]) ** 2 + (y - best["y"]) ** 2) ** 0.5
+                    <= float(jitter_px) for (x, y, _a, _c) in d)
+            for d in late) if late else False
+        if gone_late and still == 0:
+            out["left"] = True
+            out["why"] = ("a ball sat at (%d, %d) in %d of the first %d "
+                          "frames and is gone from every frame after the "
+                          "strike" % (out["spot"][0], out["spot"][1],
+                                      out["seen_before"], len(head)))
+        elif still >= 2:
+            out["left"] = False
+            out["why"] = ("the ball is still at (%d, %d) in %d frames "
+                          "after the strike" % (out["spot"][0],
+                                                out["spot"][1], still))
+        else:
+            out["why"] = ("a ball sat at (%d, %d) before the strike but "
+                          "what happened to it is not clear "
+                          "(%d of %d frames after still show it)"
+                          % (out["spot"][0], out["spot"][1], still,
+                             len(tail)))
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.debug("ball_at_address failed (%s)", exc)
+        out["why"] = "ball check failed"
+        return out
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:  # noqa: BLE001
+                pass

@@ -449,15 +449,25 @@ def main() -> int:
     r3 = pick_front_golfer([front], ZONES, people=[])
     check("no detections falls back to the heat",
           r3["from"], "the motion heat (no person detector)")
-    # THE TIGHTER MARGIN. Real feet are steady to a few pixels, so
-    # one step toward the markers separates two players; two abreast
-    # still read as level.
+    # THE MARGIN, LOWERED TO 0.02 ON 8 NOV. The operator's reading of
+    # the hole is that the golfer furthest up is almost always the
+    # one hitting, which makes DECLINING the expensive mistake. What
+    # is left of the bar is detector jitter: ~7 px on a 380 px
+    # golfer. `stand` has feet at y=800.
     _step = person(1070, 330, 150, 400)           # feet y=730: 70 px up
     check("one step forward separates them",
           pick_front_golfer([], PZ, people=[stand, _step])["pick"] is not None,
           True)
-    _abreast = person(1070, 410, 150, 380)        # feet y=790: 10 px up
-    check("  but two abreast are still too close",
+    # THE 8 NOV CLIP: two players on a tee, the hitter 24 px further
+    # up in the frame. The old 0.08 bar wanted 27 and declined,
+    # losing the zoom on a clip the rule had right.
+    _close = person(1070, 400, 150, 376)          # feet y=776: 24 px up
+    check("  and so does the 24 px gap that used to decline",
+          pick_front_golfer([], PZ,
+                            people=[stand, _close])["pick"] is not None, True)
+    # BUT A DIFFERENCE OF NOISE IS STILL NO DIFFERENCE.
+    _abreast = person(1070, 416, 150, 380)        # feet y=796: 4 px up
+    check("  while four pixels is still too close to call",
           pick_front_golfer([], PZ,
                             people=[stand, _abreast])["close"], True)
     # THE TREE, 8 Nov. The detector offered a palm as a person; its

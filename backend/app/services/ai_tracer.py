@@ -8978,7 +8978,7 @@ AUDIO2_CLASSES = {
 
 def judge_swing_audio2(frames_path, image_path, *, ratio=None,
                        attack_ms=None, offsets=None, frames=None,
-                       model: str | None = None) -> dict:
+                       ball_left=None, model: str | None = None) -> dict:
     """The audio-2 judge: five frames, the heat map, and the numbers.
 
     Returns the usual {is_swing, confidence, reason} so the page and
@@ -9037,6 +9037,25 @@ def judge_swing_audio2(frames_path, image_path, *, ratio=None,
     _facts.append("Audio attack duration: %s."
                   % ("%.1f ms" % float(attack_ms) if attack_ms
                      else "not measured"))
+    # THE BALL, WHEN IT COULD BE READ AT ALL. Measured, not guessed:
+    # a small round bright thing on the turf, off every detected
+    # body, holding the same spot across the frames before the
+    # strike. None means it could not be identified clearly, and the
+    # model is told nothing rather than told "no ball" -- an
+    # obstructed ball must not read as an absent one.
+    if ball_left is True:
+        _facts.append(
+            "A golf ball was clearly identified on the ground before the "
+            "strike, in the same spot across the early frames, and is "
+            "absent from every frame after it. A ball does not leave a "
+            "tee by itself.")
+    elif ball_left is False:
+        _facts.append(
+            "A golf ball was clearly identified on the ground before the "
+            "strike and is STILL THERE in the frames after it. That does "
+            "not by itself rule out a swing -- the strike can fall later "
+            "than the audio peak -- but nothing was hit away in these "
+            "frames.")
     try:
         client = _anthropic_client()
         resp = client.messages.create(

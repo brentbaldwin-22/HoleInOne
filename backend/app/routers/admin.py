@@ -15193,6 +15193,28 @@ def test_cut_long_upload(
                                 log.debug(
                                     "test-cut frame strip failed: %s", _fx)
 
+                        # AND WHERE THE BALL WENT. The most direct
+                        # evidence this system can get: a ball does
+                        # not leave a tee by itself. Only runs on the
+                        # full six frames -- the rule is "2 of the
+                        # first 3, then gone" and a short clip with
+                        # no address frame cannot answer it.
+                        if _golfer and _strip is not None and len(_used) == 6:
+                            try:
+                                from ..services.ball_vanish import (
+                                    ball_at_address,
+                                )
+                                _bl = ball_at_address(
+                                    src_path, peak_time_sec,
+                                    [u[0] for u in _used],
+                                    rect=_chk.get("frames_rect"),
+                                    people=_people2)
+                                cut_entry["ball_left"] = _bl["left"]
+                                cut_entry["ball_spot"] = _bl["spot"]
+                                cut_entry["ball_why"] = _bl["why"]
+                            except Exception as _bx:  # noqa: BLE001
+                                log.debug("test-cut ball check: %s", _bx)
+
                         _final = _heat
                         if _audio2:
                             from ..services.tracer import (
@@ -15204,7 +15226,8 @@ def test_cut_long_upload(
                                 attack_ms=cut_entry.get("attack_ms"),
                                 offsets=([u[0] for u in _used]
                                          if _used else _A2),
-                                frames=[u[1] for u in _used])
+                                frames=[u[1] for u in _used],
+                                ball_left=cut_entry.get("ball_left"))
                             for _k in ("classification", "golfer_visible",
                                        "swing_motion_visible",
                                        "impact_alignment",
@@ -15278,6 +15301,24 @@ def test_cut_long_upload(
                         # less. This is the one endpoint on the server
                         # that HAS an audio ratio to weigh, which is
                         # why the gate can run here and not in debug3.
+                        # A BALL THAT LEFT SETTLES IT. The
+                        # operator's rule: "if it disappears as the
+                        # golfer completes his swing then its
+                        # definitely a swing." This only ever turns a
+                        # verdict INTO a swing -- a ball still sitting
+                        # there is not taken as proof of the
+                        # opposite, because the strike can simply
+                        # happen later than the audio peak, which is
+                        # exactly what one of the 8 Nov clips shows.
+                        if cut_entry.get("ball_left") is True:
+                            if cut_entry.get("is_swing") is not True:
+                                cut_entry["ball_override"] = True
+                                cut_entry["verify_reason"] = (
+                                    "%s — but %s"
+                                    % (cut_entry.get("verify_reason") or
+                                       "the judge was not convinced",
+                                       cut_entry.get("ball_why")))
+                            cut_entry["is_swing"] = True
                         _post = ({"keep": True, "why": "audio 2"}
                                  if _audio2 else _sj.postjudge(
                                      cut_entry.get("is_swing"),

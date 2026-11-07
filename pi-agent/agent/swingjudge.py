@@ -600,11 +600,23 @@ FRONT_GOLFER_MARGIN_FRAC = 0.25
 # would throw away the precision that was the whole reason for
 # detecting people.
 #
-# UNMEASURED, like its larger sibling. 0.08 of a body height is about
-# a shoe length: enough that two players genuinely abreast still read
-# as level, small enough that one step toward the markers separates
-# them.
-FRONT_GOLFER_MARGIN_DETECTED = 0.08
+# LOWERED 0.08 -> 0.02 ON 8 NOV, on the operator's instruction and
+# against a case that measured it. Two players on a tee, the hitter
+# 8 px further up at tile scale (~24 px in the frame) against a 27 px
+# bar: it declined, fell back to the whole-tee crop, and the zoom was
+# lost on a clip where the rule had the right answer.
+#
+# What makes a small margin safe here is the operator's own reading
+# of the hole: "almost always the golfer whose feet are higher up in
+# the frame is the golfer" -- the player hitting has walked forward
+# to the markers and the rest stand back. If that is nearly always
+# true then declining is the expensive mistake, not picking.
+#
+# 0.02 of a body height is ~7 px on a 340 px golfer, which is about
+# the frame-to-frame jitter of a detector box edge. So it still
+# declines when two boxes differ by noise alone, and separates on any
+# real difference.
+FRONT_GOLFER_MARGIN_DETECTED = 0.02
 
 
 def pick_front_golfer(blobs, zones, *, offset=(0, 0),
