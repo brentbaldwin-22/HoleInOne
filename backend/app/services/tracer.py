@@ -3680,8 +3680,14 @@ def swing_heat_check(
                     # size -- this just stops throwing the rest away.
                     _cands = [_geo.get("main")] + list(_geo.get("others") or [])
                     _cands = [c for c in _cands
-                              if c and c["w"] >= 8 and c["h"] >= 8][
-                                  :max(1, int(max_candidates))]
+                              if c and c["w"] >= 8 and c["h"] >= 8]
+                    # EVERY person-shaped blob, kept whole, so that a
+                    # crop can be held clear of the ones it is not
+                    # about -- including any beyond max_candidates,
+                    # which are not asked about but are still in the
+                    # picture if the crop reaches them.
+                    _people = list(_cands)
+                    _cands = _cands[:max(1, int(max_candidates))]
                     out["candidates"] = []
                     _base_img = judged
                     for _ci, _mz in enumerate(_cands):
@@ -3721,13 +3727,38 @@ def swing_heat_check(
                                     _zx1 = min(_zw, max(_zx1, _sx1))
                             except Exception:  # noqa: BLE001
                                 pass
+                        # BUT ONE GOLFER PER PICTURE. Widening to the
+                        # zone reached the whole tee, which put BOTH
+                        # players in both candidate crops -- so the two
+                        # calls asked the same question about the same
+                        # image, and "a thin extension above the
+                        # golfer's head" stopped having one head to
+                        # mean. The judge came back reporting on "the
+                        # right figure". The crop stops just short of
+                        # anyone else, which keeps the width where
+                        # there is room for it and gives the plume test
+                        # its subject back.
+                        for _o in _people:
+                            if _o is _mz:
+                                continue
+                            if _o["x"] + _o["w"] <= _ax:
+                                _zx0 = max(_zx0,
+                                           min(_o["x"] + _o["w"] + 4, _ax))
+                            elif _o["x"] >= _ax + _mz["w"]:
+                                _zx1 = min(_zx1,
+                                           max(_o["x"] - 4,
+                                               _ax + _mz["w"]))
                         _zy0 = 0
                         _zy1 = _ay + _mz["h"] + int(_mz["h"] * 0.35)
                         if floor_y is not None:
-                            # Below the feet by a little, so the stance
-                            # and the turf are both in the picture.
-                            _zy1 = max(_zy1, int(float(floor_y) - _oy)
-                                       + int(_mz["h"] * 0.15))
+                            # THE FEET, AND NOT THE FAIRWAY BEYOND
+                            # THEM. The zones are drawn round feet, so
+                            # their bottom edge IS the ground line; the
+                            # margin that used to sit under it only
+                            # bought empty turf, which costs apparent
+                            # size in the picture for nothing.
+                            _zy1 = max(int(float(floor_y) - _oy),
+                                       _ay + _mz["h"] + 4)
                         _zy1 = min(_zh, _zy1)
                         # GROW A SMALL CROP, DO NOT ABANDON IT. The
                         # first version skipped the zoom when the crop

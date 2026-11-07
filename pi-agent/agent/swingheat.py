@@ -239,15 +239,31 @@ def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
                                 _zx1 = min(_zw, max(_zx1, _sx1))
                         except Exception:  # noqa: BLE001
                             pass
+                    # BUT ONE GOLFER PER PICTURE -- the crop stops just
+                    # short of anybody else the measurement found. See
+                    # tracer.swing_heat_check: widening to the zone put
+                    # both players in the frame and left "above the
+                    # golfer's head" with two heads to mean.
+                    _ax = _mz["x"]
+                    for _o in (_geo.get("others") or []):
+                        if not _o or _o["w"] < 8 or _o["h"] < 8:
+                            continue
+                        if _o["x"] + _o["w"] <= _ax:
+                            _zx0 = max(_zx0, min(_o["x"] + _o["w"] + 4, _ax))
+                        elif _o["x"] >= _ax + _mz["w"]:
+                            _zx1 = min(_zx1,
+                                       max(_o["x"] - 4, _ax + _mz["w"]))
                     _zy0 = 0
                     # Down to the feet, not to the bottom of the heat:
                     # a golfer's legs barely move, so the motion stops
-                    # around the waist. See tracer.swing_heat_check.
+                    # around the waist. To the feet and NOT past them:
+                    # turf below the stance only costs apparent size.
+                    # See tracer.swing_heat_check.
                     _zy1 = _mz["y"] + _mz["h"] + int(_mz["h"] * 0.35)
                     if prefer_xy is not None:
                         try:
                             _fy = float(prefer_xy[1]) - oy
-                            _zy1 = max(_zy1, int(_fy) + int(_mz["h"] * 0.15))
+                            _zy1 = max(int(_fy), _mz["y"] + _mz["h"] + 4)
                         except Exception:  # noqa: BLE001
                             pass
                     _zy1 = min(_zh, _zy1)
