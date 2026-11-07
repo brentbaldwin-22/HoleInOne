@@ -21,7 +21,7 @@ from ..schemas import (
     RegistrationResult,
     TeeTimeOut,
 )
-from ..services import appearance, notifications, tee_times
+from ..services import appearance, highlights, notifications, tee_times
 from ..services import site_theme
 from ..services.qr import generate_qr_png
 from ..services.stripe_service import create_registration_payment_intent
@@ -144,41 +144,26 @@ def public_profile(user_id: int, db: Session = Depends(get_db)):
     total_aces = sum(1 for (c, _) in clip_q if c.ball_in_cup)
     closest_ctp = min((c.distance_from_pin_feet for (c, _) in clip_q if c.distance_from_pin_feet is not None), default=None)
 
-    # Highlight clips: aces first, then the nearest the pin, then
-    # whatever is most recent. Carry used to rank these, and ranking by a
-    # number we cannot measure put arbitrary shots at the top of a
-    # golfer's profile.
-    highlights = []
-    for c, course in clip_q:
-        if c.ball_in_cup:
-            highlights.append((3_000_000, c, course, "ACE"))
-    for c, course in clip_q:
-        d = c.distance_from_pin_feet
-        if d is not None:
-            # Closest wins, so invert: 1 ft outranks 40 ft.
-            highlights.append((2_000_000 - int(d), c, course, f"{d} ft from the pin"))
-    for c, course in clip_q:
-        # Nothing measured on this one -- still worth showing, ordered by
-        # recency, so a profile is never empty just because the tracer
-        # had nothing to say.
-        highlights.append((int(c.captured_at.timestamp()), c, course, None))
-    seen = set()
+    # THE REEL: the golfer's ten closest, holed shots leading. Ranked in
+    # services/highlights.py so the order can be tested without a
+    # database, because "closest first" is the sort of thing that looks
+    # right in a screenshot whichever way round it actually is.
     dedup = []
-    for score, clip, course, tag in sorted(highlights, key=lambda x: -x[0]):
-        if clip.id in seen:
-            continue
-        seen.add(clip.id)
+    for clip, course, tag in highlights.rank(clip_q):
         dedup.append({
             "clip_id": clip.id,
             "course": course.name,
             "hole": clip.hole_number,
-            "source_url": clip.source_url,
+            # What to PLAY, not what was uploaded: the tracer render is
+            # the finished article and source_url is raw footage with no
+            # line on it. The reel plays these back to back, so it should
+            # play the same cut the golfer's gallery does.
+            "source_url": clip.tracer_url or clip.source_url,
             "thumbnail_url": clip.thumbnail_url,
             "ball_in_cup": clip.ball_in_cup,
+            "distance_from_pin_feet": clip.distance_from_pin_feet,
             "tag": tag,
         })
-        if len(dedup) >= 3:
-            break
 
     # Recent rounds
     recent = [

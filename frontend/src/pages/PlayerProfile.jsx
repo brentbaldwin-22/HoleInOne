@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
@@ -18,6 +19,8 @@ export default function PlayerProfile() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [copied, setCopied] = useState(false);
+  // -1 = not playing. Otherwise the index of the clip on screen.
+  const [reelAt, setReelAt] = useState(-1);
 
   useEffect(() => {
     api.publicProfile(userId).then(setData).catch((e) => setError(e.message));
@@ -91,7 +94,17 @@ export default function PlayerProfile() {
 
       {data.highlights.length > 0 && (
         <div className="card">
-          <h3 style={{ marginBottom: 10 }}>Highlight reel</h3>
+          <div className="inline" style={{ justifyContent: "space-between", width: "100%", marginBottom: 10 }}>
+            <h3 style={{ margin: 0 }}>Highlight reel</h3>
+            <div className="inline" style={{ gap: 12 }}>
+              <span className="small muted">
+                {data.highlights.length} closest shot{data.highlights.length === 1 ? "" : "s"}
+              </span>
+              <button type="button" onClick={() => setReelAt(0)}>
+                Play all
+              </button>
+            </div>
+          </div>
           <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
             {data.highlights.map((h) => (
               <div key={h.clip_id}>
@@ -111,6 +124,56 @@ export default function PlayerProfile() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* THE REEL, BACK TO BACK. One <video> that advances on `ended`,
+          which is how Watch.jsx plays the broadcast -- no stitched file,
+          so nothing to encode, nothing to store on a disk that is
+          already filling, and a clip re-rendered tomorrow is in the reel
+          tonight. The `key` forces React to rebuild the element on each
+          change so the new src actually loads and autoplays, rather than
+          the browser holding the old buffered stream. */}
+      {reelAt >= 0 && data.highlights[reelAt] && createPortal(
+        <div className="clip-watch" onClick={() => setReelAt(-1)}>
+          <video
+            key={data.highlights[reelAt].clip_id}
+            src={data.highlights[reelAt].source_url}
+            poster={data.highlights[reelAt].thumbnail_url || undefined}
+            controls
+            autoPlay
+            playsInline
+            onEnded={() => setReelAt((i) => (i + 1 < data.highlights.length ? i + 1 : -1))}
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: "min(100%, 900px)", maxHeight: "72vh" }}
+          />
+          <div className="clip-watch-bar">
+            <button
+              type="button"
+              className="ghost small"
+              disabled={reelAt === 0}
+              onClick={() => setReelAt((i) => Math.max(0, i - 1))}
+            >
+              ← Previous
+            </button>
+            <span className="small">
+              {reelAt + 1} of {data.highlights.length}
+              {" · "}
+              <b>{data.highlights[reelAt].course}</b>
+              {" · "}Hole {data.highlights[reelAt].hole}
+              {data.highlights[reelAt].tag ? ` · ${data.highlights[reelAt].tag}` : ""}
+            </span>
+            <button
+              type="button"
+              className="ghost small"
+              disabled={reelAt + 1 >= data.highlights.length}
+              onClick={() => setReelAt((i) => i + 1)}
+            >
+              Next →
+            </button>
+            <button type="button" onClick={() => setReelAt(-1)}>Close</button>
+          </div>
+        </div>,
+        document.body,
       )}
 
       {data.recent_rounds.length > 0 && (
