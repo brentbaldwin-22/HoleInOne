@@ -15013,9 +15013,19 @@ def test_cut_long_upload(
                         from ..services.tracer import (
                             AUDIO2_OFFSETS_SEC as _BO,
                         )
+                        # THE BAND COMES FROM THE GOLFER WE CROPPED
+                        # TO, not from everybody on the tee. Taken
+                        # across all of them, a partner bending over
+                        # at a different depth widened the allowed
+                        # band until it covered turf 44 px below this
+                        # golfer's own feet.
+                        _anc = None
+                        if _chk.get("front_feet") and _chk.get("front_h"):
+                            _anc = (_chk["front_feet"][1], _chk["front_h"])
                         _bl = ball_at_address(
                             src_path, peak_time_sec, _BO,
-                            rect=_chk.get("frames_rect"), people=_people2)
+                            rect=_chk.get("frames_rect"),
+                            people=_people2, anchor=_anc)
                         cut_entry["ball_left"] = _bl["left"]
                         cut_entry["ball_spot"] = _bl["spot"]
                         cut_entry["ball_balls"] = _bl.get("balls")

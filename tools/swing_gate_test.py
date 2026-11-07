@@ -37,8 +37,8 @@ sys.path.insert(0, str(ROOT / "pi-agent"))
 import numpy as np                                    # noqa: E402
 
 from agent.swingjudge import (                        # noqa: E402
-    aim_verdict, confidence_verdict, decide_verdict, measure_heat,
-    pick_front_golfer,
+    aim_verdict, break_tie_on_motion, confidence_verdict, decide_verdict,
+    measure_heat, pick_front_golfer,
     pick_stance, postjudge, prejudge, shape_verdict, stance_verdict,
     tiebreak, MIN_ASPECT,
 )
@@ -493,6 +493,38 @@ def main() -> int:
     # stop at the waist.
     check("the heat fallback still forgives a high blob",
           pick_front_golfer([_waist], ZONES)["pick"] is _waist, True)
+
+    # ---- when the feet are level, the heat decides ------------------
+    # TWO PLAYERS ABREAST look identical to a rule about feet, and on
+    # 8 Nov that cost a legitimate swing: the partner stood well back,
+    # the stance rule had nothing to separate them and declined, and
+    # the whole-tee crop went to the wrong man. They do not look
+    # identical to the MOTION.
+    LEFT = {"box": [500, 200, 90, 380], "feet": [545, 580]}
+    RIGHT = {"box": [800, 200, 90, 380], "feet": [845, 580]}
+    # The swing: a wide hot blob over the right-hand golfer. Blobs
+    # are in CROP pixels, the crop sits at (100, 50) in the frame.
+    SWING = {"x": 690, "y": 170, "w": 160, "h": 300}
+    r = break_tie_on_motion([LEFT, RIGHT], [SWING], offset=(100, 50))
+    check("the golfer holding the motion wins",
+          r["pick"] is RIGHT, True)
+    check("  and it says the heat decided", "heat decided" in r["why"],
+          True)
+    # The other way round, so it is not just picking the last one.
+    SWING_L = {"x": 390, "y": 170, "w": 160, "h": 300}
+    check("  whichever side the motion is on",
+          break_tie_on_motion([LEFT, RIGHT], [SWING_L],
+                              offset=(100, 50))["pick"] is LEFT, True)
+    # MOTION SOMEWHERE ELSE ENTIRELY is not an answer. A tee with two
+    # still golfers and a cart moving behind them has not told us who
+    # was hitting.
+    ELSEWHERE = {"x": 1200, "y": 170, "w": 100, "h": 100}
+    check("motion over nobody decides nothing",
+          break_tie_on_motion([LEFT, RIGHT], [ELSEWHERE],
+                              offset=(100, 50))["pick"] is None, True)
+    check("  and no blobs at all likewise",
+          break_tie_on_motion([LEFT, RIGHT], [], offset=(100, 50))
+          ["pick"] is None, True)
 
     # ---- three tests, majority wins --------------------------------
     # THE BALL STOPS BEING A VETO. It was overturning two judges that

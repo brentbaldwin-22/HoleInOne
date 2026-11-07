@@ -3949,12 +3949,46 @@ def swing_heat_check(
                         # golfer; on the whole-tee fallback it is
                         # hunting specks across a hundred yards of
                         # turf.
-                        out["golfer_crop"] = _pf.get("pick") is not None
-                        out["picked_front"] = "%s — %s" % (
-                            _pf.get("from") or "?", _pf["why"])
-                        out["front_candidates"] = _pf.get("considered")
                         _front = _pf.get("pick")
                         _front_floor = _pf.get("floor")
+                        _why = _pf["why"]
+                        # THE FEET WERE LEVEL -> ASK THE HEAT. Two
+                        # players abreast look identical to a rule
+                        # about feet, and on one clip that cost a
+                        # legitimate swing. They do not look identical
+                        # to the motion. See
+                        # swingjudge.break_tie_on_motion.
+                        if _front is None and _pf.get("close") and people:
+                            _mt = _sj.break_tie_on_motion(
+                                people, _cands_all, offset=(_ox, _oy))
+                            if _mt.get("pick"):
+                                _front = _mt["pick"]
+                                _why = "%s; %s" % (_pf["why"], _mt["why"])
+                                for _c in (_pf.get("considered") or []):
+                                    _c["picked"] = (
+                                        _c["feet"] == list(
+                                            _front.get("feet") or []))
+                                _front_floor = None
+                                try:
+                                    _fx = float(_front["feet"][0])
+                                    _fy = float(_front["feet"][1])
+                                    for _z in zones:
+                                        if (_z[0] <= _fx <= _z[0] + _z[2]
+                                                and _z[1] - _z[3] <= _fy
+                                                <= _z[1] + 2 * _z[3]):
+                                            _front_floor = _z[1] + _z[3]
+                                            break
+                                except Exception:  # noqa: BLE001
+                                    _front_floor = None
+                        if _front is not None and people:
+                            _front = dict(
+                                _front,
+                                x=_front["box"][0], y=_front["box"][1],
+                                w=_front["box"][2], h=_front["box"][3])
+                        out["golfer_crop"] = _front is not None
+                        out["picked_front"] = "%s — %s" % (
+                            _pf.get("from") or "?", _why)
+                        out["front_candidates"] = _pf.get("considered")
                     if _front is not None:
                         # BACK INTO CROP PIXELS. The heat blobs were
                         # measured on the crop; a detector box is in
@@ -3966,6 +4000,10 @@ def swing_heat_check(
                                 _front,
                                 x=int(_front["x"]) - _ox,
                                 y=int(_front["y"]) - _oy)
+                            out["front_feet"] = [
+                                int(_front["x"] + _front["w"] / 2 + _ox),
+                                int(_front["y"] + _front["h"] + _oy)]
+                            out["front_h"] = int(_front["h"])
                         # ONE GOLFER IS THE CROP. Pads named here
                         # rather than buried: a third of a body width
                         # either side is "a little outside the body",

@@ -361,31 +361,45 @@ ADDRESS_MAX_AREA = 250
 # golfer's feet were at four fifths.
 #
 # As fractions of the golfer's height, above and below their feet.
-# Generous upward, because the tee can be well behind where they
-# stand; tight downward, because nothing is closer to the camera than
-# the near edge of the tee.
-BALL_BAND_ABOVE_FEET = 0.35
-BALL_BAND_BELOW_FEET = 0.15
+#
+# "THE OBVIOUS THING IS THAT THE BALL IS GOING TO BE EVEN OR HIGHER
+# THAN THE GREEN FOOT LINE" -- the operator, 8 Nov, and he is right:
+# the ball is teed AHEAD of the stance, which from a camera behind
+# the tee means at the foot line or above it. Never below. The old
+# 0.15 downward allowance had nothing behind it and let a speck 44 px
+# BELOW the golfer's feet be called a ball.
+#
+# Upward was 0.35, which admitted another at 0.24 of a golfer's
+# height above the line -- well up the picture, nowhere near the tee.
+# Measured against the real balls seen so far, which sit 0.14 of a
+# height above the line at most.
+BALL_BAND_ABOVE_FEET = 0.18
+BALL_BAND_BELOW_FEET = 0.02
 
 
-def _on_the_ground(y, people) -> bool:
-    """Is this height plausible for a ball, given where people stand?
+def _on_the_ground(y, anchor) -> bool:
+    """Is this height plausible for a ball at THIS golfer's feet?
 
-    True when nobody was detected: absence of evidence is not a
-    reason to refuse, and the person filter above is the one doing
-    the heavy lifting.
+    `anchor` is (feet_y, height) for the ONE golfer the crop was cut
+    around. It used to be every detected person, with the band taken
+    as the union -- and a playing partner bending over at a different
+    depth widened that union until it covered turf 44 px below the
+    picked golfer's own feet, which is how a speck down there came
+    back as a ball.
+
+    True when there is no anchor: absence of evidence is not a reason
+    to refuse, and the on-a-person filter is the heavy lifting.
     """
-    bands = []
-    for p in people or []:
-        b = p.get("box") if isinstance(p, dict) else p
-        if not b or b[3] <= 0:
-            continue
-        feet = b[1] + b[3]
-        bands.append((feet - BALL_BAND_ABOVE_FEET * b[3],
-                      feet + BALL_BAND_BELOW_FEET * b[3]))
-    if not bands:
+    if not anchor:
         return True
-    return any(lo <= y <= hi for lo, hi in bands)
+    try:
+        feet, h = float(anchor[0]), float(anchor[1])
+    except Exception:  # noqa: BLE001
+        return True
+    if h <= 0:
+        return True
+    return (feet - BALL_BAND_ABOVE_FEET * h <= y
+            <= feet + BALL_BAND_BELOW_FEET * h)
 
 
 # HOW FAR OUTSIDE A PERSON'S BOX STILL COUNTS AS ON THEM. A
@@ -394,7 +408,11 @@ def _on_the_ground(y, people) -> bool:
 # reported as a ball that "was NOT hit", in the right size, the right
 # brightness, perfectly still, just outside the box. As fractions of
 # the box, so it scales with how far away they are standing.
-PERSON_PAD_W = 0.12
+# SIDEWAYS IS NARROW ON PURPOSE. The shoe that started this poked
+# out of the BOTTOM of the box; padding the sides as generously would
+# swallow a ball teed a club-head's width from the stance, which is
+# where a ball at address actually sits.
+PERSON_PAD_W = 0.04
 PERSON_PAD_H = 0.06
 
 
@@ -464,7 +482,7 @@ def classify_balls(good, tail_live, jitter_px=ADDRESS_JITTER_PX):
 
 
 def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
-                    people=None,
+                    people=None, anchor=None,
                     before: int = 3, jitter_px: float = ADDRESS_JITTER_PX,
                     min_contrast: float = ADDRESS_MIN_CONTRAST,
                     max_area: int = ADDRESS_MAX_AREA) -> dict:
@@ -539,7 +557,7 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
             dets = [d for d in _detections(gray, boxes, rel=0.0)
                     if d[2] <= int(cap_area) and d[3] >= float(min_contrast)
                     and not _on_a_person(d[0], d[1], people)
-                    and _on_the_ground(d[1], people)]
+                    and _on_the_ground(d[1], anchor)]
             per_frame.append(dets)
 
         head = per_frame[:int(before)]

@@ -52,39 +52,49 @@ def main() -> int:
     # The box is padded for this test only.
     check("  a shoe just below the box is still on a person",
           _on_a_person(127, 240, GOLFER), True)
-    check("  and one just off the side is too",
-          _on_a_person(178, 230, GOLFER), True)
-    # BUT THE PAD IS SMALL. A ball teed a body-width away is not
-    # swallowed by it.
-    check("  while a ball a body-width away is not",
+    check("  and one a pixel off the side is too",
+          _on_a_person(176, 230, GOLFER), True)
+    # SIDEWAYS IS DELIBERATELY NARROW. The shoe that started this
+    # poked out of the BOTTOM of the box; padding the sides as
+    # generously would swallow a ball teed a club-head's width from
+    # the stance, which is exactly where a ball at address sits --
+    # and on 8 Nov a ball right beside a golfer went unfound.
+    check("  but a ball a club-head's width out is NOT on him",
+          _on_a_person(184, 230, GOLFER), False)
+    check("  nor one a body-width away",
           _on_a_person(260, 230, GOLFER), False)
     # NOBODY DETECTED is not a reason to refuse everything.
     check("with nobody detected nothing is on a person",
           _on_a_person(201, 204, []), False)
 
     # ---- and a ball is on the ground ------------------------------
-    # Feet at 234, 208 tall: the band runs 234-0.35*208 = 161 up to
-    # 234+0.15*208 = 265.
+    # "THE BALL IS GOING TO BE EVEN OR HIGHER THAN THE GREEN FOOT
+    # LINE" -- it is teed AHEAD of the stance, which from a camera
+    # behind the tee means at the foot line or above it, never below.
+    # The anchor is the ONE golfer the crop was cut around: feet at
+    # 234, 208 px tall.
+    ANCHOR = (234, 208)
     lo = 234 - BALL_BAND_ABOVE_FEET * 208
     hi = 234 + BALL_BAND_BELOW_FEET * 208
-    check("the band is anchored on the feet", (round(lo), round(hi)),
-          (161, 265))
-    check("the real ball is in the band", _on_the_ground(204, GOLFER), True)
-    # The background spot that got picked before this filter existed.
-    check("a bright spot in the background is not",
-          _on_the_ground(35, GOLFER), False)
-    # A ball teed well back still counts; one in the sky does not.
-    check("  a ball teed further away still counts",
-          _on_the_ground(170, GOLFER), True)
-    check("  a gull overhead does not", _on_the_ground(60, GOLFER), False)
-    # Below the near edge of the tee is nothing at all.
-    check("  and neither is something under the camera",
-          _on_the_ground(290, GOLFER), False)
-    # ABSENCE OF PEOPLE IS NOT A REFUSAL: with nobody detected there
-    # is no ground line to measure against, and the person filter is
-    # the one doing the heavy lifting anyway.
-    check("with nobody detected every height is allowed",
-          _on_the_ground(35, []), True)
+    check("the band is anchored on that golfer's feet",
+          (round(lo), round(hi)), (197, 238))
+    check("the real ball is in the band", _on_the_ground(204, ANCHOR), True)
+    check("  and one exactly on the line", _on_the_ground(234, ANCHOR), True)
+    # THE 8 NOV FALSE POSITIVES, both measured off the screenshots.
+    # A speck 44 px BELOW the foot line, which the old 0.15 downward
+    # allowance let through.
+    check("a speck below the foot line is not a ball",
+          _on_the_ground(234 + 44, ANCHOR), False)
+    # And one 63 px above, which the old 0.35 upward allowance let
+    # through -- well up the picture, nowhere near the tee.
+    check("  nor is one far up the picture",
+          _on_the_ground(234 - 63, ANCHOR), False)
+    check("  a gull overhead does not", _on_the_ground(60, ANCHOR), False)
+    # NO ANCHOR IS NOT A REFUSAL: with nobody picked there is no
+    # ground line to measure against, and the on-a-person filter is
+    # the one doing the heavy lifting.
+    check("with no golfer picked every height is allowed",
+          _on_the_ground(35, None), True)
 
     # ---- which ball left -------------------------------------------
     def ball(x, y):

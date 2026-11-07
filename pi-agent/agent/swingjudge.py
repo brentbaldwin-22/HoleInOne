@@ -628,6 +628,62 @@ FRONT_GOLFER_MARGIN_FRAC = 0.25
 FRONT_GOLFER_MARGIN_DETECTED = 0.06
 
 
+def break_tie_on_motion(people, blobs, offset=(0, 0)) -> dict:
+    """Of these golfers, which one MOVED? {"pick": person|None, "why"}.
+
+    THE OPERATOR'S SUGGESTION, 8 Nov, for the case the feet cannot
+    settle: "maybe if the feet are close, we do the heat test with
+    just the ... trigger zone for the cropping and then zoom in if
+    there's a swing candidate from the heat map".
+
+    Two players level on a tee look identical to a rule about feet,
+    and on one clip that cost a legitimate swing -- the partner was
+    standing well back, so the stance rule had nothing to separate
+    them and declined, and the whole-tee crop went to the wrong man.
+    But they do not look identical to the HEAT: one of them swung a
+    club and the other stood still, and that is the entire difference
+    this system exists to find.
+
+    So the heat blobs, measured on the zone crop that is already
+    built, are scored against each person's box and the person
+    holding the most motion wins. `blobs` are in CROP pixels and
+    `offset` is where that crop sits in the frame; `people` are in
+    frame pixels.
+
+    None when nothing overlaps anybody, which is honest: a tee with
+    two still golfers on it and the motion somewhere else has not
+    told us who was hitting.
+    """
+    out = {"pick": None, "why": "no motion to separate them"}
+    try:
+        ox, oy = float(offset[0]), float(offset[1])
+        best, best_a = None, 0.0
+        for p in people or []:
+            b = p.get("box") if isinstance(p, dict) else p
+            if not b:
+                continue
+            bx0, by0, bx1, by1 = b[0], b[1], b[0] + b[2], b[1] + b[3]
+            tot = 0.0
+            for g in blobs or []:
+                if not g:
+                    continue
+                gx0, gy0 = g["x"] + ox, g["y"] + oy
+                gx1, gy1 = gx0 + g["w"], gy0 + g["h"]
+                iw = max(0.0, min(bx1, gx1) - max(bx0, gx0))
+                ih = max(0.0, min(by1, gy1) - max(by0, gy0))
+                tot += iw * ih
+            if tot > best_a:
+                best, best_a = p, tot
+        if best is None or best_a <= 0:
+            return out
+        out["pick"] = best
+        out["why"] = ("the feet were level, so the heat decided: this "
+                      "golfer holds %d px of the motion" % int(best_a))
+        return out
+    except Exception:  # noqa: BLE001
+        return out
+
+
 def pick_front_golfer(blobs, zones, *, offset=(0, 0),
                       slack=None,
                       margin_frac=None,
