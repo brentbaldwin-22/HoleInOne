@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import BackLink from "./BackLink.jsx";
+import GolferMenu from "./GolferMenu.jsx";
 import useAuth from "../hooks/useAuth.js";
 import useSiteTheme from "../hooks/useSiteTheme.js";
 import { logoUrl } from "../theme.js";
@@ -18,6 +19,8 @@ export function Brand({ subtitle, hideAccount }) {
   return (
     <>
     <div className="brand" style={{ justifyContent: "space-between", width: "100%" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <GolferMenu />
       <Link
         to="/"
         style={{ display: "flex", alignItems: "center", gap: 14, textDecoration: "none", color: "inherit" }}
@@ -29,6 +32,7 @@ export function Brand({ subtitle, hideAccount }) {
         />
         {subtitle && <div className="tag">{subtitle}</div>}
       </Link>
+      </div>
       {!hideAccount && (
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {user ? (

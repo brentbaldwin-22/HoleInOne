@@ -531,6 +531,68 @@ code {
   letter-spacing: 0.04em;
 }
 
+/* ---- Golfer menu (top left) -------------------------------------- */
+.gmenu { position: relative; display: inline-flex; }
+.gmenu-btn {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: none;
+}
+.gmenu-btn:hover { background: var(--surface-2, var(--surface)); color: var(--ink); }
+.gmenu-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 1200;
+  min-width: 248px;
+  padding: 7px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.16);
+}
+.gmenu-panel a,
+.gmenu-signout {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 11px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  text-decoration: none;
+  box-shadow: none;
+}
+.gmenu-panel a:hover,
+.gmenu-signout:hover { background: var(--primary-soft); color: var(--ink); text-decoration: none; }
+.gmenu-head {
+  padding: 7px 11px 9px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--ink-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gmenu-sep { height: 1px; margin: 6px 4px; background: var(--rule); }
+.gmenu-signout { color: var(--danger); }
+
 /* ---- Controls --------------------------------------------------- */
 
 .btn, button.btn, a.btn {
