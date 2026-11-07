@@ -3697,6 +3697,30 @@ def swing_heat_check(
                         _ax, _ay = _mz["x"], _mz["y"]
                         _zx0 = max(0, _ax - _px)
                         _zx1 = min(_zw, _ax + _mz["w"] + _px)
+                        # AS WIDE AS THE TRIGGER ZONE. The blob is
+                        # what MOVED, and a golfer whose hands are the
+                        # only hot thing measures a couple of hundred
+                        # pixels across -- so a crop built from the
+                        # blob alone cuts off the ground either side of
+                        # the stance and, worse, cuts off the club on
+                        # the way through. The zones are the width of
+                        # the ground a golfer can legally be standing
+                        # on, which is the right amount of context, and
+                        # the caller already hands it over for the
+                        # measurement. Never NARROWER than the blob
+                        # crop -- a blob outside the zones (which
+                        # happens, the zones are drawn round feet and
+                        # the heat is the whole body) keeps its own
+                        # margins and the union covers both.
+                        if _psp is not None:
+                            try:
+                                _sx0 = int(min(_psp))
+                                _sx1 = int(max(_psp))
+                                if _sx1 > _sx0:
+                                    _zx0 = max(0, min(_zx0, _sx0))
+                                    _zx1 = min(_zw, max(_zx1, _sx1))
+                            except Exception:  # noqa: BLE001
+                                pass
                         _zy0 = 0
                         _zy1 = _ay + _mz["h"] + int(_mz["h"] * 0.35)
                         if floor_y is not None:

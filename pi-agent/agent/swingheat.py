@@ -56,7 +56,8 @@ FRAME_TILE_PX = 640
 
 def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
           after_sec: float = 0.5, crop=None, out_path=None,
-          meta=None, frames_out=None, prefer_xy=None):
+          meta=None, frames_out=None, prefer_xy=None,
+          prefer_span=None):
     """Render the heat composite around `at_sec`. Path, or None.
 
     `meta`, when a dict is passed, is filled with what this pass
@@ -224,6 +225,20 @@ def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
                     _px = int(_mz["w"] * 1.25)
                     _zx0 = max(0, _mz["x"] - _px)
                     _zx1 = min(_zw, _mz["x"] + _mz["w"] + _px)
+                    # AS WIDE AS THE TRIGGER ZONE, and never narrower
+                    # than the blob crop. See tracer.swing_heat_check
+                    # for why: the blob is only what moved, so a crop
+                    # built from it clips the ground either side of the
+                    # stance and the club on the way through.
+                    if prefer_span is not None:
+                        try:
+                            _sx0 = int(min(prefer_span)) - ox
+                            _sx1 = int(max(prefer_span)) - ox
+                            if _sx1 > _sx0:
+                                _zx0 = max(0, min(_zx0, _sx0))
+                                _zx1 = min(_zw, max(_zx1, _sx1))
+                        except Exception:  # noqa: BLE001
+                            pass
                     _zy0 = 0
                     # Down to the feet, not to the bottom of the heat:
                     # a golfer's legs barely move, so the motion stops
@@ -342,6 +357,25 @@ def _frame_strip(kept: dict, box, width: int, height: int, out_path):
     grid = np.vstack([np.hstack(cells[0:2]), np.hstack(cells[2:4])])
     return bool(cv2.imwrite(str(out_path), grid,
                             [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]))
+
+
+def zone_span(roi, boxes_fn):
+    """The trigger zones' x-range in frame pixels, or None.
+
+    The crop above is generous on purpose; this is the zones
+    themselves, which is the width of ground a golfer can legally be
+    standing on. The zoom uses it so the picture the judge sees is as
+    wide as the tee rather than as wide as whatever happened to move.
+    """
+    try:
+        zs = boxes_fn(roi) or []
+        if not zs:
+            return None
+        x0 = min(int(z["x"]) for z in zs)
+        x1 = max(int(z["x"]) + int(z["w"]) for z in zs)
+        return (x0, x1) if x1 > x0 else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def zone_crop(roi, boxes_fn):

@@ -840,6 +840,8 @@ class CopyEngine:
                 from . import swingheat, swingjudge
                 _crop = swingheat.zone_crop(
                     getattr(runner, "roi", None), tee_roi.boxes)
+                _zspan = swingheat.zone_span(
+                    getattr(runner, "roi", None), tee_roi.boxes)
                 _meta: dict = {}
                 _strip = clip_path.with_suffix(".frames.jpg")
                 _stance0 = (detail or {}).get("stance")
@@ -850,6 +852,7 @@ class CopyEngine:
                     crop=_crop,
                     meta=_meta, frames_out=_strip,
                     prefer_xy=_stance0,
+                    prefer_span=_zspan,
                 )
                 # WHAT THE PICTURE ACTUALLY CONTAINS, before anyone is
                 # asked about it. On 5 Nov the judge called a 150x199
