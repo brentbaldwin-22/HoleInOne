@@ -146,7 +146,11 @@ export default function PlayerProfile() {
             onClick={(e) => e.stopPropagation()}
             style={{ maxWidth: "min(100%, 900px)", maxHeight: "72vh" }}
           />
-          <div className="clip-watch-bar">
+          {/* The backdrop closes the reel, and these sit on top of it.
+              Without this, Next both advanced AND bubbled up to the
+              close handler -- which ran second, so every press shut the
+              player. Close still works: it sets -1 itself. */}
+          <div className="clip-watch-bar" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
               className="ghost small"
