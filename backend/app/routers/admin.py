@@ -14868,6 +14868,7 @@ def test_cut_long_upload(
             # than one that reports without it.
             try:
                 _crop = None
+                _zspan = None
                 try:
                     _zs = _tee_trigger_zones(db, row) or []
                     if _zs:
@@ -14877,16 +14878,22 @@ def test_cut_long_upload(
                         _y1 = max(int(z["y"]) + int(z["h"]) for z in _zs)
                         _w, _h = _x1 - _x0, _y1 - _y0
                         _crop = (_x0 - _w, _y0 - 3 * _h, 3 * _w, 4 * _h)
+                        # AND THE SPAN A GOLFER MUST BE STANDING IN.
+                        # A long upload has no person detector, so
+                        # there is no stance point -- but the zones are
+                        # right here, and without something the
+                        # measurement falls back to the largest mover.
+                        # On clip 1734 that was a bystander at a cart
+                        # who beat the actual swing by 27% of area.
+                        _zspan = (_x0, _x1)
                 except Exception:  # noqa: BLE001
                     _crop = None
+                    _zspan = None
                 from ..services.tracer import swing_heat_check
                 _chk = swing_heat_check(
                     src_path, peak_time_sec, tee_fps,
                     crop=_crop,
-                    # No golfer position on a long upload -- nothing
-                    # detected a person -- so the measurement falls
-                    # back to the largest mover and says so.
-                    prefer_xy=None,
+                    prefer_span=_zspan,
                     debug_dir=CLIPS_DIR,
                     debug_prefix=f"verify-{upload_id}-{idx:02d}-"
                                  f"{secrets.token_hex(3)}",

@@ -3321,8 +3321,12 @@ def swing_heat_check(
     after_sec: float = 2.5,
     crop=None,
     # Where the golfer is believed to be, so the measurement picks
-    # THEIR blob rather than the largest thing that moved.
+    # THEIR blob rather than the largest thing that moved. A point
+    # (a detected stance) when something found one; otherwise an
+    # (x0, x1) span they must be standing in -- the trigger zones,
+    # which a long upload has even though it has no person detector.
     prefer_xy=None,
+    prefer_span=None,
 ) -> dict:
     """Confirm a suspected swing with MOG2 physics.
 
@@ -3604,7 +3608,11 @@ def swing_heat_check(
                     _pxy = prefer_xy
                     if _pxy is not None and (_ox or _oy):
                         _pxy = (float(_pxy[0]) - _ox, float(_pxy[1]) - _oy)
-                    _geo = _sj.measure_heat(_hmj, prefer_xy=_pxy)
+                    _psp = prefer_span
+                    if _psp is not None and _ox:
+                        _psp = (float(_psp[0]) - _ox, float(_psp[1]) - _ox)
+                    _geo = _sj.measure_heat(_hmj, prefer_xy=_pxy,
+                                            prefer_span=_psp)
                     _mm = _geo.get("main")
                     if _mm:
                         _mm["frame_x"] = _mm["x"] + _ox
