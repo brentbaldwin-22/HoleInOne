@@ -45,9 +45,6 @@ export default function SampleGallery() {
           A sample round at {courseName}. Yours arrives in your inbox the same
           way — one email, every par-3 clip attached, every overlay branded.
         </p>
-        <Link to="/" className="btn small" style={{ width: "auto", marginTop: 14 }}>
-          ← Back home
-        </Link>
       </div>
 
       <div className="card center">
