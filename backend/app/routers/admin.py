@@ -114,6 +114,7 @@ from ..services.ai_tracer import (
     find_impact_via_audio,
     refine_impact_frame,
     track_ball_after_impact,
+    judge_swing_audio2,
     judge_swing_heat_image,
     judge_swing_with_frames,
     trace_ball_path_ai,
@@ -14656,7 +14657,13 @@ def test_cut_long_upload(
     tee_fps = probe_fps(src_path) or 30.0
     detector = (detector or "motion").lower()
     debug: dict = {}
-    if detector == "audio":
+    # AUDIO 2 HEARS EXACTLY WHAT AUDIO HEARS. It is a different
+    # VERIFICATION process, not a different detector: same peaks, same
+    # thresholds, different pictures and a different question. Sharing
+    # the detection is the point -- two verification processes over
+    # the same candidate list is a comparison; over two candidate
+    # lists it is an argument about which peaks were real.
+    if detector in ("audio", "audio2"):
         windows = detect_swings_from_audio(
             src_path,
             fps=tee_fps,
@@ -14928,6 +14935,7 @@ def test_cut_long_upload(
                     prefer_span=_zspan,
                     floor_y=_zfloor,
                     zones=_zbox,
+                    style=("golfer" if detector == "audio2" else "zone"),
                     # ASK ABOUT EVERY GOLFER, because nothing in the
                     # heat map says which of them swung -- two people
                     # measure the same to within a few percent on
@@ -14965,8 +14973,24 @@ def test_cut_long_upload(
                 # prejudge treats a missing anchor as "nothing rules it
                 # out", which is why it is safe to call anyway -- the
                 # shape half still catches a whole-frame wash.
-                _gate = _sj.prejudge(_geo, None)
+                # AUDIO 2 DOES NOT RUN THESE GATES, and that is not
+                # an oversight. prejudge's shape half refuses a blob
+                # taller than 0.45 of the frame, which is a sane rule
+                # for a whole-tee crop and nonsense for one cropped
+                # tight to a single golfer -- it would refuse every
+                # audio 2 picture it was handed. postjudge weighs a
+                # "medium" verdict against the x-ratio, and audio 2's
+                # confidence is a 0-100 number from a different rubric
+                # with the ratio already given to the model as
+                # evidence; weighing it again would count the sound
+                # twice. Both were calibrated on the other process and
+                # neither has been measured on this one.
+                _audio2 = (detector == "audio2")
+                _gate = ({"ask": True, "why": "audio 2: gates not applied"}
+                         if _audio2 else _sj.prejudge(_geo, None))
                 cut_entry["gate"] = _gate["why"]
+                if _chk.get("picked_front"):
+                    cut_entry["picked_front"] = _chk["picked_front"]
                 if (_chk.get("image_clean")
                         and os.environ.get("ANTHROPIC_API_KEY")):
                     # WHICH GOLFER FIRST, THEN THE FRAMES. The heat
@@ -14989,7 +15013,22 @@ def test_cut_long_upload(
                         cut_entry["verify_reason"] = _gate["why"]
                     else:
                         _cl = _chk.get("candidates") or []
-                        if len(_cl) > 1:
+                        if _audio2:
+                            # ONE QUESTION, ONE CALL. The operator's
+                            # prompt describes a single judgement over
+                            # the heat map AND the five frames
+                            # together, so there is no heat-only
+                            # verdict to take, no pair to disagree and
+                            # no tie to break. Asking the old question
+                            # too would double the cost of every row
+                            # to produce an answer nothing reads.
+                            _heat_img = CLIPS_DIR / _chk["image_clean"]
+                            _m2 = _geo.get("main") or {}
+                            _heat_box = (
+                                (_m2.get("frame_x"), _m2.get("frame_y"),
+                                 _m2.get("w"), _m2.get("h"))
+                                if _m2.get("w") else None)
+                        elif len(_cl) > 1:
                             # MORE THAN ONE GOLFER MOVED. Ask about
                             # each and keep the first yes: the swing is
                             # a swing whichever of them made it, and a
@@ -15041,10 +15080,19 @@ def test_cut_long_upload(
                         # just picked, unless the operator has asked
                         # for the old heat-only question. See
                         # tracer.frames_strip.
+                        # AUDIO 2 ALWAYS BUILDS THEM. The checkbox
+                        # offers the OLD process its old heat-only
+                        # question; audio 2 has no such mode, its
+                        # prompt promises the model five frames, and a
+                        # prompt that lists evidence it is not given
+                        # invites the model to imagine it.
                         _strip = None
-                        if judge_with_frames:
+                        if judge_with_frames or _audio2:
                             try:
-                                from ..services.tracer import frames_strip
+                                from ..services.tracer import (
+                                    AUDIO2_OFFSETS_SEC, FRAME_OFFSETS_SEC,
+                                    frames_strip,
+                                )
                                 _sp = CLIPS_DIR / (
                                     f"verifyframes-{upload_id}-{idx:02d}-"
                                     f"{secrets.token_hex(3)}.jpg")
@@ -15055,9 +15103,12 @@ def test_cut_long_upload(
                                 # box on a camera with no zones drawn.
                                 _zp = CLIPS_DIR / (
                                     _sp.name[:-4] + "-zones.jpg")
+                                _offs = (AUDIO2_OFFSETS_SEC if _audio2
+                                         else FRAME_OFFSETS_SEC)
                                 if frames_strip(src_path, peak_time_sec, _sp,
                                                 rect=_chk.get("frames_rect"),
                                                 box=_heat_box,
+                                                offsets=_offs,
                                                 zones=_zbox,
                                                 zones_out=(_zp if _zbox
                                                            else None)):
@@ -15073,7 +15124,25 @@ def test_cut_long_upload(
                                     "test-cut frame strip failed: %s", _fx)
 
                         _final = _heat
-                        if _strip is not None:
+                        if _audio2:
+                            from ..services.tracer import (
+                                AUDIO2_OFFSETS_SEC as _A2,
+                            )
+                            _ja = judge_swing_audio2(
+                                _strip, _heat_img,
+                                ratio=cut_entry.get("ratio"),
+                                attack_ms=cut_entry.get("attack_ms"),
+                                offsets=_A2)
+                            for _k in ("classification", "golfer_visible",
+                                       "swing_motion_visible",
+                                       "impact_alignment",
+                                       "confidence_pct"):
+                                cut_entry[_k] = _ja.get(_k)
+                            _final = {"is_swing": _ja.get("is_swing"),
+                                      "confidence": _ja.get("confidence"),
+                                      "reason": _ja.get("reason")}
+                            _saw = _ja.get("saw") or "audio 2"
+                        elif _strip is not None:
                             # BOTH ANSWERS, NOT ONE. The operator is
                             # choosing between two questions, and a
                             # single verdict makes that choice on a
@@ -15137,10 +15206,12 @@ def test_cut_long_upload(
                         # less. This is the one endpoint on the server
                         # that HAS an audio ratio to weigh, which is
                         # why the gate can run here and not in debug3.
-                        _post = _sj.postjudge(
-                            cut_entry.get("is_swing"),
-                            cut_entry.get("verify_confidence"),
-                            cut_entry.get("ratio"), float(pi_min_ratio))
+                        _post = ({"keep": True, "why": "audio 2"}
+                                 if _audio2 else _sj.postjudge(
+                                     cut_entry.get("is_swing"),
+                                     cut_entry.get("verify_confidence"),
+                                     cut_entry.get("ratio"),
+                                     float(pi_min_ratio)))
                         if not _post["keep"]:
                             cut_entry["is_swing"] = False
                             cut_entry["verify_reason"] = _post["why"]

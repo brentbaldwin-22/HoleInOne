@@ -231,7 +231,7 @@ export default function AdminLongUpload() {
   async function testCutPrior(uploadId) {
     const detector = testCutDetector[uploadId] || "motion";
     const opts = {};
-    if (detector === "audio") {
+    if (detector === "audio" || detector === "audio2") {
       const ratio = parseFloat(
         audioMinRatio[uploadId] ?? RIG_AUDIO.minRatio);
       if (Number.isFinite(ratio) && ratio > 0) opts.audioMinPeakRatio = ratio;
@@ -566,15 +566,17 @@ export default function AdminLongUpload() {
                         disabled={!!testCutting[u.id] || missing || busy}
                         className="small"
                         style={{ fontSize: 12, padding: "2px 6px" }}
-                        title="Swing detector used for the test cut. 'combined' AND's audio + motion: a swing only counts when an audio peak and a motion peak land within the pair window."
+                        title="Swing detector used for the test cut. 'combined' AND's audio + motion: a swing only counts when an audio peak and a motion peak land within the pair window. 'audio 2' hears exactly what 'audio' hears and then verifies differently: it crops to the one golfer standing furthest up a trigger zone, shows the judge five frames spanning -0.60s to +0.60s, and asks for a four-way classification instead of yes/no."
                       >
                         <option value="motion">motion</option>
                         <option value="audio">audio</option>
+                        <option value="audio2">audio 2</option>
                         <option value="combined">combined</option>
                         <option value="pi">pi (rig)</option>
                         <option value="ballgone">ball vanishes</option>
                       </select>
-                      {(testCutDetector[u.id] || "motion") === "audio" && (
+                      {["audio", "audio2"].includes(
+                        testCutDetector[u.id] || "motion") && (
                         <input
                           type="number"
                           min="1"
@@ -589,7 +591,8 @@ export default function AdminLongUpload() {
                           title={`Minimum peak/median ratio. Higher = stricter (only the loudest thwacks). Defaults to what the rig runs: ${RIG_AUDIO.minRatio}.`}
                         />
                       )}
-                      {(testCutDetector[u.id] || "motion") === "audio" && (
+                      {["audio", "audio2"].includes(
+                        testCutDetector[u.id] || "motion") && (
                         <label className="tiny muted"
                                style={{ display: "inline-flex",
                                         alignItems: "center", gap: 3 }}>
@@ -609,7 +612,8 @@ export default function AdminLongUpload() {
                           />
                         </label>
                       )}
-                      {(testCutDetector[u.id] || "motion") === "audio" && (
+                      {["audio", "audio2"].includes(
+                        testCutDetector[u.id] || "motion") && (
                         <label className="tiny muted"
                                style={{ display: "inline-flex",
                                         alignItems: "center", gap: 3 }}>
@@ -627,7 +631,8 @@ export default function AdminLongUpload() {
                           />
                         </label>
                       )}
-                      {(testCutDetector[u.id] || "motion") === "audio"
+                      {["audio", "audio2"].includes(
+                        testCutDetector[u.id] || "motion")
                         && verifySwings[u.id] && (
                         <label className="tiny muted"
                                style={{ display: "inline-flex",
@@ -1588,6 +1593,71 @@ export default function AdminLongUpload() {
                                             <div className="muted">{a.reason}</div>
                                           </div>
                                         ))}
+                                      </div>
+                                    )}
+                                    {/* AUDIO 2 ANSWERS IN FOUR CLASSES,
+                                        not yes/no, and the class is
+                                        the point: PROBABLE and
+                                        CONFIRMED both upload but mean
+                                        different things, and UNCERTAIN
+                                        is the one the operator asked
+                                        the model to use instead of
+                                        guessing. Flattening them to a
+                                        tick would throw away the whole
+                                        reason for the process. */}
+                                    {c.classification && (
+                                      <div className="tiny" style={{
+                                        marginTop: 4, maxWidth: 200,
+                                        whiteSpace: "normal",
+                                        lineHeight: 1.35,
+                                      }}>
+                                        <div>
+                                          <b style={{
+                                            color:
+                                              c.classification === "CONFIRMED_SWING"
+                                                ? "#1a7f37"
+                                                : c.classification === "PROBABLE_SWING"
+                                                ? "#5a8f20"
+                                                : c.classification === "NOT_SWING"
+                                                ? "#c0392b" : "#b45309",
+                                          }}>
+                                            {c.classification.replace("_", " ").toLowerCase()}
+                                          </b>
+                                          {c.confidence_pct !== null
+                                            && c.confidence_pct !== undefined && (
+                                            <span className="muted">
+                                              {" "}· {c.confidence_pct}% confident
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="muted">
+                                          {[["golfer", c.golfer_visible],
+                                            ["swing motion", c.swing_motion_visible],
+                                            ["impact aligned", c.impact_alignment]]
+                                            .filter(([, v]) => v !== null
+                                                            && v !== undefined)
+                                            .map(([k, v]) => (
+                                              <span key={k} style={{ marginRight: 6 }}>
+                                                {v === true || v === "true"
+                                                  ? "✓" : v === false || v === "false"
+                                                  ? "✗" : "?"}{" "}{k}
+                                              </span>
+                                            ))}
+                                        </div>
+                                        {/* WHICH GOLFER, AND WHY THAT
+                                            ONE. Audio 2 crops to a
+                                            single player chosen by a
+                                            rule, and a crop nobody can
+                                            explain is a crop nobody
+                                            can argue with. Says so
+                                            too when the rule declined
+                                            and it fell back. */}
+                                        {c.picked_front && (
+                                          <div className="muted"
+                                               style={{ marginTop: 2 }}>
+                                            crop: {c.picked_front}
+                                          </div>
+                                        )}
                                       </div>
                                     )}
                                     {/* BOTH VERDICTS, SIDE BY SIDE, when

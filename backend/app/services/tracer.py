@@ -3222,6 +3222,29 @@ def golfer_and_ball_box(constant, det_scale: float, width: int, height: int,
                     int(_bx1 - _bx0), int(_by1 - _by0)]
 
 
+# WHICH MOMENTS THE JUDGE IS SHOWN.
+#
+# The original four are tight around the impact: a quarter-second
+# before, the impact itself, and two just after. They answer "did the
+# club move through here".
+FRAME_OFFSETS_SEC = (-0.25, 0.0, 0.15, 0.40)
+
+# Audio 2's five, as the operator specified them, span more than twice
+# as long and are symmetric about the peak:
+#
+#   -0.60  backswing or setup
+#   -0.20  downswing or transition
+#    0.00  impact
+#   +0.20  early follow-through
+#   +0.60  finish
+#
+# A WIDER WINDOW IS THE POINT. The old four cannot tell a swing from a
+# waggle, because a waggle also moves a club near the ball; a finish
+# position 0.6s later is the thing a waggle does not have. It costs a
+# longer read either side of the peak and one more tile.
+AUDIO2_OFFSETS_SEC = (-0.60, -0.20, 0.0, 0.20, 0.60)
+
+
 # The trigger zones, drawn in a colour COLORMAP_TURBO does not
 # contain. Turbo runs dark blue -> cyan -> green -> yellow -> red, so
 # magenta cannot be mistaken for heat, which a white or green outline
@@ -3282,7 +3305,7 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
 
 
 def frames_strip(input_path, at_sec: float, out_path, *, box=None,
-                 rect=None, offsets=(-0.25, 0.0, 0.15, 0.40),
+                 rect=None, offsets=FRAME_OFFSETS_SEC,
                  tile_px: int = 640, pad_frac: float = 1.0,
                  zones=None, zones_out=None):
     """Four ordinary frames around the impact, as one 2x2 tile. Bool.
@@ -3377,15 +3400,26 @@ def frames_strip(input_path, at_sec: float, out_path, *, box=None,
         th = max(t.shape[0] for t in tiles)
         tw = max(t.shape[1] for t in tiles)
 
+        # AS MANY TILES AS THERE ARE, in reading order. This was a
+        # hardcoded 2x2 and audio 2 asks for FIVE frames, which it
+        # silently truncated to the first four -- losing the finish,
+        # which is half of what five frames were for. Columns are
+        # ceil(sqrt(n)), so 4 stays 2x2 exactly as before and 5 is
+        # 3x2 with one blank cell; chronological order still reads
+        # left to right, top to bottom.
+        _cols = max(1, int(math.ceil(math.sqrt(len(tiles)))))
+        _rows = max(1, int(math.ceil(len(tiles) / float(_cols))))
+
         def _grid(ts):
             cs = []
             for _t in ts:
                 _pad = np.zeros((th, tw, 3), np.uint8)
                 _pad[:_t.shape[0], :_t.shape[1]] = _t
                 cs.append(_pad)
-            while len(cs) < 4:
+            while len(cs) < _cols * _rows:
                 cs.append(np.zeros((th, tw, 3), np.uint8))
-            return np.vstack([np.hstack(cs[0:2]), np.hstack(cs[2:4])])
+            return np.vstack([np.hstack(cs[_r * _cols:(_r + 1) * _cols])
+                              for _r in range(_rows)])
 
         if zones_out is not None and ztiles:
             try:
@@ -3393,14 +3427,7 @@ def frames_strip(input_path, at_sec: float, out_path, *, box=None,
                             [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             except Exception:  # noqa: BLE001
                 pass
-        cells = []
-        for t in tiles:
-            pad = np.zeros((th, tw, 3), np.uint8)
-            pad[:t.shape[0], :t.shape[1]] = t
-            cells.append(pad)
-        while len(cells) < 4:
-            cells.append(np.zeros((th, tw, 3), np.uint8))
-        grid = np.vstack([np.hstack(cells[0:2]), np.hstack(cells[2:4])])
+        grid = _grid(tiles)
         return bool(cv2.imwrite(str(out_path), grid,
                                 [int(cv2.IMWRITE_JPEG_QUALITY), 80]))
     except Exception as exc:  # noqa: BLE001
@@ -3429,6 +3456,7 @@ def swing_heat_check(
     prefer_xy=None,
     prefer_span=None,
     zones=None,
+    style: str = "zone",
     # THE GROUND LINE, in frame pixels: the golfer's feet, or the
     # bottom of the trigger zones, which are drawn round feet. The
     # heat blob's own bottom is NOT the feet -- a golfer's legs barely
@@ -3804,7 +3832,47 @@ def swing_heat_check(
                                 _zone = None
                         except Exception:  # noqa: BLE001
                             _zone = None
-                    if _zone is not None:
+                    # AUDIO 2: AROUND ONE GOLFER, NOT THE WHOLE TEE.
+                    # The one standing in a zone whose feet are
+                    # furthest up the picture -- see
+                    # swingjudge.pick_front_golfer for why that is the
+                    # player hitting. Just outside the body either
+                    # side, just below the feet, and (for the heat
+                    # map) all the way to the top.
+                    #
+                    # FALLS BACK, LOUDLY. When nobody's feet are in a
+                    # zone, or two golfers are level and it cannot be
+                    # called, this reverts to the zone rectangle --
+                    # which is what the operator asked for -- and says
+                    # so in `picked_front` so the page can report it
+                    # rather than leaving the crop unexplained.
+                    _front = None
+                    if str(style) == "golfer" and zones:
+                        _pf = _sj.pick_front_golfer(
+                            _cands_all, zones, offset=(_ox, _oy))
+                        out["picked_front"] = _pf["why"]
+                        _front = _pf.get("pick")
+                    if _front is not None:
+                        # ONE GOLFER IS THE CROP. Pads named here
+                        # rather than buried: a third of a body width
+                        # either side is "a little outside the body",
+                        # and a twelfth of a body height below the
+                        # feet is "just below".
+                        _fw2 = max(12, int(_front["w"] * 0.35))
+                        _fb = _front["y"] + _front["h"] + max(
+                            6, int(_front["h"] * 0.08))
+                        _zone = (_front["x"] - _fw2,
+                                 _front["x"] + _front["w"] + _fw2,
+                                 _fb)
+                        # The frames stop just above the head instead
+                        # of at the top of the picture.
+                        _fp = max(8, int(_front["h"] * 0.10))
+                        out["frames_rect"] = [
+                            int(_zone[0] + _ox),
+                            int(max(0, _front["y"] - _fp) + _oy),
+                            int(_zone[1] + _ox), int(_fb + _oy)]
+                        _cands = _cands[:1]
+                    elif _zone is not None:
                         # AND THE SAME RECTANGLE FOR THE FOUR FRAMES,
                         # except at the top. The heat map runs to the
                         # top of the picture because a club at the top

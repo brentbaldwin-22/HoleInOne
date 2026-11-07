@@ -509,6 +509,106 @@ def confidence_verdict(is_swing, confidence, ratio, gate_ratio, *,
             % (band, r, over)}
 
 
+# ---- which golfer is hitting ---------------------------------------
+
+# THE OPERATOR'S RULE, 8 Nov, for the "audio 2" process: "crop around
+# the golfer who's feet are in one of our trigger zones and the
+# furthest up."
+#
+# WHY IT WORKS. The camera stands behind the hitting area looking down
+# the hole, so further UP the picture is further AWAY. On a tee the
+# player hitting has walked forward to the markers and the others are
+# standing back waiting -- so the golfer whose feet sit highest in the
+# frame, among those standing in a zone at all, is the one about to
+# hit. Nothing in the heat map says this; it is knowledge about how
+# people stand on a tee.
+
+# How much vertical slack a foot point gets against the zone it is
+# supposed to be standing in, as a multiple of that zone's own height.
+# The "feet" here are the BOTTOM of a heat blob, and heat is motion:
+# on a golfer whose legs barely move it stops around the waist, well
+# above the real stance. One zone height of slack costs nothing --
+# zones are small -- and without it audio 2 would fall back to the
+# whole-zone crop on exactly the quiet swings it was written for.
+FEET_ZONE_SLACK = 1.0
+
+# WHEN IT IS TOO CLOSE TO CALL. Two golfers level on a tee is the
+# normal case while one addresses the ball and the other watches, and
+# picking the wrong one by three pixels is worse than not picking: the
+# operator asked for the original crop in that case.
+#
+# As a fraction of the leading golfer's own blob HEIGHT, so it scales
+# with distance -- the same step forward is fewer pixels on a far tee
+# than a near one, and a constant would be wrong at one end or the
+# other.
+#
+# UNMEASURED. 0.25 of a golfer's height is roughly knee to ankle,
+# which is more than the gap between two people standing side by side
+# and less than a step toward the markers. It wants checking against
+# real clips once there are some.
+FRONT_GOLFER_MARGIN_FRAC = 0.25
+
+
+def pick_front_golfer(blobs, zones, *, offset=(0, 0),
+                      slack=FEET_ZONE_SLACK,
+                      margin_frac=FRONT_GOLFER_MARGIN_FRAC) -> dict:
+    """The golfer standing in a zone whose feet are furthest up.
+
+    `blobs` are measure_heat's person-shaped blobs, in CROP pixels;
+    `offset` is where that crop sits in the original frame, because
+    `zones` are (x, y, w, h) in frame pixels as the operator drew
+    them.
+
+    Returns {"pick": blob|None, "close": bool, "why": str}. `pick` is
+    None when no blob's feet are in any zone, and `close` is true when
+    the leader and the runner-up are too near to separate -- both mean
+    "use the ordinary crop", and the caller is told which so the page
+    can say why.
+    """
+    out = {"pick": None, "close": False, "why": "no zones drawn"}
+    if not zones:
+        return out
+    try:
+        ox, oy = float(offset[0]), float(offset[1])
+        standing = []
+        for b in blobs or []:
+            if not b:
+                continue
+            fx = float(b.get("base", (0, 0))[0]) + ox
+            fy = float(b.get("base", (0, 0))[1]) + oy
+            for z in zones:
+                zx, zy, zw, zh = (float(z[0]), float(z[1]),
+                                  float(z[2]), float(z[3]))
+                _s = float(slack) * zh
+                if (zx <= fx <= zx + zw
+                        and zy - _s <= fy <= zy + zh + _s):
+                    standing.append((fy, b))
+                    break
+        if not standing:
+            out["why"] = "nobody's feet are in a trigger zone"
+            return out
+        standing.sort(key=lambda t: t[0])
+        lead_y, lead = standing[0]
+        if len(standing) > 1:
+            gap = standing[1][0] - lead_y
+            need = float(margin_frac) * float(lead.get("h") or 1)
+            if gap < need:
+                out["close"] = True
+                out["pick"] = None
+                out["why"] = (
+                    "two golfers level in the zones (%.0f px apart, needs "
+                    "%.0f) — too close to call which is hitting"
+                    % (gap, need))
+                return out
+        out["pick"] = lead
+        out["why"] = ("the golfer standing furthest up the tee (feet at "
+                      "y=%.0f of %d in a zone)" % (lead_y, len(standing)))
+        return out
+    except Exception:  # noqa: BLE001
+        out["why"] = "could not read the blobs"
+        return out
+
+
 # ---- when the two judges disagree ----------------------------------
 
 # THE OPERATOR'S TIE-BREAK, 7 Nov. The heat map and the four frames

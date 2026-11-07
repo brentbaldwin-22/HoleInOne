@@ -37,8 +37,9 @@ sys.path.insert(0, str(ROOT / "pi-agent"))
 import numpy as np                                    # noqa: E402
 
 from agent.swingjudge import (                        # noqa: E402
-    aim_verdict, confidence_verdict, measure_heat, pick_stance, postjudge,
-    prejudge, shape_verdict, stance_verdict, tiebreak, MIN_ASPECT,
+    aim_verdict, confidence_verdict, measure_heat, pick_front_golfer,
+    pick_stance, postjudge, prejudge, shape_verdict, stance_verdict,
+    tiebreak, MIN_ASPECT,
 )
 
 FAIL: list[str] = []
@@ -328,6 +329,54 @@ def main() -> int:
     check("a failed judge is not a contradiction",
           rig({"is_swing": True, "confidence": "high",
                "heat_is_swing": None, "frames_is_swing": True}, 12.0), True)
+
+    # ---- audio 2: which golfer is hitting --------------------------
+    # THE RULE: among golfers whose feet are in a trigger zone, the
+    # one furthest UP the picture is the one who has walked forward to
+    # the markers. Blobs are in crop pixels; zones in frame pixels.
+    ZONES = [(700, 800, 220, 90), (960, 820, 200, 80)]
+
+    def blob(x, y, w, h):
+        return {"x": x, "y": y, "w": w, "h": h,
+                "base": (x + w // 2, y + h)}
+
+    # Two on the tee: one at the markers (feet y=840), one back
+    # (feet y=890). 50 px apart against a 0.25 x 200 = 50 px bar --
+    # just clear.
+    front = blob(740, 640, 140, 200)        # feet (810, 840)
+    back = blob(990, 690, 130, 200)         # feet (1055, 890)
+    r = pick_front_golfer([back, front], ZONES)
+    check("picks the golfer furthest up the tee",
+          r["pick"] is front, True)
+    check("  and says which", "furthest up" in r["why"], True)
+    # Order must not decide it.
+    check("  whichever order they arrive in",
+          pick_front_golfer([front, back], ZONES)["pick"] is front, True)
+    # LEVEL ON THE TEE -> no pick, and say why. 20 px apart.
+    _lvl = blob(990, 660, 130, 200)         # feet (1055, 860)
+    r = pick_front_golfer([_lvl, front], ZONES)
+    check("two level golfers is too close to call",
+          r["pick"] is None and r["close"], True)
+    check("  which is not the same as nobody there",
+          "too close" in r["why"], True)
+    # FEET OUTSIDE EVERY ZONE -> no pick, and a different reason.
+    _off = blob(100, 640, 140, 200)         # feet (170, 840)
+    r = pick_front_golfer([_off], ZONES)
+    check("feet outside the zones is no pick",
+          r["pick"] is None, True)
+    check("  and is NOT reported as too close", r["close"], False)
+    # THE SLACK. Heat that stops at the waist leaves the blob's bottom
+    # well above the real stance; one zone height of slack keeps that
+    # golfer eligible.
+    _waist = blob(740, 600, 140, 130)       # feet (810, 730), zone top 800
+    check("heat stopping above the zone still counts",
+          pick_front_golfer([_waist], ZONES)["pick"] is _waist, True)
+    _high = blob(740, 300, 140, 130)        # feet (810, 430) -- far above
+    check("  but not a blob in the sky",
+          pick_front_golfer([_high], ZONES)["pick"] is None, True)
+    # NO ZONES AT ALL -> nothing to pick from.
+    check("no zones means no pick",
+          pick_front_golfer([front], None)["pick"] is None, True)
 
     print()
     if FAIL:

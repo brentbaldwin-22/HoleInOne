@@ -8859,6 +8859,187 @@ _JUDGE_SWING_FRAMES_PROMPT = (
 )
 
 
+# ---- the "audio 2" judge -------------------------------------------
+
+# THE OPERATOR'S OWN INSTRUCTION, 8 Nov, kept verbatim. It is a
+# different question from _JUDGE_SWING_FRAMES_PROMPT, not a revision
+# of it: four classes instead of a boolean, a 0-100 confidence, and
+# the audio measurements handed over as evidence rather than used to
+# weigh the answer afterwards. Both live here so the two processes can
+# be run over the same clip and compared, which is the whole point of
+# audio 2 being a separate entry in the dropdown.
+#
+# NOT EDITED. Where it differs from house style -- the all-caps
+# shouting elsewhere in this file, the explicit "answer FALSE" rules
+# -- that is deliberate: it is the operator's wording, and rewording
+# it would make a comparison between the two processes a comparison
+# between two of my paraphrases.
+_JUDGE_SWING_AUDIO2_PROMPT = (
+    "You are the GolfReelz golf swing verification system.\n"
+    "Your task is to determine whether the provided images show a REAL "
+    "golf swing occurring at approximately the time of the detected "
+    "audio impact.\n"
+    "You will receive:\n"
+    "\n"
+    "* One MOG2 motion heatmap.\n"
+    "* Five chronological video frames captured around the audio peak.\n"
+    "* The time offset of each frame relative to the audio peak.\n"
+    "* The audio peak's signal-to-noise ratio and attack duration.\n"
+    "\n"
+    "Evaluation rules:\n"
+    "\n"
+    "1. Identify a golfer within the designated tee-box region.\n"
+    "2. Look for visual evidence of a golf swing, including backswing, "
+    "downswing, impact position, or follow-through.\n"
+    "3. Compare the chronological frames to determine whether the "
+    "golfer's position changes consistently with a swing.\n"
+    "4. Determine whether the motion is temporally consistent with the "
+    "detected audio impact.\n"
+    "5. Use the MOG2 heatmap only as supporting evidence. Do not infer "
+    "a swing solely from colorful motion patterns.\n"
+    "6. Do not assume that a golfer holding a club is swinging.\n"
+    "7. Do not claim to see a club or ball unless it is actually "
+    "distinguishable.\n"
+    "8. Do not invent intermediate movements that are not visible in "
+    "the supplied frames.\n"
+    "9. If the golfer is too small, obscured, or the frames are "
+    "inconclusive, return UNCERTAIN rather than guessing.\n"
+    "\n"
+    "Classification:\n"
+    "\n"
+    "* CONFIRMED_SWING: Clear visual evidence of a golf swing aligned "
+    "with the audio event.\n"
+    "* PROBABLE_SWING: Visual evidence strongly suggests a swing, but "
+    "the sequence is incomplete.\n"
+    "* NOT_SWING: No convincing evidence of a golf swing, or the motion "
+    "clearly represents another activity.\n"
+    "* UNCERTAIN: Insufficient visual information to make a reliable "
+    "determination.\n"
+    "\n"
+    "Return structured JSON containing:\n"
+    "\n"
+    "* classification\n"
+    "* golfer_visible\n"
+    "* swing_motion_visible\n"
+    "* impact_alignment\n"
+    "* confidence (0-100)\n"
+    "* explanation (maximum 40 words)\n"
+    "\n"
+    "Base your confidence on visual evidence, not merely the strength "
+    "of the audio trigger.\n"
+)
+
+# HOW THE FOUR CLASSES BECOME THE BOOLEAN the rest of the pipeline
+# runs on. UNCERTAIN is None and not False, which is the same rule
+# every other judge here follows: "could not tell" has always meant
+# upload, because a verification that cannot be had must never cost a
+# swing.
+AUDIO2_CLASSES = {
+    "CONFIRMED_SWING": True,
+    "PROBABLE_SWING": True,
+    "NOT_SWING": False,
+    "UNCERTAIN": None,
+}
+
+
+def judge_swing_audio2(frames_path, image_path, *, ratio=None,
+                       attack_ms=None, offsets=None,
+                       model: str | None = None) -> dict:
+    """The audio-2 judge: five frames, the heat map, and the numbers.
+
+    Returns the usual {is_swing, confidence, reason} so the page and
+    the gates keep working, PLUS the structured fields the operator's
+    prompt asks for: classification, golfer_visible,
+    swing_motion_visible, impact_alignment, confidence_pct.
+
+    `confidence` is mapped to the high/medium/low band the rest of the
+    codebase speaks, but note that NOTHING downstream weighs it for
+    audio 2 -- see the caller. The band is for display.
+
+    Never raises.
+    """
+    out = {"available": False, "is_swing": None, "confidence": None,
+           "reason": None, "saw": "audio2: heat + 5 frames",
+           "classification": None, "golfer_visible": None,
+           "swing_motion_visible": None, "impact_alignment": None,
+           "confidence_pct": None}
+    if not frames_path or not Path(frames_path).exists():
+        out["reason"] = "audio 2 needs the five frames and none were built"
+        return out
+    if not HAS_ANTHROPIC or not os.environ.get("ANTHROPIC_API_KEY"):
+        out["reason"] = "ANTHROPIC_API_KEY not set"
+        return out
+    try:
+        fdata = Path(frames_path).read_bytes()
+        hdata = Path(image_path).read_bytes()
+    except Exception as exc:  # noqa: BLE001
+        out["reason"] = f"could not read images: {exc}"
+        return out
+    # THE MEASUREMENTS THE PROMPT PROMISES. It tells the model it will
+    # receive the frame offsets and the audio numbers, so they have to
+    # actually arrive -- a prompt that lists evidence it is not given
+    # invites the model to imagine it.
+    _offs = list(offsets or (-0.60, -0.20, 0.0, 0.20, 0.60))
+    _facts = ["The five frames are in reading order, left to right and "
+              "top to bottom, at these offsets from the audio peak: "
+              + ", ".join("%+.2fs" % o for o in _offs) + "."]
+    _facts.append("Audio signal-to-noise ratio: %s."
+                  % ("x%.1f" % float(ratio) if ratio else "not measured"))
+    _facts.append("Audio attack duration: %s."
+                  % ("%.1f ms" % float(attack_ms) if attack_ms
+                     else "not measured"))
+    try:
+        client = _anthropic_client()
+        resp = client.messages.create(
+            model=_resolve_frame_picker_model(model),
+            max_tokens=400,
+            system=[{
+                "type": "text",
+                "text": _JUDGE_SWING_AUDIO2_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": "The MOG2 motion heatmap:"},
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/jpeg",
+                    "data": base64.standard_b64encode(hdata).decode("ascii"),
+                }},
+                {"type": "text",
+                 "text": "The five chronological video frames:"},
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/jpeg",
+                    "data": base64.standard_b64encode(fdata).decode("ascii"),
+                }},
+                {"type": "text", "text": "\n".join(_facts)},
+                {"type": "text", "text": "JSON only."},
+            ]}],
+        )
+    except Exception as exc:  # noqa: BLE001
+        out["reason"] = f"api_failed: {exc}"
+        return out
+    text = "".join(
+        c.text for c in resp.content if getattr(c, "type", None) == "text"
+    )
+    parsed = _extract_json(text) or {}
+    out["available"] = True
+    _cls = str(parsed.get("classification") or "").strip().upper()
+    out["classification"] = _cls or None
+    out["is_swing"] = AUDIO2_CLASSES.get(_cls)
+    for _k in ("golfer_visible", "swing_motion_visible",
+               "impact_alignment"):
+        out[_k] = parsed.get(_k)
+    try:
+        out["confidence_pct"] = max(0, min(100, int(parsed["confidence"])))
+    except Exception:  # noqa: BLE001
+        out["confidence_pct"] = None
+    _p = out["confidence_pct"]
+    out["confidence"] = (None if _p is None else
+                         "high" if _p >= 80 else
+                         "medium" if _p >= 50 else "low")
+    out["reason"] = parsed.get("explanation") or parsed.get("reason")
+    return out
+
+
 def judge_swing_with_frames(frames_path, image_path,
                             model: str | None = None) -> dict:
     """The swing judge, shown real frames as well as the heat map.
