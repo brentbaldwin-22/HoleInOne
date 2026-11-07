@@ -100,7 +100,8 @@ export default function AdminLongUpload() {
   // around the impact, judged for the club's fan.
   const [verifySwings, setVerifySwings] = useState({});
   // SHOW THE JUDGE FOUR REAL FRAMES, or ask the old heat-only
-  // question. Per upload, and ON by default to match the server.
+  // question. Per upload, and OFF by default to match the server:
+  // Test Cut asks what it has always asked unless you opt in.
   // Measured on 17 labelled clips, 6 Nov: heat alone kept 7 of 8
   // swings with 4 false positives, heat plus frames kept 7 of 8
   // with 0 -- but the heat-only wording is the one tuned over weeks,
@@ -275,7 +276,7 @@ export default function AdminLongUpload() {
       opts.verifySwings = true;
       opts.verifyWindowSec = 0.5;
       // undefined means "not set" -> the server's default (on).
-      opts.judgeWithFrames = judgeFrames[uploadId] !== false;
+      opts.judgeWithFrames = judgeFrames[uploadId] === true;
     }
     setTestCutting((t) => ({ ...t, [uploadId]: true }));
     setError(null);
@@ -835,21 +836,22 @@ export default function AdminLongUpload() {
                             gap: 4,
                           }}
                           title={
-                            "ON: the judge sees four real frames around the "
-                            + "impact (-0.25s, 0.00s, +0.15s, +0.40s) cropped "
-                            + "to whatever moved, alongside the heat map, and "
-                            + "is asked whether a person is holding a club "
-                            + "and moving it.\n\nOFF: the old question — the "
-                            + "heat composite alone, judged on whether it "
-                            + "shows a compact bright figure with a thin "
-                            + "cooler plume.\n\nOn 17 labelled clips (6 Nov) "
-                            + "frames kept the same 7 of 8 swings and took "
-                            + "false positives from 4 to 0."
+                            "OFF (the default): the question Test Cut has "
+                            + "always asked — the heat composite alone, "
+                            + "judged on whether it shows a compact bright "
+                            + "figure with a thin cooler plume.\n\nON: the "
+                            + "judge also sees four real frames around the "
+                            + "impact (-0.25s, 0.00s, +0.15s, +0.40s), "
+                            + "cropped to whatever moved, and is asked "
+                            + "whether a person is holding a club and moving "
+                            + "it across them.\n\nOn 17 labelled clips "
+                            + "(6 Nov) frames kept the same 7 of 8 swings and "
+                            + "took false positives from 4 to 0."
                           }
                         >
                           <input
                             type="checkbox"
-                            checked={judgeFrames[u.id] !== false}
+                            checked={judgeFrames[u.id] === true}
                             onChange={(e) =>
                               setJudgeFrames((d) => ({
                                 ...d, [u.id]: e.target.checked,

@@ -14594,14 +14594,20 @@ def test_cut_long_upload(
     verify_window_sec: float = Form(0.5),
     # SHOW THE JUDGE FOUR REAL FRAMES, or only the heat composite.
     #
+    # OFF BY DEFAULT: Test Cut asks the question it has always asked,
+    # and frames are opted into. The operator asked to go back to the
+    # old question and the first version of this shipped the opposite
+    # as the default, reachable only by unticking a box -- which is
+    # not going back, it is burying the thing that was asked for.
+    #
     # A SWITCH RATHER THAN A DECISION, because the two ask genuinely
-    # different questions and the operator wants to compare them on
-    # the same upload without a deploy. Measured on 17 clips the
-    # operator labelled, 6 Nov: heat alone kept 7 of 8 swings with 4
-    # false positives; heat plus frames kept 7 of 8 with 0. But the
-    # heat-only wording is what was tuned over weeks, and a number
-    # off one afternoon is not a reason to make it unreachable.
-    judge_with_frames: bool = Form(True),
+    # different questions and they want to compare them on the same
+    # upload without a deploy. Measured on 17 clips they labelled,
+    # 6 Nov: heat alone kept 7 of 8 swings with 4 false positives;
+    # heat plus frames kept 7 of 8 with 0. That is a real result and
+    # the tooltip carries it -- but the default belongs to whoever is
+    # tuning, not to the last measurement.
+    judge_with_frames: bool = Form(False),
     # ZONES FOR THIS RUN ONLY, as JSON [{x,y,w,h}] in 0-1 fractions of
     # the frame. NOTHING IS SAVED: the camera's own boxes are what the
     # rig records against, and a tester that quietly rewrote them could

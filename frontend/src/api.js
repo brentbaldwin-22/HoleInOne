@@ -1275,11 +1275,13 @@ export const api = {
         fd.append("verify_swings", "true");
         fd.append("verify_window_sec",
           String(opts.verifyWindowSec != null ? opts.verifyWindowSec : 0.5));
-        // Only send it when it is OFF: the server defaults to on, and
-        // an older server that has never heard of the field keeps
-        // behaving the way it already does.
-        if (opts.judgeWithFrames === false) {
-          fd.append("judge_with_frames", "false");
+        // Only send it when it is ON: the server defaults to the old
+        // heat-only question, and an older server that has never
+        // heard of the field also asks the old question. Both ends
+        // agree without the field, which is what makes it safe to
+        // deploy either side first.
+        if (opts.judgeWithFrames === true) {
+          fd.append("judge_with_frames", "true");
         }
       }
       if (opts.audioMaxAttackMs != null) {
