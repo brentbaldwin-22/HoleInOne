@@ -561,6 +561,20 @@ def confidence_verdict(is_swing, confidence, ratio, gate_ratio, *,
 # whole-zone crop on exactly the quiet swings it was written for.
 FEET_ZONE_SLACK = 1.0
 
+# AND ALMOST NONE WHEN THE FEET ARE REAL. The slack above exists for
+# exactly one reason: a motion blob's bottom is the waist of a golfer
+# whose legs did not move, so it sits a long way above the stance and
+# needs room. A person detector's box bottom IS the stance, so the
+# room is not needed -- and it is actively harmful, because one zone
+# height of reach above a zone is enough to admit things standing
+# nowhere near the tee. On 8 Nov it admitted a tree: the detector
+# called it a person, its "feet" sat well above the zone, and the
+# slack waved it through to win the pick.
+#
+# 0.15 of a zone's height is a cushion for the box edge jitter
+# between frames, not a reach into the next part of the hole.
+FEET_ZONE_SLACK_DETECTED = 0.15
+
 # WHEN IT IS TOO CLOSE TO CALL. Two golfers level on a tee is the
 # normal case while one addresses the ball and the other watches, and
 # picking the wrong one by three pixels is worse than not picking: the
@@ -594,7 +608,7 @@ FRONT_GOLFER_MARGIN_DETECTED = 0.08
 
 
 def pick_front_golfer(blobs, zones, *, offset=(0, 0),
-                      slack=FEET_ZONE_SLACK,
+                      slack=None,
                       margin_frac=None,
                       people=None) -> dict:
     """The golfer standing in a zone whose feet are furthest up.
@@ -635,6 +649,9 @@ def pick_front_golfer(blobs, zones, *, offset=(0, 0),
     if margin_frac is None:
         margin_frac = (FRONT_GOLFER_MARGIN_DETECTED if people
                        else FRONT_GOLFER_MARGIN_FRAC)
+    if slack is None:
+        slack = (FEET_ZONE_SLACK_DETECTED if people
+                 else FEET_ZONE_SLACK)
     out = {"pick": None, "floor": None, "close": False, "from": None,
            # EVERY BLOB IT LOOKED AT AND WHAT IT MEASURED. The rule
            # reads a FOOT POINT off each blob -- the bottom-centre of

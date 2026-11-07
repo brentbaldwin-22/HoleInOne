@@ -426,12 +426,13 @@ def main() -> int:
         return {"box": [x, y, w, h], "feet": [x + w // 2, y + h],
                 "conf": c}
     stand = person(840, 400, 90, 400)             # feet y=800
-    bend = person(1070, 380, 150, 320)            # feet y=700, further up
+    # Feet INSIDE the zone (720..830) and further up than `stand`.
+    bend = person(1070, 340, 150, 400)            # feet y=740
     r = pick_front_golfer([], PZ, people=[stand, bend])
     check("the detector's people are used over the blobs",
           r["from"], "the person detector")
     check("  and the golfer further up wins",
-          r["pick"]["feet"], [1145, 700])
+          r["pick"]["feet"], [1145, 740])
     check("  with the zone's floor, not the box's bottom",
           r["floor"], 830)
     # THE FEET IT REPORTS ARE THE BOX BOTTOM, every time.
@@ -443,7 +444,7 @@ def main() -> int:
     decoy = blob(900, 300, 120, 200)              # blob feet y=500
     r2 = pick_front_golfer([decoy], PZ, people=[stand, bend])
     check("a heat blob cannot outvote a detected person",
-          r2["pick"]["feet"], [1145, 700])
+          r2["pick"]["feet"], [1145, 740])
     # NO PEOPLE -> the blobs are still the fallback, and it says so.
     r3 = pick_front_golfer([front], ZONES, people=[])
     check("no detections falls back to the heat",
@@ -459,6 +460,28 @@ def main() -> int:
     check("  but two abreast are still too close",
           pick_front_golfer([], PZ,
                             people=[stand, _abreast])["close"], True)
+    # THE TREE, 8 Nov. The detector offered a palm as a person; its
+    # feet sat well ABOVE the zone, and one zone height of slack --
+    # which exists only to excuse a motion blob ending at the waist
+    # -- waved it through to win. Real feet need no such reach.
+    # PZ's zone is y 720..830, so 110 px tall; the tree's feet are
+    # 120 px above its top.
+    tree = person(600, 300, 110, 300)             # feet y=600
+    r4 = pick_front_golfer([], PZ, people=[tree])
+    check("a detection above the zones is refused",
+          r4["pick"] is None, True)
+    check("  and is reported as out of the zones, not too close",
+          r4["close"], False)
+    check("  and still appears in the working, marked out-of-zone",
+          [c["zone"] for c in r4["considered"]], [False])
+    # ...while the real golfer beside it is unaffected.
+    r5 = pick_front_golfer([], PZ, people=[tree, stand])
+    check("  and the golfer on the tee still wins",
+          r5["pick"]["feet"], [885, 800])
+    # THE BLOB FALLBACK KEEPS ITS SLACK, because a blob really does
+    # stop at the waist.
+    check("the heat fallback still forgives a high blob",
+          pick_front_golfer([_waist], ZONES)["pick"] is _waist, True)
 
     print()
     if FAIL:

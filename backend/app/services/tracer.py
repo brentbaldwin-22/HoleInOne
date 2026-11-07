@@ -3328,14 +3328,31 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
                 fy = int(round((float(_f["feet"][1]) - oy) * sc))
                 bw = max(6, int(round(float(_f["box"][2]) * sc)))
                 _pk = bool(_f.get("picked"))
-                if -bw < fx < w + bw and -20 < fy < h + 20:
-                    cv2.line(out, (fx - bw // 2, fy), (fx + bw // 2, fy),
-                             FOOT_COLOR, 3 if _pk else 2, cv2.LINE_AA)
-                    cv2.line(out, (fx, fy - 7), (fx, fy + 7),
-                             FOOT_COLOR, 3 if _pk else 2, cv2.LINE_AA)
-                    cv2.circle(out, (fx, fy), 5, FOOT_COLOR,
-                               -1 if _pk else 1, cv2.LINE_AA)
+                _in = bool(_f.get("zone"))
+                if not (-bw < fx < w + bw and -20 < fy < h + 20):
+                    continue
+                if not _in:
+                    # CONSIDERED AND REFUSED -- feet nowhere near a
+                    # trigger zone. Still drawn, because seeing the
+                    # tree the detector offered is how it got caught,
+                    # but as a small hollow mark: a full foot bar on
+                    # something that was never in the running reads
+                    # like a pick.
+                    cv2.circle(out, (fx, fy), 4, FOOT_COLOR, 1,
+                               cv2.LINE_AA)
+                    cv2.line(out, (fx - 6, fy - 6), (fx + 6, fy + 6),
+                             FOOT_COLOR, 1, cv2.LINE_AA)
+                    cv2.line(out, (fx - 6, fy + 6), (fx + 6, fy - 6),
+                             FOOT_COLOR, 1, cv2.LINE_AA)
                     drew += 1
+                    continue
+                cv2.line(out, (fx - bw // 2, fy), (fx + bw // 2, fy),
+                         FOOT_COLOR, 3 if _pk else 2, cv2.LINE_AA)
+                cv2.line(out, (fx, fy - 7), (fx, fy + 7),
+                         FOOT_COLOR, 3 if _pk else 2, cv2.LINE_AA)
+                cv2.circle(out, (fx, fy), 5, FOOT_COLOR,
+                           -1 if _pk else 1, cv2.LINE_AA)
+                drew += 1
             except Exception:  # noqa: BLE001
                 continue
         return out if drew else None

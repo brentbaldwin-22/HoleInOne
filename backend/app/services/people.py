@@ -91,7 +91,25 @@ def _net():
     return _NET
 
 
-def find_people(frame, *, input_size: int = 320, conf: float = 0.35,
+# A PERSON IS TALLER THAN THEY ARE WIDE, in every pose anybody adopts
+# on a tee -- standing, addressing, bending to a tee peg, mid-follow-
+# through. Nothing on a golf hole that is twice as wide as it is tall
+# is a person, and YOLO at a distance will occasionally offer a bush,
+# a bunker edge or a tree canopy as one. This is a sanity bound, not
+# a pose classifier: it is deliberately loose enough that a golfer
+# doubled over picking up a ball still passes.
+MAX_PERSON_WIDTH_OVER_HEIGHT = 2.0
+
+# 0.35 let a palm tree through on 8 Nov. YOLOv8's own default is 0.25
+# and the rig runs 0.40; a golfer on a tee is a large, well-lit,
+# unambiguous box and does not need the bottom of the range. The
+# trigger-zone test is still the real defence -- a tree's feet are
+# not on the tee -- and this only stops them being offered.
+DEFAULT_PERSON_CONF = 0.50
+
+
+def find_people(frame, *, input_size: int = 320,
+                conf: float = DEFAULT_PERSON_CONF,
                 iou: float = 0.5, min_area_frac: float = 0.0) -> list:
     """Every person in the frame, feet first. Never raises.
 
@@ -129,6 +147,8 @@ def find_people(frame, *, input_size: int = 320, conf: float = 0.35,
             cx, cy, bw, bh = row[0], row[1], row[2], row[3]
             bw_px, bh_px = bw / n * w, bh / n * h
             if bw_px * bh_px < min_px:
+                continue
+            if bh_px <= 0 or (bw_px / bh_px) > MAX_PERSON_WIDTH_OVER_HEIGHT:
                 continue
             boxes.append([int((cx - bw / 2) / n * w),
                           int((cy - bh / 2) / n * h),
