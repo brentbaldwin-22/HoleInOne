@@ -214,92 +214,45 @@ def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
                 # trigger boxes are wide flat strips that leaves a
                 # 70 px golfer in a 1920 px landscape. Headroom is not
                 # symmetric: the club plume rises ABOVE the head and
-                # is the single most important thing in the picture,
-                # so a full blob height above and a third below.
+                # is the single most important thing in the picture.
                 _mz = _geo.get("main")
                 if _mz and _mz["w"] >= 8 and _mz["h"] >= 8:
                     _zh, _zw = img.shape[:2]
-                    # Same geometry as tracer.swing_heat_check: wide
-                    # sides, up to the top of the picture, down to the
-                    # feet. See there for why.
-                    # THE GOLFERS STANDING IN THE ZONE. See
-                    # tracer.swing_heat_check: the narrower of the zone
-                    # and the players on it is the crop, because a zone
-                    # wider than the players buys empty fairway.
-                    _people = [p for p in ([_mz] + list(
-                        _geo.get("others") or []))
-                        if p and p["w"] >= 8 and p["h"] >= 8]
-                    _inzone = _people
+                    # THE TRIGGER ZONE IS THE CROP. Same rule as
+                    # tracer.swing_heat_check, see there: the zone's
+                    # x-range and its bottom edge, run up to the top of
+                    # the picture, the same rectangle on every strike.
+                    # Nothing here follows the people any more.
+                    _zone = None
                     if prefer_span is not None:
                         try:
-                            _s0 = int(min(prefer_span)) - ox
-                            _s1 = int(max(prefer_span)) - ox
-                            _hit = [p for p in _people
-                                    if _s0 <= p["x"] + p["w"] / 2.0 <= _s1]
-                            if _hit:
-                                _inzone = _hit
+                            _z0 = int(prefer_span[0]) - ox
+                            _z1 = int(prefer_span[1]) - ox
+                            _zb = int(prefer_span[2]) - oy
+                            if _z1 > _z0:
+                                _zone = (_z0, _z1, _zb)
                         except Exception:  # noqa: BLE001
-                            pass
-                    _gx0 = min(p["x"] for p in _inzone)
-                    _gx1 = max(p["x"] + p["w"] for p in _inzone)
-                    _gy1 = max(p["y"] + p["h"] for p in _inzone)
-                    _px = int(_mz["w"] * 1.25)
-                    _zx0 = max(0, _mz["x"] - _px)
-                    _zx1 = min(_zw, _mz["x"] + _mz["w"] + _px)
-                    # AS WIDE AS THE TRIGGER ZONE, and never narrower
-                    # than the blob crop. See tracer.swing_heat_check
-                    # for why: the blob is only what moved, so a crop
-                    # built from it clips the ground either side of the
-                    # stance and the club on the way through.
-                    if prefer_span is not None:
-                        try:
-                            _sx0 = int(min(prefer_span)) - ox
-                            _sx1 = int(max(prefer_span)) - ox
-                            if _sx1 > _sx0:
-                                _zx0 = max(0, min(_zx0, _sx0))
-                                _zx1 = min(_zw, max(_zx1, _sx1))
-                        except Exception:  # noqa: BLE001
-                            pass
-                    # ...BUT NEVER WIDER THAN THE GOLFERS ON IT.
-                    _ax = _mz["x"]
-                    _gp = max(6, int((_gx1 - _gx0) * 0.04))
-                    _zx0 = max(_zx0, min(_gx0 - _gp, _ax))
-                    _zx1 = min(_zx1, max(_gx1 + _gp, _ax + _mz["w"]))
-                    # BUT ONE GOLFER PER PICTURE -- the crop stops just
-                    # short of anybody else the measurement found. See
-                    # tracer.swing_heat_check: widening to the zone put
-                    # both players in the frame and left "above the
-                    # golfer's head" with two heads to mean.
-                    for _o in (_geo.get("others") or []):
-                        if not _o or _o["w"] < 8 or _o["h"] < 8:
-                            continue
-                        if _o["x"] + _o["w"] <= _ax:
-                            _zx0 = max(_zx0, min(_o["x"] + _o["w"] + 4, _ax))
-                        elif _o["x"] >= _ax + _mz["w"]:
-                            _zx1 = min(_zx1,
-                                       max(_o["x"] - 4, _ax + _mz["w"]))
-                    _zy0 = 0
-                    # Down to the feet, not to the bottom of the heat:
-                    # a golfer's legs barely move, so the motion stops
-                    # around the waist. To the feet and NOT past them:
-                    # turf below the stance only costs apparent size.
-                    # See tracer.swing_heat_check.
-                    _bot = max(_gy1, _mz["y"] + _mz["h"])
-                    _zy1 = _bot + max(4, int(_mz["h"] * 0.08))
-                    if prefer_xy is not None:
-                        try:
-                            # The detected stance only ever RESCUES a
-                            # crop that stopped short, and even then by
-                            # no more than a sliver of turf. See
-                            # tracer.swing_heat_check.
-                            _fy = int(float(prefer_xy[1]) - oy)
-                            if _fy > _zy1:
-                                _zy1 = min(
-                                    _fy,
-                                    _bot + max(8, int(_mz["h"] * 0.15)))
-                        except Exception:  # noqa: BLE001
-                            pass
-                    _zy1 = min(_zh, _zy1)
+                            _zone = None
+                    if _zone is not None:
+                        _zx0 = max(0, min(_zw - 1, _zone[0]))
+                        _zx1 = max(_zx0 + 1, min(_zw, _zone[1]))
+                        _zy0 = 0
+                        _zy1 = max(1, min(_zh, _zone[2]))
+                    else:
+                        # NO ZONES DRAWN -- crop to the blob, which is
+                        # what this did before the zone crop went in.
+                        _px = int(_mz["w"] * 1.25)
+                        _zx0 = max(0, _mz["x"] - _px)
+                        _zx1 = min(_zw, _mz["x"] + _mz["w"] + _px)
+                        _zy0 = 0
+                        _zy1 = _mz["y"] + _mz["h"] + int(_mz["h"] * 0.35)
+                        if prefer_xy is not None:
+                            try:
+                                _zy1 = max(_zy1,
+                                           int(float(prefer_xy[1]) - oy))
+                            except Exception:  # noqa: BLE001
+                                pass
+                        _zy1 = min(_zh, _zy1)
                     _zx0, _zx1 = swingjudge.grow_span(_zx0, _zx1, 160, _zw)
                     if (_zx1 - _zx0) >= 64 and (_zy1 - _zy0) >= 64:
                         img = img[_zy0:_zy1, _zx0:_zx1].copy()
@@ -409,12 +362,14 @@ def _frame_strip(kept: dict, box, width: int, height: int, out_path):
 
 
 def zone_span(roi, boxes_fn):
-    """The trigger zones' x-range in frame pixels, or None.
+    """The trigger zones as (x0, x1, bottom) in frame pixels, or None.
 
     The crop above is generous on purpose; this is the zones
-    themselves, which is the width of ground a golfer can legally be
-    standing on. The zoom uses it so the picture the judge sees is as
-    wide as the tee rather than as wide as whatever happened to move.
+    themselves. Their x-range is the width of ground a golfer can
+    legally be standing on, and their bottom edge is the ground line,
+    because zones are drawn round FEET. The judged picture is exactly
+    that rectangle, run up to the top of the frame -- see
+    tracer.swing_heat_check.
     """
     try:
         zs = boxes_fn(roi) or []
@@ -422,7 +377,8 @@ def zone_span(roi, boxes_fn):
             return None
         x0 = min(int(z["x"]) for z in zs)
         x1 = max(int(z["x"]) + int(z["w"]) for z in zs)
-        return (x0, x1) if x1 > x0 else None
+        y1 = max(int(z["y"]) + int(z["h"]) for z in zs)
+        return (x0, x1, y1) if x1 > x0 else None
     except Exception:  # noqa: BLE001
         return None
 

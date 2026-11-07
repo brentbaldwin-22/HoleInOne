@@ -3663,156 +3663,78 @@ def swing_heat_check(
                         _psp = (float(_psp[0]) - _ox, float(_psp[1]) - _ox)
                     _geo = _sj.measure_heat(_hmj, prefer_xy=_pxy,
                                             prefer_span=_psp)
-                    # AND NOW ZOOM TO THE GOLFER. The zone crop above
-                    # is as tight as the zones are, and on a hole whose
-                    # trigger boxes are two wide flat strips that is
-                    # the whole picture -- a 70 px golfer in a 1920 px
-                    # landscape, which is what the judge has been
-                    # squinting at. The measurement has just said which
-                    # blob is theirs, so the crop can follow it.
-                    #
-                    # HEADROOM IS NOT SYMMETRIC. The club plume rises
-                    # ABOVE the head and is the single most important
-                    # thing in the frame, so there is a full blob
-                    # height above and only a third below.
                     # EVERY PERSON-SHAPED CANDIDATE, best first. The
                     # ranking is unchanged -- the caller's anchor, then
                     # size -- this just stops throwing the rest away.
                     _cands = [_geo.get("main")] + list(_geo.get("others") or [])
                     _cands = [c for c in _cands
                               if c and c["w"] >= 8 and c["h"] >= 8]
-                    # EVERY person-shaped blob, kept whole, so that a
-                    # crop can be held clear of the ones it is not
-                    # about -- including any beyond max_candidates,
-                    # which are not asked about but are still in the
-                    # picture if the crop reaches them.
-                    _people = list(_cands)
-                    _cands = _cands[:max(1, int(max_candidates))]
-                    # AND THE GOLFERS STANDING IN THE ZONE. The zone
-                    # span is a width of GROUND; these are the people
-                    # on it, and the narrower of the two is the crop
-                    # the operator asked for -- a zone wider than the
-                    # players on it is buying empty fairway. Centre
-                    # inside the span, not wholly inside: the blob is
-                    # the whole body and a stance at the edge of a zone
-                    # leans out of it.
-                    _inzone = _people
-                    if _psp is not None:
+                    # THE TRIGGER ZONE IS THE CROP, 7 Nov. Every
+                    # people-aware rule that was here is gone: the
+                    # golfer-extent narrowing, the stop-short-of-the-
+                    # other-player exclusion, the ground line read off
+                    # the lowest heat. They were each defensible and
+                    # together they made the picture a different shape
+                    # on every clip, which is the one thing a judge
+                    # being asked the same question every time cannot
+                    # have. The zone is drawn by hand, it does not
+                    # move, and it is the same rectangle for every
+                    # strike on that hole.
+                    #
+                    # Width: the zone span. Bottom: the zone's bottom
+                    # edge, which is drawn round feet. Top: the top of
+                    # the picture, because the club at the top of a
+                    # backswing and the ball leaving both go up out of
+                    # any box you would draw round a stance.
+                    _zone = None
+                    if _psp is not None and floor_y is not None:
                         try:
-                            _s0, _s1 = int(min(_psp)), int(max(_psp))
-                            _hit = [p for p in _people
-                                    if _s0 <= p["x"] + p["w"] / 2.0 <= _s1]
-                            if _hit:
-                                _inzone = _hit
+                            _zone = (int(min(_psp)), int(max(_psp)),
+                                     int(float(floor_y) - _oy))
+                            if _zone[1] <= _zone[0]:
+                                _zone = None
                         except Exception:  # noqa: BLE001
-                            pass
-                    _gx0 = min(p["x"] for p in _inzone)
-                    _gx1 = max(p["x"] + p["w"] for p in _inzone)
-                    _gy1 = max(p["y"] + p["h"] for p in _inzone)
+                            _zone = None
+                    if _zone is not None:
+                        # ONE PICTURE, ONE QUESTION. The crop no longer
+                        # depends on which blob is being asked about,
+                        # so a second candidate would be a second
+                        # vision call on a byte-identical image. The
+                        # candidate machinery stays for callers that
+                        # have no zones and still crop to the blob.
+                        _cands = _cands[:1]
+                    else:
+                        _cands = _cands[:max(1, int(max_candidates))]
                     out["candidates"] = []
                     _base_img = judged
                     for _ci, _mz in enumerate(_cands):
                         judged = _base_img
                         _zh, _zw = judged.shape[:2]
-                        # WIDE SIDES, ALL THE WAY UP, DOWN TO THE FEET.
-                        # A ball leaves the top of the frame and a club
-                        # at the top of the backswing can be well above
-                        # the blob the heat found, so the crop runs to
-                        # the top of the picture rather than guessing a
-                        # headroom. Below the feet is grass.
-                        _px = int(_mz["w"] * 1.25)
                         _ax, _ay = _mz["x"], _mz["y"]
-                        _zx0 = max(0, _ax - _px)
-                        _zx1 = min(_zw, _ax + _mz["w"] + _px)
-                        # AS WIDE AS THE TRIGGER ZONE. The blob is
-                        # what MOVED, and a golfer whose hands are the
-                        # only hot thing measures a couple of hundred
-                        # pixels across -- so a crop built from the
-                        # blob alone cuts off the ground either side of
-                        # the stance and, worse, cuts off the club on
-                        # the way through. The zones are the width of
-                        # the ground a golfer can legally be standing
-                        # on, which is the right amount of context, and
-                        # the caller already hands it over for the
-                        # measurement. Never NARROWER than the blob
-                        # crop -- a blob outside the zones (which
-                        # happens, the zones are drawn round feet and
-                        # the heat is the whole body) keeps its own
-                        # margins and the union covers both.
-                        if _psp is not None:
-                            try:
-                                _sx0 = int(min(_psp))
-                                _sx1 = int(max(_psp))
-                                if _sx1 > _sx0:
-                                    _zx0 = max(0, min(_zx0, _sx0))
-                                    _zx1 = min(_zw, max(_zx1, _sx1))
-                            except Exception:  # noqa: BLE001
-                                pass
-                        # ...BUT NEVER WIDER THAN THE GOLFERS ON IT.
-                        # Zones are drawn generously and the players
-                        # rarely fill one, so the zone width alone left
-                        # a stripe of empty fairway down one side,
-                        # which costs apparent size in the upscaled
-                        # crop for nothing. Whichever of the two is
-                        # narrower wins. Never cuts into this
-                        # candidate's own blob.
-                        _gp = max(6, int((_gx1 - _gx0) * 0.04))
-                        _zx0 = max(_zx0, min(_gx0 - _gp, _ax))
-                        _zx1 = min(_zx1, max(_gx1 + _gp, _ax + _mz["w"]))
-                        # BUT ONE GOLFER PER PICTURE. Widening to the
-                        # zone reached the whole tee, which put BOTH
-                        # players in both candidate crops -- so the two
-                        # calls asked the same question about the same
-                        # image, and "a thin extension above the
-                        # golfer's head" stopped having one head to
-                        # mean. The judge came back reporting on "the
-                        # right figure". The crop stops just short of
-                        # anyone else, which keeps the width where
-                        # there is room for it and gives the plume test
-                        # its subject back.
-                        for _o in _people:
-                            if _o is _mz:
-                                continue
-                            if _o["x"] + _o["w"] <= _ax:
-                                _zx0 = max(_zx0,
-                                           min(_o["x"] + _o["w"] + 4, _ax))
-                            elif _o["x"] >= _ax + _mz["w"]:
-                                _zx1 = min(_zx1,
-                                           max(_o["x"] - 4,
-                                               _ax + _mz["w"]))
-                        _zy0 = 0
-                        # THE FEET, AND NOT THE FAIRWAY BEYOND THEM.
-                        # The heat runs down the legs to the shoes on
-                        # most of these, so the LOWEST heat among the
-                        # golfers in the zone is the ground line, and
-                        # it is a better one than the zone's bottom
-                        # edge: zones are drawn round feet but drawn
-                        # generously, and that edge sat well below the
-                        # stance. Taken across all of them, not just
-                        # this candidate, so one player whose legs
-                        # never moved still gets a floor from the one
-                        # standing beside him.
-                        _zy1 = max(_gy1, _ay + _mz["h"]) + max(
-                            4, int(_mz["h"] * 0.08))
-                        if floor_y is not None:
-                            # The zone floor only ever RESCUES a crop
-                            # that stopped short -- a swing in which
-                            # nothing below the waist moved -- and even
-                            # then it may not add more than a sliver of
-                            # turf. It is no longer allowed to drag the
-                            # bottom down on its own.
-                            _fy = int(float(floor_y) - _oy)
-                            if _fy > _zy1:
-                                _zy1 = min(_fy, max(_gy1, _ay + _mz["h"])
-                                           + max(8, int(_mz["h"] * 0.15)))
-                        _zy1 = min(_zh, _zy1)
+                        if _zone is not None:
+                            _zx0 = max(0, min(_zw - 1, _zone[0]))
+                            _zx1 = max(_zx0 + 1, min(_zw, _zone[1]))
+                            _zy0 = 0
+                            _zy1 = max(1, min(_zh, _zone[2]))
+                        else:
+                            # NO ZONES DRAWN. A camera nobody has drawn
+                            # boxes for still has to be judged, and the
+                            # blob is the only thing there is to aim
+                            # at: wide sides, up to the top of the
+                            # picture, a third of a blob below the
+                            # heat. This is what every caller got
+                            # before the zone crop went in.
+                            _px = int(_mz["w"] * 1.25)
+                            _zx0 = max(0, _ax - _px)
+                            _zx1 = min(_zw, _ax + _mz["w"] + _px)
+                            _zy0 = 0
+                            _zy1 = min(_zh, _ay + _mz["h"]
+                                       + int(_mz["h"] * 0.35))
                         # GROW A SMALL CROP, DO NOT ABANDON IT. The
                         # first version skipped the zoom when the crop
                         # came out under 160 px either way -- which
                         # threw it away for exactly the small, distant
-                        # golfers that most needed it. A 60 px golfer
-                        # makes a 150 px crop and got the full 1920 px
-                        # landscape instead.
+                        # golfers that most needed it.
                         _zx0, _zx1 = _sj.grow_span(_zx0, _zx1, 160, _zw)
                         _zy0, _zy1 = _sj.grow_span(_zy0, _zy1, 160, _zh)
                         if (_zx1 - _zx0) >= 64 and (_zy1 - _zy0) >= 64:
