@@ -9620,6 +9620,47 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             searched, what it picked and why a frame was refused --
             which is the only way to tell "the ball was not there"
             from "the box was pointed at the wrong grass". */}
+        {/* THE ZOOMED WALK UP THE COLUMN. The sweep searches a band
+            the full width of the frame; this searches a column over
+            the measured ball, one window at a time, zoomed 3.7x.
+            Both run -- the band is what every verdict so far was
+            measured against and this has never been scored -- so the
+            two are shown together and can be compared. */}
+        {rep?.ascent_zoom && (
+          <div style={{ marginTop: 10 }}>
+            <b>Zoomed walk up from the ball</b>{" "}
+            <span className={rep.ascent_zoom.ok ? "pill ok" : "pill"}>
+              {(rep.ascent_zoom.tiles || []).length} window(s) ·{" "}
+              {(rep.ascent_zoom.points || []).length} point(s)
+            </span>
+            <div className="tiny muted" style={{ marginTop: 3 }}>
+              {rep.ascent_zoom.reason}
+              {rep.ascent_zoom.seconds != null
+                ? ` · ${rep.ascent_zoom.seconds}s` : ""}
+            </div>
+            {rep.ascent_zoom.image_url && (
+              <a href={rep.ascent_zoom.image_url} target="_blank"
+                 rel="noreferrer">
+                <img src={rep.ascent_zoom.image_url}
+                     alt="the zoomed walk up the column"
+                     style={{ width: "100%", maxWidth: 900, marginTop: 4,
+                              borderRadius: 4,
+                              border: "1px solid var(--border, #333)" }} />
+              </a>
+            )}
+            {(rep.ascent_zoom.tiles || []).length > 0 && (
+              <div className="tiny muted" style={{ marginTop: 3 }}>
+                {rep.ascent_zoom.tiles.map((t, i) => (
+                  <div key={i}>
+                    {t.i}: y{t.box[1]}–{t.box[1] + t.box[3]} ·{" "}
+                    {t.n_movers} mover(s) · {t.n_tracks} track(s) ·{" "}
+                    {t.n_points} pt — {t.why}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {rep?.ai_launch && (
           <div className="card" style={{ margin: "10px 0", padding: 10 }}>
             <div className="row" style={{ justifyContent: "space-between" }}>
@@ -9632,6 +9673,30 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                 {rep.ai_launch.rest ? " · ball found at address" : ""}
               </span>
             </div>
+            {/* MEASURED OFF THE PIXELS, beside what the model said.
+                The AI is shown a box and asked to find the ball and
+                follow it; this finds the same ball with a detector
+                and reports the first frame it is NOT there. On the
+                clip that prompted this the AI "found the ball at
+                address but saw it on none of the 4 frames after it",
+                which is a report of having lost it rather than of it
+                having gone -- and the two readings side by side are
+                the only way to tell those apart. */}
+            {rep.ai_launch.measured_why && (
+              <div className="tiny" style={{
+                marginTop: 3, color: rep.ai_launch.measured_impact_frame
+                  ? "#1a7f37" : "#777",
+              }}>
+                <b>measured:</b> {rep.ai_launch.measured_why}
+                {rep.ai_launch.measured_impact_frame
+                  && rep.ai_launch.impact_frame_rig
+                  && rep.ai_launch.measured_impact_frame
+                     !== rep.ai_launch.impact_frame_rig
+                  ? ` — impact moved f${rep.ai_launch.impact_frame_rig}`
+                    + ` → f${rep.ai_launch.measured_impact_frame}`
+                  : ""}
+              </div>
+            )}
             <div className="tiny muted" style={{ marginTop: 3 }}>
               {rep.ai_launch.reason}
               {/* THE SUM, COMPACTLY, WHERE THE FRAME IS USED. The

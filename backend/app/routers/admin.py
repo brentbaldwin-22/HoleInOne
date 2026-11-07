@@ -24786,7 +24786,10 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
            "find the ball at address, and every few frames after it to "
            "follow the ball out. "
            + str((rep["ai_launch"] or {}).get("rect_from") or "")
-           + ". " + str((rep["ai_launch"] or {}).get("reason") or ""),
+           + ". " + str((rep["ai_launch"] or {}).get("reason") or "")
+           + " | measured off the pixels: "
+           + str((rep["ai_launch"] or {}).get("measured_why")
+                 or "not run"),
            (rep["ai_launch"] or {}).get("n_points"), "plotted",
            time.perf_counter() - _t)
 
@@ -24824,6 +24827,52 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                               gates=_gt,
                               **_search_area_for(db, row)) or {}
     _sec_sweep = time.perf_counter() - _t_sub
+    # ── AND THE ZOOMED WALK UP THE COLUMN ────────────────────────────
+    #
+    # The sweep above searches a BAND: the full width of the frame,
+    # from the top down to a golfer's height above the tee, at native
+    # resolution, over the whole clip. On this clip that is 840 frames
+    # and 303 detections for 1 ball, and the ball itself is three
+    # pixels whose frame-to-frame difference barely survives the blur.
+    #
+    # Stage 1 has just placed the golfer with a detector and measured
+    # the ball's resting spot and the impact frame off the pixels. A
+    # ball leaves from that spot and climbs very nearly straight up --
+    # that is what a camera behind the hitting area buys. So the sky
+    # worth searching is a column over the ball, one window at a time,
+    # zoomed 3.7x so the ball survives the blur, walking up until a
+    # window comes back empty.
+    #
+    # IT DOES NOT REPLACE THE SWEEP. Every verdict so far was measured
+    # against the band; this has never been scored on a corpus, and
+    # swapping the measured thing for the unmeasured one on the
+    # strength of an argument is how the last fortnight's bugs got in.
+    # Both run, both are reported, and `ascent_zoom` carries the work.
+    _al = rep.get("ai_launch") or {}
+    _zspot = _al.get("measured_ball") or (
+        [_al["rest"][0], _al["rest"][1]] if _al.get("rest") else None)
+    _zimp = _al.get("measured_impact_frame") or _al.get("impact_frame")
+    if _zspot and _zimp is not None:
+        _t_zoom = time.perf_counter()
+        try:
+            rep["ascent_zoom"] = _d3.find_ascents_tiled(
+                src_path, fps, int(_zimp), (_zspot[0], _zspot[1]),
+                golfer_box=_al.get("golfer_box"))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ball scan: zoomed ascent failed on %s: %s",
+                        row.id, exc)
+            rep["ascent_zoom"] = {"ok": False, "tiles": [],
+                                  "reason": f"failed: {exc}"}
+        rep["ascent_zoom"]["seconds"] = round(
+            time.perf_counter() - _t_zoom, 2)
+        _ascent_zoom_image(row, src_path, int(_zimp), rep["ascent_zoom"],
+                           _zspot)
+    else:
+        rep["ascent_zoom"] = {
+            "ok": False, "tiles": [],
+            "reason": ("no measured ball spot and impact frame to climb "
+                       "from — stage 1 found %s"
+                       % (_al.get("measured_why") or "nothing"))}
     _t_sub = time.perf_counter()
     _ball_scan_sweep_image(row, src_path, sweep)
     _ball_scan_considered_image(row, src_path, sweep)
@@ -26212,6 +26261,72 @@ def _ascent_swing_heat(row, src_path, fps, rig) -> dict:
     return out
 
 
+def _ascent_zoom_image(row, src_path, impact_frame, zoom, spot) -> None:
+    """One picture of the zoomed walk: every window, and what it found.
+
+    THE WORK, NOT THE ANSWER. "No ascent" covers four different
+    failures that want opposite fixes -- nothing moved in the window,
+    something moved but did not climb, the ball left the column, or
+    the sky ran out -- and a sentence cannot tell them apart. Each
+    window is drawn where it was looked at, numbered, magenta where it
+    found a climbing track and grey where it did not, with the reason
+    written on it.
+    """
+    try:
+        import cv2  # type: ignore
+
+        if not zoom or not zoom.get("tiles"):
+            return
+        cap = cv2.VideoCapture(str(src_path))
+        if not cap.isOpened():
+            return
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(impact_frame)))
+        ok, im = cap.read()
+        cap.release()
+        if not ok or im is None:
+            return
+        im = (im.astype("float32") * 0.72).astype("uint8")
+        _col = zoom.get("column")
+        if _col:
+            cv2.rectangle(im, (int(_col[0]), 0),
+                          (int(_col[0] + _col[2]), int(_col[3])),
+                          (200, 90, 220), 1)
+        for t in zoom["tiles"]:
+            bx, by, bw, bh = [int(v) for v in t["box"]]
+            got = bool(t.get("points"))
+            c = (200, 90, 220) if got else (110, 110, 110)
+            cv2.rectangle(im, (bx, by), (bx + bw, by + bh), c,
+                          2 if got else 1)
+            cv2.putText(im, "%d: %s" % (t.get("i", 0), t.get("why") or ""),
+                        (bx + 6, by + 18), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.44, c, 1, cv2.LINE_AA)
+            pts = t.get("points") or []
+            for a_, b_ in zip(pts, pts[1:]):
+                cv2.line(im, (a_["x"], a_["y"]), (b_["x"], b_["y"]),
+                         (200, 90, 220), 2, cv2.LINE_AA)
+            for q in pts:
+                cv2.circle(im, (q["x"], q["y"]), 3, (255, 255, 255), -1,
+                           cv2.LINE_AA)
+        if spot:
+            cv2.circle(im, (int(spot[0]), int(spot[1])), 12,
+                       (60, 200, 255), 2, cv2.LINE_AA)
+        cv2.putText(
+            im,
+            "zoomed walk from the measured ball at f%d: %d window(s) at "
+            "%.1fx, %d point(s) - %s"
+            % (int(impact_frame), len(zoom["tiles"]),
+               float(zoom.get("zoom") or 0), len(zoom.get("points") or []),
+               str(zoom.get("reason") or "")),
+            (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1,
+            cv2.LINE_AA)
+        _nm = f"ascentzoom-{row.id}-{secrets.token_hex(3)}.jpg"
+        cv2.imwrite(str(CLIPS_DIR / _nm), im,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        zoom["image_url"] = _clip_url_for(_nm)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("ascent zoom image failed: %s", exc)
+
+
 def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
     """Ask the model where the ball went, BEFORE looking for it.
 
@@ -26326,14 +26441,66 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
                         " — WHICH DOES NOT OVERLAP THE HOLE'S TEE BOX; "
                         "one of the two is wrong, and the motion is the "
                         "one measured today")
-        elif _box:
+        if _rect is None:
+            # ASK THE PERSON DETECTOR BEFORE FALLING BACK TO A
+            # RECTANGLE DRAWN LAST MONTH. The heat places the golfer
+            # from the brightest continuous body in it, which fails
+            # exactly when it matters -- a golfer at address is not
+            # moving their legs, so the heat stops at the waist, and
+            # on a tee with several people the brightest body is
+            # whoever moved most rather than whoever hit. That is the
+            # same failure this was chasing through Test Cut all
+            # week, and the answer was the same: a detector finds a
+            # body whether or not it moved.
+            #
+            # The ball is at the feet of the golfer who is HITTING --
+            # the one standing furthest up the tee, or when they are
+            # level the one holding the motion. See
+            # swingjudge.pick_front_golfer and break_tie_on_motion.
+            try:
+                from ..services import swingjudge as _sj2
+                from ..services.people import find_people_over_time
+                from ..services.tracer import AUDIO2_OFFSETS_SEC as _AO
+                _zb = []
+                try:
+                    _zb = [(int(z["x"]), int(z["y"]),
+                            int(z["w"]), int(z["h"]))
+                           for z in (_tee_trigger_zones(db, row) or [])]
+                except Exception:  # noqa: BLE001
+                    _zb = []
+                _ppl = find_people_over_time(
+                    src_path, float(_rig["sec"]), _AO)
+                out["n_people"] = len(_ppl)
+                _pf2 = _sj2.pick_front_golfer([], _zb, people=_ppl)
+                _g2 = _pf2.get("pick")
+                if _g2 is None and _pf2.get("close") and _ppl:
+                    _mt2 = _sj2.break_tie_on_motion(
+                        _ppl, [(_heat.get("geo") or {}).get("main")]
+                        if (_heat.get("geo") or {}).get("main") else [])
+                    _g2 = _mt2.get("pick")
+                if _g2 is not None:
+                    _gb = _g2["box"]
+                    # A BOX ROUND THE FEET, not round the body: the
+                    # ball sits at them. A third of a body height
+                    # square is generous for a teed ball and still
+                    # far smaller than any tee box.
+                    _side = max(24, int(_gb[3] * 0.33))
+                    _fx, _fy = _g2["feet"][0], _g2["feet"][1]
+                    _rect = (max(0, _fx - _side), max(0, _fy - _side // 2),
+                             _side * 2, _side)
+                    out["rect_from"] = (
+                        "the person detector — %s" % _pf2["why"])
+                    out["golfer_box"] = [int(v) for v in _gb]
+            except Exception as _px2:  # noqa: BLE001
+                log.debug("ai launch: person detector failed: %s", _px2)
+        if _rect is None and _box:
             _rect = (int(float(_box["x"]) * _w), int(float(_box["y"]) * _h),
                      max(8, int(float(_box["w"]) * _w)),
                      max(8, int(float(_box["h"]) * _h)))
             out["rect_from"] = (
                 "the hole's tee box — the swing check could not place the "
                 "golfer (" + str(_heat.get("reason") or "no reason given")
-                + ")")
+                + ") and the person detector found nobody in a zone")
         if _rect is None:
             out["reason"] = (
                 "the swing check could not find the golfer ("
@@ -26366,6 +26533,37 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
     out["points"] = list(_res.get("points") or [])
     out["n_points"] = len(out["points"])
     out["rest"] = _res.get("rest")
+    # AND THE SAME TWO QUESTIONS ASKED WITHOUT A MODEL. The AI is
+    # shown the box and asked to find the ball and follow it; this
+    # measures the same thing off the pixels -- a small round bright
+    # thing on the turf, off every detected body, in the same spot
+    # frame after frame, and then the first frame it is not. On the
+    # clip that prompted this the AI "found the ball at address but
+    # saw it on none of the 4 frames after it", which is a report of
+    # having lost it, not of it having gone.
+    #
+    # BOTH ARE REPORTED. This is cheap, deterministic and has never
+    # been scored against the AI on a corpus, so it does not replace
+    # it; it stands beside it where they can be compared.
+    try:
+        from ..services.ball_vanish import ball_departure
+        _dep = ball_departure(
+            src_path, float(_rig["sec"]),
+            rect=(None if not _rect else
+                  (_rect[0], _rect[1], _rect[0] + _rect[2],
+                   _rect[1] + _rect[3])),
+            anchor=(None if not out.get("golfer_box") else
+                    (out["golfer_box"][1] + out["golfer_box"][3],
+                     out["golfer_box"][3])))
+        out["measured_ball"] = _dep.get("spot")
+        out["measured_impact_frame"] = _dep.get("impact_frame")
+        out["measured_why"] = _dep.get("why")
+        if _dep.get("impact_frame") is not None:
+            out["impact_frame_rig"] = out.get("impact_frame")
+            out["impact_frame"] = int(_dep["impact_frame"])
+    except Exception as _dx:  # noqa: BLE001
+        log.debug("ai launch: departure search failed: %s", _dx)
+        out["measured_why"] = "the departure search failed"
     out["reason"] = _res.get("reason")
     out["frame_log"] = _res.get("frame_log") or []
     out["step"] = _res.get("step") or _step
