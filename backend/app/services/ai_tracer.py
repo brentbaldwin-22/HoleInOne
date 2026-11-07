@@ -8660,8 +8660,21 @@ _JUDGE_SWING_HEAT_PROMPT = (
     "- sometimes a dotted trail of brief blue motion leaving the scene "
     "(the ball). Its absence means nothing: the ball is often invisible "
     "against sky.\n"
-    "A bright compact figure with a thin plume above it IS a swing, even "
-    "with no fan shape anywhere in the picture.\n"
+    # REMOVED, 7 Nov: "A bright compact figure with a thin plume above
+    # it IS a swing, even with no fan shape anywhere in the picture."
+    #
+    # It went in to stop the judge insisting on a fan -- down the line
+    # the club arc is foreshortened into a sliver and demanding a fan
+    # was costing real swings. It overshot into a sufficiency claim,
+    # and a sufficiency claim about a blob with an edge is a very low
+    # bar. It is the line that passed the 150x199 near-square orange
+    # mass on 5 Nov, described back to us as "a compact hot figure
+    # with a cooler plume extending upward consistent with a club
+    # arc" -- a fair reading of the picture against this sentence.
+    #
+    # The bullets above still describe the plume and still say the
+    # fan is not required, so the thing it was added for survives;
+    # what goes is the instruction to treat the plume as proof.
     "Answer false for: a person WALKING (a smeared blob strung out along "
     "the direction of travel, with no vertical extension above it), "
     "someone bending to tee up or pick up a ball (heat low down, nothing "
