@@ -14928,8 +14928,16 @@ def test_cut_long_upload(
                     _zspan = None
                     _zfloor = None
                     _zbox = None
+                # BOTH AUDIO PROCESSES GET THE GOLFER CROP AND THE
+                # SIX TILES NOW. They still ask DIFFERENT QUESTIONS --
+                # audio 2 has its own prompt and its own four-way
+                # answer, audio keeps the two-judge pair and the
+                # x-ratio tie-break -- but there is no reason the
+                # older question should be asked about a worse
+                # picture.
+                _golfer = detector in ("audio", "audio2")
                 _people2 = None
-                if detector == "audio2":
+                if _golfer:
                     try:
                         from ..services.people import (
                             find_people_over_time,
@@ -14966,7 +14974,7 @@ def test_cut_long_upload(
                     prefer_span=_zspan,
                     floor_y=_zfloor,
                     zones=_zbox,
-                    style=("golfer" if detector == "audio2" else "zone"),
+                    style=("golfer" if _golfer else "zone"),
                     # REAL FEET, FROM A REAL PERSON DETECTOR. Audio 2
                     # chooses the golfer whose feet are furthest up,
                     # and the motion heat cannot say where anybody's
@@ -14975,7 +14983,7 @@ def test_cut_long_upload(
                     # Empty list = could not tell (no model on disk,
                     # a frame that would not decode), and
                     # pick_front_golfer falls back to the heat.
-                    people=(_people2 if detector == "audio2" else None),
+                    people=(_people2 if _golfer else None),
                     # ASK ABOUT EVERY GOLFER, because nothing in the
                     # heat map says which of them swung -- two people
                     # measure the same to within a few percent on
@@ -15013,21 +15021,24 @@ def test_cut_long_upload(
                 # prejudge treats a missing anchor as "nothing rules it
                 # out", which is why it is safe to call anyway -- the
                 # shape half still catches a whole-frame wash.
-                # AUDIO 2 DOES NOT RUN THESE GATES, and that is not
-                # an oversight. prejudge's shape half refuses a blob
-                # taller than 0.45 of the frame, which is a sane rule
-                # for a whole-tee crop and nonsense for one cropped
-                # tight to a single golfer -- it would refuse every
-                # audio 2 picture it was handed. postjudge weighs a
-                # "medium" verdict against the x-ratio, and audio 2's
-                # confidence is a 0-100 number from a different rubric
-                # with the ratio already given to the model as
-                # evidence; weighing it again would count the sound
-                # twice. Both were calibrated on the other process and
-                # neither has been measured on this one.
+                # prejudge RUNS FOR BOTH, and the note that used to
+                # sit here saying audio 2 had to skip it was wrong.
+                # It claimed the shape gate would refuse a crop cut
+                # tight to one golfer, because that golfer fills it --
+                # but `_geo` is measured on the ZONE crop, before the
+                # golfer zoom, which only ever changes the picture
+                # that gets rendered. height_frac is relative to the
+                # zone crop whatever the style, so the gate sees
+                # exactly what it always saw and its whole-frame-wash
+                # protection is worth keeping.
+                #
+                # postjudge is a different matter and audio 2 really
+                # does skip it: it weighs a hedged verdict against the
+                # x-ratio, and audio 2's prompt has already been given
+                # that ratio as evidence. Weighing it again counts the
+                # sound twice.
                 _audio2 = (detector == "audio2")
-                _gate = ({"ask": True, "why": "audio 2: gates not applied"}
-                         if _audio2 else _sj.prejudge(_geo, None))
+                _gate = _sj.prejudge(_geo, None)
                 cut_entry["gate"] = _gate["why"]
                 if _chk.get("picked_front"):
                     cut_entry["picked_front"] = _chk["picked_front"]
@@ -15154,7 +15165,12 @@ def test_cut_long_upload(
                                 # box on a camera with no zones drawn.
                                 _zp = CLIPS_DIR / (
                                     _sp.name[:-4] + "-zones.jpg")
-                                _offs = (AUDIO2_OFFSETS_SEC if _audio2
+                                # SIX TILES FOR BOTH. The old four
+                                # span 0.65s and cannot tell a swing
+                                # from a waggle on their own; the six
+                                # span 1.8s and carry an address
+                                # frame and a finish.
+                                _offs = (AUDIO2_OFFSETS_SEC if _golfer
                                          else FRAME_OFFSETS_SEC)
                                 if frames_strip(src_path, peak_time_sec, _sp,
                                                 rect=_chk.get("frames_rect"),

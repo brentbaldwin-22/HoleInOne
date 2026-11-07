@@ -8820,11 +8820,13 @@ _JUDGE_SWING_FRAMES_PROMPT = (
     "course camera that stands BEHIND the hitting area and looks down "
     "the hole.\n"
     "You get two pictures.\n"
-    "PICTURE 1 is four ORDINARY VIDEO FRAMES in a 2x2 grid, read left "
-    "to right then top to bottom, labelled with their time relative to "
-    "the suspected impact: about -0.25s (late backswing), 0.00s (the "
-    "strike), +0.15s and +0.40s (follow-through). They are cropped "
-    "around whatever moved, so the candidate fills the tile.\n"
+    "PICTURE 1 is SIX ORDINARY VIDEO FRAMES in a 3x2 grid, read left "
+    "to right then top to bottom, labelled with their frame number and "
+    "their time relative to the suspected impact: about -1.20s "
+    "(address), -0.60s, -0.20s (late backswing), 0.00s (the strike), "
+    "+0.20s and +0.60s (follow-through and finish). They are cropped "
+    "around the golfer standing in the tee zone, so the candidate "
+    "fills the tile.\n"
     "PICTURE 2 is a MOTION-HEAT map of the same moment: one frame with "
     "accumulated motion overlaid in color (blue/cyan = moved briefly, "
     "green/yellow/orange/red = moved through more of the window). It "
@@ -8839,7 +8841,7 @@ _JUDGE_SWING_FRAMES_PROMPT = (
     "changes position between tiles and is NOT a swing. So does "
     "someone leaning on a club. For a real swing the club goes UP to "
     "around shoulder height or beyond in at least one tile and DOWN "
-    "through the ball in another: across the four frames the club "
+    "through the ball in another: across the frames the club "
     "should sweep through most of a circle, not jiggle.\n"
     "If every tile shows the clubhead at or near the ball, answer "
     "false however confident the heat map looks.\n"
@@ -9130,7 +9132,7 @@ def judge_swing_with_frames(frames_path, image_path,
                 "cache_control": {"type": "ephemeral"},
             }],
             messages=[{"role": "user", "content": [
-                {"type": "text", "text": "PICTURE 1 - the four frames:"},
+                {"type": "text", "text": "PICTURE 1 - the frames:"},
                 {"type": "image", "source": {
                     "type": "base64", "media_type": "image/jpeg",
                     "data": base64.standard_b64encode(fdata).decode("ascii"),

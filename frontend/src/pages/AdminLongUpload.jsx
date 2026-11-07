@@ -1644,49 +1644,51 @@ export default function AdminLongUpload() {
                                               </span>
                                             ))}
                                         </div>
-                                        {/* WHICH GOLFER, AND WHY THAT
-                                            ONE. Audio 2 crops to a
-                                            single player chosen by a
-                                            rule, and a crop nobody can
-                                            explain is a crop nobody
-                                            can argue with. Says so
-                                            too when the rule declined
-                                            and it fell back. */}
-                                        {c.picked_front && (
-                                          <div className="muted"
-                                               style={{ marginTop: 2 }}>
-                                            crop: {c.picked_front}
+                                      </div>
+                                    )}
+                                    {/* WHICH GOLFER, AND WHY THAT ONE.
+                                        OUTSIDE the audio-2 block: both
+                                        audio processes crop to a single
+                                        player now, and a crop nobody
+                                        can explain is a crop nobody can
+                                        argue with. Says so too when the
+                                        rule declined and fell back. */}
+                                    {c.picked_front && (
+                                      <div className="muted tiny"
+                                           style={{ marginTop: 2,
+                                                    maxWidth: 200,
+                                                    whiteSpace: "normal",
+                                                    lineHeight: 1.3 }}>
+                                        crop: {c.picked_front}
+                                      </div>
+                                    )}
+                                    {/* AND ITS WORKING: what was
+                                        measured on each candidate, and
+                                        which one won. */}
+                                    {Array.isArray(c.front_candidates)
+                                      && c.front_candidates.length > 0 && (
+                                      <div className="muted tiny"
+                                           style={{ marginTop: 2 }}>
+                                        {c.front_candidates
+                                          .slice()
+                                          .sort((a, b) => a.feet[1] - b.feet[1])
+                                          .map((f, i) => (
+                                          <div key={i} style={{
+                                            color: f.picked
+                                              ? "#c0f" : undefined,
+                                          }}>
+                                            {f.picked ? "▸ " : "  "}
+                                            feet ({f.feet[0]},{f.feet[1]})
+                                            {" · "}{f.box[2]}×{f.box[3]}
+                                            {f.zone
+                                              ? ` · floor ${f.floor}`
+                                              : " · not in a zone"}
+                                            {f.seen_at !== undefined
+                                              && f.seen_at !== null
+                                              ? ` · seen ${f.seen_at > 0 ? "+" : ""}${f.seen_at}s`
+                                              : ""}
                                           </div>
-                                        )}
-                                        {/* AND ITS WORKING. Which blob
-                                            won is only arguable if you
-                                            can see what it measured on
-                                            each one -- the foot point
-                                            is the bottom of a MOTION
-                                            blob, which is not reliably
-                                            anybody's feet. */}
-                                        {Array.isArray(c.front_candidates)
-                                          && c.front_candidates.length > 0 && (
-                                          <div className="muted"
-                                               style={{ marginTop: 2 }}>
-                                            {c.front_candidates
-                                              .slice()
-                                              .sort((a, b) => a.feet[1] - b.feet[1])
-                                              .map((f, i) => (
-                                              <div key={i} style={{
-                                                color: f.picked
-                                                  ? "#c0f" : undefined,
-                                              }}>
-                                                {f.picked ? "▸ " : "  "}
-                                                feet ({f.feet[0]},{f.feet[1]})
-                                                {" · "}{f.box[2]}×{f.box[3]}
-                                                {f.zone
-                                                  ? ` · floor ${f.floor}`
-                                                  : " · not in a zone"}
-                                              </div>
-                                            ))}
-                                          </div>
-                                        )}
+                                        ))}
                                       </div>
                                     )}
                                     {/* BOTH VERDICTS, SIDE BY SIDE, when

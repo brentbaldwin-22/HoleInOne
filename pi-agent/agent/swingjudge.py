@@ -724,6 +724,11 @@ def pick_front_golfer(blobs, zones, *, offset=(0, 0),
                 "area": int(b.get("area") or 0),
                 "zone": best_floor is not None,
                 "floor": None if best_floor is None else int(best_floor),
+                # WHICH MOMENT THIS PERSON WAS SEEN AT. Detection runs
+                # at six offsets and a golfer hidden at the impact is
+                # found half a second away; a stance read from there
+                # should be recognisable as such.
+                "seen_at": b.get("seen_at"),
                 "picked": False,
             })
             if best_floor is not None:
