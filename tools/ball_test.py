@@ -46,6 +46,18 @@ def main() -> int:
     # The actual ball, on the turf beside him and outside the box.
     check("a ball on the turf is not on a person",
           _on_a_person(201, 204, GOLFER), False)
+    # A SHOE POKES OUT OF THE BOTTOM OF THE BOX. On 8 Nov one was
+    # reported as a ball that "was NOT hit" -- right size, right
+    # brightness, perfectly still, a few pixels below the box edge.
+    # The box is padded for this test only.
+    check("  a shoe just below the box is still on a person",
+          _on_a_person(127, 240, GOLFER), True)
+    check("  and one just off the side is too",
+          _on_a_person(178, 230, GOLFER), True)
+    # BUT THE PAD IS SMALL. A ball teed a body-width away is not
+    # swallowed by it.
+    check("  while a ball a body-width away is not",
+          _on_a_person(260, 230, GOLFER), False)
     # NOBODY DETECTED is not a reason to refuse everything.
     check("with nobody detected nothing is on a person",
           _on_a_person(201, 204, []), False)

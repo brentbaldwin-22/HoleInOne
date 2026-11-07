@@ -388,13 +388,25 @@ def _on_the_ground(y, people) -> bool:
     return any(lo <= y <= hi for lo, hi in bands)
 
 
+# HOW FAR OUTSIDE A PERSON'S BOX STILL COUNTS AS ON THEM. A
+# detection box is drawn to the body it found and a white SHOE pokes
+# out of the bottom of it -- which is how, on 8 Nov, a shoe was
+# reported as a ball that "was NOT hit", in the right size, the right
+# brightness, perfectly still, just outside the box. As fractions of
+# the box, so it scales with how far away they are standing.
+PERSON_PAD_W = 0.12
+PERSON_PAD_H = 0.06
+
+
 def _on_a_person(x, y, people) -> bool:
-    """Is this point inside somebody's detection box?"""
+    """Is this point inside somebody's detection box, or just off it?"""
     for p in people or []:
         b = p.get("box") if isinstance(p, dict) else p
         if not b:
             continue
-        if b[0] <= x <= b[0] + b[2] and b[1] <= y <= b[1] + b[3]:
+        px, py = PERSON_PAD_W * b[2], PERSON_PAD_H * b[3]
+        if (b[0] - px <= x <= b[0] + b[2] + px
+                and b[1] - py <= y <= b[1] + b[3] + py):
             return True
     return False
 

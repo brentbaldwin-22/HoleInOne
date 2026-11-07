@@ -37,7 +37,8 @@ sys.path.insert(0, str(ROOT / "pi-agent"))
 import numpy as np                                    # noqa: E402
 
 from agent.swingjudge import (                        # noqa: E402
-    aim_verdict, confidence_verdict, measure_heat, pick_front_golfer,
+    aim_verdict, confidence_verdict, decide_verdict, measure_heat,
+    pick_front_golfer,
     pick_stance, postjudge, prejudge, shape_verdict, stance_verdict,
     tiebreak, MIN_ASPECT,
 )
@@ -492,6 +493,53 @@ def main() -> int:
     # stop at the waist.
     check("the heat fallback still forgives a high blob",
           pick_front_golfer([_waist], ZONES)["pick"] is _waist, True)
+
+    # ---- three tests, majority wins --------------------------------
+    # THE BALL STOPS BEING A VETO. It was overturning two judges that
+    # agreed, on the strength of a few bright pixels, and on one clip
+    # those pixels were a shoe. As one vote of three it still decides
+    # every split -- which is what it was brought in for.
+    def V(h, f, b, ratio=5.0):
+        return decide_verdict(h, f, b, ratio)
+
+    check("two judges agreeing beat a dissenting ball",
+          V(True, True, False)["is_swing"], True)
+    check("  and the ball cannot overturn an agreed no",
+          V(False, False, True)["is_swing"], False)
+    check("  which is reported as a majority",
+          V(True, True, False)["how"], "majority")
+    # THE SPLIT IS WHERE IT EARNS ITS PLACE.
+    check("the ball decides a split, for a swing",
+          V(True, False, True)["is_swing"], True)
+    check("  and against one", V(True, False, False)["is_swing"], False)
+    check("  without the x-ratio being consulted",
+          V(True, False, False)["how"], "majority")
+    # NO BALL -> THE X-RATIO IS BACK. "If ball test can't happen
+    # because of no zoom or obstruction, then use the xaudio."
+    check("a split with no ball falls to the x-ratio",
+          V(True, False, None, 12.0)["is_swing"], True)
+    check("  which still respects the x10 bar",
+          V(True, False, None, 5.2)["is_swing"], False)
+    check("  and says so", V(True, False, None, 5.2)["how"], "x-ratio")
+    # AND AGREEMENT NEEDS NOTHING BREAKING.
+    check("two judges agreeing with no ball stand",
+          V(True, True, None)["is_swing"], True)
+    # A TEST THAT COULD NOT ANSWER DOES NOT VOTE.
+    check("one judge silent leaves the other two to it",
+          V(None, True, True)["is_swing"], True)
+    check("  and the ball alone decides when both are silent",
+          V(None, None, False)["is_swing"], False)
+    check("  reported as a single test",
+          V(None, None, False)["how"], "one test")
+    check("nothing to go on is None",
+          V(None, None, None)["is_swing"], None)
+    # AN EVEN SPLIT WITH NO RATIO EITHER falls back to the frames,
+    # which is tiebreak's own long-standing rule: they at least show
+    # a club and a body through time. Not a new decision here.
+    check("an even split and no ratio leaves the frames standing",
+          V(True, False, None, None)["is_swing"], False)
+    check("  and says why", "no x-ratio" in V(True, False, None, None)["why"],
+          True)
 
     print()
     if FAIL:

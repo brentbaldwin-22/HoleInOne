@@ -1700,8 +1700,10 @@ export default function AdminLongUpload() {
                                           : c.ball_balls
                                           ? "⛳ ball found — outcome unclear"
                                           : "⛳ no ball identified"}
-                                        {c.ball_override
-                                          ? " — overruled the judges" : ""}
+                                        {c.decided_by === "majority"
+                                          && c.ball_left !== null
+                                          && c.ball_left !== undefined
+                                          ? " — one vote of three" : ""}
                                         <div className="muted">
                                           {c.ball_why}
                                         </div>

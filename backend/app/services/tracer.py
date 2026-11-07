@@ -3269,8 +3269,14 @@ ZONE_COLOR = (255, 0, 255)
 FOOT_COLOR = (0, 255, 0)
 
 
+# The ball, in red: the one colour not already spoken for here, and
+# not in COLORMAP_TURBO's ramp at the brightness it is drawn.
+BALL_COLOR = (0, 0, 255)
+
+
 def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
-               color=ZONE_COLOR, thickness=2, label=True, feet=None):
+               color=ZONE_COLOR, thickness=2, label=True, feet=None,
+               ball=None):
     """A copy of `img` with the trigger zones outlined, or None.
 
     NOT ON THE PICTURE THE JUDGE SEES. This writes a SEPARATE copy for
@@ -3355,6 +3361,19 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
                 drew += 1
             except Exception:  # noqa: BLE001
                 continue
+        # AND THE BALL, CIRCLED. Which bright speck on the turf the
+        # check settled on is the one thing its sentence cannot say,
+        # and on 8 Nov the answer turned out to be a shoe.
+        if ball and ball.get("spot"):
+            try:
+                bx = int(round((float(ball["spot"][0]) - ox) * sc))
+                by = int(round((float(ball["spot"][1]) - oy) * sc))
+                if -30 < bx < w + 30 and -30 < by < h + 30:
+                    cv2.circle(out, (bx, by), 11, BALL_COLOR, 2,
+                               cv2.LINE_AA)
+                    drew += 1
+            except Exception:  # noqa: BLE001
+                pass
         return out if drew else None
     except Exception:  # noqa: BLE001
         return None
@@ -3363,7 +3382,8 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
 def frames_strip(input_path, at_sec: float, out_path, *, box=None,
                  rect=None, offsets=FRAME_OFFSETS_SEC,
                  tile_px: int = 640, pad_frac: float = 1.0,
-                 zones=None, zones_out=None, used=None, feet=None):
+                 zones=None, zones_out=None, used=None, feet=None,
+                 ball=None):
     """Four ordinary frames around the impact, as one 2x2 tile. Bool.
 
     THE COMPANION TO THE HEAT COMPOSITE, and the thing it cannot be.
@@ -3464,7 +3484,7 @@ def frames_strip(input_path, at_sec: float, out_path, *, box=None,
                 _zt = draw_zones(t, zones, offset=(x0, y0),
                                  scale=(t.shape[1] / float(x1 - x0))
                                  if x1 > x0 else 1.0,
-                                 feet=feet)
+                                 feet=feet, ball=ball)
                 ztiles.append(_zt if _zt is not None else t)
         if not tiles:
             return False
@@ -3924,6 +3944,12 @@ def swing_heat_check(
                         _pf = _sj.pick_front_golfer(
                             _cands_all, zones, offset=(_ox, _oy),
                             people=people)
+                        # DID WE ACTUALLY CROP? The ball check only
+                        # means anything on a crop cut round one
+                        # golfer; on the whole-tee fallback it is
+                        # hunting specks across a hundred yards of
+                        # turf.
+                        out["golfer_crop"] = _pf.get("pick") is not None
                         out["picked_front"] = "%s — %s" % (
                             _pf.get("from") or "?", _pf["why"])
                         out["front_candidates"] = _pf.get("considered")

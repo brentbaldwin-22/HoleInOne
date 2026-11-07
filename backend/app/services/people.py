@@ -133,6 +133,19 @@ INPUT_SIZE = 320
 # on a seam is whole in the next one.
 WINDOW_STEP_FRAC = 0.6
 
+# A BOX CUT OFF BY THE EDGE HAS NO TRUSTWORTHY FEET. Its bottom is
+# wherever the picture stopped, not where anybody is standing, and
+# the whole point of detecting people here is to read a foot point
+# off that bottom edge. Combined with low confidence it is also where
+# the junk lives: on 8 Nov a bush at the right-hand edge was offered
+# as a person and its "feet" were drawn on a branch.
+#
+# BOTH CONDITIONS, not either. A golfer really can stand at the edge
+# of the searched band, and a confident detection there is still a
+# golfer; a hesitant one flush against the edge is a bush.
+EDGE_PX = 2
+EDGE_MIN_CONF = 0.55
+
 
 def _covered(a, b) -> float:
     """How much of box `a` lies inside box `b`, 0..1. Never raises."""
@@ -251,6 +264,12 @@ def find_people(frame, *, region=None, conf: float = DEFAULT_PERSON_CONF,
             # few pixels apart, which it reports as too close to call.
             if any(_covered([x, y, bw_px, bh_px], q["box"]) > 0.70
                    for q in people):
+                continue
+            if (confs[i] < EDGE_MIN_CONF
+                    and (x <= rx + EDGE_PX
+                         or y <= ry + EDGE_PX
+                         or x + bw_px >= rx + rw - EDGE_PX
+                         or y + bh_px >= ry + rh - EDGE_PX)):
                 continue
             people.append({
                 "box": [x, y, bw_px, bh_px],

@@ -14997,6 +14997,36 @@ def test_cut_long_upload(
                     before_sec=float(verify_window_sec),
                     after_sec=float(verify_window_sec),
                 )
+                # THE BALL, BEFORE ANYTHING IS DRAWN, so the spot
+                # it chose can be circled on the pictures the
+                # operator checks. Which bright speck it settled on
+                # is the one thing its sentence cannot say.
+                #
+                # ONLY ON A REAL CROP. "When we don't crop, don't
+                # bother looking for the ball" -- on the whole-tee
+                # fallback the rect is a hundred yards of turf and
+                # the check is hunting specks across all of it.
+                _bl = None
+                if _golfer and _chk.get("golfer_crop"):
+                    try:
+                        from ..services.ball_vanish import ball_at_address
+                        from ..services.tracer import (
+                            AUDIO2_OFFSETS_SEC as _BO,
+                        )
+                        _bl = ball_at_address(
+                            src_path, peak_time_sec, _BO,
+                            rect=_chk.get("frames_rect"), people=_people2)
+                        cut_entry["ball_left"] = _bl["left"]
+                        cut_entry["ball_spot"] = _bl["spot"]
+                        cut_entry["ball_balls"] = _bl.get("balls")
+                        cut_entry["ball_why"] = _bl["why"]
+                    except Exception as _bx:  # noqa: BLE001
+                        log.debug("test-cut ball check: %s", _bx)
+                        cut_entry["ball_why"] = "the ball check failed"
+                elif _golfer:
+                    cut_entry["ball_why"] = (
+                        "no zoom crop on this one, so the ball was not "
+                        "looked for")
                 # AND THE WHOLE FRAME IT WAS CUT FROM, for QC. The
                 # crop is now chosen by a detector, a zone test and a
                 # furthest-up rule, and every one of those can be
@@ -15020,7 +15050,8 @@ def test_cut_long_upload(
                                 _ff = cv2.resize(
                                     _ff, (960, max(1, int(_fh * _fs))))
                             _fz = _dz(_ff, _zbox, scale=_fs,
-                                      feet=_chk.get("front_candidates"))
+                                      feet=_chk.get("front_candidates"),
+                                      ball=_bl)
                             _fn = CLIPS_DIR / (
                                 f"verifyfull-{upload_id}-{idx:02d}-"
                                 f"{secrets.token_hex(3)}.jpg")
@@ -15217,6 +15248,7 @@ def test_cut_long_upload(
                                                 zones=_zbox,
                                                 feet=_chk.get(
                                                     "front_candidates"),
+                                                ball=_bl,
                                                 used=_used,
                                                 zones_out=(_zp if _zbox
                                                            else None)):
@@ -15237,45 +15269,6 @@ def test_cut_long_upload(
                         # full six frames -- the rule is "2 of the
                         # first 3, then gone" and a short clip with
                         # no address frame cannot answer it.
-                        # ALWAYS SAY WHAT THE BALL DID, even when it
-                        # says nothing. Three answers are useful and
-                        # a fourth is not an answer at all -- hit,
-                        # not hit, or not identified -- but a row that
-                        # simply omits the line leaves the reader
-                        # unable to tell "no ball" from "never
-                        # checked", and the verdict then appears to
-                        # have ignored evidence it never had.
-                        #
-                        # NOT TIED TO THE STRIP. The check decodes
-                        # its own frames, so it runs whether or not
-                        # the operator asked for the frames judge.
-                        if _golfer:
-                            _boffs = ([u[0] for u in _used] if _used
-                                      else list(_A2_OFFS))
-                            try:
-                                from ..services.ball_vanish import (
-                                    ball_at_address,
-                                )
-                                if len(_boffs) != 6:
-                                    cut_entry["ball_why"] = (
-                                        "the ball needs all six frames; "
-                                        "this clip reaches %d"
-                                        % len(_boffs))
-                                else:
-                                    _bl = ball_at_address(
-                                        src_path, peak_time_sec, _boffs,
-                                        rect=_chk.get("frames_rect"),
-                                        people=_people2)
-                                    cut_entry["ball_left"] = _bl["left"]
-                                    cut_entry["ball_spot"] = _bl["spot"]
-                                    cut_entry["ball_balls"] = _bl.get(
-                                        "balls")
-                                    cut_entry["ball_why"] = _bl["why"]
-                            except Exception as _bx:  # noqa: BLE001
-                                log.debug("test-cut ball check: %s", _bx)
-                                cut_entry["ball_why"] = (
-                                    "the ball check failed: %s" % _bx)
-
                         _final = _heat
                         if _audio2:
                             _A2 = _A2_OFFS
@@ -15319,40 +15312,25 @@ def test_cut_long_upload(
                                 "confidence": _jf.get("confidence"),
                                 "reason": _jf.get("reason"),
                             }
-                            # AND THE MICROPHONE BREAKS THE TIE. See
-                            # swingjudge.tiebreak: when the two judges
-                            # contradict each other the frames used to
-                            # win by default, which settled nothing and
-                            # hid the split. The x-ratio is the one
-                            # piece of evidence neither of them can
-                            # see.
-                            # NOT WHEN THE BALL ALREADY ANSWERED.
-                            # The x-ratio is the third opinion for
-                            # two judges who cannot agree; a ball
-                            # that visibly left, or visibly did not,
-                            # outranks all three.
-                            _tb = ({"split": False, "is_swing": None,
-                                    "why": "the ball answered it"}
-                                   if cut_entry.get("ball_left") is not None
-                                   else _sj.tiebreak(
-                                       _heat["is_swing"],
-                                       _jf.get("is_swing"),
-                                       cut_entry.get("ratio")))
-                            cut_entry["tiebreak"] = _tb["why"]
-                            if _tb["split"]:
-                                _final = {
-                                    "is_swing": _tb["is_swing"],
-                                    # THE TIE-BREAK IS THE VERDICT NOW,
-                                    # so neither judge's confidence
-                                    # describes it. Saying so keeps
-                                    # postjudge -- which narrows hedged
-                                    # yeses on quiet strikes -- from
-                                    # second-guessing a decision the
-                                    # ratio has already made.
-                                    "confidence": "tiebreak",
-                                    "reason": _tb["why"],
-                                }
-                            _saw = _saw + " + 4 frames"
+                            # THREE TESTS, MAJORITY WINS. See
+                            # swingjudge.decide_verdict. The ball is
+                            # one vote now rather than a veto: it
+                            # still decides every case where the two
+                            # judges split, and can no longer
+                            # overturn them when they agree. With the
+                            # ball abstaining a split falls back to
+                            # the x-ratio, as it always did.
+                            _dv = _sj.decide_verdict(
+                                _heat["is_swing"], _jf.get("is_swing"),
+                                cut_entry.get("ball_left"),
+                                cut_entry.get("ratio"))
+                            cut_entry["tiebreak"] = _dv["why"]
+                            cut_entry["decided_by"] = _dv["how"]
+                            if _dv["is_swing"] is not None:
+                                _final = {"is_swing": _dv["is_swing"],
+                                          "confidence": _dv["confidence"],
+                                          "reason": _dv["why"]}
+                            _saw = _saw + " + 6 frames"
                         elif judge_with_frames:
                             # ASKED FOR AND NOT DELIVERED is a third
                             # state, and reporting it as the heat-only
@@ -15369,39 +15347,15 @@ def test_cut_long_upload(
                         # less. This is the one endpoint on the server
                         # that HAS an audio ratio to weigh, which is
                         # why the gate can run here and not in debug3.
-                        # THE BALL SETTLES IT, EITHER WAY, AND IT
-                        # SETTLES IT FIRST. A ball does not leave a
-                        # tee by itself and it does not stay on one
-                        # that was struck, so when the ball could be
-                        # read at all there is nothing left for the
-                        # judges to disagree about and nothing for the
-                        # x-ratio to break. The first version only
-                        # let it force a YES, so a clip whose ball
-                        # plainly never moved still went to a tie-
-                        # break and was decided by how loud the strike
-                        # was. That is the ball evidence being
-                        # gathered and then ignored.
-                        #
-                        # Silent when the ball could not be clearly
-                        # identified: absence of a ball is not
-                        # evidence of anything, and an obstructed one
-                        # must never read as an absent one.
-                        _bal = cut_entry.get("ball_left")
-                        if _bal is not None:
-                            if cut_entry.get("is_swing") is not _bal:
-                                cut_entry["ball_override"] = True
-                                cut_entry["verify_reason"] = (
-                                    "%s — but %s"
-                                    % (cut_entry.get("verify_reason")
-                                       or "the judges were split",
-                                       cut_entry.get("ball_why")))
-                            else:
-                                cut_entry["verify_reason"] = (
-                                    cut_entry.get("ball_why"))
-                            cut_entry["is_swing"] = bool(_bal)
-                            cut_entry["verify_confidence"] = "ball"
+                        # THE BALL NO LONGER OVERRULES. It votes;
+                        # decide_verdict counts. What is left here is
+                        # only the x-ratio confidence gate, which has
+                        # nothing to add to a verdict the ratio or a
+                        # majority already decided.
                         _post = ({"keep": True, "why": "audio 2"}
-                                 if (_audio2 or _bal is not None)
+                                 if (_audio2
+                                     or cut_entry.get("verify_confidence")
+                                     in ("majority", "tiebreak", "sole"))
                                  else _sj.postjudge(
                                      cut_entry.get("is_swing"),
                                      cut_entry.get("verify_confidence"),

@@ -612,11 +612,20 @@ FRONT_GOLFER_MARGIN_FRAC = 0.25
 # to the markers and the rest stand back. If that is nearly always
 # true then declining is the expensive mistake, not picking.
 #
-# 0.02 of a body height is ~7 px on a 340 px golfer, which is about
-# the frame-to-frame jitter of a detector box edge. So it still
-# declines when two boxes differ by noise alone, and separates on any
-# real difference.
-FRONT_GOLFER_MARGIN_DETECTED = 0.02
+# RAISED 0.02 -> 0.06 ON 8 NOV, against two measured clips that
+# bracket it:
+#
+#   two players level on a tee, feet 6 px apart, leader 107 px tall
+#     -> needs a margin over 0.056 to decline, and it should: the
+#        crop went to the pair on the left while the golfer was on
+#        the right
+#   the hitter one step forward, feet 24 px apart, leader 340 px
+#     -> needs a margin under 0.070 to separate, and it should
+#
+# 0.06 sits between them. That is a narrow window and it is fitted to
+# two clips, so treat it as provisional: it will want re-measuring
+# against a batch rather than a pair.
+FRONT_GOLFER_MARGIN_DETECTED = 0.06
 
 
 def pick_front_golfer(blobs, zones, *, offset=(0, 0),
@@ -833,6 +842,58 @@ def tiebreak(heat_is_swing, frames_is_swing, ratio, *,
                        "swing" if frames_is_swing else "not",
                        r, "over" if _win else "under", float(over),
                        "swing" if _win else "not a swing"))}
+
+
+def decide_verdict(heat_is_swing, frames_is_swing, ball_left, ratio, *,
+                   over=TIEBREAK_RATIO) -> dict:
+    """The verdict from all three tests. Never raises.
+
+    THE OPERATOR'S RULE, 8 Nov: "we've got 3 good tests - let's just
+    go with the majority. if ball test can't happen because of no
+    zoom or obstruction, then use the xaudio as tie break."
+    
+    So the ball stops being a trump card. It was overruling two
+    judges that agreed, on the strength of a few bright pixels, and
+    on one clip it called a shoe a ball and said so out loud. As one
+    vote of three it still decides every case where the judges split
+    -- which is the case it was brought in for -- and cannot overturn
+    them when they agree.
+
+    A test that could not answer does not vote. With the ball absent
+    the other two either agree, which settles it, or they do not,
+    which is where the x-ratio comes back in. An even split with no
+    ratio to weigh is left as None: could not tell.
+
+    Returns {"is_swing", "confidence", "why", "how"}.
+    """
+    votes = [("the heat map", heat_is_swing),
+             ("the frames", frames_is_swing),
+             ("the ball", ball_left)]
+    live = [(n, v) for n, v in votes if v is not None]
+    yes = [n for n, v in live if v is True]
+    no = [n for n, v in live if v is False]
+    if len(live) < 2:
+        if len(live) == 1:
+            return {"is_swing": live[0][1], "confidence": "sole",
+                    "how": "one test", "why": "only %s could answer"
+                    % live[0][0]}
+        return {"is_swing": None, "confidence": None, "how": "nothing",
+                "why": "no test could answer"}
+    if len(yes) != len(no):
+        win = len(yes) > len(no)
+        return {"is_swing": win, "confidence": "majority",
+                "how": "majority",
+                "why": "%d of %d say %s (%s)"
+                       % (max(len(yes), len(no)), len(live),
+                          "swing" if win else "not a swing",
+                          ", ".join(yes if win else no))}
+    # DEAD EVEN, which with three tests means the ball abstained.
+    tb = tiebreak(heat_is_swing, frames_is_swing, ratio, over=over)
+    if tb["split"]:
+        return {"is_swing": tb["is_swing"], "confidence": "tiebreak",
+                "how": "x-ratio", "why": tb["why"]}
+    return {"is_swing": None, "confidence": None, "how": "even",
+            "why": "the tests are evenly split and nothing breaks it"}
 
 
 # ---- where the ball left from --------------------------------------
