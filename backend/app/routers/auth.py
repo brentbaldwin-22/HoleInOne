@@ -17,7 +17,12 @@ from ..models import (
     User,
     VideoClip,
 )
-from ..services.auth import hash_password, issue_token, verify_password
+from ..services.auth import (
+    hash_password,
+    issue_token,
+    last_registration,
+    verify_password,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -33,10 +38,20 @@ class LoginBody(BaseModel):
     password: str
 
 
+class LastRegistration(BaseModel):
+    """What this golfer typed the last time they signed up."""
+    name: str | None = None
+    mobile: str | None = None
+    email: str | None = None
+
+
 class UserOut(BaseModel):
     id: int
     email: EmailStr
     name: str | None = None
+    # Only /me fills this in; signup and login have no round to look back
+    # on, and a golfer who has never registered has none either.
+    last_registration: LastRegistration | None = None
 
     class Config:
         from_attributes = True
@@ -90,8 +105,19 @@ def login(payload: LoginBody, db: Session = Depends(get_db)):
 
 
 @router.get("/me", response_model=UserOut)
-def me(user: User = Depends(current_user)):
-    return user
+def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """The account, plus what they last typed on a registration form.
+
+    The details ride on /me rather than sitting behind their own endpoint
+    because every page that cares already has the user: one request, and
+    a form that is filled in by the time it is looked at.
+    """
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "last_registration": last_registration(db, user.id),
+    }
 
 
 @router.get("/me/rounds")

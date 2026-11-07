@@ -40,15 +40,42 @@ export default function Register() {
   // way the platform intends -- including the wheel on a phone.
   const dateRef = useRef(null);
   const clockRef = useRef(null);
-  const [name, setName] = useState(user?.name || "");
+  const [name, setName] = useState("");
   const [mobile, setMobile] = useState("");
-  const [email, setEmail] = useState(user?.email || "");
+  const [email, setEmail] = useState("");
   const [selfieFile, setSelfieFile] = useState(null);
   const [selfiePreview, setSelfiePreview] = useState(null);
   // Single openCameraId across the whole form so only one device camera is mounted at a time.
   const [openCameraId, setOpenCameraId] = useState(null);
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+
+  /**
+   * A signed-in golfer should not type their details again.
+   *
+   * FILLED IN AN EFFECT, NOT AS INITIAL STATE. useState's argument is
+   * read once, on the first render, and on a cold load of this page
+   * `user` is null then -- useAuth has a token but has not fetched yet.
+   * The old code seeded name and email from it and so filled them only
+   * when the golfer happened to arrive from another page with the user
+   * already cached; a scanned QR code got a blank form.
+   *
+   * Their LAST REGISTRATION first, the account second. The account holds
+   * no phone number at all, which is why the mobile was re-typed every
+   * round, and where the two disagree the one they typed more recently
+   * is the one they chose.
+   *
+   * Only blanks are filled. The functional updates below cannot clobber
+   * something already typed, which matters because `user` can arrive
+   * after the golfer has started on the form.
+   */
+  useEffect(() => {
+    if (!user) return;
+    const last = user.last_registration || {};
+    setName((v) => v || last.name || user.name || "");
+    setMobile((v) => v || last.mobile || "");
+    setEmail((v) => v || last.email || user.email || "");
+  }, [user]);
 
   useEffect(() => {
     (async () => {
