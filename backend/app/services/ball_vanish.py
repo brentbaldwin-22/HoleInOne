@@ -395,10 +395,15 @@ def classify_balls(good, tail_live, jitter_px=ADDRESS_JITTER_PX):
     clip it is already gone by then. Either way the frame cannot be
     read, which is why it is excluded rather than weighed.
 
-    Only the frames AFTER it answer the question,
-    and they have to agree -- present in all of them is a ball nobody
-    touched, absent from all of them is a ball that left, anything
-    else is not an answer.
+    Only the frames AFTER it answer the question, and the two
+    outcomes are exhaustive rather than agreeing: absent from ALL of
+    them is a ball that left, seen in ANY of them is a ball that did
+    not. A struck ball does not come back, so one sighting after the
+    strike settles it -- and requiring every late frame to show it
+    instead meant a single missed detection returned "no answer",
+    which is how a clip whose ball plainly sat there all six frames
+    came back with the ball unmentioned and the verdict decided by
+    the x-ratio.
 
     EVERY BALL, NOT THE BEST ONE. Judging the brightest or steadiest
     alone would call a real swing "not a swing" because some other
@@ -425,11 +430,10 @@ def classify_balls(good, tail_live, jitter_px=ADDRESS_JITTER_PX):
         c["still"] = sum(1 for d in tail_live if _there(c, d))
         if not late:
             continue
-        hits = sum(1 for d in late if _there(c, d))
-        if hits == 0:
-            gone.append(c)
-        elif hits == len(late):
+        if any(_there(c, d) for d in late):
             stayed.append(c)
+        else:
+            gone.append(c)
     return gone, stayed
 
 

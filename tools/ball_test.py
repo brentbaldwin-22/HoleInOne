@@ -96,10 +96,24 @@ def main() -> int:
     check("  still there AT the strike, gone after, is a swing",
           verdict([ball(200, 204)],
                   [frame((200, 204)), frame(), frame()]), True)
-    # THE FRAMES AFTER HAVE TO AGREE.
-    check("  gone then back again is no answer",
+    # A STRUCK BALL DOES NOT COME BACK, so one sighting after the
+    # strike settles it: the ball was not hit. Requiring EVERY frame
+    # after to show it meant a single missed detection returned "no
+    # answer" -- which is how a clip whose ball sat plainly on the
+    # turf through all six frames came back with the ball unmentioned
+    # and the verdict handed to the x-ratio instead.
+    check("  seen in any later frame means it was not hit",
           verdict([ball(200, 204)],
-                  [frame(), frame(), frame((200, 204))]), None)
+                  [frame(), frame(), frame((200, 204))]), False)
+    check("  and seen in only the first of them, likewise",
+          verdict([ball(200, 204)],
+                  [frame(), frame((200, 204)), frame()]), False)
+    # THE TWO OUTCOMES ARE EXHAUSTIVE once there are frames after the
+    # strike: there is no "identified but unreadable" case left, and
+    # None now means one thing only -- no ball was identified.
+    check("  so a ball that is found always gets an answer",
+          verdict([ball(200, 204)],
+                  [frame(), frame(), frame()]) is not None, True)
     # THREE BALLS ON THE TURF, which is the normal case on a tee and
     # the one that makes "the ball" the wrong question. Whichever
     # LEFT is the one that matters; the others never moved and never

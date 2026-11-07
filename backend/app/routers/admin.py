@@ -15177,6 +15177,9 @@ def test_cut_long_upload(
                         # prompt promises the model five frames, and a
                         # prompt that lists evidence it is not given
                         # invites the model to imagine it.
+                        from ..services.tracer import (
+                            AUDIO2_OFFSETS_SEC as _A2_OFFS,
+                        )
                         _strip = None
                         # WHICH MOMENTS THE STRIP ACTUALLY HOLDS, so
                         # audio 2 can tell the model what it was sent
@@ -15234,28 +15237,48 @@ def test_cut_long_upload(
                         # full six frames -- the rule is "2 of the
                         # first 3, then gone" and a short clip with
                         # no address frame cannot answer it.
-                        if _golfer and _strip is not None and len(_used) == 6:
+                        # ALWAYS SAY WHAT THE BALL DID, even when it
+                        # says nothing. Three answers are useful and
+                        # a fourth is not an answer at all -- hit,
+                        # not hit, or not identified -- but a row that
+                        # simply omits the line leaves the reader
+                        # unable to tell "no ball" from "never
+                        # checked", and the verdict then appears to
+                        # have ignored evidence it never had.
+                        #
+                        # NOT TIED TO THE STRIP. The check decodes
+                        # its own frames, so it runs whether or not
+                        # the operator asked for the frames judge.
+                        if _golfer:
+                            _boffs = ([u[0] for u in _used] if _used
+                                      else list(_A2_OFFS))
                             try:
                                 from ..services.ball_vanish import (
                                     ball_at_address,
                                 )
-                                _bl = ball_at_address(
-                                    src_path, peak_time_sec,
-                                    [u[0] for u in _used],
-                                    rect=_chk.get("frames_rect"),
-                                    people=_people2)
-                                cut_entry["ball_left"] = _bl["left"]
-                                cut_entry["ball_spot"] = _bl["spot"]
-                                cut_entry["ball_balls"] = _bl.get("balls")
-                                cut_entry["ball_why"] = _bl["why"]
+                                if len(_boffs) != 6:
+                                    cut_entry["ball_why"] = (
+                                        "the ball needs all six frames; "
+                                        "this clip reaches %d"
+                                        % len(_boffs))
+                                else:
+                                    _bl = ball_at_address(
+                                        src_path, peak_time_sec, _boffs,
+                                        rect=_chk.get("frames_rect"),
+                                        people=_people2)
+                                    cut_entry["ball_left"] = _bl["left"]
+                                    cut_entry["ball_spot"] = _bl["spot"]
+                                    cut_entry["ball_balls"] = _bl.get(
+                                        "balls")
+                                    cut_entry["ball_why"] = _bl["why"]
                             except Exception as _bx:  # noqa: BLE001
                                 log.debug("test-cut ball check: %s", _bx)
+                                cut_entry["ball_why"] = (
+                                    "the ball check failed: %s" % _bx)
 
                         _final = _heat
                         if _audio2:
-                            from ..services.tracer import (
-                                AUDIO2_OFFSETS_SEC as _A2,
-                            )
+                            _A2 = _A2_OFFS
                             _ja = judge_swing_audio2(
                                 _strip, _heat_img,
                                 ratio=cut_entry.get("ratio"),

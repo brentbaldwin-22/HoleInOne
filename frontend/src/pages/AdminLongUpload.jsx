@@ -1683,19 +1683,23 @@ export default function AdminLongUpload() {
                                         when it could not be read --
                                         an obstructed ball must not
                                         look like an absent one. */}
-                                    {c.ball_left !== undefined
-                                      && c.ball_left !== null && (
+                                    {c.ball_why && (
                                       <div className="tiny" style={{
                                         marginTop: 2, maxWidth: 200,
                                         whiteSpace: "normal",
                                         lineHeight: 1.3,
-                                        color: c.ball_left
-                                          ? "#1a7f37" : "#777",
+                                        color: c.ball_left === true
+                                          ? "#1a7f37"
+                                          : c.ball_left === false
+                                          ? "#c0392b" : "#777",
                                       }}>
-                                        {c.ball_left ? "⛳ ball left the spot"
-                                          : "⛳ ball still there"}
+                                        {c.ball_left === true
+                                          ? "⛳ ball was hit"
+                                          : c.ball_left === false
+                                          ? "⛳ ball was NOT hit"
+                                          : "⛳ no ball identified"}
                                         {c.ball_override
-                                          ? " — overruled the judge" : ""}
+                                          ? " — overruled the judges" : ""}
                                         <div className="muted">
                                           {c.ball_why}
                                         </div>
