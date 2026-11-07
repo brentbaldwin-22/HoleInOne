@@ -4260,15 +4260,6 @@ def _swing_strength(cut: dict) -> tuple:
     return (_conf, _ratio)
 
 
-class _SkipFrames(Exception):
-    """The operator asked for the heat-only judge on this run.
-
-    An exception rather than a branch because the strip is built
-    inside a try that already swallows everything -- one more nested
-    `if` around four statements reads worse than saying so once.
-    """
-
-
 def resolve_swing_refractory(cuts: list, refractory_sec: float) -> int:
     """Within one quiet period, keep the BEST swing rather than the first.
 
@@ -14964,93 +14955,126 @@ def test_cut_long_upload(
                 cut_entry["gate"] = _gate["why"]
                 if (_chk.get("image_clean")
                         and os.environ.get("ANTHROPIC_API_KEY")):
-                    # FOUR REAL FRAMES TOO, unless the operator has
-                    # asked for the old heat-only question. See
-                    # tracer.frames_strip.
-                    _strip = None
-                    try:
-                        if not judge_with_frames:
-                            raise _SkipFrames()
-                        from ..services.tracer import frames_strip
-                        _sp = CLIPS_DIR / (
-                            f"verifyframes-{upload_id}-{idx:02d}-"
-                            f"{secrets.token_hex(3)}.jpg")
-                        if frames_strip(
-                            src_path, peak_time_sec, _sp,
-                            box=((_m.get("frame_x"), _m.get("frame_y"),
-                                  _m.get("w"), _m.get("h"))
-                                 if _m.get("w") else None),
-                        ):
-                            _strip = _sp
-                            cut_entry["frames_image_url"] = _clip_url_for(
-                                _sp.name)
-                    except _SkipFrames:
-                        cut_entry["verify_saw"] = "heat only (asked for)"
-                    except Exception as _fx:  # noqa: BLE001
-                        log.debug("test-cut frame strip failed: %s", _fx)
+                    # WHICH GOLFER FIRST, THEN THE FRAMES. The heat
+                    # answers "did anyone here swing" over every
+                    # candidate blob; the frames then re-ask about the
+                    # one it picked. Building the strip BEFORE that
+                    # choice -- which is what this did once the
+                    # candidate loop went in -- cropped the frames to
+                    # the largest mover, and skipped the frames judge
+                    # altogether whenever two people moved, which is
+                    # exactly the row that needs it most. The page then
+                    # had one verdict to print instead of two.
+                    _heat = None
+                    _heat_img = None
+                    _heat_box = None
+                    _saw = "heat only"
                     if not _gate["ask"]:
                         cut_entry["is_swing"] = False
                         cut_entry["verify_confidence"] = "gate"
                         cut_entry["verify_reason"] = _gate["why"]
-                    elif len(_chk.get("candidates") or []) > 1:
-                        # MORE THAN ONE GOLFER MOVED. Ask about each
-                        # and keep the first yes: the swing is a swing
-                        # whichever of them made it, and a no on the
-                        # player standing still says nothing about the
-                        # one who hit. Costs one call per candidate.
-                        _alts = []
-                        for _k in _chk["candidates"]:
-                            _ja = judge_swing_heat_image(
-                                CLIPS_DIR / _k["image"])
-                            _alts.append({
-                                "image_url": _clip_url_for(_k["image"]),
-                                "box": _k["box"],
-                                "is_swing": _ja.get("is_swing"),
-                                "confidence": _ja.get("confidence"),
-                                "reason": _ja.get("reason"),
-                            })
-                            if _ja.get("is_swing") is True:
-                                break
-                        cut_entry["candidates"] = _alts
-                        _win = next((a for a in _alts
-                                     if a["is_swing"] is True), None) or _alts[0]
-                        cut_entry["is_swing"] = _win["is_swing"]
-                        cut_entry["verify_confidence"] = _win["confidence"]
-                        cut_entry["verify_reason"] = _win["reason"]
-                        cut_entry["heat_image_url"] = _win["image_url"]
-                        cut_entry["verify_saw"] = (
-                            "heat, %d golfer(s) asked about"
-                            % len(_alts))
                     else:
+                        _cl = _chk.get("candidates") or []
+                        if len(_cl) > 1:
+                            # MORE THAN ONE GOLFER MOVED. Ask about
+                            # each and keep the first yes: the swing is
+                            # a swing whichever of them made it, and a
+                            # no on the player standing still says
+                            # nothing about the one who hit. Costs one
+                            # call per candidate.
+                            _alts = []
+                            for _k in _cl:
+                                _ja = judge_swing_heat_image(
+                                    CLIPS_DIR / _k["image"])
+                                _alts.append({
+                                    "image": _k["image"],
+                                    "image_url": _clip_url_for(_k["image"]),
+                                    "box": _k["box"],
+                                    "is_swing": _ja.get("is_swing"),
+                                    "confidence": _ja.get("confidence"),
+                                    "reason": _ja.get("reason"),
+                                })
+                                if _ja.get("is_swing") is True:
+                                    break
+                            cut_entry["candidates"] = _alts
+                            _win = next((a for a in _alts
+                                         if a["is_swing"] is True),
+                                        None) or _alts[0]
+                            _heat = _win
+                            _heat_img = CLIPS_DIR / _win["image"]
+                            _heat_box = _win["box"]
+                            cut_entry["heat_image_url"] = _win["image_url"]
+                            _saw = ("heat, %d golfer(s) asked about"
+                                    % len(_alts))
+                        else:
+                            _jh = judge_swing_heat_image(
+                                CLIPS_DIR / _chk["image_clean"])
+                            _heat = {
+                                "is_swing": _jh.get("is_swing"),
+                                "confidence": _jh.get("confidence"),
+                                "reason": _jh.get("reason"),
+                            }
+                            _heat_img = CLIPS_DIR / _chk["image_clean"]
+                            _heat_box = (
+                                (_m.get("frame_x"), _m.get("frame_y"),
+                                 _m.get("w"), _m.get("h"))
+                                if _m.get("w") else None)
+                            _saw = _jh.get("saw") or "heat only"
+
+                        # FOUR REAL FRAMES TOO, on the golfer the heat
+                        # just picked, unless the operator has asked
+                        # for the old heat-only question. See
+                        # tracer.frames_strip.
+                        _strip = None
+                        if judge_with_frames:
+                            try:
+                                from ..services.tracer import frames_strip
+                                _sp = CLIPS_DIR / (
+                                    f"verifyframes-{upload_id}-{idx:02d}-"
+                                    f"{secrets.token_hex(3)}.jpg")
+                                if frames_strip(src_path, peak_time_sec, _sp,
+                                                box=_heat_box):
+                                    _strip = _sp
+                                    cut_entry["frames_image_url"] = (
+                                        _clip_url_for(_sp.name))
+                            except Exception as _fx:  # noqa: BLE001
+                                log.debug(
+                                    "test-cut frame strip failed: %s", _fx)
+
+                        _final = _heat
                         if _strip is not None:
                             # BOTH ANSWERS, NOT ONE. The operator is
                             # choosing between two questions, and a
                             # single verdict makes that choice on a
                             # hunch. The heat-only call is the one the
-                            # page has always shown; the frames call
-                            # is the challenger. Two vision calls on
-                            # this row instead of one, which is the
-                            # price of being able to see the
-                            # disagreement rather than argue about it.
-                            _jh = judge_swing_heat_image(
-                                CLIPS_DIR / _chk["image_clean"])
-                            cut_entry["heat_is_swing"] = _jh.get("is_swing")
-                            cut_entry["heat_confidence"] = _jh.get(
+                            # page has always shown; the frames call is
+                            # the challenger. Two vision calls on this
+                            # row instead of one, which is the price of
+                            # being able to SEE the disagreement rather
+                            # than argue about it.
+                            _jf = judge_swing_with_frames(_strip, _heat_img)
+                            cut_entry["heat_is_swing"] = _heat["is_swing"]
+                            cut_entry["heat_confidence"] = _heat["confidence"]
+                            cut_entry["heat_reason"] = _heat["reason"]
+                            cut_entry["frames_is_swing"] = _jf.get("is_swing")
+                            cut_entry["frames_confidence"] = _jf.get(
                                 "confidence")
-                            cut_entry["heat_reason"] = _jh.get("reason")
-                            _j = judge_swing_with_frames(
-                                _strip, CLIPS_DIR / _chk["image_clean"])
-                            cut_entry["frames_is_swing"] = _j.get("is_swing")
-                            cut_entry["frames_confidence"] = _j.get(
-                                "confidence")
-                            cut_entry["frames_reason"] = _j.get("reason")
-                        else:
-                            _j = judge_swing_heat_image(
-                                CLIPS_DIR / _chk["image_clean"])
-                        cut_entry["is_swing"] = _j.get("is_swing")
-                        cut_entry["verify_confidence"] = _j.get("confidence")
-                        cut_entry["verify_reason"] = _j.get("reason")
-                        cut_entry["verify_saw"] = _j.get("saw") or "heat only"
+                            cut_entry["frames_reason"] = _jf.get("reason")
+                            _final = {
+                                "is_swing": _jf.get("is_swing"),
+                                "confidence": _jf.get("confidence"),
+                                "reason": _jf.get("reason"),
+                            }
+                            _saw = _saw + " + 4 frames"
+                        elif judge_with_frames:
+                            # ASKED FOR AND NOT DELIVERED is a third
+                            # state, and reporting it as the heat-only
+                            # question would hide a broken strip.
+                            _saw = _saw + " (frames asked for, none built)"
+                        cut_entry["is_swing"] = _final["is_swing"]
+                        cut_entry["verify_confidence"] = _final["confidence"]
+                        cut_entry["verify_reason"] = _final["reason"]
+                        cut_entry["verify_saw"] = _saw
                         # AND A HEDGED YES NEEDS THE MICROPHONE BEHIND
                         # IT -- the rule measured on the rig's own 29
                         # accepted clips, where every false positive

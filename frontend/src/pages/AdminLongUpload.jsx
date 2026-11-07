@@ -1611,14 +1611,29 @@ export default function AdminLongUpload() {
                                         <div className="muted">
                                           {c.frames_reason}
                                         </div>
-                                        {c.heat_is_swing !== c.frames_is_swing && (
-                                          <div style={{
-                                            color: "#b45309", marginTop: 3,
-                                          }}>
-                                            they disagree — the frames answer
-                                            is the one used
-                                          </div>
-                                        )}
+                                        {/* AND WHICH ONE WON. The row's
+                                            own verdict column already
+                                            shows it, but not next to the
+                                            two answers it came from --
+                                            which is the whole point of
+                                            printing both. */}
+                                        <div style={{
+                                          marginTop: 3,
+                                          color: c.heat_is_swing
+                                            !== c.frames_is_swing
+                                            ? "#b45309" : "#555",
+                                        }}>
+                                          {c.heat_is_swing !== c.frames_is_swing
+                                            ? "they disagree — "
+                                            : "they agree — "}
+                                          final:{" "}
+                                          <b>
+                                            {c.is_swing === true ? "swing"
+                                              : c.is_swing === false ? "not"
+                                              : "?"}
+                                          </b>
+                                          {c.overruled ? " (overruled by ×ratio)" : ""}
+                                        </div>
                                       </div>
                                     )}
                                     {c.verify_saw && c.heat_is_swing === undefined && (
