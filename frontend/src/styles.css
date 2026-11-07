@@ -532,7 +532,24 @@ code {
 }
 
 /* ---- Golfer menu (top left) -------------------------------------- */
+.brand-left { position: relative; display: flex; align-items: center; gap: 10px; }
 .gmenu { position: relative; display: inline-flex; }
+
+/* OUT INTO THE MARGIN, but only where there is a margin to go into.
+   The page content sits in a 1180px column, so on a wide screen there is
+   an empty gutter either side of the logo and the button belongs halfway
+   across it: (100vw - 1180) / 4 is exactly that midpoint. Below that
+   width the gutter closes, and an absolutely positioned button would be
+   pushed off the left edge of a phone -- so it stays beside the logo
+   there, in flow. */
+@media (min-width: 1240px) {
+  .gmenu {
+    position: absolute;
+    right: calc(100% + clamp(16px, (100vw - 1180px) / 4 - 19px, 240px));
+    top: 50%;
+    transform: translateY(-50%);
+  }
+}
 .gmenu-btn {
   width: 38px;
   height: 38px;

@@ -19,7 +19,7 @@ export function Brand({ subtitle, hideAccount }) {
   return (
     <>
     <div className="brand" style={{ justifyContent: "space-between", width: "100%" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div className="brand-left">
       <GolferMenu />
       <Link
         to="/"
