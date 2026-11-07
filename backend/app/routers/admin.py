@@ -15121,6 +15121,8 @@ def test_cut_long_upload(
                                                 box=_heat_box,
                                                 offsets=_offs,
                                                 zones=_zbox,
+                                                feet=_chk.get(
+                                                    "front_candidates"),
                                                 used=_used,
                                                 zones_out=(_zp if _zbox
                                                            else None)):

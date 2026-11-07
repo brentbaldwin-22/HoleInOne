@@ -144,12 +144,33 @@ def measure_heat(heat8, hot_level: int = HOT_LEVEL,
             by = int(stats[i, cv2.CC_STAT_TOP])
             bw = max(1, int(stats[i, cv2.CC_STAT_WIDTH]))
             bh = max(1, int(stats[i, cv2.CC_STAT_HEIGHT]))
+            # WHERE THE FEET ARE, which is NOT the bottom of the
+            # bounding box. That bottom is the lowest pixel of ANY
+            # part of the blob, so a shadow stretching sideways
+            # across the grass, a club lying down, or a streak of
+            # wind-moved turf drags it well below the golfer -- and
+            # everything that reads a stance off a blob then reads it
+            # off that streak instead.
+            #
+            # The lowest row of the blob within the MIDDLE HALF of
+            # its width. On a standing person that band is their
+            # legs; on one bending over it is their body; in neither
+            # case is it the far end of a sideways smear. `base` is
+            # kept as it was because callers display it and compare
+            # against it, but `foot` is what a stance rule should
+            # use.
+            _sub = _lab[by:by + bh, bx:bx + bw] == i
+            _lo = int(bw * 0.25)
+            _hi = max(_lo + 1, int(bw * 0.75))
+            _rows = np.where(_sub[:, _lo:_hi].any(axis=1))[0]
+            _fy = by + (int(_rows[-1]) if len(_rows) else bh - 1)
             blobs.append({
                 "x": bx, "y": by, "w": bw, "h": bh, "area": area,
                 "aspect": round(bh / float(bw), 3),
                 "fill": round(area / float(bw * bh), 3),
                 "height_frac": round(bh / float(h), 4),
                 "base": (bx + bw // 2, by + bh),
+                "foot": (bx + bw // 2, _fy),
             })
         if not blobs:
             return out
@@ -594,8 +615,13 @@ def pick_front_golfer(blobs, zones, *, offset=(0, 0),
         for b in blobs or []:
             if not b:
                 continue
-            fx = float(b.get("base", (0, 0))[0]) + ox
-            fy = float(b.get("base", (0, 0))[1]) + oy
+            # `foot` over `base`: see measure_heat. The bounding
+            # box's bottom follows a sideways shadow or a streak of
+            # grass to wherever it ends, which is not where anybody
+            # is standing.
+            _ft = b.get("foot") or b.get("base") or (0, 0)
+            fx = float(_ft[0]) + ox
+            fy = float(_ft[1]) + oy
             # THE ZONE THEY ARE ACTUALLY IN, not the first one in the
             # list that the slack happens to reach. Taking the first
             # match put a golfer standing in the upper box on the

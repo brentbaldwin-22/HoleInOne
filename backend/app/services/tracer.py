@@ -3258,8 +3258,19 @@ AUDIO2_OFFSETS_SEC = (-1.20, -0.60, -0.20, 0.0, 0.20, 0.60)
 ZONE_COLOR = (255, 0, 255)
 
 
+# Where the picker thinks each golfer's feet are. Green, because it
+# has to be told apart from the magenta zones at a glance and from
+# every colour in TURBO.
+# ONE COLOUR, TWO SHAPES. The first version marked the chosen golfer
+# in a different colour and the colour it used was yellow, which is
+# the middle of COLORMAP_TURBO -- a "feet here" marker that reads as
+# heat is worse than none. Green is outside the ramp, and the choice
+# is shown by a filled disc rather than a hue.
+FOOT_COLOR = (0, 255, 0)
+
+
 def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
-               color=ZONE_COLOR, thickness=2, label=True):
+               color=ZONE_COLOR, thickness=2, label=True, feet=None):
     """A copy of `img` with the trigger zones outlined, or None.
 
     NOT ON THE PICTURE THE JUDGE SEES. This writes a SEPARATE copy for
@@ -3305,6 +3316,28 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
                     cv2.putText(out, _t, _p, cv2.FONT_HERSHEY_SIMPLEX,
                                 0.45, _c, _th, cv2.LINE_AA)
             drew += 1
+        # AND WHERE IT THINKS THE FEET ARE. The picker chooses the
+        # golfer whose feet are furthest up, so when it chooses wrong
+        # the only question is what it read as feet -- and that was
+        # invisible until now. Drawn as a line the width of the blob
+        # with a tick at the foot point, so it can be held against
+        # the real stance in the same picture.
+        for _f in (feet or []):
+            try:
+                fx = int(round((float(_f["feet"][0]) - ox) * sc))
+                fy = int(round((float(_f["feet"][1]) - oy) * sc))
+                bw = max(6, int(round(float(_f["box"][2]) * sc)))
+                _pk = bool(_f.get("picked"))
+                if -bw < fx < w + bw and -20 < fy < h + 20:
+                    cv2.line(out, (fx - bw // 2, fy), (fx + bw // 2, fy),
+                             FOOT_COLOR, 3 if _pk else 2, cv2.LINE_AA)
+                    cv2.line(out, (fx, fy - 7), (fx, fy + 7),
+                             FOOT_COLOR, 3 if _pk else 2, cv2.LINE_AA)
+                    cv2.circle(out, (fx, fy), 5, FOOT_COLOR,
+                               -1 if _pk else 1, cv2.LINE_AA)
+                    drew += 1
+            except Exception:  # noqa: BLE001
+                continue
         return out if drew else None
     except Exception:  # noqa: BLE001
         return None
@@ -3313,7 +3346,7 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
 def frames_strip(input_path, at_sec: float, out_path, *, box=None,
                  rect=None, offsets=FRAME_OFFSETS_SEC,
                  tile_px: int = 640, pad_frac: float = 1.0,
-                 zones=None, zones_out=None, used=None):
+                 zones=None, zones_out=None, used=None, feet=None):
     """Four ordinary frames around the impact, as one 2x2 tile. Bool.
 
     THE COMPANION TO THE HEAT COMPOSITE, and the thing it cannot be.
@@ -3413,7 +3446,8 @@ def frames_strip(input_path, at_sec: float, out_path, *, box=None,
             if zones_out is not None:
                 _zt = draw_zones(t, zones, offset=(x0, y0),
                                  scale=(t.shape[1] / float(x1 - x0))
-                                 if x1 > x0 else 1.0)
+                                 if x1 > x0 else 1.0,
+                                 feet=feet)
                 ztiles.append(_zt if _zt is not None else t)
         if not tiles:
             return False
@@ -4029,7 +4063,8 @@ def swing_heat_check(
                             _zimg = draw_zones(
                                 judged, zones,
                                 offset=(_ox + _zx0, _oy + _zy0),
-                                scale=_usc)
+                                scale=_usc,
+                                feet=out.get("front_candidates"))
                             if _zimg is not None:
                                 _zn = _nm[:-4] + "-zones.jpg"
                                 if not cv2.imwrite(
