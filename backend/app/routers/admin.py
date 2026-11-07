@@ -14931,9 +14931,19 @@ def test_cut_long_upload(
                 _people2 = None
                 if detector == "audio2":
                     try:
-                        from ..services.people import find_people, frame_at
+                        from ..services.people import (
+                            find_people_over_time,
+                        )
+                        from ..services.tracer import AUDIO2_OFFSETS_SEC
 
-                        _fr2 = frame_at(src_path, peak_time_sec)
+                        # ACROSS ALL SIX MOMENTS, NOT JUST THE
+                        # IMPACT. A golfer standing behind a playing
+                        # partner at the instant of the strike did
+                        # not exist to a detector that only looked
+                        # there -- while being in clear view, feet
+                        # and all, half a second either side. See
+                        # people.find_people_over_time.
+                        #
                         # IN THE SAME REGION THE HEAT IS MEASURED IN.
                         # The model's input is fixed at 320x320, so a
                         # 1920-wide frame leaves a golfer about 15 px
@@ -14943,8 +14953,9 @@ def test_cut_long_upload(
                         # people.find_people -- puts them nearer 120.
                         # A golfer outside this region is outside the
                         # zones too, so nothing eligible is lost.
-                        _people2 = (find_people(_fr2, region=_crop)
-                                    if _fr2 is not None else [])
+                        _people2 = find_people_over_time(
+                            src_path, peak_time_sec,
+                            AUDIO2_OFFSETS_SEC, region=_crop)
                     except Exception as _px:  # noqa: BLE001
                         log.debug("test-cut: person detect failed: %s", _px)
                         _people2 = None

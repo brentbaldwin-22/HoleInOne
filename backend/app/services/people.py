@@ -263,6 +263,75 @@ def find_people(frame, *, region=None, conf: float = DEFAULT_PERSON_CONF,
         return []
 
 
+def _overlaps(a, b, *, iou=0.30, cover=0.60) -> bool:
+    """Are these two boxes the same person? Never raises."""
+    ax1, ay1 = a[0] + a[2], a[1] + a[3]
+    bx1, by1 = b[0] + b[2], b[1] + b[3]
+    iw = max(0, min(ax1, bx1) - max(a[0], b[0]))
+    ih = max(0, min(ay1, by1) - max(a[1], b[1]))
+    inter = float(iw * ih)
+    if inter <= 0:
+        return False
+    aa, ba = float(max(1, a[2] * a[3])), float(max(1, b[2] * b[3]))
+    if inter / (aa + ba - inter) >= iou:
+        return True
+    return max(inter / aa, inter / ba) >= cover
+
+
+def find_people_over_time(video_path, at_sec: float, offsets=(0.0,), *,
+                          region=None, **kw) -> list:
+    """Everybody seen at ANY of these moments, merged. Never raises.
+
+    ONE FRAME IS NOT ENOUGH, and that was the bug. Detection ran on
+    the impact frame alone, so a golfer standing behind a playing
+    partner at that instant simply did not exist -- while being in
+    clear view, feet and all, half a second either side. The
+    operator's words: "he's partially blocked in some frames but feet
+    always in view."
+
+    The frames are visited NEAREST THE IMPACT FIRST, and a detection
+    is kept only if it does not overlap somebody already found. So
+    the impact frame defines the cast wherever it can see, earlier
+    and later frames only ADD the people it could not, and a golfer
+    who merely walked between frames is not counted twice.
+
+    Each person carries `seen_at`, the offset they were found at, so
+    a stance measured half a second from the impact can be recognised
+    as such rather than trusted blindly.
+    """
+    order = sorted({round(float(o), 3) for o in (offsets or (0.0,))},
+                   key=lambda o: (abs(o), o))
+    found: list = []
+    cap = None
+    try:
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            return []
+        fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
+        for off in order:
+            f = int(round((float(at_sec) + off) * fps))
+            if f < 0:
+                continue
+            cap.set(cv2.CAP_PROP_POS_FRAMES, f)
+            ok, fr = cap.read()
+            if not ok or fr is None:
+                continue
+            for p in find_people(fr, region=region, **kw):
+                if any(_overlaps(p["box"], q["box"]) for q in found):
+                    continue
+                found.append(dict(p, seen_at=off, frame=f))
+        return found
+    except Exception as exc:  # noqa: BLE001
+        log.debug("people: multi-frame detection failed (%s)", exc)
+        return found
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def frame_at(video_path, at_sec: float):
     """One decoded frame from a video, or None. Never raises."""
     cap = None

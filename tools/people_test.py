@@ -20,7 +20,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from app.services.people import (                       # noqa: E402
-    MAX_PERSON_WIDTH_OVER_HEIGHT, WINDOW_STEP_FRAC, _covered, _windows,
+    MAX_PERSON_WIDTH_OVER_HEIGHT, WINDOW_STEP_FRAC, _covered, _overlaps,
+    _windows,
 )
 
 FAIL = []
@@ -95,6 +96,36 @@ def main() -> int:
     ):
         check("%s passes the shape bound" % name,
               (bw / bh) <= MAX_PERSON_WIDTH_OVER_HEIGHT, want)
+
+    # ---- one person across several frames --------------------------
+    # DETECTION RUNS AT SIX MOMENTS, not one, because a golfer
+    # standing behind a playing partner at the instant of the strike
+    # did not exist to a detector that only looked there. The merge
+    # keeps a detection only when it does not overlap somebody
+    # already found, so earlier and later frames ADD people rather
+    # than duplicating the ones the impact frame could already see.
+    stand = [530, 284, 139, 422]
+    # The same golfer a third of a second later, barely shifted.
+    same = [536, 288, 137, 418]
+    check("the same player across frames is one player",
+          _overlaps(same, stand), True)
+    # A player who took a step is still that player.
+    stepped = [566, 284, 139, 422]
+    check("  even after a step", _overlaps(stepped, stand), True)
+    # SOMEBODY ELSE IS SOMEBODY ELSE. The whole point is that a
+    # golfer hidden at the peak gets added from another frame, so a
+    # genuinely separate body must not be swallowed.
+    other = [760, 290, 130, 410]
+    check("a different player is not merged",
+          _overlaps(other, stand), False)
+    # The 8 Nov case: the third golfer stands close behind another,
+    # shoulders overlapping, bodies distinct.
+    behind = [700, 270, 120, 400]
+    check("  nor one standing close behind another",
+          _overlaps(behind, stand), False)
+    # NO OVERLAP AT ALL IS NEVER A MERGE.
+    check("boxes that do not touch are not merged",
+          _overlaps([0, 0, 50, 50], stand), False)
 
     print()
     if FAIL:
