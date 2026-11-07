@@ -96,24 +96,22 @@ def main() -> int:
     check("  still there AT the strike, gone after, is a swing",
           verdict([ball(200, 204)],
                   [frame((200, 204)), frame(), frame()]), True)
-    # A STRUCK BALL DOES NOT COME BACK, so one sighting after the
-    # strike settles it: the ball was not hit. Requiring EVERY frame
-    # after to show it meant a single missed detection returned "no
-    # answer" -- which is how a clip whose ball sat plainly on the
-    # turf through all six frames came back with the ball unmentioned
-    # and the verdict handed to the x-ratio instead.
-    check("  seen in any later frame means it was not hit",
+    # THE FRAMES AFTER THE STRIKE HAVE TO AGREE. Present in all of
+    # them is a ball nobody touched; absent from all is one that
+    # left; one of each is no answer. The detector can deliver that
+    # now -- the reason a ball visible in all six frames came back
+    # found in two was the relative threshold in _detections, fixed
+    # at the source rather than papered over by accepting a single
+    # sighting.
+    check("  present in every later frame means it was not hit",
+          verdict([ball(200, 204)], [frame(), frame((200, 204)),
+                                     frame((200, 204))]), False)
+    check("  gone then back again is no answer",
           verdict([ball(200, 204)],
-                  [frame(), frame(), frame((200, 204))]), False)
-    check("  and seen in only the first of them, likewise",
+                  [frame(), frame(), frame((200, 204))]), None)
+    check("  and there then gone is no answer either",
           verdict([ball(200, 204)],
-                  [frame(), frame((200, 204)), frame()]), False)
-    # THE TWO OUTCOMES ARE EXHAUSTIVE once there are frames after the
-    # strike: there is no "identified but unreadable" case left, and
-    # None now means one thing only -- no ball was identified.
-    check("  so a ball that is found always gets an answer",
-          verdict([ball(200, 204)],
-                  [frame(), frame(), frame()]) is not None, True)
+                  [frame(), frame((200, 204)), frame()]), None)
     # THREE BALLS ON THE TURF, which is the normal case on a tee and
     # the one that makes "the ball" the wrong question. Whichever
     # LEFT is the one that matters; the others never moved and never
@@ -127,6 +125,21 @@ def main() -> int:
     # A BALL THAT MOVED A LITTLE IS THE SAME BALL. Jitter is 4 px.
     check("a ball 3 px off is the same ball",
           verdict([ball(200, 204)], [frame((203, 204))] * 3), False)
+    # AND THE THRESHOLD THAT CAUSED ALL THIS. _detections scales its
+    # bar off the brightest thing in the crop, which is right for a
+    # ball in flight and wrong for one on a tee beside a golfer in a
+    # white shirt. rel=0 thresholds on absolute local contrast.
+    import numpy as _np
+    from app.services.ball_vanish import _detections as _det
+    _img = _np.full((120, 160), 60, _np.uint8)
+    _img[60:64, 40:44] = 150          # the ball: contrast ~90
+    _img[20:40, 110:150] = 255        # a white shirt, far brighter
+    _near = lambda ds: any(abs(d[0]-42) <= 3 and abs(d[1]-62) <= 3
+                           for d in ds)
+    check("the relative bar loses a ball beside something bright",
+          _near(_det(_img, [(0, 0, 160, 120)], rel=0.55)), False)
+    check("  and the absolute bar keeps it",
+          _near(_det(_img, [(0, 0, 160, 120)], rel=0.0)), True)
     check("  one 20 px away is not, so the first one left",
           verdict([ball(200, 204)], [frame((220, 204))] * 3), True)
     # NOTHING AFTER THE STRIKE AT ALL -> no answer, not a verdict.

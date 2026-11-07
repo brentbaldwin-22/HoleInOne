@@ -116,8 +116,22 @@ GONE_SEC = 0.8
 SPLIT_GAP_SEC = 8.0
 
 
-def _detections(gray, roi_boxes):
-    """Small, round, locally bright things inside the boxes."""
+def _detections(gray, roi_boxes, rel: float = 0.55):
+    """Small, round, locally bright things inside the boxes.
+
+    `rel` scales the threshold off the BRIGHTEST thing in the box.
+    That is right for a flight, where the ball in the air is the
+    brightest thing there is -- and wrong for a ball sitting on a tee
+    beside a golfer in a white shirt, because then the shirt sets the
+    bar and the ball never clears it. Measured on the 8 Nov clip: the
+    ball's top-hat response is 85-102 across the six frames, steady
+    and strong, while the brightest thing in the crop is 202, so the
+    bar sits at 111 and the ball is refused in every frame. Worse, it
+    is refused INCONSISTENTLY -- whichever frame happens to have the
+    dimmest highlight is the one where the ball survives, which is
+    exactly how a ball visible in all six comes back found in two.
+    Pass rel=0 to threshold on absolute local contrast instead.
+    """
     import cv2
     import numpy as np
 
@@ -134,7 +148,7 @@ def _detections(gray, roi_boxes):
         hat = cv2.morphologyEx(sub, cv2.MORPH_TOPHAT, k)
         if hat.max() < MIN_LOCAL_CONTRAST:
             continue
-        thr = max(MIN_LOCAL_CONTRAST, 0.55 * float(hat.max()))
+        thr = max(MIN_LOCAL_CONTRAST, float(rel) * float(hat.max()))
         _, mask = cv2.threshold(hat, thr, 255, cv2.THRESH_BINARY)
         n, _lab, stats, cents = cv2.connectedComponentsWithStats(
             mask.astype(np.uint8), 8)
@@ -395,15 +409,14 @@ def classify_balls(good, tail_live, jitter_px=ADDRESS_JITTER_PX):
     clip it is already gone by then. Either way the frame cannot be
     read, which is why it is excluded rather than weighed.
 
-    Only the frames AFTER it answer the question, and the two
-    outcomes are exhaustive rather than agreeing: absent from ALL of
-    them is a ball that left, seen in ANY of them is a ball that did
-    not. A struck ball does not come back, so one sighting after the
-    strike settles it -- and requiring every late frame to show it
-    instead meant a single missed detection returned "no answer",
-    which is how a clip whose ball plainly sat there all six frames
-    came back with the ball unmentioned and the verdict decided by
-    the x-ratio.
+    Only the frames AFTER it answer the question, and they have to
+    AGREE: absent from all of them is a ball that left, present in
+    all of them is a ball nobody touched, one of each is no answer.
+    The operator wants it that way and the detector can now deliver
+    it -- the reason a ball visible in all six frames was coming back
+    found in two was the relative threshold in _detections, not the
+    ball, and that is fixed at the source rather than papered over
+    here by accepting a single sighting.
 
     EVERY BALL, NOT THE BEST ONE. Judging the brightest or steadiest
     alone would call a real swing "not a swing" because some other
@@ -430,10 +443,11 @@ def classify_balls(good, tail_live, jitter_px=ADDRESS_JITTER_PX):
         c["still"] = sum(1 for d in tail_live if _there(c, d))
         if not late:
             continue
-        if any(_there(c, d) for d in late):
-            stayed.append(c)
-        else:
+        hits = sum(1 for d in late if _there(c, d))
+        if hits == 0:
             gone.append(c)
+        elif hits == len(late):
+            stayed.append(c)
     return gone, stayed
 
 
@@ -506,7 +520,11 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
                 per_frame.append(None)
                 continue
             gray = cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY)
-            dets = [d for d in _detections(gray, boxes)
+            # ABSOLUTE, NOT RELATIVE. See _detections: a golfer in a
+            # white shirt standing over the ball otherwise sets a bar
+            # the ball cannot clear. The ADDRESS_MIN_CONTRAST filter
+            # below is the real bar here.
+            dets = [d for d in _detections(gray, boxes, rel=0.0)
                     if d[2] <= int(cap_area) and d[3] >= float(min_contrast)
                     and not _on_a_person(d[0], d[1], people)
                     and _on_the_ground(d[1], people)]

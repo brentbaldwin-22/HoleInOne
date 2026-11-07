@@ -1697,6 +1697,8 @@ export default function AdminLongUpload() {
                                           ? "⛳ ball was hit"
                                           : c.ball_left === false
                                           ? "⛳ ball was NOT hit"
+                                          : c.ball_balls
+                                          ? "⛳ ball found — outcome unclear"
                                           : "⛳ no ball identified"}
                                         {c.ball_override
                                           ? " — overruled the judges" : ""}
