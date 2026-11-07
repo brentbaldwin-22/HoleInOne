@@ -446,6 +446,26 @@ code {
 .home-speclist li { padding: 11px 0; border-top: 1px solid var(--rule); }
 .home-courses { display: flex; flex-wrap: wrap; gap: 10px 26px; }
 .home-ticker { border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding: 13px 0; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.16em; color: var(--ink-mute); }
+/* The ticker's figures ran into their own labels and into each other --
+   "23CLIPS DELIVERED THIS WEEK1GOLFER PLAYING TODAY". The row was not a
+   flex row, so the spans sat flush, and <b>{n}</b>{label} has no space
+   between them in the markup either. Both fixed here rather than by
+   sprinkling &nbsp; through the JSX. */
+.home-ticker-in {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 28px;
+}
+.home-ticker-in b {
+  margin-right: 7px;
+  color: var(--ink);
+  font-weight: 700;
+}
+/* The live dot is an empty <span class="pulse"> with an animation and no
+   shape, so it draws nothing. Left as it is -- but in a flex row an
+   element drawing nothing would still take a 28px gap with it. */
+.home-ticker-in .pulse:empty { display: none; }
 .logo, .brand img { display: block; height: auto; }
 
 /* ---- Masthead / nav --------------------------------------------- */
