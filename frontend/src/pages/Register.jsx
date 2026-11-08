@@ -4,6 +4,7 @@ import { api } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
 import SelfieField from "../components/SelfieField.jsx";
 import useAuth from "../hooks/useAuth.js";
+import { formatUsPhone } from "../phone.js";
 
 // Today, and a sensible first guess at "now", both on the GOLFER's clock
 // -- they are standing at the course when they fill this in. Local
@@ -73,7 +74,7 @@ export default function Register() {
     if (!user) return;
     const last = user.last_registration || {};
     setName((v) => v || last.name || user.name || "");
-    setMobile((v) => v || last.mobile || "");
+    setMobile((v) => v || formatUsPhone(last.mobile) || "");
     setEmail((v) => v || last.email || user.email || "");
   }, [user]);
 
@@ -201,7 +202,14 @@ export default function Register() {
         <div className="row">
           <div className="field">
             <label>Mobile</label>
-            <input type="tel" value={mobile} onChange={(e) => setMobile(e.target.value)} placeholder="+1 555 123 4567" />
+            <input
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel"
+              value={mobile}
+              onChange={(e) => setMobile(formatUsPhone(e.target.value))}
+              placeholder="469-847-9270"
+            />
           </div>
           <div className="field">
             <label>Email</label>
