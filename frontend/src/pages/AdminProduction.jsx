@@ -9620,44 +9620,41 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             searched, what it picked and why a frame was refused --
             which is the only way to tell "the ball was not there"
             from "the box was pointed at the wrong grass". */}
-        {/* THE ZOOMED WALK UP THE COLUMN. The sweep searches a band
-            the full width of the frame; this searches a column over
-            the measured ball, one window at a time, zoomed 3.7x.
-            Both run -- the band is what every verdict so far was
-            measured against and this has never been scored -- so the
-            two are shown together and can be compared. */}
-        {rep?.ascent_zoom && (
+        {/* THE SAME SEARCH, NARROWED TO THE BALL'S COLUMN. Not a
+            new detector -- find_ascents, whose gates every verdict so
+            far was measured against -- run again over a column round
+            the measured ball instead of the full width of the frame.
+            The window-by-window walk that was here counted movers
+            and duly found the golfer's own swing; these gates are
+            about rising far enough, fast enough and straight enough,
+            which is what a swing fails. */}
+        {rep?.ascent_column && (
           <div style={{ marginTop: 10 }}>
-            <b>Zoomed walk up from the ball</b>{" "}
-            <span className={rep.ascent_zoom.ok ? "pill ok" : "pill"}>
-              {(rep.ascent_zoom.tiles || []).length} window(s) ·{" "}
-              {(rep.ascent_zoom.points || []).length} point(s)
+            <b>The ball's own column</b>{" "}
+            <span className={rep.ascent_column.ok ? "pill ok" : "pill"}>
+              {(rep.ascent_column.points || []).length} point(s) ·{" "}
+              {(rep.ascent_column.considered || []).length} chain(s)
             </span>
             <div className="tiny muted" style={{ marginTop: 3 }}>
-              {rep.ascent_zoom.reason}
-              {rep.ascent_zoom.seconds != null
-                ? ` · ${rep.ascent_zoom.seconds}s` : ""}
+              {rep.ascent_column.reason}
+              {rep.ascent_column.from_ball
+                ? ` · from the measured ball at (${
+                    rep.ascent_column.from_ball[0]}, ${
+                    rep.ascent_column.from_ball[1]}), impact f${
+                    rep.ascent_column.impact_frame}`
+                : ""}
+              {rep.ascent_column.seconds != null
+                ? ` · ${rep.ascent_column.seconds}s` : ""}
             </div>
-            {rep.ascent_zoom.image_url && (
-              <a href={rep.ascent_zoom.image_url} target="_blank"
+            {rep.ascent_column.image_url && (
+              <a href={rep.ascent_column.image_url} target="_blank"
                  rel="noreferrer">
-                <img src={rep.ascent_zoom.image_url}
-                     alt="the zoomed walk up the column"
+                <img src={rep.ascent_column.image_url}
+                     alt="the narrowed ascent search"
                      style={{ width: "100%", maxWidth: 900, marginTop: 4,
                               borderRadius: 4,
                               border: "1px solid var(--border, #333)" }} />
               </a>
-            )}
-            {(rep.ascent_zoom.tiles || []).length > 0 && (
-              <div className="tiny muted" style={{ marginTop: 3 }}>
-                {rep.ascent_zoom.tiles.map((t, i) => (
-                  <div key={i}>
-                    {t.i}: y{t.box[1]}–{t.box[1] + t.box[3]} ·{" "}
-                    {t.n_movers} mover(s) · {t.n_tracks} track(s) ·{" "}
-                    {t.n_points} pt — {t.why}
-                  </div>
-                ))}
-              </div>
             )}
           </div>
         )}

@@ -175,7 +175,6 @@ def main() -> int:
     import cv2
     import numpy as np
     from app.services.ball_vanish import ball_departure
-    from app.services.debug3 import find_ascents_tiled
 
     W, H, FPS, IMPACT, BALL = 960, 720, 30, 60, (480, 600)
     d = tempfile.mkdtemp()
@@ -220,17 +219,6 @@ def main() -> int:
     check("a ball that never leaves has no impact frame",
           st["impact_frame"], None)
     check("  and says so", "still there" in (st["why"] or ""), True)
-
-    asc = find_ascents_tiled(vid, FPS, IMPACT, BALL,
-                             golfer_box=[430, 420, 40, 185])
-    check("the zoomed walk follows the ball up", asc["ok"], True)
-    check("  across more than one window", asc["n_tiles"] > 1, True)
-    check("  and shows its working for every one",
-          all("why" in t and "box" in t for t in asc["tiles"]), True)
-    check("  in a column over the ball, not the whole frame",
-          asc["column"][2] < W // 2, True)
-    # AND IT STOPS, with a reason, rather than running to max_tiles.
-    check("  stopping with a reason", bool(asc["reason"]), True)
 
     print()
     if FAIL:
