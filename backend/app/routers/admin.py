@@ -20210,7 +20210,7 @@ def long_upload_green_rest(upload_id: int,
     says nothing about whether the thing found is a ball, and the only
     way to judge a run of this is to look at what it looked at.
     """
-    from ..services import ai_tracer, greenrest
+    from ..services import ai_tracer, greenball, greenrest
 
     row = db.get(LongVideoUpload, upload_id)
     if row is None:
@@ -20265,20 +20265,151 @@ def long_upload_green_rest(upload_id: int,
     # run's picture out of the browser cache. That bug is invisible
     # precisely when it matters: the operator changes a plate time,
     # the numbers move, and the picture does not.
+    def _url(pth):
+        _p = Path(str(pth or ""))
+        return ((f"{settings.app_base_url}/uploads/clips/{_p.name}"
+                 f"?v={int(_p.stat().st_mtime)}")
+                if pth and _p.exists() else None)
+
     def _staged(rows):
         out = []
         for r in rows or []:
-            _p = Path(str(r.get("path") or ""))
-            if not _p.exists():
+            _u = _url(r.get("path"))
+            if not _u:
                 continue
-            out.append({
-                "name": r.get("name"), "title": r.get("title"),
-                "why": r.get("why"),
-                "url": (f"{settings.app_base_url}/uploads/clips/{_p.name}"
-                        f"?v={int(_p.stat().st_mtime)}")})
+            out.append({"name": r.get("name"), "title": r.get("title"),
+                        "why": r.get("why"), "url": _u})
         return out
 
     _stem = f"green-rest-{upload_id}"
+
+    # ── 1. THE SAME DETECTOR TEST CUT USES, ZONE BY ZONE ────────────
+    #
+    # BEFORE THE MODEL, because it measures where the model estimates.
+    # `ball_vanish._detections` -- white top-hat, then area, roundness
+    # and fill -- is what finds a ball sitting on the turf in front of
+    # a golfer, tuned against real 1080p grass over a week of clips.
+    # The green asks the same question at a different scale: the ball
+    # is a hundred yards away and three or four pixels across, which
+    # the top-hat's 15px kernel swallows. So the green is cut into
+    # four zones and each is scaled up before the detector runs.
+    #
+    # It answers both halves at once. What it finds in the BEFORE
+    # frame is the balls already lying there; what is in the AFTER
+    # frame and not in the BEFORE one is the shot.
+    _bsec = _b if _b is not None else 2.0
+    _asec = _a if _a is not None else 13.0
+    _f_before = ai_tracer._grab_colour_frame(path, _bsec)
+    _f_after = ai_tracer._grab_colour_frame(path, _asec)
+    tiles = {"ok": False, "why": "could not read both frames"}
+    if _f_before is not None and _f_after is not None:
+        tiles = greenball.find_balls_on_green(
+            _f_before, _f_after,
+            polygon=roi.get("points"),
+            drawn_at=[frame.get("w"), frame.get("h")] if frame else None,
+            out_dir=CLIPS_DIR, stem=_stem)
+    tiles["before_sec"] = _bsec
+    tiles["after_sec"] = _asec
+
+    if tiles.get("best"):
+        # MORE THAN ONE NEW THING, SO ASK WHICH. The detector says
+        # where, which is the half a model estimates badly; the model
+        # says which, which is the half it is reliably good at. One
+        # candidate is not a question and is not asked.
+        _pick = None
+        if len(tiles.get("new") or []) > 1 and tiles["images"].get("picker"):
+            try:
+                _jpeg = Path(tiles["images"]["picker"]).read_bytes()
+                _pick = ai_tracer.pick_ball_among(
+                    _jpeg, len(tiles["new"]))
+                _i = _pick.get("index")
+                if _i and 1 <= int(_i) <= len(tiles["new"]):
+                    tiles["best"] = tiles["new"][int(_i) - 1]
+            except Exception as exc:  # noqa: BLE001
+                log.warning("green rest: picker failed on %s: %s",
+                            upload_id, exc)
+        _best = tiles["best"]
+        return {
+            "ok": True,
+            "source": "tiles",
+            "best": {"x": int(round(_best["x"])), "y": int(round(_best["y"])),
+                     "area": _best["area"], "persist": None},
+            "arrivals": [{"x": int(round(d["x"])), "y": int(round(d["y"]))}
+                         for d in tiles["new"]],
+            "departures": [],
+            "on_green": True,
+            "confidence": None,
+            "before_frame": 0, "after_frame": 0, "fps": 1,
+            "tiles": tiles,
+            "picked_by": _pick,
+            "notes": [
+                tiles.get("why") or "",
+                ("%d ball(s) were already on the green when the shot was "
+                 "played — ringed in orange, and not confused with the "
+                 "one that arrived." % len(tiles["before"])
+                 if tiles["before"] else
+                 "The green was empty before the shot."),
+                ("Several new things arrived; the model was shown the "
+                 "numbered pair and picked %s — %s"
+                 % (_pick.get("index"), _pick.get("why") or "")
+                 if _pick and _pick.get("index") else
+                 "More than one new thing arrived and the model could "
+                 "not choose between them, so the brightest is shown."
+                 if len(tiles.get("new") or []) > 1 else ""),
+            ],
+            "image_url": _url(tiles["images"].get("after")),
+            "camera_id": cam.id if cam else None,
+            "has_outline": bool(roi.get("points")),
+            "clip": row.green_filename,
+            "timing": {"fetch_sec": round(fetch_sec, 2)},
+            "stages": _staged([
+                {"name": "tiles-before", "title": "1 · Before the shot",
+                 "why": ("The green at %.1fs, cropped to the outline and "
+                         "otherwise untouched. Orange rings are balls "
+                         "already lying on it -- a partner's, or one "
+                         "nobody has marked yet. They are in both "
+                         "pictures, so they are not the shot."
+                         % _bsec),
+                 "path": tiles["images"].get("before")},
+                {"name": "tiles-after", "title": "2 · After it settled",
+                 "why": ("The green at %.1fs. The cyan ring is what is "
+                         "here and was not there before -- measured off "
+                         "the pixels by the same detector Test Cut uses "
+                         "for a ball at address, not read by a model."
+                         % _asec),
+                 "path": tiles["images"].get("after")},
+            ] + [
+                {"name": "zone%d" % z["n"],
+                 "title": "Zone %d of %d — %.1fx" % (
+                     z["n"], len(tiles["zones"]), z["zoom"]),
+                 "why": ("%s in the frame, scaled %.1fx before the "
+                         "detector ran. %d thing(s) before, %d after. "
+                         "A ball four pixels across is invisible in any "
+                         "view of the whole green, so this is the "
+                         "picture the detector actually saw."
+                         % (",".join(str(v) for v in z["rect"]), z["zoom"],
+                            z["n_before"], z["n_after"])),
+                 "path": z.get("path")}
+                for z in tiles["zones"]
+            ] + ([{"name": "picker",
+                   "title": "The numbered pair the model was shown",
+                   "why": ("More than one new thing arrived. The "
+                           "detector says where each is; the model was "
+                           "asked only which one is the ball, which is "
+                           "the half it is reliably good at."),
+                   "path": tiles["images"].get("picker")}]
+                 if tiles["images"].get("picker") else [])),
+        }
+
+    # ── 2. ...AND THE MODEL ONLY WHERE THE DETECTOR FOUND NOTHING ───
+    #
+    # This is the gridded ask: the frames go up with a labelled pixel
+    # grid over them because here the model has to produce a POSITION
+    # rather than pick between measured ones, and without a grid it
+    # estimates one 50-100px out. The grid is why it is second now --
+    # on a cropped green it has to be fine enough to be useful and
+    # then its labels overlap into a stripe across the picture, over
+    # the very ball it was drawn to help find.
     ai_out = ai_tracer.find_ball_at_rest(
         path,
         before_sec=_b if _b is not None else 2.0,

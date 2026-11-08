@@ -77,6 +77,131 @@ function Stages({ stages }) {
   );
 }
 
+/**
+ * The zoned detector's own account of itself.
+ *
+ * A DIFFERENT QUESTION FROM THE PLATES, so a different panel. The
+ * plates ask "what is in the second picture that was not in the
+ * first", pixel by pixel, over a median of thirty frames. This asks
+ * "where are the small round locally-bright things", in each of four
+ * zones, on one frame each side -- which is the question Test Cut
+ * already answers on the tee, with constants measured against real
+ * turf rather than invented for the green.
+ */
+function HowTheTilesFound({ out }) {
+  const t = out.tiles || {};
+  const zones = t.zones || [];
+  const pick = out.picked_by;
+  return (
+    <details style={{ marginTop: 12 }}>
+      <summary className="small" style={{ cursor: "pointer" }}>
+        <b>How it found it</b>
+        <span className="muted">
+          {" "}— the zoned detector, with this run&apos;s numbers
+        </span>
+      </summary>
+
+      <div className="tiny muted" style={{ marginTop: 8 }}>
+        This is the same detector that finds a ball sitting on the turf
+        in front of a golfer on Test Cut: a <b>white top-hat</b> — what
+        is brighter than its own immediate neighbourhood, rather than
+        brighter than the picture as a whole — then area, roundness and
+        fill. Its constants were measured against real 1080p grass over
+        a week of clips. The green asks the same question at a different
+        scale, which is the only thing that had to change.
+      </div>
+
+      <Step n="1" title="Cut to the green"
+            count={t.crop?.rect ? t.crop.rect.slice(2).join("×") : null}
+            units="px" bad={!out.has_outline}>
+        The outline&apos;s own bounding box. Everything outside it —
+        sky, treeline, rough, the cart path — is not searched, so a
+        white thing out there cannot be mistaken for a ball. A
+        detection just outside the line still counts: the outline is
+        dragged with a mouse on a live view and a ball on the collar is
+        on the green as far as anybody watching is concerned.
+      </Step>
+
+      <Step n="2" title="Four zones, each scaled up"
+            count={zones.length} units="zones"
+            bad={!zones.length}>
+        On the tee the ball is a few feet away and spans a dozen
+        pixels. On the green it is a hundred yards away and spans three
+        or four — and the top-hat&apos;s 15px kernel is then wide
+        enough to swallow it whole. So each zone is scaled up before
+        the detector runs: at 3× a four-pixel ball is a twelve-pixel
+        ball, the size the constants were set against. The zones
+        overlap, so a ball on a boundary is not cut in half by both and
+        rejected by both.
+        {zones.length > 0 && (
+          <div style={{ marginTop: 3 }}>
+            {zones.map((z) => (
+              <span key={z.n}>
+                {z.n > 1 ? " · " : ""}zone {z.n} at {z.zoom}× —{" "}
+                {z.n_before}/{z.n_after}
+              </span>
+            ))}
+            <div className="muted">(things found before/after, per zone)</div>
+          </div>
+        )}
+      </Step>
+
+      <Step n="3" title="What was already lying there"
+            count={(t.before || []).length} units="ball(s)">
+        Anything the detector finds in the <b>before</b> frame was on
+        the green when the shot was played — a partner&apos;s ball, or
+        one nobody has marked yet. Ringed in orange, reported, and
+        never confused with the one that arrived. Reporting them is the
+        point: an operator reading a confusing answer deserves to know
+        how many balls are lying out there.
+      </Step>
+
+      <Step n="4" title="And what arrived"
+            count={(t.new || []).length} units="new"
+            bad={!(t.new || []).length}>
+        Everything in the <b>after</b> frame that has nothing within a
+        few pixels of it in the before frame. The size gate is applied
+        in the FRAME&apos;s pixels, not the zoomed zone&apos;s — the
+        zoom exists to give the top-hat something to work with, not to
+        make the detector less fussy about size. Without that, every
+        re-quantised speck on a mowing stripe passes: measured on a
+        synthetic green with real-ish turf noise, 59 &ldquo;balls&rdquo;
+        before that line and one after, and the one is the ball.
+        {(t.new || []).length > 0 && (
+          <div style={{ marginTop: 3 }}>
+            {t.new.map((d, i) => (
+              <div key={i}>
+                {Math.round(d.x)}, {Math.round(d.y)} — {d.diam_px}px across,{" "}
+                {d.contrast} levels brighter than its surroundings, zone{" "}
+                {d.zone}
+              </div>
+            ))}
+          </div>
+        )}
+      </Step>
+
+      <Step n="5" title="Which one is the ball"
+            count={pick?.index != null ? `ring ${pick.index}`
+              : ((t.new || []).length > 1 ? "not resolved" : "only one")}
+            bad={(t.new || []).length > 1 && pick?.index == null}>
+        Only asked when more than one new thing arrived. The detector
+        says <i>where</i>, which is the half a vision model estimates
+        badly — 50 to 100px out, by this app&apos;s own measurements.
+        The model is asked only <i>which</i>, off the numbered pair,
+        which is the half it is reliably good at.
+        {pick && (
+          <div style={{ marginTop: 3 }}>
+            {pick.index != null
+              ? <>picked ring {pick.index} at{" "}
+                  {Math.round((pick.confidence || 0) * 100)}% — {pick.why}</>
+              : <>could not choose — {pick.error || pick.why}</>}
+          </div>
+        )}
+      </Step>
+    </details>
+  );
+}
+
 /** One row of the funnel: what went in, what came out, and the gate. */
 function Step({ n, title, count, units, children, bad }) {
   return (
@@ -107,6 +232,7 @@ function Step({ n, title, count, units, children, bad }) {
  * it was, and they need opposite fixes.
  */
 function HowItFound({ out }) {
+  if (out.source === "tiles") return <HowTheTilesFound out={out} />;
   const st = out.steps || {};
   const dl = out.dials || {};
   const pl = out.plates || {};
@@ -416,24 +542,35 @@ export default function GreenRestModal({ row, adminPassword, onClose }) {
                   ? `Ball at ${out.best.x}, ${out.best.y} — `
                     + `${Math.round((out.confidence || 0) * 100)}% confident, `
                     + (out.on_green ? "on the green" : "NOT on the green")
-                  : `At rest near ${out.best.x}, ${out.best.y} — `
-                    + `${out.best.area}px, present in `
-                    + `${Math.round((out.best.persist || 0) * 100)}% of the `
-                    + "after frames")
+                  : out.source === "tiles"
+                    ? `At rest at ${out.best.x}, ${out.best.y} — `
+                      + `${out.best.area}px across, and not there before`
+                    : `At rest near ${out.best.x}, ${out.best.y} — `
+                      + `${out.best.area}px, present in `
+                      + `${Math.round((out.best.persist || 0) * 100)}% of the `
+                      + "after frames")
                 : "No ball found on the green."}
               {out.source && (
                 <span className="muted">
                   {" "}· {out.source === "ai" ? "found by the model"
-                    : "plate comparison"}
+                    : out.source === "tiles"
+                      ? "the zoned ball detector — the same one Test Cut "
+                        + "uses for a ball at address"
+                      : "plate comparison"}
                 </span>
               )}
             </div>
             <div className="muted" style={{ marginTop: 2 }}>
-              {out.source === "ai" ? (out.clip || "") : (
-                <>plates at {(out.before_frame / (out.fps || 60)).toFixed(1)}s
-                  {" "}and {(out.after_frame / (out.fps || 60)).toFixed(1)}s
-                  {out.clip ? ` · ${out.clip}` : ""}</>
-              )}
+              {out.source === "ai" ? (out.clip || "")
+                : out.source === "tiles" ? (
+                  <>frames at {out.tiles?.before_sec}s and{" "}
+                    {out.tiles?.after_sec}s — single frames, not plates
+                    {out.clip ? ` · ${out.clip}` : ""}</>
+                ) : (
+                  <>plates at {(out.before_frame / (out.fps || 60)).toFixed(1)}s
+                    {" "}and {(out.after_frame / (out.fps || 60)).toFixed(1)}s
+                    {out.clip ? ` · ${out.clip}` : ""}</>
+                )}
             </div>
             {out.timing && (
               <div className="muted" style={{ marginTop: 2 }}>
