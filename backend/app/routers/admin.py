@@ -20278,7 +20278,22 @@ def long_upload_green_rest(upload_id: int,
             "camera_id": cam.id if cam else None,
             "has_outline": bool(roi.get("points")),
             "clip": row.green_filename,
-            "timing": {},
+            "timing": {"fetch_sec": round(fetch_sec, 2)},
+            "ai": {
+                "ran": True,
+                "model": ai_out.get("model"),
+                "error": None,
+                "why": ai_out.get("why"),
+                "confidence": ai_out.get("confidence"),
+                "min_confidence": getattr(
+                    ai_tracer, "BALL_AT_REST_MIN_CONFIDENCE", None),
+                "on_green": ai_out.get("on_green"),
+                "before_sec": ai_out.get("before_sec"),
+                "after_sec": ai_out.get("after_sec"),
+                "snapped": ai_out.get("snapped"),
+                "snap_px": ai_out.get("snap_px"),
+                "used": True,
+            },
         }
 
     # ...and the plates as the fallback, exactly as produce does.
@@ -20294,6 +20309,27 @@ def long_upload_green_rest(upload_id: int,
     out.setdefault("notes", []).insert(
         0, f"The model did not answer ({ai_out.get('error')}), so this is "
            "the plate comparison.")
+    # ── WHAT THE MODEL WAS ASKED AND WHAT IT SAID ───────────────────
+    #
+    # The note above compresses that into one parenthesis, which is
+    # enough to know the fallback ran and not enough to know whether
+    # the first look was reasonable. These are three different things
+    # and only the first of them is a reason to leave the finder
+    # alone: no key configured, the model answered and was refused on
+    # confidence, the model answered a position off the frame.
+    out["ai"] = {
+        "ran": bool(ai_out.get("model")),
+        "model": ai_out.get("model"),
+        "error": ai_out.get("error"),
+        "why": ai_out.get("why"),
+        "confidence": ai_out.get("confidence"),
+        "min_confidence": getattr(
+            ai_tracer, "BALL_AT_REST_MIN_CONFIDENCE", None),
+        "on_green": ai_out.get("on_green"),
+        "before_sec": ai_out.get("before_sec"),
+        "after_sec": ai_out.get("after_sec"),
+        "used": False,
+    }
     img = CLIPS_DIR / out_name
     out["image_url"] = (
         f"{settings.app_base_url}/uploads/clips/{out_name}"

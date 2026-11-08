@@ -300,7 +300,7 @@ def render_marks(plate, poly, marks, out_path, caption=""):
 
 
 def _render(plate_b, plate_a, poly, arrivals, departures, out_path,
-            caption=""):
+            caption="", rejects=None):
     """The two plates side by side, with what was found ringed.
 
     COORDINATES ARE NOT AN ANSWER. "1247, 638" tells an operator
@@ -320,6 +320,37 @@ def _render(plate_b, plate_a, poly, arrivals, departures, out_path,
             shifted = poly.copy()
             shifted[:, 0] += dx
             cv2.polylines(pair, [shifted], True, (120, 230, 170), u)
+
+    # ── WHAT IT LOOKED AT AND TURNED DOWN ───────────────────────────
+    #
+    # UNDER the rings, so an accepted ball is never buried by a reject
+    # drawn over it. These are the components that crossed the
+    # brightness threshold and then failed a gate -- too small, too
+    # big, not round, or not there in enough frames. A picture with a
+    # grey square exactly where the ball is says "the gate is wrong";
+    # a picture with no square there at all says "the ball was never
+    # bright enough to be a candidate", and those need opposite fixes.
+    for r in (rejects or [])[:MAX_DRAWN]:
+        cv2.rectangle(pair,
+                      (r["x"] + w - 7 * u, r["y"] - 7 * u),
+                      (r["x"] + w + 7 * u, r["y"] + 7 * u),
+                      (120, 120, 120), u)
+        # THE LABEL GOES WHERE IT FITS. A candidate near the right edge
+        # of the green had its reason written off the end of the
+        # picture, and the reason is the only part of a reject worth
+        # drawing -- a grey square on its own says a gate fired without
+        # saying which. Measured, not assumed: ask OpenCV how wide the
+        # text is and put it on the other side when it would not fit.
+        _why = str(r.get("why") or "")
+        _sc = 0.34 * u
+        (_tw, _th), _ = cv2.getTextSize(
+            _why, cv2.FONT_HERSHEY_SIMPLEX, _sc, u)
+        _lx = r["x"] + w + 10 * u
+        if _lx + _tw > pair.shape[1] - 4 * u:
+            _lx = max(w + 4 * u, r["x"] + w - 10 * u - _tw)
+        _ly = min(h - 4 * u, max(_th + 4 * u, r["y"] + 4 * u))
+        cv2.putText(pair, _why, (_lx, _ly),
+                    cv2.FONT_HERSHEY_SIMPLEX, _sc, (150, 150, 150), u)
 
     # Rings go on the AFTER panel, which is where the thing is.
     #
@@ -362,27 +393,74 @@ def _render(plate_b, plate_a, poly, arrivals, departures, out_path,
     return out_path
 
 
-def _blobs(diff_mask, diff, mask):
-    """Ball-shaped components of a thresholded difference."""
+def _blobs(diff_mask, diff, mask, rejects=None, counts=None):
+    """Ball-shaped components of a thresholded difference.
+
+    EVERY ONE IT SAW, AND THE GATE EACH DIED ON. This used to `continue`
+    past a component that failed the area or the roundness test, which
+    meant a run that found nothing had exactly one thing to say about
+    why -- "nothing new is on the green" -- covering four completely
+    different failures that need opposite fixes:
+
+      * nothing was bright enough to cross DIFF_THRESHOLD at all (the
+        exposure match is off, or the ball is in shade);
+      * something was, but it was one pixel (the ball is at the back
+        of the green and MIN_AREA is cutting it);
+      * something was, and it was a 60x4 streak (a mowing stripe or a
+        shadow edge -- the roundness gate doing its job);
+      * something round and ball-sized was found and then failed the
+        persistence check further up (it was not there in every frame,
+        so it was a person or a flicker).
+
+    `rejects` collects the first three with their numbers; `counts`
+    tallies the funnel. Both optional, so the produce path that only
+    wants the answer pays nothing for them.
+    """
     n, _lbl, stats, cent = cv2.connectedComponentsWithStats(
         cv2.bitwise_and(diff_mask, mask))
     out = []
+    if counts is not None:
+        counts["components"] = counts.get("components", 0) + max(0, n - 1)
     for i in range(1, n):
         area = int(stats[i, cv2.CC_STAT_AREA])
-        if not (MIN_AREA <= area <= MAX_AREA):
-            continue
         bw = int(stats[i, cv2.CC_STAT_WIDTH])
         bh = int(stats[i, cv2.CC_STAT_HEIGHT])
-        long_, short_ = max(bw, bh), max(1, min(bw, bh))
-        if long_ / short_ > MAX_ASPECT:
-            continue
         x, y = int(round(cent[i][0])), int(round(cent[i][1]))
-        out.append({
-            "x": x, "y": y, "area": area,
-            "strength": int(abs(int(diff[y, x]))) if (
-                0 <= y < diff.shape[0] and 0 <= x < diff.shape[1]) else 0,
-        })
+        _str = (int(abs(int(diff[y, x])))
+                if (0 <= y < diff.shape[0] and 0 <= x < diff.shape[1])
+                else 0)
+        long_, short_ = max(bw, bh), max(1, min(bw, bh))
+        _row = {"x": x, "y": y, "area": area, "strength": _str,
+                "w": bw, "h": bh, "aspect": round(long_ / short_, 2)}
+        if area < MIN_AREA:
+            _row["why"] = f"{area}px, smaller than {MIN_AREA}px"
+        elif area > MAX_AREA:
+            _row["why"] = f"{area}px, bigger than {MAX_AREA}px"
+        elif long_ / short_ > MAX_ASPECT:
+            _row["why"] = (f"{bw}x{bh} — {round(long_ / short_, 1)}:1, "
+                           f"not round (limit {MAX_ASPECT}:1)")
+        else:
+            if counts is not None:
+                counts["ball_shaped"] = counts.get("ball_shaped", 0) + 1
+            out.append({"x": x, "y": y, "area": area, "strength": _str,
+                        "w": bw, "h": bh,
+                        "aspect": round(long_ / short_, 2)})
+            continue
+        if counts is not None:
+            _k = ("too_small" if area < MIN_AREA
+                  else "too_big" if area > MAX_AREA else "not_round")
+            counts[_k] = counts.get(_k, 0) + 1
+        if rejects is not None:
+            rejects.append(_row)
     return out
+
+
+# HOW MANY REJECTED CANDIDATES COME BACK. A green in low sun can throw
+# hundreds of one-pixel specks, and a list that long is not a report,
+# it is a second problem. The ones worth reading are the BIGGEST -- a
+# near miss is a component that nearly passed -- so they are sorted and
+# cut here rather than at the point they are found.
+MAX_REJECTS_REPORTED = 24
 
 
 def _persistence(frames, blob, reference, sign: int = 1):
@@ -483,12 +561,36 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
         pos = (diff >= DIFF_THRESHOLD).astype(np.uint8) * 255
         neg = (diff <= -DIFF_THRESHOLD).astype(np.uint8) * 255
 
-        arrivals = _blobs(pos, diff, mask)
+        # THE FUNNEL, COUNTED AT EVERY STAGE. "0 arrivals" is one
+        # sentence covering four different failures with four opposite
+        # fixes; which stage the count fell to nothing at is the thing
+        # that says which one happened. See `_blobs`.
+        _counts: dict = {}
+        _rejects: list = []
+        _npos = int((pos > 0).sum())
+        _nneg = int((neg > 0).sum())
+        _nmask = int((mask > 0).sum()) if mask is not None else 0
+        arrivals = _blobs(pos, diff, mask, _rejects, _counts)
         departures = _blobs(neg, diff, mask)
 
         for blob in arrivals:
             blob["persist"] = round(
                 _persistence(frames_a, blob, matched_b), 2)
+        # AND THE LAST GATE RECORDS ITS DEAD TOO. A ball-shaped,
+        # ball-sized, ball-bright thing that fails persistence is the
+        # single most interesting rejection this whole file produces:
+        # it is either a person standing still for part of the window
+        # (working as intended) or the ball itself in shade for a few
+        # frames (PERSIST_FRAC too high), and nothing in the old output
+        # could tell those apart.
+        for blob in arrivals:
+            if blob["persist"] < PERSIST_FRAC:
+                _rejects.append(dict(blob, why=(
+                    "in %d%% of the after frames, needs %d%%"
+                    % (round(blob["persist"] * 100),
+                       round(PERSIST_FRAC * 100)))))
+                _counts["not_persistent"] = _counts.get(
+                    "not_persistent", 0) + 1
         arrivals = [x for x in arrivals if x["persist"] >= PERSIST_FRAC]
         # A DEPARTURE HAS TO BE GONE, not merely dimmer in the median.
         # Same discipline as an arrival and for the same reason: the
@@ -502,6 +604,16 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
         # green the ball is a handful of pixels and the biggest thing
         # that survives the filters is more likely to be a shadow.
         arrivals.sort(key=lambda z: (-z["persist"], -z["strength"]))
+        # BIGGEST FIRST, because a near miss is a component that nearly
+        # passed, and a green in low sun throws hundreds of one-pixel
+        # specks that are not worth a row each.
+        _rejects.sort(key=lambda z: (-z["area"], -z["strength"]))
+        _n_rejects = len(_rejects)
+        _rejects = _rejects[:MAX_REJECTS_REPORTED]
+        _counts["kept"] = len(arrivals)
+        _counts["bright_px"] = _npos
+        _counts["dim_px"] = _nneg
+        _counts["searched_px"] = _nmask
 
         notes = []
         _gap = (a - b) / fps
@@ -534,9 +646,50 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
                 "marked or picked up. Harmless, and noted so the picture "
                 "makes sense.")
         if not arrivals:
-            notes.append(
-                "Nothing new is on the green. Either the shot missed it, or "
-                "the ball came to rest outside the outline.")
+            # WHICH STAGE IT FELL AT, not just that it fell. Four quite
+            # different failures used to share this one sentence, and
+            # they need opposite fixes: a threshold that nothing
+            # crossed is an exposure problem, a candidate that was
+            # ball-shaped and failed persistence is a gate set too
+            # tight, and only the case where nothing was found at any
+            # stage is actually "the shot missed".
+            if not _counts.get("components"):
+                notes.append(
+                    "Nothing on the green was %d grey levels brighter "
+                    "than before, anywhere inside the outline. That is "
+                    "not a ball that was rejected — it is a ball that "
+                    "was never a candidate. Either the shot missed the "
+                    "green, the ball is in shade, or the two plates are "
+                    "so far apart that the exposure match could not "
+                    "bring them together."
+                    % DIFF_THRESHOLD)
+            elif not _counts.get("ball_shaped"):
+                notes.append(
+                    "%d thing(s) were bright enough, and none of them "
+                    "were ball-shaped — %d too small, %d too big, %d "
+                    "not round. A ball at the back of a green can be "
+                    "under %dpx; mowing stripes and shadow edges are "
+                    "what the roundness test is there to remove."
+                    % (_counts.get("components", 0),
+                       _counts.get("too_small", 0),
+                       _counts.get("too_big", 0),
+                       _counts.get("not_round", 0), MIN_AREA))
+            elif _counts.get("not_persistent"):
+                notes.append(
+                    "%d ball-shaped candidate(s) were found and then "
+                    "failed the persistence check — they were not in "
+                    "at least %d%% of the after frames. That is either "
+                    "a person who stood still for part of the window, "
+                    "or the ball itself passing through shade. The "
+                    "turned-down list below has the percentage each "
+                    "one reached."
+                    % (_counts.get("not_persistent", 0),
+                       round(PERSIST_FRAC * 100)))
+            else:
+                notes.append(
+                    "Nothing new is on the green. Either the shot "
+                    "missed it, or the ball came to rest outside the "
+                    "outline.")
 
         detect_sec = time.monotonic() - _t
         _t = time.monotonic()
@@ -569,7 +722,8 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
                     f"{len(arrivals)} arrival(s), {len(departures)} "
                     f"departure(s) - plates {b / fps:.1f}s and {a / fps:.1f}s")
                 image = str(_render(matched_b, plate_a, poly, arrivals,
-                                    departures, Path(debug_path), cap_txt))
+                                    departures, Path(debug_path), cap_txt,
+                                    rejects=_rejects))
             except Exception as exc:  # noqa: BLE001
                 log.warning("rest-spot debug render failed: %s", exc)
 
@@ -595,6 +749,36 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
             "best": arrivals[0] if arrivals else None,
             "arrivals": arrivals,
             "departures": departures,
+            # ── THE WORK, NOT ONLY THE ANSWER ────────────────────────
+            #
+            # `steps` is the funnel: how many pixels were searched, how
+            # many were bright enough, how many of those grouped into
+            # components, and how many survived each gate. `rejected`
+            # is the biggest two dozen that did not, each with the gate
+            # it died on. `dials` is every constant the gates were
+            # measured against, so the operator reading a rejection can
+            # see which number to change without opening the file.
+            "steps": _counts,
+            "n_rejected": _n_rejects,
+            "rejected": _rejects,
+            "dials": {
+                "diff_threshold": DIFF_THRESHOLD,
+                "min_area": MIN_AREA,
+                "max_area": MAX_AREA,
+                "max_aspect": MAX_ASPECT,
+                "persist_frac": PERSIST_FRAC,
+                "persist_rel": PERSIST_REL,
+                "persist_samples": PERSIST_SAMPLES,
+                "plate_frames": PLATE_FRAMES,
+                "plate_span_sec": PLATE_SPAN_SEC,
+            },
+            "plates": {
+                "before_sec": round(b / fps, 2),
+                "after_sec": round(a / fps, 2),
+                "span_sec": PLATE_SPAN_SEC,
+                "frames_each": len(frames_b),
+                "gap_sec": round((a - b) / fps, 1),
+            },
             "before_frame": b,
             "after_frame": a,
             "frame_size": [int(plate_a.shape[1]), int(plate_a.shape[0])],
