@@ -533,7 +533,13 @@ code {
 
 /* ---- Golfer menu (top left) -------------------------------------- */
 .brand-left { position: relative; display: flex; align-items: center; gap: 10px; }
-.gmenu { position: relative; display: inline-flex; }
+/* THE Z-INDEX BELONGS HERE, NOT ONLY ON THE PANEL. Once .gmenu took a
+   transform (to centre it in the margin) it became a stacking context,
+   and the panel's z-index stopped being measured against the page --
+   only against its own button. The menu then opened UNDER the hero,
+   which paints later in the document. Raising .gmenu itself lifts the
+   whole context, panel included. */
+.gmenu { position: relative; display: inline-flex; z-index: 1200; }
 
 /* OUT INTO THE MARGIN, but only where there is a margin to go into.
    The page content sits in a 1180px column, so on a wide screen there is
