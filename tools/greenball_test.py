@@ -39,7 +39,7 @@ def ok(label, got, want):
         _fails.append(label)
 
 
-def green_frame(balls, seed=3):
+def green_frame(balls, seed=3, bunker=True):
     """1920x1080: sky, treeline, striped turf with noise, and a bunker."""
     rng = np.random.default_rng(seed)
     f = np.full((H, W, 3), 60, np.uint8)
@@ -50,7 +50,8 @@ def green_frame(balls, seed=3):
         f[y, :] = (b - 12, b + 10, b - 6)
     f[620:] = cv2.add(f[620:],
                       rng.integers(0, 7, (H - 620, W, 3), dtype=np.uint8))
-    cv2.ellipse(f, (520, 960), (300, 70), 0, 0, 360, (190, 195, 200), -1)
+    if bunker:
+        cv2.ellipse(f, (520, 960), (300, 70), 0, 0, 360, (190, 195, 200), -1)
     for (bx, by) in balls:
         cv2.circle(f, (bx, by), 3, (238, 240, 242), -1)
     return f
@@ -138,6 +139,68 @@ def main():
     ok("no outline still returns an answer", r5["ok"], True)
     ok("  and says it searched the whole frame",
        "no outline" in (r5["crop"]["from"] or ""), True)
+
+    # ── AND WHEN IT FINDS NOTHING, IT SAYS WHICH STAGE ──────────────
+    #
+    # THE FAILURE THAT STARTED THIS. The first run on real footage
+    # came back empty, the dialog fell through to the plates, and
+    # there was nothing at all to look at -- so a change that had
+    # shipped was indistinguishable from one that had not. Five quite
+    # different failures shared that one empty answer.
+
+    # 1. Nothing anywhere was brighter than its surroundings. Note
+    #    the frame has NO BUNKER: a bunker is a huge bright region
+    #    that always gets rejected for size, so a green with one in
+    #    it can never reach this diagnosis -- which is itself worth
+    #    knowing and is why the bunker-ful frame is used below.
+    flat = green_frame([], bunker=False)
+    r6 = find_balls_on_green(flat, flat, GREEN)
+    ok("a flat empty green names the brightness stage",
+       "never a candidate" in (r6["found_nothing_because"] or ""), True)
+    ok("  and reports the brightest thing it did see, per zone",
+       all(z.get("hat_max") is not None for z in r6["zones"]), True)
+    ok("  which is under the bar",
+       all(z["hat_max"] < z["hat_needs"] for z in r6["zones"]), True)
+
+    # 2. Something WAS bright enough, and a gate refused it. That is
+    #    the opposite diagnosis and the opposite fix.
+    streak = green_frame([], bunker=False)
+    cv2.line(streak, (1500, 800), (1620, 802), (235, 237, 239), 2)
+    r7 = find_balls_on_green(green_frame([], bunker=False), streak, GREEN)
+    ok("a bright streak is turned down, not found", len(r7["new"]), 0)
+    ok("  and the summary blames a gate, not the light",
+       "turned down" in (r7["found_nothing_because"] or ""), True)
+    ok("  and some zone recorded the rejection",
+       sum(z.get("n_rejected") or 0 for z in r7["zones"]) >= 1, True)
+    ok("  with the measurement and the limit in the sentence",
+       any("over" in (q["why"] or "") or "sliver" in (q["why"] or "")
+           or "not round" in (q["why"] or "")
+           for z in r7["zones"] for q in (z.get("rejected") or [])), True)
+    ok("  and that zone saw something bright",
+       max(z["hat_max"] for z in r7["zones"]) >= 18, True)
+
+    # 3. A ball that is in both frames is not an arrival, and that is
+    #    its own sentence too -- the shot missed, it did not fail.
+    both = green_frame([(640, 790)])
+    r8 = find_balls_on_green(both, both, GREEN)
+    ok("a ball in both frames is not new", len(r8["new"]), 0)
+    ok("  and the summary says nothing arrived",
+       "nothing arrived" in (r8["found_nothing_because"] or ""), True)
+
+    # ── THE PICTURES EXIST WHETHER OR NOT ANYTHING WAS FOUND ────────
+    # Rendering them only on success is what made the empty run
+    # unreadable, so this is the assertion that keeps them.
+    import tempfile
+    with tempfile.TemporaryDirectory() as _td:
+        r9 = find_balls_on_green(green_frame([]), green_frame([]), GREEN,
+                                 out_dir=_td, stem="t")
+        ok("an empty run still writes the before picture",
+           bool(r9["images"].get("before")), True)
+        ok("  and the after picture", bool(r9["images"].get("after")), True)
+        ok("  and one picture per zone",
+           sum(1 for z in r9["zones"] if z.get("path")), len(r9["zones"]))
+        ok("  and no picker, since there was nothing to pick between",
+           r9["images"].get("picker"), None)
 
     print()
     if _fails:

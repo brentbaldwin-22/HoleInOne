@@ -79,6 +79,11 @@ SAME_BALL_PX = 8.0
 # the detector being precise about the wrong thing.
 OUTLINE_SLACK_FRAC = 0.06
 
+# HOW MANY TURNED-DOWN CANDIDATES COME BACK PER ZONE. A zone of turf
+# in low sun throws plenty of one-pixel specks, and a list that long
+# is not a report. The ones worth reading are the biggest.
+MAX_REJECTS_PER_ZONE = 8
+
 
 def _scaled_polygon(polygon, shape, drawn_at=None):
     """[[x,y], ...] in THIS frame's pixels, or None."""
@@ -138,8 +143,20 @@ def _detect_in_zone(frame_bgr, rect):
     gray = cv2.cvtColor(sub, cv2.COLOR_BGR2GRAY)
     zh, zw = gray.shape[:2]
     out = []
+    # ── AND WHAT IT TURNED DOWN, ALWAYS ─────────────────────────────
+    #
+    # "No ball on this green" is one sentence covering five different
+    # failures: nothing was brighter than its surroundings at all; the
+    # ball was, but it is one pixel after the top-hat; it is a streak;
+    # it is a blob the size of a shirt; or it is round and bright and
+    # the right size and sits outside a hand-drawn outline. Those need
+    # opposite fixes and the first run of this on real footage came
+    # back empty with nothing to look at.
+    _rej: list = []
+    _stat: list = []
     for cx, cy, area, contrast in _detections(gray, [(0, 0, zw, zh)],
-                                              rel=0.0):
+                                              rel=0.0, rejects=_rej,
+                                              stats_out=_stat):
         # ── THE SIZE GATE BELONGS IN ORIGINAL PIXELS ────────────────
         #
         # `_detections` applies BALL_MIN_AREA in the pixels of the
@@ -165,7 +182,30 @@ def _detect_in_zone(frame_bgr, rect):
             "contrast": round(float(contrast), 1),
             "zoom": round(float(scale), 2),
         })
-    return out, sub, scale
+    # Rejections in ORIGINAL pixels too, and the biggest first: a near
+    # miss is a thing that nearly passed, and a zone can throw dozens
+    # of one-pixel specks that are not worth a row each.
+    _rows = []
+    for r in _rej:
+        _oa = float(r["area"]) / (scale * scale)
+        _rows.append({"x": float(ax + r["x"] / scale),
+                      "y": float(ay + r["y"] / scale),
+                      "area": round(_oa, 1),
+                      "diam_px": round(2.0 * (_oa / 3.14159) ** 0.5, 1),
+                      "why": r["why"]})
+    _rows.sort(key=lambda z: -z["area"])
+    _diag = {
+        "rejected": _rows[:MAX_REJECTS_PER_ZONE],
+        "n_rejected": len(_rows),
+        # THE STRONGEST THING IN THE ZONE, whether or not anything
+        # passed. This is the one number that separates "the ball was
+        # never bright enough to be a candidate" -- an exposure or a
+        # contrast problem, nothing to do with any gate -- from "it
+        # was, and a gate refused it".
+        "hat_max": (_stat[0]["hat_max"] if _stat else None),
+        "hat_needs": (_stat[0]["needs"] if _stat else None),
+    }
+    return out, sub, scale, _diag
 
 
 def _merge(dets, px=SAME_BALL_PX):
@@ -252,8 +292,17 @@ def find_balls_on_green(before_bgr, after_bgr, polygon=None, drawn_at=None,
         rects = _zone_rects(x0, y0, x1, y1)
         _b_all, _a_all = [], []
         for i, rect in enumerate(rects):
-            _bd, _bz, _bs = _detect_in_zone(before_bgr, rect)
-            _ad, _az, _as = _detect_in_zone(after_bgr, rect)
+            _bd, _bz, _bs, _bdiag = _detect_in_zone(before_bgr, rect)
+            _ad, _az, _as, _adiag = _detect_in_zone(after_bgr, rect)
+            # OUTSIDE THE OUTLINE IS ITS OWN REJECTION, recorded with
+            # the rest. A round, bright, ball-sized thing refused for
+            # being two feet past a line somebody dragged with a mouse
+            # is the single most misleading silent failure here.
+            for _d in _ad:
+                if not _inside(poly, _d["x"], _d["y"], _sl):
+                    _adiag["rejected"].append(dict(
+                        _d, why="outside the green's outline"))
+                    _adiag["n_rejected"] += 1
             _bd = [d for d in _bd if _inside(poly, d["x"], d["y"], _sl)]
             _ad = [d for d in _ad if _inside(poly, d["x"], d["y"], _sl)]
             for d in _bd + _ad:
@@ -264,11 +313,17 @@ def find_balls_on_green(before_bgr, after_bgr, polygon=None, drawn_at=None,
                                           rect[2] - rect[0],
                                           rect[3] - rect[1]],
                      "zoom": round(float(_as), 2),
-                     "n_before": len(_bd), "n_after": len(_ad)}
+                     "n_before": len(_bd), "n_after": len(_ad),
+                     "hat_max": _adiag.get("hat_max"),
+                     "hat_needs": _adiag.get("hat_needs"),
+                     "n_rejected": _adiag.get("n_rejected"),
+                     "rejected": _adiag.get("rejected")}
             if out_dir is not None and _bz is not None and _az is not None:
                 _zrow["path"] = _zone_image(
                     _bz, _az, _bd, _ad, rect, _as,
-                    Path(out_dir) / f"{stem}-zone{i + 1}.jpg")
+                    Path(out_dir) / f"{stem}-zone{i + 1}.jpg",
+                    rejects=_adiag.get("rejected"),
+                    hat=(_adiag.get("hat_max"), _adiag.get("hat_needs")))
             out["zones"].append(_zrow)
 
         out["before"] = _merge(_b_all)
@@ -288,12 +343,58 @@ def find_balls_on_green(before_bgr, after_bgr, polygon=None, drawn_at=None,
         out["new"].sort(key=lambda z: -z["contrast"])
         out["best"] = out["new"][0] if out["new"] else None
         out["ok"] = bool(out["best"])
+        _hats = [z["hat_max"] for z in out["zones"]
+                 if z.get("hat_max") is not None]
+        _needs = next((z["hat_needs"] for z in out["zones"]
+                       if z.get("hat_needs")), None)
+        _nrej = sum(z.get("n_rejected") or 0 for z in out["zones"])
+        out["found_nothing_because"] = None
+        if not out["new"]:
+            # WHICH STAGE IT FELL AT. Five failures used to share one
+            # empty answer, and they need opposite fixes.
+            if _hats and max(_hats) < (_needs or 18):
+                out["found_nothing_because"] = (
+                    "nothing anywhere on the green was %d grey levels "
+                    "brighter than its own surroundings — the brightest "
+                    "was %d. That is not a ball a gate refused; it is a "
+                    "ball that was never a candidate. The green is in "
+                    "flat light or shade, or the frame times are wrong."
+                    % ((_needs or 18), max(_hats)))
+            elif out["after"]:
+                # BEFORE THE GATE SENTENCE, deliberately. A green with
+                # a bunker on it always has something that gets
+                # rejected for size, so "things were turned down" is
+                # true on nearly every run and says nothing. "Every
+                # ball-shaped thing here was already here" is the
+                # finding: the shot missed the green, or the frames
+                # are too late and somebody has pocketed it.
+                out["found_nothing_because"] = (
+                    "%d ball-shaped thing(s) were found in the after "
+                    "frame and every one was already there in the "
+                    "before frame — nothing arrived between the two. "
+                    "Either the shot missed, or the after frame is "
+                    "late enough that the ball has been marked."
+                    % len(out["after"]))
+            elif _nrej:
+                out["found_nothing_because"] = (
+                    "%d thing(s) were bright enough and every one was "
+                    "turned down — see the grey squares on the zone "
+                    "pictures and the gate each died on. A grey square "
+                    "where the ball is means a gate is set wrong."
+                    % _nrej)
+            else:
+                out["found_nothing_because"] = (
+                    "nothing ball-shaped in either frame, and nothing "
+                    "bright enough was turned down either — which is "
+                    "the combination that should not happen, so the "
+                    "zone pictures are the place to look.")
         out["why"] = (
             "%d ball(s) already on the green, %d thing(s) in the after "
             "frame, %d of them new — searched %d zone(s) at up to %.1fx"
             % (len(out["before"]), len(out["after"]), len(out["new"]),
                len(out["zones"]),
-               max([z["zoom"] for z in out["zones"]] or [1.0])))
+               max([z["zoom"] for z in out["zones"]] or [1.0]))
+            + ("" if out["new"] else ". " + out["found_nothing_because"]))
 
         if out_dir is not None:
             _d = Path(out_dir)
@@ -350,7 +451,8 @@ def _marked(frame_bgr, poly, box, was_there, arrived, path):
         return None
 
 
-def _zone_image(before_zoom, after_zoom, bdets, adets, rect, scale, path):
+def _zone_image(before_zoom, after_zoom, bdets, adets, rect, scale, path,
+                rejects=None, hat=(None, None)):
     """One zone, before over after, at the zoom the detector ran at.
 
     THE PICTURE THE DETECTOR ACTUALLY SAW. A ball four pixels across
@@ -374,9 +476,36 @@ def _zone_image(before_zoom, after_zoom, bdets, adets, rect, scale, path):
         for d in adets:
             _ring(pair, (d["x"] - ax) * scale,
                   (d["y"] - ay) * scale + h1 + 6, ARRIVED, "", u, r=12)
+        # ── AND WHAT IT TURNED DOWN, IN GREY, WITH THE GATE ─────────
+        #
+        # A grey square exactly where the ball is says a gate is set
+        # wrong and names which. No square there at all says the ball
+        # never crossed the brightness threshold, which is an exposure
+        # problem and not a gate's fault. Those need opposite fixes
+        # and a picture with neither mark on it says only that
+        # somebody should look at something else.
+        for d in (rejects or [])[:MAX_REJECTS_PER_ZONE]:
+            _rx = int((d["x"] - ax) * scale)
+            _ry = int((d["y"] - ay) * scale) + h1 + 6
+            cv2.rectangle(pair, (_rx - 9 * u, _ry - 9 * u),
+                          (_rx + 9 * u, _ry + 9 * u), (150, 150, 150), u)
+            _why = str(d.get("why") or "")
+            _sc = 0.38 * u
+            (_tw, _), _ = cv2.getTextSize(_why, cv2.FONT_HERSHEY_SIMPLEX,
+                                          _sc, u)
+            _lx = _rx + 12 * u
+            if _lx + _tw > pair.shape[1] - 4 * u:
+                _lx = max(4 * u, _rx - 12 * u - _tw)
+            cv2.putText(pair, _why, (_lx, _ry + 4 * u),
+                        cv2.FONT_HERSHEY_SIMPLEX, _sc, (170, 170, 170), u,
+                        cv2.LINE_AA)
         cv2.putText(pair, "BEFORE", (8 * u, 20 * u),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5 * u, (235, 235, 235), u)
-        cv2.putText(pair, "AFTER", (8 * u, h1 + 6 + 20 * u),
+        _lbl = "AFTER"
+        if hat and hat[0] is not None:
+            _lbl += ("  -  brightest thing here is %d levels above its "
+                     "surroundings (needs %d)" % (hat[0], hat[1] or 0))
+        cv2.putText(pair, _lbl, (8 * u, h1 + 6 + 20 * u),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5 * u, (235, 235, 235), u)
         if not cv2.imwrite(str(path), pair,
                            [int(cv2.IMWRITE_JPEG_QUALITY), 88]):

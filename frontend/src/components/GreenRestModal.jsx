@@ -92,8 +92,12 @@ function HowTheTilesFound({ out }) {
   const t = out.tiles || {};
   const zones = t.zones || [];
   const pick = out.picked_by;
+  // OPEN WHEN IT FOUND NOTHING. A run that worked needs no
+  // explanation; a run that came back empty is the one the operator
+  // has to read, and leaving the explanation behind a disclosure
+  // triangle is how an empty answer stays an empty answer.
   return (
-    <details style={{ marginTop: 12 }}>
+    <details style={{ marginTop: 12 }} open={!(t.new || []).length}>
       <summary className="small" style={{ cursor: "pointer" }}>
         <b>How it found it</b>
         <span className="muted">
@@ -134,14 +138,52 @@ function HowTheTilesFound({ out }) {
         overlap, so a ball on a boundary is not cut in half by both and
         rejected by both.
         {zones.length > 0 && (
-          <div style={{ marginTop: 3 }}>
-            {zones.map((z) => (
-              <span key={z.n}>
-                {z.n > 1 ? " · " : ""}zone {z.n} at {z.zoom}× —{" "}
-                {z.n_before}/{z.n_after}
-              </span>
-            ))}
-            <div className="muted">(things found before/after, per zone)</div>
+          <table className="tiny" style={{ marginTop: 4, width: "100%",
+                                           borderCollapse: "collapse" }}>
+            <tbody>
+              {zones.map((z) => (
+                <tr key={z.n}>
+                  <td className="muted" style={{ paddingRight: 8,
+                                                 whiteSpace: "nowrap" }}>
+                    zone {z.n} · {z.zoom}×
+                  </td>
+                  <td className="muted" style={{ paddingRight: 8,
+                                                 whiteSpace: "nowrap" }}>
+                    {z.n_before} before / {z.n_after} after
+                  </td>
+                  {/* THE ONE NUMBER THAT SAYS WHOSE FAULT IT IS. If
+                      the brightest thing in a zone is under the bar,
+                      no gate refused the ball -- it was never a
+                      candidate, and the fix is exposure or frame
+                      times, not a constant. */}
+                  <td className="muted" style={{ paddingRight: 8,
+                                                 whiteSpace: "nowrap",
+                                                 color: z.hat_max != null
+                                                   && z.hat_max < (z.hat_needs || 18)
+                                                   ? "#fbbf24" : undefined }}>
+                    {z.hat_max != null
+                      ? `brightest +${z.hat_max} (needs ${z.hat_needs})`
+                      : "—"}
+                  </td>
+                  <td className="muted">
+                    {z.n_rejected ? `${z.n_rejected} turned down` : ""}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {zones.some((z) => (z.rejected || []).length) && (
+          <div style={{ marginTop: 4 }}>
+            <b>Turned down</b>
+            <div style={{ maxHeight: 150, overflow: "auto" }}>
+              {zones.flatMap((z) => (z.rejected || []).map((r, i) => (
+                <div key={`${z.n}-${i}`} className="muted">
+                  z{z.n} · {Math.round(r.x)}, {Math.round(r.y)} ·{" "}
+                  {r.diam_px}px — {r.why}
+                </div>
+              )))}
+            </div>
           </div>
         )}
       </Step>
@@ -155,6 +197,12 @@ function HowTheTilesFound({ out }) {
         point: an operator reading a confusing answer deserves to know
         how many balls are lying out there.
       </Step>
+
+      {t.found_nothing_because && (
+        <div className="tiny" style={{ marginTop: 8, color: "#fbbf24" }}>
+          <b>Found nothing, and this is why:</b> {t.found_nothing_because}
+        </div>
+      )}
 
       <Step n="4" title="And what arrived"
             count={(t.new || []).length} units="new"
@@ -232,19 +280,29 @@ function Step({ n, title, count, units, children, bad }) {
  * it was, and they need opposite fixes.
  */
 function HowItFound({ out }) {
-  if (out.source === "tiles") return <HowTheTilesFound out={out} />;
+  // THE ZONED DETECTOR'S PANEL WHENEVER IT RAN, not only when it
+  // won. An empty step 1 is the run most worth reading, and showing
+  // only the plates' funnel there was how a change that had shipped
+  // looked like a change that had not.
   const st = out.steps || {};
+  return (
+    <>
+      {out.tiles && <HowTheTilesFound out={out} />}
+      {out.source !== "tiles" && <HowThePlatesFound out={out} st={st} />}
+    </>
+  );
+}
+
+function HowThePlatesFound({ out, st }) {
   const dl = out.dials || {};
   const pl = out.plates || {};
-  const ai = out.ai || null;
   const rej = out.rejected || [];
-  const ai_used = out.source === "ai";
   return (
     <details style={{ marginTop: 12 }}>
       <summary className="small" style={{ cursor: "pointer" }}>
-        <b>How it found it</b>
+        <b>And then the plate comparison</b>
         <span className="muted">
-          {" "}— the six steps, with this run&apos;s numbers
+          {" "}— the fallback, with this run&apos;s numbers
         </span>
       </summary>
 
@@ -257,49 +315,7 @@ function HowItFound({ out }) {
         that was not on it before</i>.
       </div>
 
-      <Step n="1" title="Ask the model first"
-            count={ai_used ? "answered" : "not used"}
-            bad={!ai_used}>
-        Two colour frames, a yellow grid drawn over both so a position
-        can be read off a cell rather than guessed from the frame edge,
-        and one question: where is the golf ball in the AFTER frame. It
-        needs no outline and no plates. Its answer is snapped onto the
-        nearest ball-sized blob when there is one within reach, so a
-        position that is close becomes a position that is exact.
-        {ai?.crop && (
-          <div style={{ marginTop: 3 }}>
-            {ai.crop.applied
-              ? <>cropped to the green at {ai.crop.origin?.join(",")}, sent{" "}
-                  {ai.crop.size?.join("x")} at {ai.crop.scale}x — the
-                  model&apos;s fixed budget of attention is spent on the
-                  putting surface instead of on sky and treeline, and every
-                  white thing outside the outline is simply not in the
-                  picture to be mistaken for a ball</>
-              : <>sent the whole frame — {ai.crop.why}</>}
-          </div>
-        )}
-        {ai && (
-          <div style={{ marginTop: 3 }}>
-            {ai.ran
-              ? <>asked {ai.model}
-                {ai.confidence != null
-                  ? ` · ${Math.round(ai.confidence * 100)}% confident`
-                  : ""}
-                {ai.min_confidence != null
-                  ? ` (needs ${Math.round(ai.min_confidence * 100)}%)`
-                  : ""}
-                {ai.error ? ` · NOT USED: ${ai.error}` : " · used"}
-                {ai.why ? <div style={{ marginTop: 2 }}>“{ai.why}”</div>
-                  : null}
-              </>
-              : <>not asked — {ai.error || "no model configured"}</>}
-          </div>
-        )}
-      </Step>
-
-      {!ai_used && (
-        <>
-          <Step n="2" title="Build two plates"
+          <Step n="1" title="Build two plates"
                 count={out.timing?.frames_read} units="frames read">
             A plate is the <b>median</b> of {dl.plate_frames || 31} frames
             spread over {dl.plate_span_sec || 4} seconds — not consecutive
@@ -319,7 +335,7 @@ function HowItFound({ out }) {
             )}
           </Step>
 
-          <Step n="3" title="Match the exposure, then subtract"
+          <Step n="2" title="Match the exposure, then subtract"
                 count={out.exposure_shift != null
                   ? `${out.exposure_shift > 0 ? "+" : ""}`
                     + `${out.exposure_shift} levels, gain `
@@ -342,7 +358,7 @@ function HowItFound({ out }) {
             )}
           </Step>
 
-          <Step n="4" title="Keep only the ball-shaped ones"
+          <Step n="3" title="Keep only the ball-shaped ones"
                 count={st.ball_shaped != null
                   ? `${st.ball_shaped} of ${st.components || 0}`
                   : null}
@@ -365,7 +381,7 @@ function HowItFound({ out }) {
             )}
           </Step>
 
-          <Step n="5" title="Is it there in every frame?"
+          <Step n="4" title="Is it there in every frame?"
                 count={st.kept != null
                   ? `${st.kept} of ${st.ball_shaped || 0}`
                   : null}
@@ -389,7 +405,7 @@ function HowItFound({ out }) {
               : null}
           </Step>
 
-          <Step n="6" title="Rank, and say what left too"
+          <Step n="5" title="Rank, and say what left too"
                 count={(out.arrivals || []).length} units="arrival(s)">
             Steadiest first, then brightest — <i>not</i> biggest: at the
             back of a green the ball is a handful of pixels and the
@@ -400,8 +416,6 @@ function HowItFound({ out }) {
             operator reading a confusing answer deserves to know a ball
             left.
           </Step>
-        </>
-      )}
 
       {rej.length > 0 && (
         <div style={{ marginTop: 10 }}>

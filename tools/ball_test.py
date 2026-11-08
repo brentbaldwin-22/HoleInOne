@@ -220,6 +220,94 @@ def main() -> int:
           st["impact_frame"], None)
     check("  and says so", "still there" in (st["why"] or ""), True)
 
+    # ── THE BOOKKEEPING CHANGES NOTHING IT FINDS ────────────────────
+    #
+    # `_detections` now optionally records the components it turned
+    # down and the strongest top-hat response per box, so the green's
+    # zoned search can say WHICH stage it fell at rather than coming
+    # back empty with nothing to look at. That meant splitting one
+    # compound area test into two and reading w/h and the centroid
+    # earlier -- a rewrite of the gate ladder in the function the rig
+    # has been shipping all week.
+    #
+    # So it is checked against the original ladder rather than
+    # reasoned about: assorted bright shapes on noisy turf, both
+    # thresholds, with and without the bookkeeping, and the kept set
+    # has to be identical every time.
+    import cv2 as _cv2
+    from app.services import ball_vanish as _bv
+
+    def _original(gray, boxes, rel):
+        out = []
+        for (x0, y0, x1, y1) in boxes:
+            sub = gray[y0:y1, x0:x1]
+            if sub.size == 0:
+                continue
+            k = _cv2.getStructuringElement(_cv2.MORPH_ELLIPSE, (15, 15))
+            hat = _cv2.morphologyEx(sub, _cv2.MORPH_TOPHAT, k)
+            if hat.max() < _bv.MIN_LOCAL_CONTRAST:
+                continue
+            thr = max(_bv.MIN_LOCAL_CONTRAST, float(rel) * float(hat.max()))
+            _, mask = _cv2.threshold(hat, thr, 255, _cv2.THRESH_BINARY)
+            n, _l, st_, ce = _cv2.connectedComponentsWithStats(
+                mask.astype(np.uint8), 8)
+            for i in range(1, n):
+                area = int(st_[i, _cv2.CC_STAT_AREA])
+                if not (_bv.BALL_MIN_AREA <= area <= _bv.BALL_MAX_AREA):
+                    continue
+                w = int(st_[i, _cv2.CC_STAT_WIDTH])
+                h = int(st_[i, _cv2.CC_STAT_HEIGHT])
+                if w == 0 or h == 0:
+                    continue
+                if max(w / h, h / w) > _bv.MAX_ASPECT:
+                    continue
+                if area / float(w * h) < _bv.MIN_FILL:
+                    continue
+                cx, cy = ce[i]
+                out.append((float(cx) + x0, float(cy) + y0, area,
+                            float(hat[int(ce[i][1]), int(ce[i][0])])))
+        return out
+
+    _rng = np.random.default_rng(11)
+    _bad = 0
+    for _t in range(40):
+        g = _rng.integers(60, 110, (480, 640), dtype=np.uint8)
+        for _ in range(int(_rng.integers(0, 14))):
+            x, y = int(_rng.integers(20, 620)), int(_rng.integers(20, 460))
+            kind = int(_rng.integers(0, 4))
+            if kind == 0:
+                _cv2.circle(g, (x, y), int(_rng.integers(1, 9)), 240, -1)
+            elif kind == 1:
+                _cv2.line(g, (x, y), (x + int(_rng.integers(5, 90)), y + 1),
+                          235, int(_rng.integers(1, 4)))
+            elif kind == 2:
+                _cv2.rectangle(g, (x, y),
+                               (x + int(_rng.integers(10, 60)),
+                                y + int(_rng.integers(10, 60))), 230, -1)
+            else:
+                g[y, x] = 255
+        _boxes = [(0, 0, 640, 480), (100, 100, 300, 300)]
+        for _rel in (0.0, 0.55):
+            _a = _original(g, _boxes, _rel)
+            _r, _so = [], []
+            if (_a != _bv._detections(g, _boxes, _rel)
+                    or _a != _bv._detections(g, _boxes, _rel,
+                                             rejects=_r, stats_out=_so)):
+                _bad += 1
+    check("the rewritten gate ladder finds exactly what the old one did",
+          _bad, 0)
+    # ...and the bookkeeping has to actually record something, or the
+    # test above passes by recording nothing at all.
+    _r, _so = [], []
+    _g = np.full((200, 200), 80, np.uint8)
+    cv2.line(_g, (40, 100), (160, 101), 240, 2)      # a sliver
+    cv2.circle(_g, (60, 40), 1, 250, -1)             # a speck
+    _bv._detections(_g, [(0, 0, 200, 200)], 0.0, rejects=_r, stats_out=_so)
+    check("  and the rejects are recorded with a reason",
+          bool(_r) and all(q.get("why") for q in _r), True)
+    check("  and the strongest response is reported",
+          bool(_so) and _so[0]["hat_max"] > 0, True)
+
     print()
     if FAIL:
         print(f"FAILED {len(FAIL)}: " + ", ".join(FAIL))

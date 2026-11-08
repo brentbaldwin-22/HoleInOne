@@ -116,7 +116,8 @@ GONE_SEC = 0.8
 SPLIT_GAP_SEC = 8.0
 
 
-def _detections(gray, roi_boxes, rel: float = 0.55):
+def _detections(gray, roi_boxes, rel: float = 0.55, rejects=None,
+                stats_out=None):
     """Small, round, locally bright things inside the boxes.
 
     `rel` scales the threshold off the BRIGHTEST thing in the box.
@@ -131,6 +132,19 @@ def _detections(gray, roi_boxes, rel: float = 0.55):
     dimmest highlight is the one where the ball survives, which is
     exactly how a ball visible in all six comes back found in two.
     Pass rel=0 to threshold on absolute local contrast instead.
+
+    `rejects` and `stats_out` are optional bookkeeping, off by
+    default so the rig's own path pays nothing for them. `rejects`
+    collects every component that crossed the brightness threshold and
+    then failed a gate, with the measurement and the limit;
+    `stats_out` records the strongest top-hat response in each box
+    whether or not anything passed. Between them they separate the
+    four failures that "found nothing" used to cover: nothing was
+    brighter than its surroundings at all, something was but it was
+    one pixel, something was but it was a streak, something was but it
+    was a blob the size of a shirt. They need opposite fixes, and the
+    old output could not tell them apart -- which is how a green that
+    plainly has a ball on it comes back empty with nothing to look at.
     """
     import cv2
     import numpy as np
@@ -146,6 +160,10 @@ def _detections(gray, roi_boxes, rel: float = 0.55):
         # them, which is the definition being used here anyway.
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
         hat = cv2.morphologyEx(sub, cv2.MORPH_TOPHAT, k)
+        if stats_out is not None:
+            stats_out.append({"box": [x0, y0, x1, y1],
+                              "hat_max": int(hat.max()),
+                              "needs": int(MIN_LOCAL_CONTRAST)})
         if hat.max() < MIN_LOCAL_CONTRAST:
             continue
         thr = max(MIN_LOCAL_CONTRAST, float(rel) * float(hat.max()))
@@ -154,17 +172,34 @@ def _detections(gray, roi_boxes, rel: float = 0.55):
             mask.astype(np.uint8), 8)
         for i in range(1, n):
             area = int(stats[i, cv2.CC_STAT_AREA])
-            if not (BALL_MIN_AREA <= area <= BALL_MAX_AREA):
-                continue
             w = int(stats[i, cv2.CC_STAT_WIDTH])
             h = int(stats[i, cv2.CC_STAT_HEIGHT])
+            cx, cy = cents[i]
+
+            def _no(why, _cx=cx, _cy=cy, _a=area, _w=w, _h=h):
+                if rejects is not None:
+                    rejects.append({"x": float(_cx) + x0,
+                                    "y": float(_cy) + y0,
+                                    "area": _a, "w": _w, "h": _h,
+                                    "why": why})
+
+            if area < BALL_MIN_AREA:
+                _no(f"{area}px of area, under {BALL_MIN_AREA}")
+                continue
+            if area > BALL_MAX_AREA:
+                _no(f"{area}px of area, over {BALL_MAX_AREA}")
+                continue
             if w == 0 or h == 0:
+                _no("no width or no height")
                 continue
             if max(w / h, h / w) > MAX_ASPECT:
+                _no(f"{w}x{h} — {max(w / h, h / w):.1f}:1, a sliver "
+                    f"(limit {MAX_ASPECT}:1)")
                 continue
             if area / float(w * h) < MIN_FILL:
+                _no(f"fills {area / float(w * h):.2f} of its {w}x{h} box, "
+                    f"needs {MIN_FILL} — not round")
                 continue
-            cx, cy = cents[i]
             out.append((float(cx) + x0, float(cy) + y0, area,
                         float(hat[int(cents[i][1]), int(cents[i][0])])))
     return out

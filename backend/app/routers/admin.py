@@ -10804,9 +10804,67 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
     operator is looking at the picture and judging, not fine when the
     answer becomes a measured distance on somebody's prize.
     """
-    from ..services import ai_tracer, greenrest
+    from ..services import ai_tracer, greenball, greenrest
 
-    # ── ask the model first ─────────────────────────────────────────
+    # ── 1. THE ZONED DETECTOR, FIRST ────────────────────────────────
+    #
+    # THE SAME ORDER THE BUTTON RUNS, because an operator checking one
+    # against the other is the whole point of having the button and
+    # two different orders would make that check meaningless.
+    #
+    # It measures where the model estimates. `ball_vanish._detections`
+    # is what Test Cut uses to find a ball sitting in front of a
+    # golfer, tuned against real 1080p turf; the green asks the same
+    # question at a third the scale, so the outline's box is cut into
+    # four overlapping zones and each is scaled up before it runs.
+    # What it finds in the before frame was already lying there; what
+    # is in the after frame and not the before one is the shot.
+    pts, drawn_at = _green_outline_for(db, green_camera_id)
+    _bsec = max(0.0, green_impact_sec - REST_PLATE_BEFORE_SEC)
+    _asec = green_impact_sec + REST_PLATE_AFTER_SEC
+    _tiles = {"ok": False, "why": "could not read both frames"}
+    _fb = ai_tracer._grab_colour_frame(green_path, _bsec)
+    _fa = ai_tracer._grab_colour_frame(green_path, _asec)
+    if _fb is not None and _fa is not None:
+        _tiles = greenball.find_balls_on_green(
+            _fb, _fa, polygon=pts, drawn_at=drawn_at,
+            out_dir=(Path(marks_path).parent if marks_path else None),
+            stem=(Path(marks_path).stem + "-tiles" if marks_path
+                  else "greenball"))
+    if _tiles.get("best"):
+        # MORE THAN ONE NEW THING, SO ASK WHICH -- and only then. The
+        # detector says where, which a model estimates badly; the
+        # model says which, which it is reliably good at.
+        _pick = None
+        if len(_tiles.get("new") or []) > 1 and \
+                (_tiles.get("images") or {}).get("picker"):
+            try:
+                _pick = ai_tracer.pick_ball_among(
+                    Path(_tiles["images"]["picker"]).read_bytes(),
+                    len(_tiles["new"]))
+                _i = _pick.get("index")
+                if _i and 1 <= int(_i) <= len(_tiles["new"]):
+                    _tiles["best"] = _tiles["new"][int(_i) - 1]
+            except Exception as exc:  # noqa: BLE001
+                log.warning("rest spot: picker failed: %s", exc)
+        _bb = _tiles["best"]
+        return (
+            {"xy": [float(_bb["x"]), float(_bb["y"])],
+             "camera_id": int(green_camera_id), "source": "tiles",
+             "on_green": True, "confidence": None,
+             "image": (_tiles.get("images") or {}).get("after")},
+            ("came to rest at %d,%d — %gpx across, %g levels brighter "
+             "than its surroundings, and not there before the shot. %s%s"
+             % (round(_bb["x"]), round(_bb["y"]), _bb["diam_px"],
+                _bb["contrast"], _tiles.get("why") or "",
+                (" The model was shown the numbered pair and picked %s."
+                 % _pick["index"])
+                if _pick and _pick.get("index") else "")),
+        )
+    _tiles_why = (_tiles.get("found_nothing_because")
+                  or _tiles.get("why") or "the zoned detector found nothing")
+
+    # ── 2. ask the model ────────────────────────────────────────────
     #
     # NO OUTLINE, NO PLATES, NO TRACKING. Two colour frames and a
     # question. The plate comparison below is a careful piece of
@@ -10837,15 +10895,10 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
     # the model does not, and a camera with none drawn gets the whole
     # frame exactly as before. See ai_tracer._crop_to_green.
     #
-    # The operator's button passes the same outline, because an
-    # operator checking one against the other is the whole point of
-    # having the button and two different crops would make that check
-    # meaningless.
-    pts, drawn_at = _green_outline_for(db, green_camera_id)
+    # The outline is looked up above now, for the zoned detector.
     _ai = ai_tracer.find_ball_at_rest(
         green_path,
-        before_sec=max(0.0, green_impact_sec - REST_PLATE_BEFORE_SEC),
-        after_sec=green_impact_sec + REST_PLATE_AFTER_SEC,
+        before_sec=_bsec, after_sec=_asec,
         polygon=pts, drawn_at=drawn_at,
         debug_path=marks_path)
     if _ai.get("xy"):
@@ -10866,13 +10919,14 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
              + f"). {_ai.get('why') or ''} Frames at "
              f"{_ai['before_sec']}s and {_ai['after_sec']}s."),
         )
-    _ai_why = _ai.get("error") or "the model found no ball"
+    _ai_why = (_tiles_why + "; "
+               + (_ai.get("error") or "the model found no ball"))
 
     # ── and fall back to the plates ─────────────────────────────────
     #
     # Free, deterministic, and already written. It needs the outline
     # the model does not, so without one this is where the road ends.
-    # (Looked up above now, so the model could be shown the green.)
+    # (Looked up at the top now, for the zoned detector.)
     if not pts:
         return None, (f"{_ai_why}; and with no green outline drawn there "
                       "is no fallback to try")
@@ -20250,14 +20304,18 @@ def long_upload_green_rest(upload_id: int,
 
     out_name = f"green-rest-{upload_id}.jpg"
 
-    # THE SAME MODEL THE PRODUCE PATH USES, and for the same reason: a
-    # ball at rest on mown grass is a thing a model can simply see, and
-    # it needs no outline to do it. The button and the produce run must
-    # not answer differently -- an operator checking one against the
-    # other is the whole point of having the button.
+    # TWO STEPS NOW, AND THE MODEL IS NOT THE FIRST ONE. The zoned
+    # detector measures a position; the plates are the fallback; the
+    # model is asked only to choose between measured candidates. The
+    # gridded position-estimate ask that used to sit between them is
+    # gone from this button -- see step 2 below for why.
+    #
+    # THE PRODUCE PATH RUNS THE SAME TWO STEPS IN THE SAME ORDER, by
+    # `_rest_spot_at`. The button and the produce run must not answer
+    # differently: an operator checking one against the other is the
+    # whole point of having the button.
     _b = _secs("before_sec")
     _a = _secs("after_sec")
-    pair_name = f"green-rest-{upload_id}-pair.jpg"
     # ── A HELPER FOR THE PICTURES THE DIALOG SHOWS ──────────────────
     #
     # Each stage comes back as a path on disk; the dialog needs a URL
@@ -20311,6 +20369,55 @@ def long_upload_green_rest(upload_id: int,
     tiles["before_sec"] = _bsec
     tiles["after_sec"] = _asec
 
+    # ── THE PICTURES, WHETHER OR NOT IT FOUND ANYTHING ──────────────
+    #
+    # BUILT HERE RATHER THAN INSIDE THE SUCCESS BRANCH, which is the
+    # bug that made the first version of this useless: on the one run
+    # where the zones mattered -- the run where nothing was found --
+    # the zone pictures were rendered to disk and then never attached
+    # to the answer, so the dialog showed the fallback's pictures and
+    # the operator reasonably concluded nothing had changed.
+    _tile_stages = _staged([
+        {"name": "tiles-before", "title": "1 · Before the shot",
+         "why": ("The green at %.1fs, cropped to the outline and "
+                 "otherwise untouched -- no grid. Orange rings are "
+                 "balls already lying on it: a partner's, or one "
+                 "nobody has marked yet. They are in both pictures, so "
+                 "they are not the shot." % _bsec),
+         "path": (tiles.get("images") or {}).get("before")},
+        {"name": "tiles-after", "title": "2 · After it settled",
+         "why": ("The green at %.1fs. A cyan ring is something here "
+                 "that was not there before -- measured off the pixels "
+                 "by the same detector Test Cut uses for a ball at "
+                 "address, not read by a model." % _asec),
+         "path": (tiles.get("images") or {}).get("after")},
+    ] + [
+        {"name": "zone%d" % z["n"],
+         "title": "Zone %d of %d — %.1f×" % (
+             z["n"], len(tiles.get("zones") or []), z["zoom"]),
+         "why": ("%s in the frame, scaled %.1f× before the detector "
+                 "ran. %d thing(s) before, %d after%s. A ball four "
+                 "pixels across is invisible in any view of the whole "
+                 "green, so this is the picture the detector actually "
+                 "saw. Grey squares are what it turned down, with the "
+                 "gate each died on."
+                 % (",".join(str(v) for v in z["rect"]), z["zoom"],
+                    z["n_before"], z["n_after"],
+                    ("; brightest thing here is %d levels above its "
+                     "surroundings, needs %d"
+                     % (z["hat_max"], z.get("hat_needs") or 0))
+                    if z.get("hat_max") is not None else "")),
+         "path": z.get("path")}
+        for z in (tiles.get("zones") or [])
+    ] + ([{"name": "picker",
+           "title": "The numbered pair the model was shown",
+           "why": ("More than one new thing arrived. The detector says "
+                   "where each is; the model was asked only which one "
+                   "is the ball, which is the half it is reliably good "
+                   "at."),
+           "path": (tiles.get("images") or {}).get("picker")}]
+         if (tiles.get("images") or {}).get("picker") else []))
+
     if tiles.get("best"):
         # MORE THAN ONE NEW THING, SO ASK WHICH. The detector says
         # where, which is the half a model estimates badly; the model
@@ -20362,126 +20469,28 @@ def long_upload_green_rest(upload_id: int,
             "has_outline": bool(roi.get("points")),
             "clip": row.green_filename,
             "timing": {"fetch_sec": round(fetch_sec, 2)},
-            "stages": _staged([
-                {"name": "tiles-before", "title": "1 · Before the shot",
-                 "why": ("The green at %.1fs, cropped to the outline and "
-                         "otherwise untouched. Orange rings are balls "
-                         "already lying on it -- a partner's, or one "
-                         "nobody has marked yet. They are in both "
-                         "pictures, so they are not the shot."
-                         % _bsec),
-                 "path": tiles["images"].get("before")},
-                {"name": "tiles-after", "title": "2 · After it settled",
-                 "why": ("The green at %.1fs. The cyan ring is what is "
-                         "here and was not there before -- measured off "
-                         "the pixels by the same detector Test Cut uses "
-                         "for a ball at address, not read by a model."
-                         % _asec),
-                 "path": tiles["images"].get("after")},
-            ] + [
-                {"name": "zone%d" % z["n"],
-                 "title": "Zone %d of %d — %.1fx" % (
-                     z["n"], len(tiles["zones"]), z["zoom"]),
-                 "why": ("%s in the frame, scaled %.1fx before the "
-                         "detector ran. %d thing(s) before, %d after. "
-                         "A ball four pixels across is invisible in any "
-                         "view of the whole green, so this is the "
-                         "picture the detector actually saw."
-                         % (",".join(str(v) for v in z["rect"]), z["zoom"],
-                            z["n_before"], z["n_after"])),
-                 "path": z.get("path")}
-                for z in tiles["zones"]
-            ] + ([{"name": "picker",
-                   "title": "The numbered pair the model was shown",
-                   "why": ("More than one new thing arrived. The "
-                           "detector says where each is; the model was "
-                           "asked only which one is the ball, which is "
-                           "the half it is reliably good at."),
-                   "path": tiles["images"].get("picker")}]
-                 if tiles["images"].get("picker") else [])),
+            "stages": _tile_stages,
         }
 
-    # ── 2. ...AND THE MODEL ONLY WHERE THE DETECTOR FOUND NOTHING ───
+    # ── 2. ...AND THE PLATES WHERE THE DETECTOR FOUND NOTHING ───────
     #
-    # This is the gridded ask: the frames go up with a labelled pixel
-    # grid over them because here the model has to produce a POSITION
-    # rather than pick between measured ones, and without a grid it
-    # estimates one 50-100px out. The grid is why it is second now --
-    # on a cropped green it has to be fine enough to be useful and
-    # then its labels overlap into a stripe across the picture, over
-    # the very ball it was drawn to help find.
-    ai_out = ai_tracer.find_ball_at_rest(
-        path,
-        before_sec=_b if _b is not None else 2.0,
-        after_sec=_a if _a is not None else 13.0,
-        debug_path=CLIPS_DIR / out_name,
-        # BOTH FRAMES, for the button. The question is "what is in the
-        # second that was not in the first", so an operator checking
-        # the answer needs both on screen -- the single marked panel
-        # asks them to take the comparison on trust.
-        pair_path=CLIPS_DIR / pair_name,
-        # ...AND THE GREEN'S OUTLINE, so the model is shown the putting
-        # surface rather than a frame that is mostly sky. See
-        # ai_tracer._crop_to_green: it is the same pixels, but the
-        # model's fixed budget of visual tokens is spent on the part of
-        # the picture the ball can be in.
-        polygon=roi.get("points"),
-        drawn_at=[frame.get("w"), frame.get("h")] if frame else None,
-        sent_dir=CLIPS_DIR,
-        sent_stem=_stem,
-    )
-    if ai_out.get("xy"):
-        _img = CLIPS_DIR / (pair_name if ai_out.get("pair_image")
-                            else out_name)
-        return {
-            "ok": True,
-            "source": "ai",
-            "best": {"x": ai_out["xy"][0], "y": ai_out["xy"][1],
-                     "area": None, "persist": None},
-            "arrivals": [{"x": ai_out["xy"][0], "y": ai_out["xy"][1]}],
-            "departures": [],
-            "on_green": ai_out.get("on_green"),
-            "confidence": ai_out.get("confidence"),
-            "snapped": ai_out.get("snapped"),
-            "snap_px": ai_out.get("snap_px"),
-            "before_frame": 0, "after_frame": 0, "fps": 1,
-            "notes": [
-                (ai_out.get("why") or "").strip(),
-                (f"Snapped {ai_out['snap_px']}px onto the nearest "
-                 "ball-sized blob." if ai_out.get("snapped")
-                 else "No ball-sized blob nearby to snap to — this is the "
-                      "model's own position."),
-                ("" if ai_out.get("on_green") else
-                 "The model says this is NOT on the putting surface."),
-                f"Frames at {ai_out['before_sec']}s and "
-                f"{ai_out['after_sec']}s.",
-            ],
-            "image_url": (
-                f"{settings.app_base_url}/uploads/clips/{_img.name}"
-                f"?v={int(_img.stat().st_mtime)}" if _img.exists() else None),
-            "camera_id": cam.id if cam else None,
-            "has_outline": bool(roi.get("points")),
-            "clip": row.green_filename,
-            "timing": {"fetch_sec": round(fetch_sec, 2)},
-            "ai": {
-                "ran": True,
-                "model": ai_out.get("model"),
-                "error": None,
-                "why": ai_out.get("why"),
-                "confidence": ai_out.get("confidence"),
-                "min_confidence": getattr(
-                    ai_tracer, "BALL_AT_REST_MIN_CONFIDENCE", None),
-                "on_green": ai_out.get("on_green"),
-                "before_sec": ai_out.get("before_sec"),
-                "after_sec": ai_out.get("after_sec"),
-                "snapped": ai_out.get("snapped"),
-                "snap_px": ai_out.get("snap_px"),
-                "crop": ai_out.get("crop"),
-                "used": True,
-            },
-            "stages": _staged(ai_out.get("sent")),
-        }
-
+    # THE GRIDDED ASK IS GONE FROM THIS BUTTON. It used to sit here:
+    # the two frames went up with a labelled pixel grid over them, to
+    # turn the model's position estimate into a reading, because it
+    # knows WHAT it is looking at and estimates WHERE 50 to 100px out.
+    # On a cropped green the grid has to be fine enough to be useful,
+    # and then its labels overlap into an unreadable stripe across the
+    # picture -- over the very ball it was drawn to help find.
+    #
+    # It is not missed. Step 1 measures the position, so the model is
+    # needed only to choose between measured candidates, which is the
+    # half it is reliably good at and needs no grid. Where step 1
+    # finds nothing, the plates below are a better second opinion than
+    # an estimate: they are deterministic, they are free, and they now
+    # show their own work.
+    #
+    # `find_ball_at_rest` itself is untouched and still runs on the
+    # produce path.
     # ...and the plates as the fallback, exactly as produce does.
     out = greenrest.find_rest_spot(
         path,
@@ -20498,36 +20507,21 @@ def long_upload_green_rest(upload_id: int,
     )
     out["source"] = "plates"
     out.setdefault("notes", []).insert(
-        0, f"The model did not answer ({ai_out.get('error')}), so this is "
-           "the plate comparison.")
-    # ── WHAT THE MODEL WAS ASKED AND WHAT IT SAID ───────────────────
+        0, "The zoned ball detector found nothing, so this is the plate "
+           "comparison. " + str(tiles.get("found_nothing_because")
+                                or tiles.get("why") or ""))
+    # ── WHAT THE ZONED DETECTOR DID, EVEN THOUGH IT FOUND NOTHING ───
     #
-    # The note above compresses that into one parenthesis, which is
-    # enough to know the fallback ran and not enough to know whether
-    # the first look was reasonable. These are three different things
-    # and only the first of them is a reason to leave the finder
-    # alone: no key configured, the model answered and was refused on
-    # confidence, the model answered a position off the frame.
-    out["ai"] = {
-        "ran": bool(ai_out.get("model")),
-        "model": ai_out.get("model"),
-        "error": ai_out.get("error"),
-        "why": ai_out.get("why"),
-        "confidence": ai_out.get("confidence"),
-        "min_confidence": getattr(
-            ai_tracer, "BALL_AT_REST_MIN_CONFIDENCE", None),
-        "on_green": ai_out.get("on_green"),
-        "before_sec": ai_out.get("before_sec"),
-        "after_sec": ai_out.get("after_sec"),
-        "crop": ai_out.get("crop"),
-        "used": False,
-    }
-    # THE MODEL'S OWN PICTURES FIRST, THEN THE PLATES'. The model is
-    # step 1 and the plates are the fallback, so a reader scrolling
-    # the stages sees them in the order they ran -- including on a run
-    # where step 1 produced nothing but the two frames it was shown,
-    # which is exactly the run worth looking at.
-    out["stages"] = _staged(ai_out.get("sent")) + _staged(out.get("stages"))
+    # CARRIED INTO THIS ANSWER RATHER THAN DROPPED. An empty step 1 is
+    # the run most worth looking at, and the first version of this
+    # threw its report and its pictures away at exactly that point --
+    # so the dialog showed the fallback's pictures and the operator
+    # saw no change at all.
+    out["tiles"] = tiles
+    # THE ZONES FIRST, THEN THE PLATES'. In the order they ran, so a
+    # reader scrolls through the run rather than through two
+    # unrelated galleries.
+    out["stages"] = _tile_stages + _staged(out.get("stages"))
     img = CLIPS_DIR / out_name
     out["image_url"] = (
         f"{settings.app_base_url}/uploads/clips/{out_name}"
