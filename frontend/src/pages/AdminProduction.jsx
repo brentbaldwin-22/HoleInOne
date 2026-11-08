@@ -9620,80 +9620,33 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             searched, what it picked and why a frame was refused --
             which is the only way to tell "the ball was not there"
             from "the box was pointed at the wrong grass". */}
-        {/* THE SAME SEARCH, NARROWED TO THE BALL'S COLUMN. Not a
-            new detector -- find_ascents, whose gates every verdict so
-            far was measured against -- run again over a column round
-            the measured ball instead of the full width of the frame.
-            The window-by-window walk that was here counted movers
-            and duly found the golfer's own swing; these gates are
-            about rising far enough, fast enough and straight enough,
-            which is what a swing fails. */}
-        {rep?.ascent_column && (
-          <div style={{ marginTop: 10 }}>
-            <b>The ball's own column</b>{" "}
-            <span className={rep.ascent_column.ok ? "pill ok" : "pill"}>
-              {(rep.ascent_column.points || []).length} point(s) ·{" "}
-              {(rep.ascent_column.considered || []).length} chain(s)
-            </span>
-            <div className="tiny muted" style={{ marginTop: 3 }}>
-              {rep.ascent_column.reason}
-              {rep.ascent_column.from_ball
-                ? ` · from the measured ball at (${
-                    rep.ascent_column.from_ball[0]}, ${
-                    rep.ascent_column.from_ball[1]}), impact f${
-                    rep.ascent_column.impact_frame}`
-                : ""}
-              {rep.ascent_column.seconds != null
-                ? ` · ${rep.ascent_column.seconds}s` : ""}
-            </div>
-            {rep.ascent_column.image_url && (
-              <a href={rep.ascent_column.image_url} target="_blank"
-                 rel="noreferrer">
-                <img src={rep.ascent_column.image_url}
-                     alt="the narrowed ascent search"
-                     style={{ width: "100%", maxWidth: 900, marginTop: 4,
-                              borderRadius: 4,
-                              border: "1px solid var(--border, #333)" }} />
-              </a>
-            )}
-          </div>
-        )}
         {rep?.ai_launch && (
           <div className="card" style={{ margin: "10px 0", padding: 10 }}>
             <div className="row" style={{ justifyContent: "space-between" }}>
-              <b>1 · Swing check and AI launch plot</b>
-              <span className={rep.ai_launch.n_points > 0
-                ? "pill ok" : "pill warn"}>
-                {rep.ai_launch.ran
-                  ? `${rep.ai_launch.n_points || 0} point(s)`
-                  : "did not run"}
-                {rep.ai_launch.rest ? " · ball found at address" : ""}
+              <b>1 · The golfer, the ball, the impact frame and the
+                ascent</b>
+              {/* THE FOUR ANSWERS, AS ONE PILL. A clip the rig heard
+                  is not a clip to be searched from scratch: the
+                  strike is confirmed, so all that is left is who
+                  hit, what they hit, when, and where it went. The
+                  pill says how far down that list this clip got,
+                  because every step after the first depends on the
+                  one before it -- no golfer means no box to look for
+                  a ball in, and no ball at rest means no column to
+                  search for the ascent. */}
+              <span className={
+                rep.ascent_column?.ok ? "pill ok"
+                  : (rep.ai_launch.measured_ball ? "pill" : "pill warn")}>
+                {rep.ai_launch.rect_from ? "golfer" : "no golfer"}
+                {rep.ai_launch.measured_ball ? " · ball" : " · no ball"}
+                {rep.ai_launch.measured_impact_frame != null
+                  ? ` · f${rep.ai_launch.measured_impact_frame}`
+                  : " · no impact"}
+                {rep.ascent_column?.ok
+                  ? ` · ${(rep.ascent_column.points || []).length} pt ascent`
+                  : " · no ascent"}
               </span>
             </div>
-            {/* MEASURED OFF THE PIXELS, beside what the model said.
-                The AI is shown a box and asked to find the ball and
-                follow it; this finds the same ball with a detector
-                and reports the first frame it is NOT there. On the
-                clip that prompted this the AI "found the ball at
-                address but saw it on none of the 4 frames after it",
-                which is a report of having lost it rather than of it
-                having gone -- and the two readings side by side are
-                the only way to tell those apart. */}
-            {rep.ai_launch.measured_why && (
-              <div className="tiny" style={{
-                marginTop: 3, color: rep.ai_launch.measured_impact_frame
-                  ? "#1a7f37" : "#777",
-              }}>
-                <b>measured:</b> {rep.ai_launch.measured_why}
-                {rep.ai_launch.measured_impact_frame
-                  && rep.ai_launch.impact_frame_rig
-                  && rep.ai_launch.measured_impact_frame
-                     !== rep.ai_launch.impact_frame_rig
-                  ? ` — impact moved f${rep.ai_launch.impact_frame_rig}`
-                    + ` → f${rep.ai_launch.measured_impact_frame}`
-                  : ""}
-              </div>
-            )}
             <div className="tiny muted" style={{ marginTop: 3 }}>
               {rep.ai_launch.reason}
               {/* THE SUM, COMPACTLY, WHERE THE FRAME IS USED. The
@@ -9728,10 +9681,34 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                 frame of reference -- so the pass is run again here
                 for its COORDINATES: the body standing in the motion
                 heat is the golfer, and the ball is at its feet. */}
+            {/* ── 1. THE GOLFER ───────────────────────────────────
+                AND WHICHEVER OF THE TWO PLACED THEM. The motion heat
+                places a golfer from the brightest continuous body in
+                it, which fails exactly when it matters: a golfer at
+                address is not moving their legs, so the heat stops at
+                the waist, and on a tee with several people the
+                brightest body is whoever moved most rather than
+                whoever hit. The person detector finds a body whether
+                or not it moved, and the one HITTING is the one
+                standing furthest up the tee -- or, when they are
+                level, the one holding the motion. This line used to
+                sit inside the swing-check block, so a golfer placed
+                by the detector after the heat had failed never
+                appeared at all. */}
+            {rep.ai_launch.rect_from && (
+              <div className="tiny muted" style={{ marginTop: 8 }}>
+                <b>1 · the golfer</b> — searched{" "}
+                {rep.ai_launch.rect?.join(",")} — {rep.ai_launch.rect_from}
+                {rep.ai_launch.n_people != null
+                  ? ` · ${rep.ai_launch.n_people} person-shape(s) found`
+                  : ""}
+              </div>
+            )}
             {rep.ai_launch.swing_check?.ran && (
               <div style={{ marginTop: 8 }}>
                 <div className="tiny muted">
-                  <b>Swing check</b> — {rep.ai_launch.swing_check.verdict}
+                  the swing check says{" "}
+                  {rep.ai_launch.swing_check.verdict}
                   {rep.ai_launch.swing_check.n_rays != null
                     ? ` · ${rep.ai_launch.swing_check.n_rays} club rays at `
                       + `${rep.ai_launch.swing_check.n_angles} angles`
@@ -9749,12 +9726,6 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                       .join(",")}, run back from that chain`
                     : ""}
                 </div>
-                {rep.ai_launch.rect_from && (
-                  <div className="tiny muted">
-                    searched {rep.ai_launch.rect?.join(",")} — {}
-                    {rep.ai_launch.rect_from}
-                  </div>
-                )}
                 {rep.ai_launch.swing_check.image_url && (
                   <figure style={{ margin: "6px 0 0" }}>
                     <img src={rep.ai_launch.swing_check.image_url}
@@ -9773,6 +9744,39 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                     </figcaption>
                   </figure>
                 )}
+              </div>
+            )}
+            {/* ── 2 AND 3. THE BALL AT REST, AND THE FRAME IT LEFT ──
+                MEASURED OFF THE PIXELS, NOT READ BY A MODEL. The AI
+                used to be shown this box and asked to find the ball
+                and follow it; on the clip that ended that it "found
+                the ball at address but saw it on none of the 4
+                frames after it", which is a report of having LOST
+                the ball rather than of the ball having gone, and the
+                two are indistinguishable from the answer. A small
+                round bright thing on the turf, off every detected
+                body, in the same spot frame after frame, and then
+                the first frame it is not there: that is a
+                measurement, it is free, and it is the same code the
+                rig's own verdict runs on. */}
+            {rep.ai_launch.measured_why && (
+              <div className="tiny" style={{
+                marginTop: 8, color: rep.ai_launch.measured_impact_frame
+                  ? "#1a7f37" : "#777",
+              }}>
+                <b>2 · the ball at rest, 3 · the frame it left</b>
+                {" — "}{rep.ai_launch.measured_why}
+                {rep.ai_launch.measured_ball
+                  ? ` · at ${rep.ai_launch.measured_ball.join(",")}`
+                  : ""}
+                {rep.ai_launch.measured_impact_frame
+                  && rep.ai_launch.impact_frame_rig
+                  && rep.ai_launch.measured_impact_frame
+                     !== rep.ai_launch.impact_frame_rig
+                  ? ` — impact moved f${rep.ai_launch.impact_frame_rig}`
+                    + ` → f${rep.ai_launch.measured_impact_frame}`
+                    + " (the rig heard it; this is where it went)"
+                  : ""}
               </div>
             )}
             {rep.ai_launch.image_url && (
@@ -9796,6 +9800,55 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                       </li>
                     ))}
                   </ul>
+                )}
+              </div>
+            )}
+            {/* ── 4. AND THE ASCENT ─────────────────────────────
+                THE SAME SEARCH THE SWEEP RUNS, narrowed. Not a new
+                detector: find_ascents, whose gates every verdict so
+                far was measured against, with the same skyline
+                cutoff -- which is why it never looks at the golfer,
+                who is below that line -- run over a column round the
+                measured ball instead of the full width of the frame.
+                The window-by-window walk that was here counted
+                movers and duly found the golfer's own swing; these
+                gates are about rising far enough, fast enough and
+                straight enough, which is what a swing fails.
+
+                WHERE THIS ANSWERS, THE WHOLE-BAND SWEEP BELOW DOES
+                NOT RUN. It would be asking the same question from a
+                guessed start and a fitted frame, and it is the most
+                expensive step in the run. */}
+            {rep?.ascent_column && (
+              <div style={{ marginTop: 10 }}>
+                <b>4 · The ascent, in the ball&apos;s own column</b>{" "}
+                <span className={rep.ascent_column.ok ? "pill ok" : "pill"}>
+                  {(rep.ascent_column.points || []).length} point(s) ·{" "}
+                  {(rep.ascent_column.considered || []).length} chain(s)
+                </span>
+                <div className="tiny muted" style={{ marginTop: 3 }}>
+                  {rep.ascent_column.reason}
+                  {rep.ascent_column.fallback
+                    ? ` · falling back to ${rep.ascent_column.fallback}`
+                    : ""}
+                  {rep.ascent_column.from_ball
+                    ? ` · from the measured ball at (${
+                        rep.ascent_column.from_ball[0]}, ${
+                        rep.ascent_column.from_ball[1]}), impact f${
+                        rep.ascent_column.impact_frame}`
+                    : ""}
+                  {rep.ascent_column.seconds != null
+                    ? ` · ${rep.ascent_column.seconds}s` : ""}
+                </div>
+                {rep.ascent_column.image_url && (
+                  <a href={rep.ascent_column.image_url} target="_blank"
+                     rel="noreferrer">
+                    <img src={rep.ascent_column.image_url}
+                         alt="the narrowed ascent search"
+                         style={{ width: "100%", maxWidth: 900,
+                                  marginTop: 4, borderRadius: 4,
+                                  border: "1px solid var(--border, #333)" }} />
+                  </a>
                 )}
               </div>
             )}
