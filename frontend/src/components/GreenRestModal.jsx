@@ -18,6 +18,65 @@ import { useEffect, useState } from "react";
 
 import { api } from "../api.js";
 
+/**
+ * Every picture the run actually looked at, in the order it looked.
+ *
+ * ONE SIDE-BY-SIDE AT THE END IS A VERDICT, NOT A METHOD. It answers
+ * "is the thing it found a ball" and nothing else, and the four
+ * questions it cannot answer are the four places this goes wrong: is
+ * the before plate clean, is the after plate from before the group
+ * walked on, did the exposure match take, and what crossed the
+ * threshold. Each of those is a picture, and each one is here.
+ */
+function Stages({ stages }) {
+  const [open, setOpen] = useState(null);
+  if (!stages?.length) return null;
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div className="small"><b>What it looked at, in order</b></div>
+      <div style={{ display: "grid", gap: 10, marginTop: 6,
+                    gridTemplateColumns:
+                      "repeat(auto-fit, minmax(240px, 1fr))" }}>
+        {stages.map((st) => (
+          <figure key={st.name} style={{ margin: 0 }}>
+            <a href={st.url} target="_blank" rel="noreferrer"
+               onClick={(e) => { e.preventDefault(); setOpen(st); }}>
+              <img src={st.url} alt={st.title}
+                   style={{ width: "100%", borderRadius: 4,
+                            background: "#111", cursor: "zoom-in",
+                            border: "1px solid var(--border, #333)" }} />
+            </a>
+            <figcaption className="tiny" style={{ marginTop: 3 }}>
+              <b>{st.title}</b>
+              <div className="muted" style={{ marginTop: 2 }}>{st.why}</div>
+            </figcaption>
+          </figure>
+        ))}
+      </div>
+      {/* FULL SIZE, BECAUSE A BALL IS FOUR PIXELS. A thumbnail of a
+          green is a picture in which the thing being judged is not
+          visible, which makes the gallery decorative. */}
+      {open && (
+        <div
+          onClick={() => setOpen(null)}
+          style={{ position: "fixed", inset: 0, zIndex: 95,
+                   background: "rgba(0,0,0,0.9)", display: "flex",
+                   flexDirection: "column", alignItems: "center",
+                   justifyContent: "center", padding: 12, cursor: "zoom-out" }}
+        >
+          <img src={open.url} alt={open.title}
+               style={{ maxWidth: "100%", maxHeight: "86vh",
+                        objectFit: "contain" }} />
+          <div className="small" style={{ color: "#eee", marginTop: 8,
+                                          maxWidth: 900 }}>
+            <b>{open.title}</b> — {open.why}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** One row of the funnel: what went in, what came out, and the gate. */
 function Step({ n, title, count, units, children, bad }) {
   return (
@@ -81,6 +140,18 @@ function HowItFound({ out }) {
         needs no outline and no plates. Its answer is snapped onto the
         nearest ball-sized blob when there is one within reach, so a
         position that is close becomes a position that is exact.
+        {ai?.crop && (
+          <div style={{ marginTop: 3 }}>
+            {ai.crop.applied
+              ? <>cropped to the green at {ai.crop.origin?.join(",")}, sent{" "}
+                  {ai.crop.size?.join("x")} at {ai.crop.scale}x — the
+                  model&apos;s fixed budget of attention is spent on the
+                  putting surface instead of on sky and treeline, and every
+                  white thing outside the outline is simply not in the
+                  picture to be mistaken for a ball</>
+              : <>sent the whole frame — {ai.crop.why}</>}
+          </div>
+        )}
         {ai && (
           <div style={{ marginTop: 3 }}>
             {ai.ran
@@ -310,6 +381,8 @@ export default function GreenRestModal({ row, adminPassword, onClose }) {
                      background: "#111" }}
           />
         )}
+
+        <Stages stages={out?.stages} />
 
         <div className="row" style={{ gap: 8, marginTop: 10,
                                       alignItems: "center", flexWrap: "wrap" }}>

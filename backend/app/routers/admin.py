@@ -10820,10 +10820,33 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
     # The model's answer is snapped to the real bright blob nearest it
     # — it says which object, the pixels say where. See
     # `find_ball_at_rest`.
+    # ── AND SHOW IT THE GREEN, NOT THE WHOLE FRAME ─────────────────
+    #
+    # LOOKED UP BEFORE THE MODEL RUNS, not after it. The outline used
+    # to be fetched below, as the plates' own requirement, which meant
+    # the model was always shown a 1920x1080 frame that is mostly sky
+    # and treeline. It does not see pixels: it sees a fixed budget of
+    # visual tokens spread over whatever it is handed, and a ball at
+    # the back of a green is a fraction of one token's patch. Cut the
+    # frame to the putting surface and the same budget covers the
+    # green alone -- and every white thing outside the outline, a rake
+    # or a cart or somebody's shoe on the fringe, is simply not in the
+    # picture to be mistaken for a ball.
+    #
+    # Still optional here. The plates below refuse without an outline;
+    # the model does not, and a camera with none drawn gets the whole
+    # frame exactly as before. See ai_tracer._crop_to_green.
+    #
+    # The operator's button passes the same outline, because an
+    # operator checking one against the other is the whole point of
+    # having the button and two different crops would make that check
+    # meaningless.
+    pts, drawn_at = _green_outline_for(db, green_camera_id)
     _ai = ai_tracer.find_ball_at_rest(
         green_path,
         before_sec=max(0.0, green_impact_sec - REST_PLATE_BEFORE_SEC),
         after_sec=green_impact_sec + REST_PLATE_AFTER_SEC,
+        polygon=pts, drawn_at=drawn_at,
         debug_path=marks_path)
     if _ai.get("xy"):
         _x, _y = _ai["xy"]
@@ -10849,7 +10872,7 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
     #
     # Free, deterministic, and already written. It needs the outline
     # the model does not, so without one this is where the road ends.
-    pts, drawn_at = _green_outline_for(db, green_camera_id)
+    # (Looked up above now, so the model could be shown the green.)
     if not pts:
         return None, (f"{_ai_why}; and with no green outline drawn there "
                       "is no fallback to try")
@@ -20235,6 +20258,27 @@ def long_upload_green_rest(upload_id: int,
     _b = _secs("before_sec")
     _a = _secs("after_sec")
     pair_name = f"green-rest-{upload_id}-pair.jpg"
+    # ── A HELPER FOR THE PICTURES THE DIALOG SHOWS ──────────────────
+    #
+    # Each stage comes back as a path on disk; the dialog needs a URL
+    # with the file's own mtime on it, or a re-run shows the previous
+    # run's picture out of the browser cache. That bug is invisible
+    # precisely when it matters: the operator changes a plate time,
+    # the numbers move, and the picture does not.
+    def _staged(rows):
+        out = []
+        for r in rows or []:
+            _p = Path(str(r.get("path") or ""))
+            if not _p.exists():
+                continue
+            out.append({
+                "name": r.get("name"), "title": r.get("title"),
+                "why": r.get("why"),
+                "url": (f"{settings.app_base_url}/uploads/clips/{_p.name}"
+                        f"?v={int(_p.stat().st_mtime)}")})
+        return out
+
+    _stem = f"green-rest-{upload_id}"
     ai_out = ai_tracer.find_ball_at_rest(
         path,
         before_sec=_b if _b is not None else 2.0,
@@ -20245,6 +20289,15 @@ def long_upload_green_rest(upload_id: int,
         # the answer needs both on screen -- the single marked panel
         # asks them to take the comparison on trust.
         pair_path=CLIPS_DIR / pair_name,
+        # ...AND THE GREEN'S OUTLINE, so the model is shown the putting
+        # surface rather than a frame that is mostly sky. See
+        # ai_tracer._crop_to_green: it is the same pixels, but the
+        # model's fixed budget of visual tokens is spent on the part of
+        # the picture the ball can be in.
+        polygon=roi.get("points"),
+        drawn_at=[frame.get("w"), frame.get("h")] if frame else None,
+        sent_dir=CLIPS_DIR,
+        sent_stem=_stem,
     )
     if ai_out.get("xy"):
         _img = CLIPS_DIR / (pair_name if ai_out.get("pair_image")
@@ -20292,8 +20345,10 @@ def long_upload_green_rest(upload_id: int,
                 "after_sec": ai_out.get("after_sec"),
                 "snapped": ai_out.get("snapped"),
                 "snap_px": ai_out.get("snap_px"),
+                "crop": ai_out.get("crop"),
                 "used": True,
             },
+            "stages": _staged(ai_out.get("sent")),
         }
 
     # ...and the plates as the fallback, exactly as produce does.
@@ -20304,6 +20359,11 @@ def long_upload_green_rest(upload_id: int,
         before_sec=_b,
         after_sec=_a,
         debug_path=CLIPS_DIR / out_name,
+        # EVERY PICTURE IT LOOKED AT, for the button only. Four JPEG
+        # encodes of frames already in memory; the produce path does
+        # not ask and pays nothing.
+        stages_dir=CLIPS_DIR,
+        stages_stem=_stem,
     )
     out["source"] = "plates"
     out.setdefault("notes", []).insert(
@@ -20328,8 +20388,15 @@ def long_upload_green_rest(upload_id: int,
         "on_green": ai_out.get("on_green"),
         "before_sec": ai_out.get("before_sec"),
         "after_sec": ai_out.get("after_sec"),
+        "crop": ai_out.get("crop"),
         "used": False,
     }
+    # THE MODEL'S OWN PICTURES FIRST, THEN THE PLATES'. The model is
+    # step 1 and the plates are the fallback, so a reader scrolling
+    # the stages sees them in the order they ran -- including on a run
+    # where step 1 produced nothing but the two frames it was shown,
+    # which is exactly the run worth looking at.
+    out["stages"] = _staged(ai_out.get("sent")) + _staged(out.get("stages"))
     img = CLIPS_DIR / out_name
     out["image_url"] = (
         f"{settings.app_base_url}/uploads/clips/{out_name}"

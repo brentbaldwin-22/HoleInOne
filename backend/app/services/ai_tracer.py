@@ -13496,7 +13496,89 @@ SNAP_MAX_ASPECT = 3.0
 GRID_STEP_PX = 200
 
 
-def _with_grid(img, step: int = GRID_STEP_PX):
+# HOW CLOSE TO THE FRAME'S OWN SIZE A CROP HAS TO BE before cropping is
+# not worth doing. A green that fills the picture gains nothing from
+# being cut out of it, and a crop that is nearly the whole frame costs
+# an interpolation for no extra detail.
+CROP_MAX_AREA_FRAC = 0.75
+
+# HOW FAR OUTSIDE THE OUTLINE THE CROP REACHES, as a fraction of the
+# green's own size. The outline is drawn by hand on a live view and is
+# not a survey; a ball on the collar, or a foot over the line, has to
+# still be in the picture or the model is being asked about a green
+# that has been trimmed to exclude the answer.
+CROP_PAD_FRAC = 0.10
+
+# THE LONG EDGE A CROP IS SCALED UP TO, in pixels.
+#
+# WHY SCALE UP AT ALL. The model is not being given new information --
+# the pixels are the pixels -- but it does not see pixels. It sees a
+# fixed budget of visual tokens spread over whatever it is handed, and
+# on a 1920x1080 tee-to-green frame most of that budget is spent on
+# sky, treeline and rough. Cutting the frame down to the putting
+# surface spends the same budget on the green, and a ball at the back
+# of it goes from a smudge inside one token's patch to something with
+# a shape.
+#
+# 2560 is just under the 2,576px long edge the high-resolution tier
+# accepts without downscaling (Claude 4.7 and later; the standard tier
+# is 1,568px and will fit this down itself, which still leaves the
+# ball bigger than it was in the full frame, because the sky is gone).
+# Capped at 2x in `_crop_to_green` so a small crop is not interpolated
+# into mush.
+CROP_TARGET_LONG_EDGE = 2560
+CROP_MAX_UPSCALE = 2.0
+
+
+def _crop_to_green(img, polygon, drawn_at=None):
+    """The putting surface, padded and scaled up. (view, x0, y0, scale).
+
+    Returns the frame unchanged as (img, 0, 0, 1.0) when there is no
+    outline, when the outline is most of the frame already, or when
+    anything about it does not parse -- this is an accuracy
+    improvement, not a dependency, and a camera with no green drawn on
+    it must still get an answer.
+    """
+    if polygon is None:
+        return img, 0, 0, 1.0
+    try:
+        h, w = img.shape[:2]
+        pts = np.array(polygon, dtype=np.float64)
+        if drawn_at:
+            dw, dh = float(drawn_at[0] or w), float(drawn_at[1] or h)
+            if dw > 0 and dh > 0:
+                pts[:, 0] *= w / dw
+                pts[:, 1] *= h / dh
+        x0, y0 = float(pts[:, 0].min()), float(pts[:, 1].min())
+        x1, y1 = float(pts[:, 0].max()), float(pts[:, 1].max())
+        bw, bh = x1 - x0, y1 - y0
+        if bw < 16 or bh < 16:
+            return img, 0, 0, 1.0
+        x0 = int(max(0, x0 - bw * CROP_PAD_FRAC))
+        y0 = int(max(0, y0 - bh * CROP_PAD_FRAC))
+        x1 = int(min(w, x1 + bw * CROP_PAD_FRAC))
+        y1 = int(min(h, y1 + bh * CROP_PAD_FRAC))
+        if (x1 - x0) * (y1 - y0) > CROP_MAX_AREA_FRAC * w * h:
+            return img, 0, 0, 1.0
+        crop = img[y0:y1, x0:x1]
+        ch, cw = crop.shape[:2]
+        if ch < 8 or cw < 8:
+            return img, 0, 0, 1.0
+        scale = min(CROP_MAX_UPSCALE,
+                    CROP_TARGET_LONG_EDGE / float(max(cw, ch)))
+        if scale > 1.02:
+            crop = cv2.resize(crop, (int(cw * scale), int(ch * scale)),
+                              interpolation=cv2.INTER_CUBIC)
+        else:
+            scale = 1.0
+        return crop, x0, y0, scale
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ai_tracer: green crop failed, using the whole "
+                    "frame: %s", exc)
+        return img, 0, 0, 1.0
+
+
+def _with_grid(img, step: int = GRID_STEP_PX, origin=(0, 0), scale=1.0):
     """A labelled pixel grid over a copy of the frame.
 
     THE WHOLE ACCURACY PROBLEM IN ONE PICTURE. Asked where the ball is,
@@ -13511,18 +13593,41 @@ def _with_grid(img, step: int = GRID_STEP_PX):
     sits in and interpolates inside it -- and the lines are right there
     to check against. The snap afterwards still does the last few
     pixels, but it is being handed a point that is close.
+
+    LABELLED IN THE ORIGINAL FRAME'S COORDINATES. `origin` and `scale`
+    say where this view sits in the full frame and how much it was
+    scaled up, so a grid drawn on a crop still reads 1240, 1440, 1640
+    rather than 0, 200, 400. The answer that comes back is then
+    already in frame pixels -- no mapping afterwards, and nothing to
+    get wrong in the one place where an off-by-a-crop would look like
+    a plausible position on the wrong part of the green.
     """
     out = img.copy()
     h, w = out.shape[:2]
     u = max(1, int(round(max(w, h) / 900.0)))
-    for x in range(step, w, step):
-        cv2.line(out, (x, 0), (x, h), (0, 255, 255), u)
-        cv2.putText(out, str(x), (x + 3 * u, 18 * u),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45 * u, (0, 255, 255), u)
-    for y in range(step, h, step):
-        cv2.line(out, (0, y), (w, y), (0, 255, 255), u)
-        cv2.putText(out, str(y), (3 * u, y - 4 * u),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45 * u, (0, 255, 255), u)
+    ox, oy = int(origin[0]), int(origin[1])
+    sc = float(scale) or 1.0
+    # The first original-coordinate gridline at or after the left edge.
+    _fx = int(math.ceil(ox / float(step))) * step
+    while True:
+        px = int(round((_fx - ox) * sc))
+        if px >= w:
+            break
+        if px > 0:
+            cv2.line(out, (px, 0), (px, h), (0, 255, 255), u)
+            cv2.putText(out, str(_fx), (px + 3 * u, 18 * u),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45 * u, (0, 255, 255), u)
+        _fx += step
+    _fy = int(math.ceil(oy / float(step))) * step
+    while True:
+        py = int(round((_fy - oy) * sc))
+        if py >= h:
+            break
+        if py > 0:
+            cv2.line(out, (0, py), (w, py), (0, 255, 255), u)
+            cv2.putText(out, str(_fy), (3 * u, py - 4 * u),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45 * u, (0, 255, 255), u)
+        _fy += step
     return out
 
 
@@ -13639,7 +13744,9 @@ def _render_colour_pair(before, after, xy, out_path, caption=""):
 
 def find_ball_at_rest(green_path, before_sec: float, after_sec: float,
                       model_override: str | None = None,
-                      debug_path=None, pair_path=None) -> dict:
+                      debug_path=None, pair_path=None,
+                      polygon=None, drawn_at=None, sent_dir=None,
+                      sent_stem=None) -> dict:
     """Where the ball finished on the green, from two colour frames.
 
     No outline, no plates, no tracking: two pictures and a question.
@@ -13668,6 +13775,43 @@ def find_ball_at_rest(green_path, before_sec: float, after_sec: float,
     h, w = after.shape[:2]
     info["frame_size"] = [int(w), int(h)]
 
+    # ── CUT THE PICTURE DOWN TO THE PUTTING SURFACE ─────────────────
+    #
+    # The model is not given new information by this -- the pixels are
+    # the pixels -- but it does not see pixels. It sees a fixed budget
+    # of visual tokens spread over whatever it is handed, and on a
+    # tee-to-green frame most of that budget is spent on sky, treeline
+    # and rough. A ball at the back of the green is a few pixels
+    # across, which is a fraction of one token's patch; cut the frame
+    # down to the green and the same budget covers the green alone.
+    #
+    # It also removes a whole class of wrong answer. Every white thing
+    # outside the outline -- a bunker rake, a cart, a sprinkler head,
+    # somebody's shoe on the fringe -- is simply not in the picture to
+    # be mistaken for a ball, which is cheaper than any instruction
+    # telling the model to ignore them.
+    #
+    # The grid is labelled in the ORIGINAL frame's coordinates, so the
+    # answer comes back in frame pixels and the snap below runs on the
+    # full-resolution original exactly as before.
+    _vb, _cx, _cy, _cs = _crop_to_green(before, polygon, drawn_at)
+    _va, _, _, _ = _crop_to_green(after, polygon, drawn_at)
+    _cropped = (_cx, _cy) != (0, 0) or _vb.shape[:2] != before.shape[:2]
+    info["crop"] = {
+        "applied": bool(_cropped),
+        "origin": [int(_cx), int(_cy)],
+        "size": [int(_vb.shape[1]), int(_vb.shape[0])],
+        "scale": round(float(_cs), 2),
+        "why": ("the green's outline, padded %d%% and scaled %.2fx -- "
+                "the model's attention is spent on the putting surface "
+                "rather than on sky and treeline"
+                % (round(CROP_PAD_FRAC * 100), _cs) if _cropped else
+                ("no green outline on this camera, so the whole frame "
+                 "was sent" if polygon is None else
+                 "the outline covers most of the frame already, so "
+                 "cropping would gain nothing")),
+    }
+
     def _jpeg(img):
         ok, buf = cv2.imencode(".jpg", img,
                                [int(cv2.IMWRITE_JPEG_QUALITY), 92])
@@ -13675,10 +13819,58 @@ def find_ball_at_rest(green_path, before_sec: float, after_sec: float,
 
     # GRIDDED, BOTH OF THEM. The same lines on both frames so a spot
     # can be compared between them by cell rather than by eye.
-    jb, ja = _jpeg(_with_grid(before)), _jpeg(_with_grid(after))
+    # A GRID STEP THAT SUITS THE PICTURE. 200px is right for a whole
+    # 1080-high frame -- five divisions down it. A crop of a green is
+    # often 400 original pixels tall, where the same step draws one
+    # line and the model is back to estimating a distance from an
+    # edge, which is the error the grid exists to remove. The labels
+    # stay round numbers in the original frame's coordinates either
+    # way; only how many of them there are changes.
+    _short = min(_vb.shape[0], _vb.shape[1]) / max(_cs, 0.01)
+    _step = GRID_STEP_PX
+    for _cand in (200, 100, 50):
+        if _short / _cand >= 4:
+            _step = _cand
+            break
+    else:
+        _step = 50
+    info["grid_step_px"] = int(_step)
+    _gb = _with_grid(_vb, _step, origin=(_cx, _cy), scale=_cs)
+    _ga = _with_grid(_va, _step, origin=(_cx, _cy), scale=_cs)
+    jb, ja = _jpeg(_gb), _jpeg(_ga)
     if not jb or not ja:
         info["error"] = "could not encode the frames"
         return info
+    # ── AND THE PICTURES AS SENT, ON DISK ───────────────────────────
+    #
+    # EXACTLY WHAT THE MODEL WAS SHOWN, not an approximation of it.
+    # When a run reports "did not find a ball" the first question is
+    # whether the ball was in the picture at all and whether the grid
+    # was legible on it, and neither can be answered from a
+    # description. Written only when the caller asks (the operator's
+    # button does; the produce path does not).
+    if sent_dir is not None:
+        try:
+            _d = Path(str(sent_dir))
+            _st = sent_stem or "ballrest"
+            info["sent"] = []
+            for _nm, _im, _ttl, _sec in (
+                    ("sent-before", _gb, "The BEFORE frame as sent",
+                     before_sec),
+                    ("sent-after", _ga, "The AFTER frame as sent",
+                     after_sec)):
+                _pp = _d / f"{_st}-{_nm}.jpg"
+                cv2.imwrite(str(_pp), _im,
+                            [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+                info["sent"].append({
+                    "name": _nm, "path": str(_pp), "title": _ttl,
+                    "why": ("At %.1fs, %dx%d, with the grid labelled in "
+                            "the ORIGINAL frame's coordinates. %s"
+                            % (_sec, _im.shape[1], _im.shape[0],
+                               info["crop"]["why"]))})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ai_tracer: could not write the sent frames: %s",
+                        exc)
 
     model = _resolve_model(model_override)
     info["model"] = model
@@ -13701,8 +13893,14 @@ def find_ball_at_rest(green_path, before_sec: float, after_sec: float,
                     "type": "base64", "media_type": "image/jpeg",
                     "data": base64.standard_b64encode(ja).decode("ascii")}},
                 {"type": "text", "text": (
-                    f"Both frames are {w}x{h} pixels. A yellow grid is "
-                    f"drawn over them every {GRID_STEP_PX} pixels, with "
+                    f"The full frame is {w}x{h} pixels, and the grid "
+                    "labels below are in THAT frame's coordinates — "
+                    "answer in them. "
+                    + ("These two pictures are a crop of the putting "
+                       "surface out of that frame, so the lowest grid "
+                       "label is not zero. " if _cropped else "")
+                    + "A yellow grid is "
+                    f"drawn over them every {_step} pixels, with "
                     "the x value labelled along the top of each vertical "
                     "line and the y value beside each horizontal one. "
                     "READ THE BALL'S POSITION OFF THAT GRID: find the "

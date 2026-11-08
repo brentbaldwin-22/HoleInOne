@@ -299,6 +299,164 @@ def render_marks(plate, poly, marks, out_path, caption=""):
     return out_path
 
 
+def _outline(img, poly, colour=(120, 230, 170), u=1):
+    """The green's outline on a BGR copy, or the copy unchanged."""
+    out = img if img.ndim == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    out = out.copy()
+    if poly is not None:
+        cv2.polylines(out, [poly], True, colour, u)
+    return out
+
+
+def _caption(img, text, u=1):
+    """One line along the bottom, on a strip dark enough to read on.
+
+    SHRUNK UNTIL IT FITS. A caption written off the right-hand edge of
+    the picture is worse than none: it reads as a complete sentence
+    that happens to say the wrong thing. OpenCV will measure the
+    string, so measure it rather than guess a length that works on one
+    frame size.
+    """
+    if not text:
+        return img
+    h, w = img.shape[:2]
+    _sc = 0.45 * u
+    (_tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, _sc, u)
+    if _tw > w - 16 * u:
+        _sc *= max(0.35, (w - 16 * u) / float(max(1, _tw)))
+    cv2.rectangle(img, (0, h - 22 * u), (w, h), (20, 20, 20), -1)
+    cv2.putText(img, text, (8 * u, h - 7 * u),
+                cv2.FONT_HERSHEY_SIMPLEX, _sc, (235, 235, 235),
+                max(1, u if _sc >= 0.4 * u else 1))
+    return img
+
+
+def _stage_images(plate_b, plate_a, diff, pos, mask, poly, arrivals,
+                  rejects, out_dir, stem):
+    """Every picture the comparison actually looked at, in order.
+
+    ONE SIDE-BY-SIDE AT THE END IS A VERDICT, NOT A METHOD. It shows
+    the two plates and a ring, which answers "is the thing it found a
+    ball" and nothing else. The four questions it cannot answer are
+    the four places this goes wrong:
+
+      * is the BEFORE plate clean, or did the median catch a person
+        standing still?
+      * is the AFTER plate from before the group walked on?
+      * did the exposure match work, or is the whole green glowing?
+      * what crossed the threshold, and what shape was it?
+
+    So each stage is written as its own picture. They cost four JPEG
+    encodes of frames already in memory -- no decoding, no seeking --
+    and they are what turns "it found nothing" from an opinion into
+    something that can be looked at.
+
+    Returns [{name, title, why, path}], newest stage last. Never
+    raises: a picture that fails to write loses a picture, not a run.
+    """
+    out = []
+    try:
+        h, w = plate_a.shape[:2]
+        u = max(1, int(round(max(w, h) / 500.0)))
+        _dir = Path(out_dir)
+
+        # 1 + 2. THE TWO PLATES, as the comparison sees them: the
+        # before one already matched onto the after one's exposure,
+        # because that is the picture actually subtracted. Showing the
+        # raw before plate instead would hide the one correction that
+        # most often decides the answer.
+        _b = _caption(_outline(plate_b, poly, u=u),
+                      "BEFORE plate - the median, exposure-matched onto "
+                      "the after plate", u)
+        _pb = _dir / f"{stem}-plate-before.jpg"
+        cv2.imwrite(str(_pb), _b, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        out.append({
+            "name": "plate-before", "path": str(_pb),
+            "title": "1 · The before plate",
+            "why": ("The median of the frames around the before time, "
+                    "already scaled and shifted onto the after plate's "
+                    "exposure -- this is the picture that gets "
+                    "subtracted, not the raw frames. A person standing "
+                    "still here is a person the median failed to "
+                    "remove, and they will cancel a real ball sitting "
+                    "behind them.")})
+
+        _a = _caption(_outline(plate_a, poly, u=u),
+                      "AFTER plate - the median of the frames around the "
+                      "after time", u)
+        _pa = _dir / f"{stem}-plate-after.jpg"
+        cv2.imwrite(str(_pa), _a, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        out.append({
+            "name": "plate-after", "path": str(_pa),
+            "title": "2 · The after plate",
+            "why": ("The same median around the after time. If the "
+                    "group is on the green in this picture, the ball is "
+                    "in somebody's pocket and the run cannot find it -- "
+                    "pull the after time back until this shows an empty "
+                    "green with one ball on it.")})
+
+        # 3. THE SUBTRACTION, SIGNED. Red is brighter than before --
+        # something arrived; blue is dimmer -- something left. A green
+        # that glows red all over is an exposure match that did not
+        # take, and that is invisible in every other picture here.
+        _d = np.clip(diff, -60, 60).astype(np.float32)
+        _col = np.zeros((h, w, 3), np.uint8)
+        _col[:, :, 2] = np.clip(_d, 0, None) * (255.0 / 60.0)
+        _col[:, :, 0] = np.clip(-_d, 0, None) * (255.0 / 60.0)
+        _col[:, :, 1] = (plate_a.astype(np.float32) * 0.5).astype(np.uint8)
+        _col = _caption(_outline(_col, poly, u=u),
+                        "AFTER minus BEFORE - red arrived, blue left, "
+                        "green channel is the plate underneath", u)
+        _pd = _dir / f"{stem}-diff.jpg"
+        cv2.imwrite(str(_pd), _col, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        out.append({
+            "name": "diff", "path": str(_pd),
+            "title": "3 · After minus before",
+            "why": ("Red is brighter than it was -- something arrived. "
+                    "Blue is dimmer -- something left. The green "
+                    "channel is the plate itself, so the turf is "
+                    "visible underneath. A green that glows red all "
+                    "over is an exposure match that did not take, and "
+                    "that failure is invisible in every other picture "
+                    "here.")})
+
+        # 4. WHAT CROSSED THE THRESHOLD, AND WHAT HAPPENED TO IT.
+        # The binary mask is the honest answer to "was the ball even a
+        # candidate" -- everything after this point is filtering, and
+        # a ball that is not white in this picture was never in the
+        # running.
+        _m = cv2.bitwise_and(pos, mask)
+        _bin = cv2.cvtColor(_m, cv2.COLOR_GRAY2BGR)
+        _bin[:, :, 1] = np.maximum(
+            _bin[:, :, 1], (plate_a.astype(np.float32) * 0.22).astype(np.uint8))
+        _bin = _outline(_bin, poly, u=u)
+        for r in (rejects or [])[:MAX_DRAWN]:
+            cv2.rectangle(_bin, (r["x"] - 7 * u, r["y"] - 7 * u),
+                          (r["x"] + 7 * u, r["y"] + 7 * u),
+                          (120, 120, 120), u)
+        for a_ in arrivals:
+            cv2.circle(_bin, (a_["x"], a_["y"]), 11 * u, (60, 170, 250), u)
+        _bin = _caption(
+            _bin, "At least %d levels brighter, inside the outline - "
+                  "%d kept, %d turned down"
+                  % (DIFF_THRESHOLD, len(arrivals), len(rejects or [])), u)
+        _pm = _dir / f"{stem}-threshold.jpg"
+        cv2.imwrite(str(_pm), _bin, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        out.append({
+            "name": "threshold", "path": str(_pm),
+            "title": "4 · What crossed the threshold",
+            "why": ("White is every pixel at least %d grey levels "
+                    "brighter than the before plate, inside the "
+                    "outline. Everything after this point only "
+                    "filters: blue rings are kept, grey squares are "
+                    "turned down. A ball that is not white HERE was "
+                    "never a candidate, and no gate is to blame for "
+                    "it." % DIFF_THRESHOLD)})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("rest-spot stage images failed: %s", exc)
+    return out
+
+
 def _render(plate_b, plate_a, poly, arrivals, departures, out_path,
             caption="", rejects=None):
     """The two plates side by side, with what was found ringed.
@@ -495,7 +653,8 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
                    after_frame: int | None = None,
                    before_sec: float | None = None,
                    after_sec: float | None = None,
-                   debug_path=None, marks_path=None, marks=None) -> dict:
+                   debug_path=None, marks_path=None, marks=None,
+                   stages_dir=None, stages_stem=None) -> dict:
     """What arrived on the green, and what left it.
 
     The two plates are centred on `before_frame` / `after_frame`, or on
@@ -715,6 +874,16 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
                         f"plates {b / fps:.1f}s and {a / fps:.1f}s"))
             except Exception as exc:  # noqa: BLE001
                 log.warning("rest-spot mark render failed: %s", exc)
+        # ── EVERY PICTURE IT LOOKED AT, IN ORDER ────────────────────
+        #
+        # Four JPEG encodes of frames already in memory. The caller
+        # asks for them (the operator's button does; the produce path
+        # does not), so a run that only wants the answer is unchanged.
+        stages = []
+        if stages_dir is not None:
+            stages = _stage_images(matched_b, plate_a, diff, pos, mask,
+                                   poly, arrivals, _rejects, stages_dir,
+                                   stages_stem or "greenrest")
         image = None
         if debug_path is not None:
             try:
@@ -745,6 +914,7 @@ def find_rest_spot(input_path, polygon=None, drawn_at=None,
                 "clip_frames": total,
             },
             "image_path": image,
+            "stages": stages,
             "marks_path": marked,
             "best": arrivals[0] if arrivals else None,
             "arrivals": arrivals,
