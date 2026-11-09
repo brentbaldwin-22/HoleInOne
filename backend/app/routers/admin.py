@@ -23926,41 +23926,59 @@ def _ball_scan_sweep_image(row, src_path, sweep) -> None:
             cv2.LINE_AA)
         _b = sweep.get("band") or [0, 0, 0, 0]
         _cf = sweep.get("cap_hit_frac")
-        cv2.putText(
-            im,
-            f"{sweep.get('n_dets', '?')} detections -> "
-            f"{sweep.get('n_tracks', '?')} chains -> "
-            f"{sweep.get('n_considered', '?')} weighed  |  "
-            f"keep {sweep.get('per_frame_cap', '?')}/frame"
-            + (f", capped on {_cf:.0%} of frames "
-               f"(worst {sweep.get('max_hits_in_a_frame', '?')})"
-               if _cf is not None else "")
-            + f"  |  {'3-frame' if sweep.get('three_frame', True) else '2-frame'}"
-            f" diff"
-            # WHETHER THE SMEAR WAS REAL. A ball crossing 26px in one
-            # exposure thresholds into two or three blobs, each its own
-            # detection -- and "merged 1,840" next to the detection
-            # count says how much of that cloud was one object twice.
-            + (f"  |  merged {sweep.get('merged_away'):,} at "
-               f"{sweep.get('merge_px'):g}px"
-               if sweep.get("merged_away") is not None
-               and sweep.get("merge_px") else "")
-            # HOW MANY CHAINS WERE ONE FLIGHT. #768 came back as four
-            # chains of one ball, each traced to the tee as its own
-            # swing 0.14s apart; "joined 3" is that not happening.
-            + (f", joined {sweep.get('n_stitched')}"
-               if sweep.get("n_stitched") else "")
-            # AND WHAT THE RE-READ FOUND IN THE HOLES. "refilled 6 in
-            # 2 holes" says the ball was there all along and the
-            # three-frame pass was the only reason it was missing;
-            # nothing says the hole was really empty.
-            + (f", refilled {sweep.get('n_refilled')}"
-               f" in {sweep.get('n_holes_read')} hole(s)"
-               if sweep.get("n_holes_read") else "")
-            + f"  |  band x{int(_b[0])}-{int(_b[0]) + int(_b[2])}"
-            f" y0-{int(_b[3])}",
-            (12, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 230, 255), 1,
-            cv2.LINE_AA)
+        # ── A SWEEP THAT DID NOT RUN HAS NO NUMBERS ─────────────────
+        #
+        # When stage 1 answers, this picture is drawn from a stand-in
+        # dict that carries the chain and nothing else -- so the line
+        # below printed "0 detections -> ? chains -> ? weighed | keep
+        # ?/frame | 3-frame diff", which is not a report of anything.
+        # Worse, every one of those is a plausible-looking lie: 3-frame
+        # is the default the format string falls back to and the sweep
+        # has not used it for weeks.
+        if sweep.get("skipped_for_column"):
+            cv2.putText(
+                im,
+                "the whole-band sweep did not run - stage 1 measured "
+                "this ascent in the ball's own column, and the chain "
+                "drawn here is that one",
+                (12, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                (200, 200, 200), 1, cv2.LINE_AA)
+        else:
+            cv2.putText(
+                im,
+                f"{sweep.get('n_dets', '?')} detections -> "
+                f"{sweep.get('n_tracks', '?')} chains -> "
+                f"{sweep.get('n_considered', '?')} weighed  |  "
+                f"keep {sweep.get('per_frame_cap', '?')}/frame"
+                + (f", capped on {_cf:.0%} of frames "
+                   f"(worst {sweep.get('max_hits_in_a_frame', '?')})"
+                   if _cf is not None else "")
+                + f"  |  {'3-frame' if sweep.get('three_frame', True) else '2-frame'}"
+                f" diff"
+                # WHETHER THE SMEAR WAS REAL. A ball crossing 26px in one
+                # exposure thresholds into two or three blobs, each its own
+                # detection -- and "merged 1,840" next to the detection
+                # count says how much of that cloud was one object twice.
+                + (f"  |  merged {sweep.get('merged_away'):,} at "
+                   f"{sweep.get('merge_px'):g}px"
+                   if sweep.get("merged_away") is not None
+                   and sweep.get("merge_px") else "")
+                # HOW MANY CHAINS WERE ONE FLIGHT. #768 came back as four
+                # chains of one ball, each traced to the tee as its own
+                # swing 0.14s apart; "joined 3" is that not happening.
+                + (f", joined {sweep.get('n_stitched')}"
+                   if sweep.get("n_stitched") else "")
+                # AND WHAT THE RE-READ FOUND IN THE HOLES. "refilled 6 in
+                # 2 holes" says the ball was there all along and the
+                # three-frame pass was the only reason it was missing;
+                # nothing says the hole was really empty.
+                + (f", refilled {sweep.get('n_refilled')}"
+                   f" in {sweep.get('n_holes_read')} hole(s)"
+                   if sweep.get("n_holes_read") else "")
+                + f"  |  band x{int(_b[0])}-{int(_b[0]) + int(_b[2])}"
+                f" y0-{int(_b[3])}",
+                (12, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 230, 255), 1,
+                cv2.LINE_AA)
         nm = f"ballscan-{row.id}-sweep.jpg"
         if cv2.imwrite(str(CLIPS_DIR / nm), im,
                        [int(cv2.IMWRITE_JPEG_QUALITY), 86]):
@@ -25088,19 +25106,46 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
             import cv2 as _cv2
             _cp = _cv2.VideoCapture(str(src_path))
             _fw = int(_cp.get(_cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            _fh = int(_cp.get(_cv2.CAP_PROP_FRAME_HEIGHT) or 0)
             _cp.release()
             if _fw <= 0:
                 raise ValueError("the clip reports no frame width")
             _gb = _al.get("golfer_box")
-            # SIX GOLFER-WIDTHS EITHER SIDE OF THE BALL. A ball leaves
-            # the clubface within a few feet of the stance and climbs
-            # very nearly straight up from a camera behind the hitting
-            # area; six widths is generous for a fade and a fraction
-            # of the width the band searches.
-            _halfw = max(80, int((_gb[2] if _gb else _fw // 24) * 6.0))
+            # ── THE COLUMN HAS TO BE AS WIDE AS THE BALL DRIFTS ─────
+            #
+            # "Six golfer-widths either side, because a ball climbs
+            # very nearly straight up from a camera behind the
+            # hitting area" was wrong, and the picture says so. On
+            # this tee the flight rises through a 497px band and
+            # moves most of 650px across it -- better than 45 degrees
+            # off vertical. Six widths is 305px, so the column cut
+            # the flight in half: the sweep saw it over x641-1900 and
+            # found 303 detections and 18 chains, and the column saw
+            # x1310-1920 and found 5 points.
+            #
+            # HOW FAR IT CAN DRIFT SCALES WITH HOW FAR UP YOU LOOK,
+            # which is the band's own height -- so that is the
+            # number, not a count of golfers. A ball cannot climb
+            # 500px and move 1000px sideways without being a different
+            # kind of object; at one band-height either side the
+            # column is still less than half the frame on a 1920 view
+            # and still refuses the far side of the picture, which is
+            # all the narrowing was ever for.
+            # THE BAND'S OWN HEIGHT, from the same function the search
+            # uses -- not a guess at it from the tee box's fraction,
+            # which is a different line.
+            _area0 = _search_area_for(db, row)
+            _band_h = _d3._ascent_band(
+                _fh or 1080, _roi.get("roi"), _area0.get("sky_frac"))[0]
+            # ...AND HALF AGAIN. 650px of drift over a 497px band is
+            # 1.3 times the height; at 1.5 a ball would have to leave
+            # at better than 56 degrees off vertical to escape the
+            # column, which is not a golf shot from behind the tee.
+            _halfw = max(80, int((_gb[2] if _gb else _fw // 24) * 6.0),
+                         int(_band_h * 1.5))
             _lf = max(0.0, (float(_zspot[0]) - _halfw) / float(_fw))
             _rf = min(1.0, (float(_zspot[0]) + _halfw) / float(_fw))
-            _area = dict(_search_area_for(db, row))
+            _area = dict(_area0)
             _area["left_frac"] = _lf
             _area["right_frac"] = _rf
             # THE HOLE'S OWN GATES, the same ones the sweep is given a
@@ -25298,6 +25343,30 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # is being planned that will not run.
     _ac = rep.get("ascent_column") or {}
     _col_entry = _ac.get("entry") if _ac.get("ok") else None
+    # ── A WEAK ANSWER DOES NOT GET TO SILENCE THE SWEEP ─────────────
+    #
+    # Stage 1 suppressing the whole-band sweep is right when stage 1
+    # has the better answer and a disaster when it does not. It
+    # happened: a column cut too narrow found a 5-point chain, that
+    # counted as "answered", the sweep never ran -- and the sweep is
+    # what had been finding this flight as a 26-point chain the week
+    # before. A cheaper first look is not an override.
+    #
+    # So the suppression needs the answer to be at least as good as
+    # the thing it is replacing. Twice the minimum chain length is
+    # the bar: a chain at the floor is one bad link away from not
+    # existing, and it is exactly the kind of answer that should
+    # invite a second opinion rather than forbid one.
+    _COL_TRUSTED_POINTS = 2 * int(_d3.ASCENT_MIN_POINTS)
+    _col_weak = bool(_col_entry) and (
+        len(_col_entry.get("points") or []) < _COL_TRUSTED_POINTS)
+    if _col_weak:
+        _ac["weak"] = (
+            "%d point(s) is under the %d this needs to stand in for "
+            "the whole-band sweep, so the sweep runs too and the "
+            "longer chain wins"
+            % (len(_col_entry.get("points") or []), _COL_TRUSTED_POINTS))
+        _col_entry = None
     _win = []
     _sec_win = 0.0
     if not _col_entry:
@@ -25445,6 +25514,14 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
             "nobody is measuring yet.", None, None, _sw_unattr))
     rep["scan_stages"] = [x for x in _scan_stages if x["seconds"] > 0.004]
     _asc = list(sweep.get("ascents") or [])
+    # AND IF THE COLUMN HAD A WEAK ANSWER, IT IS STILL AN ANSWER.
+    # Kept when the sweep came back with nothing at all: five points
+    # measured from a known ball beats no points, and the whole
+    # reason the sweep ran as well is that neither was trusted to
+    # speak alone.
+    if _col_weak and not _asc and (_ac.get("entry")):
+        _asc = [_ac["entry"]]
+        sweep["fell_back_to_column"] = _ac.get("weak")
     rep["ascents"] = _asc
     _stage(2,
            ("Balls leaving the tee — not needed" if _col_entry
@@ -25613,6 +25690,38 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                      + str((_dbacks.get(_i + 1) or {}).get("why") or "")),
              "url": (_dbacks.get(_i + 1) or {}).get("image_url")},
         ]
+        # ── AN EMPTY BOX HAS TO SAY WHY IT IS EMPTY ─────────────────
+        #
+        # "nothing to show -- this step did not produce an answer" is
+        # true of every one of these and useful about none of them.
+        # No green clip on the upload, no green camera on the pair, a
+        # clip that would not open, frames that could not be read, a
+        # green the detector found nothing on: the fixes are
+        # completely different and only the first three are even
+        # about this system. The reason is already recorded at
+        # whichever level knew it; this carries it to the box.
+        _greenwhy = (_c4.get("rest_reason")
+                     or _desc.get("rest_reason")
+                     or _desc.get("reason")
+                     or "no reason was recorded, which is itself a bug")
+        for _st in _steps:
+            if _st["url"]:
+                continue
+            if _st["name"].startswith("green"):
+                _st["reason"] = _greenwhy
+            elif _st["name"] == "descent":
+                _st["reason"] = ((_dbacks.get(_i + 1) or {}).get("why")
+                                 or _c4.get("descent_back_why")
+                                 or "no ball at rest, so no descent was "
+                                    "walked — that is the contract")
+            elif _st["name"] == "rest":
+                _st["reason"] = str(_al4.get("measured_why")
+                                    or _al4.get("reason")
+                                    or "stage 1 did not run on this clip")
+            elif _st["name"] == "ascent":
+                _st["reason"] = str(_ac4.get("reason")
+                                    or _ac4.get("fallback")
+                                    or "the column search did not run")
         rep["swing_steps"].append({
             "swing": _i + 1,
             # EVERY STEP, INCLUDING THE ONES WITH NO PICTURE. An

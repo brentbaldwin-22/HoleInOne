@@ -690,12 +690,22 @@ function SwingSteps({ row }) {
                               border: "1px solid var(--border, #333)" }} />
               </a>
             ) : (
-              <div className="tiny muted"
+              // AN EMPTY BOX THAT SAYS WHY IT IS EMPTY. "This step did
+              // not produce an answer" is true of every one of these
+              // and useful about none of them: no green clip on the
+              // upload, no green camera on the pair, a clip that
+              // would not open, a green the detector found nothing
+              // on -- completely different fixes, and only some of
+              // them about this system at all.
+              <div className="tiny"
                    style={{ display: "flex", alignItems: "center",
                             justifyContent: "center", minHeight: 90,
+                            padding: 8, textAlign: "center",
+                            color: "#b4690e",
                             borderRadius: 4, background: "#1a1a1a",
                             border: "1px dashed var(--border, #444)" }}>
-                nothing to show — this step did not produce an answer
+                {st.reason || "nothing to show — and no reason was "
+                  + "recorded, which is itself a bug"}
               </div>
             )}
             <figcaption className="tiny" style={{ marginTop: 3 }}>
