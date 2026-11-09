@@ -10791,7 +10791,8 @@ def _green_outline_for(db, green_camera_id):
 
 
 def _rest_spot_at(db, row, green_path, green_impact_sec: float,
-                  green_camera_id: int, marks_path=None, landing_xy=None):
+                  green_camera_id: int, marks_path=None, landing_xy=None,
+                  images_out=None):
     """Where the ball came to rest, anchored on one swing's impact.
 
     `green_impact_sec` is the moment of impact in the GREEN clip's own
@@ -10848,6 +10849,8 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
             except Exception as exc:  # noqa: BLE001
                 log.warning("rest spot: picker failed: %s", exc)
         _bb = _tiles["best"]
+        if images_out is not None:
+            images_out.update(_tiles.get("images") or {})
         return (
             {"xy": [float(_bb["x"]), float(_bb["y"])],
              "camera_id": int(green_camera_id), "source": "tiles",
@@ -10871,6 +10874,18 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
         )
     _tiles_why = (_tiles.get("found_nothing_because")
                   or _tiles.get("why") or "the zoned detector found nothing")
+    # ── THE PICTURES SURVIVE AN EMPTY ANSWER ────────────────────────
+    #
+    # They were written to disk either way and then carried out only
+    # on the success branch -- so the one run where you need to LOOK
+    # at the green, the run that found nothing, is the one that
+    # showed you nothing. Same bug as the zone pictures a few days
+    # ago, in a second place. An empty green with the outline drawn
+    # on it is an answer: it says the shot missed, or the frames are
+    # late, or the outline is wrong, and no sentence distinguishes
+    # those.
+    if images_out is not None:
+        images_out.update(_tiles.get("images") or {})
 
     # ── 2. ask the model ────────────────────────────────────────────
     #
@@ -24979,9 +24994,16 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
             _area = dict(_search_area_for(db, row))
             _area["left_frac"] = _lf
             _area["right_frac"] = _rf
+            # THE HOLE'S OWN GATES, the same ones the sweep is given a
+            # few lines down. Without them this ran the module
+            # defaults while the sweep ran the tuned ones -- so a
+            # hole tuned to find its balls was tuned for only one of
+            # the two searches that look for them.
             rep["ascent_column"] = _d3.find_ascents(
                 src_path, fps, int(_zimp), (_zspot[0], _zspot[1]),
-                roi=_roi.get("roi"), **_area) or {}
+                roi=_roi.get("roi"),
+                gates=_gate_tuning_for(db, row, hole_hint=hole_number)[0],
+                **_area) or {}
         except Exception as exc:  # noqa: BLE001
             log.warning("ball scan: column ascent failed on %s: %s",
                         row.id, exc)
@@ -25446,7 +25468,10 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
              "why": ("Cropped to the outline and otherwise untouched. "
                      "Orange rings are balls already lying on it -- a "
                      "partner's, or one nobody has marked. They are in "
-                     "both pictures, so they are not this shot."
+                     "both pictures, so they are not this shot. An "
+                     "empty green here is itself an answer: it says "
+                     "nothing was lying there to be confused with the "
+                     "shot."
                      + ("" if _c4.get("rest_n_before") is None else
                         " %d found." % _c4["rest_n_before"])),
              "url": _c4.get("rest_before_url")},
@@ -26359,10 +26384,23 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                          f"{i + 1} of {len(_clips)}", i, len(_clips))
             _base = float(_imp) / float(fps or 30.0) - float(out["delta_sec"])
             _shot = CLIPS_DIR / f"green-rest-{row.id}-s{i + 1}.jpg"
+            _why_imgs: dict = {}
             _rest, _why = _rest_spot_at(
                 db, row, _gp, _base, int(_g_id),
-                marks_path=_shot, landing_xy=c.get("landing_spot"))
+                marks_path=_shot, landing_xy=c.get("landing_spot"),
+                images_out=_why_imgs)
             c["rest_reason"] = _why
+            # THE BEFORE AND AFTER, WHETHER OR NOT A BALL WAS FOUND.
+            # Carried off the reason's own payload rather than the
+            # answer's, because the answer is None exactly when the
+            # pictures matter most.
+            for _k, _u in (("rest_before_url", (_rest or {}).get(
+                                "image_before") or (_why_imgs or {}).get(
+                                "before")),
+                           ("rest_after_url", (_rest or {}).get("image")
+                            or (_why_imgs or {}).get("after"))):
+                if _u and Path(str(_u)).exists():
+                    c[_k] = _clip_url_for(Path(str(_u)).name)
             if _rest:
                 c["rest_spot"] = [int(_rest["xy"][0]), int(_rest["xy"][1])]
                 # WHICHEVER STEP ACTUALLY ANSWERED, not a guess. This
@@ -26377,17 +26415,6 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                 c["rest_persist"] = _rest.get("persist")
                 c["rest_n_before"] = _rest.get("n_before")
                 c["rest_n_new"] = _rest.get("n_new")
-                # THE BEFORE FRAME TOO. One picture of the after frame
-                # with a ring on it says a ball is there; it does not
-                # say the ball ARRIVED, which is the entire claim.
-                if _rest.get("image_before"):
-                    _pb = Path(str(_rest["image_before"]))
-                    if _pb.exists():
-                        c["rest_before_url"] = _clip_url_for(_pb.name)
-                if _rest.get("image"):
-                    _pa = Path(str(_rest["image"]))
-                    if _pa.exists():
-                        c["rest_after_url"] = _clip_url_for(_pa.name)
                 if _rest.get("image") and _shot.exists():
                     c["rest_image_url"] = (
                         f"{settings.app_base_url}/uploads/clips/{_shot.name}"
@@ -26958,15 +26985,34 @@ def _ascent_column_image(row, src_path, impact_frame, asc, spot) -> None:
         if spot:
             cv2.circle(im, (int(spot[0]), int(spot[1])), 12,
                        (60, 200, 255), 2, cv2.LINE_AA)
-        cv2.putText(
-            im,
-            "the ball's own column at the measured impact f%d: "
-            "%d chain(s) considered, %d point(s) taken - %s"
-            % (int(impact_frame), len(asc.get("considered") or []),
-               len(asc.get("points") or []),
-               str(asc.get("reason") or "")),
-            (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1,
-            cv2.LINE_AA)
+        # ── THE SAME FUNNEL THE SWEEP'S PICTURE PRINTS ──────────────
+        #
+        # The sweep's map says "303 detections -> 18 chains -> 3
+        # weighed | keep 40/frame | 2-frame diff | band x641-1900
+        # y0-497". This said "0 chain(s) considered, 0 point(s)
+        # taken" and stopped -- which cannot distinguish a band with
+        # no ball in it from a detector that emitted nothing, and
+        # those have opposite fixes. Where the two pictures disagree
+        # about the same ball, the only way to see WHY is to be able
+        # to read the same numbers off both.
+        _l1 = ("the ball's own column at the measured impact f%d: "
+               "%d chain(s) considered, %d point(s) taken - %s"
+               % (int(impact_frame), len(asc.get("considered") or []),
+                  len(asc.get("points") or []),
+                  str(asc.get("reason") or "")))
+        _l2 = ("%s detections -> %s tracks | keep %s/frame | %s diff | "
+               "band %s"
+               % (asc.get("n_dets", "?"), asc.get("n_tracks", "?"),
+                  asc.get("per_frame_cap", "?"),
+                  "3-frame" if asc.get("three_frame") else "2-frame",
+                  ",".join(str(v) for v in (asc.get("band") or []))
+                  or "?"))
+        for _i, _ln in enumerate((_l1, _l2)):
+            cv2.rectangle(im, (0, 10 + _i * 22), (im.shape[1], 32 + _i * 22),
+                          (20, 20, 20), -1)
+            cv2.putText(im, _ln, (12, 26 + _i * 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.46, (255, 255, 255), 1,
+                        cv2.LINE_AA)
         _nm = f"ascentcol-{row.id}-{secrets.token_hex(3)}.jpg"
         cv2.imwrite(str(CLIPS_DIR / _nm), im,
                     [int(cv2.IMWRITE_JPEG_QUALITY), 80])

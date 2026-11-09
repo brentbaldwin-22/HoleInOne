@@ -4227,6 +4227,10 @@ def find_ascents(
     sky_frac: float | None = None,
     left_frac: float | None = None,
     right_frac: float | None = None,
+    # THE HOLE'S OWN GATES AND DETECTOR SETTINGS, the same ones
+    # sweep_ascents is given. Without them this ran a DIFFERENT
+    # search -- see the note in the body.
+    gates=None,
 ) -> dict:
     """Did a ball rise away from `ball_xy` just after `impact_frame`?
 
@@ -4242,7 +4246,24 @@ def find_ascents(
     leave one unconfirmed rather than take the scan down.
     """
     out = {"ok": False, "points": [], "n_points": 0, "rise_px": 0,
-           "rate": 0.0, "bend_px": None, "reason": None}
+           "rate": 0.0, "bend_px": None, "reason": None,
+           "n_dets": 0, "n_tracks": 0}
+    # THE TUNED VALUES, BOUND AS LOCALS, exactly as sweep_ascents does
+    # it and for the same reason: every gate below then reads the
+    # hole's number through the name it already used, with no call
+    # site changed and no chance of one gate being tuned while the one
+    # beside it silently reads the module default.
+    _G = resolve_gates(gates)
+    ASCENT_MIN_POINTS = _G["ascent_min_points"]
+    ASCENT_MIN_RISE_FRAC = _G["ascent_min_rise_frac"]
+    ASCENT_RATE_LO = _G["ascent_rate_lo"]
+    ASCENT_RATE_HI = _G["ascent_rate_hi"]
+    ASCENT_MAX_BEND_PX = _G["ascent_max_bend_px"]
+    ASCENT_BEND_BASE_PX = _G["ascent_bend_base_px"]
+    ASCENT_BEND_PER_POINT_PX = _G["ascent_bend_per_point_px"]
+    _dstats: dict = {}
+    if min_points is None:
+        min_points = ASCENT_MIN_POINTS
     if not HAS_CV:
         out["reason"] = "opencv not installed"
         return out
@@ -4272,18 +4293,58 @@ def find_ascents(
         out["band"] = [_x0, 0, _x1 - _x0, band_h]
         out["band_warning"] = _band_too_thin(
             band_h, frame_h, ASCENT_MIN_RISE_FRAC, _tee_top)
-        dets = detect_movers_by_diff(input_path, f0, f1, sens=2,
-                                     per_frame=DESCENT_DIFF_PER_FRAME,
-                                     roi=(_x0, 0, _x1 - _x0, band_h),
-                                     three_frame=True)
+        # ── THE SAME DETECTOR THE SWEEP RUNS. IT WAS NOT. ───────────
+        #
+        # This was described, in its own docstring and in the produce
+        # report, as "the same search the whole-band sweep runs --
+        # same detector, same gates". It was not, in five ways, and
+        # together they are why a ball the sweep found as a clean
+        # 26-point chain came back here as ZERO TRACKS:
+        #
+        #   sensitivity   2, where the sweep runs 3 (diff threshold
+        #                 8 vs 5, blob cap 900 vs 1400)
+        #   per frame     30 kept, where the sweep keeps 40
+        #   differencing  THREE-frame, where the sweep stopped using
+        #                 it. That is the one that did the damage:
+        #                 ANDing the diffs either side of a frame
+        #                 refuses anything that does not overlap
+        #                 itself between frames, which is exactly a
+        #                 faint fast ball near the top of its climb.
+        #                 See the note in sweep_ascents.
+        #   ghost / merge / prefer_area  not passed at all
+        #   gates         module defaults, not the hole's
+        #
+        # A narrowed search that is also a weaker one is not a
+        # narrowed search. Every one of these now comes from the same
+        # resolved table the sweep reads.
+        _three = bool(int(_G["ascent_three_frame"]))
+        dets = detect_movers_by_diff(
+            input_path, f0, f1,
+            # 3, which is sweep_ascents' own default. Not a gate:
+            # it is a parameter of that function, and the table has
+            # no key for it.
+            sens=3,
+            per_frame=int(_G["ascent_per_frame"]),
+            roi=(_x0, 0, _x1 - _x0, band_h),
+            three_frame=_three,
+            ghost_px=(0.0 if _three else float(_G["ascent_ghost_px"])),
+            prefer_area=float(_G["ascent_prefer_area"]),
+            merge_px=float(_G["ascent_merge_px"]),
+            stats=_dstats)
+        out["n_dets"] = len(dets)
+        out["per_frame_cap"] = int(_G["ascent_per_frame"])
+        out["three_frame"] = _three
         if not dets:
             out["reason"] = (
                 (out.get("band_warning") or "")
                 + f"nothing moved in the band above the golfers "
-                f"(the top {band_h}px) after the strike")
+                f"(the top {band_h}px) in the {f1 - f0} frame(s) after "
+                f"the strike")
             return out
-        tracks = build_tracks(dets, 14.0, min_len=int(min_points),
+        tracks = build_tracks(dets, float(_G["ascent_corridor_px"]),
+                              min_len=int(min_points),
                               max_gap=DESCENT_MAX_GAP)
+        out["n_tracks"] = len(tracks)
         bx, by = float(ball_xy[0]), float(ball_xy[1])
         best = None
         # EVERY TRACK AND WHY IT LOST. Same reason the descent search
