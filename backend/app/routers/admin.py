@@ -10790,6 +10790,48 @@ def _green_outline_for(db, green_camera_id):
     return pts, ([frame.get("w"), frame.get("h")] if frame else None)
 
 
+# WHEN TO LOOK AT THE GREEN, AS A LADDER RATHER THAN A NUMBER.
+#
+# The one failure this has, over and over, is an after frame that is
+# TOO LATE: the group reaches the green, somebody marks the ball, and
+# the picture shows a green with nothing new on it -- which reads
+# exactly like a shot that missed. On a short hole that can happen
+# within ten seconds of the strike.
+#
+# A single constant cannot be right for both a 230-yard par 3 and a
+# 110-yard one, and picking one by fitting it to a clip is how the
+# last three constants in this file came to be provisional. So the
+# search tries a few and takes the first that finds a ball. Each
+# attempt is two frame grabs and one zoned pass; the whole ladder
+# costs less than the plate comparison it replaced.
+#
+# Ordered soonest-after-settling first, because the earlier the after
+# frame the less has had time to change on the green -- a ball found
+# at +8s is a ball found against less clutter than the same ball
+# found at +20s.
+GREEN_AFTER_LADDER_SEC = (8.0, 14.0, 20.0, 5.0)
+
+# ...and the before frame, which has the opposite problem and almost
+# never bites: it only has to be before the ball arrived.
+GREEN_BEFORE_SEC = 6.0
+
+
+def _green_windows(impact_sec):
+    """[(before_sec, after_sec), ...] to try, in order.
+
+    `impact_sec` None means the caller has no strike to anchor on --
+    a hand-uploaded pair, or the operator's button on a clip with no
+    camera event. It then falls back to the fixed pair the button
+    has always used, because an unanchored guess at "a while after
+    the strike" is not better than the one the operator knows.
+    """
+    if impact_sec is None:
+        return [(2.0, 13.0)]
+    _i = float(impact_sec)
+    return [(max(0.0, _i - GREEN_BEFORE_SEC), _i + _a)
+            for _a in GREEN_AFTER_LADDER_SEC]
+
+
 def _rest_spot_at(db, row, green_path, green_impact_sec: float,
                   green_camera_id: int, marks_path=None, landing_xy=None,
                   images_out=None):
@@ -10821,17 +10863,41 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
     # What it finds in the before frame was already lying there; what
     # is in the after frame and not the before one is the shot.
     pts, drawn_at = _green_outline_for(db, green_camera_id)
-    _bsec = max(0.0, green_impact_sec - REST_PLATE_BEFORE_SEC)
-    _asec = green_impact_sec + REST_PLATE_AFTER_SEC
+    # ── THE SAME LADDER THE BUTTON WALKS ────────────────────────────
+    #
+    # It used to be one fixed pair, impact-6 and impact+14, while the
+    # operator's Find ball on green button used 2.0 and 13.0 -- so
+    # the button and the produce were looking at DIFFERENT FRAMES,
+    # twenty seconds apart against eleven, and the button found balls
+    # the produce did not. They are the same call on the same ladder
+    # now; whichever window answers is recorded, so the two can be
+    # held against each other.
     _tiles = {"ok": False, "why": "could not read both frames"}
-    _fb = ai_tracer._grab_colour_frame(green_path, _bsec)
-    _fa = ai_tracer._grab_colour_frame(green_path, _asec)
-    if _fb is not None and _fa is not None:
-        _tiles = greenball.find_balls_on_green(
+    _tried = []
+    _bsec = _asec = None
+    for _bs, _as in _green_windows(green_impact_sec):
+        _fb = ai_tracer._grab_colour_frame(green_path, _bs)
+        _fa = ai_tracer._grab_colour_frame(green_path, _as)
+        if _fb is None or _fa is None:
+            _tried.append("%.1f/%.1fs: could not read both frames"
+                          % (_bs, _as))
+            continue
+        _try = greenball.find_balls_on_green(
             _fb, _fa, polygon=pts, drawn_at=drawn_at,
             out_dir=(Path(marks_path).parent if marks_path else None),
             stem=(Path(marks_path).stem + "-tiles" if marks_path
                   else "greenball"))
+        _bsec, _asec = _bs, _as
+        _tiles = _try
+        _tried.append("%.1f/%.1fs: %s" % (_bs, _as,
+                                          _try.get("why") or "no answer"))
+        # FIRST THAT FINDS A BALL WINS. A later window is not a
+        # better look at the same green, it is a look at a green
+        # more things have had time to happen on.
+        if _try.get("best"):
+            break
+    _tiles["window"] = (None if _bsec is None else [_bsec, _asec])
+    _tiles["windows_tried"] = _tried
     if _tiles.get("best"):
         # MORE THAN ONE NEW THING, SO ASK WHICH -- and only then. The
         # detector says where, which a model estimates badly; the
@@ -10863,7 +10929,9 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
              # says a ball is there, not that it arrived.
              "image_before": (_tiles.get("images") or {}).get("before"),
              "n_before": len(_tiles.get("before") or []),
-             "n_new": len(_tiles.get("new") or [])},
+             "n_new": len(_tiles.get("new") or []),
+             "window": _tiles.get("window"),
+             "windows_tried": _tiles.get("windows_tried")},
             ("came to rest at %d,%d — %gpx across, %g levels brighter "
              "than its surroundings, and not there before the shot. %s%s"
              % (round(_bb["x"]), round(_bb["y"]), _bb["diam_px"],
@@ -10886,6 +10954,8 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
     # those.
     if images_out is not None:
         images_out.update(_tiles.get("images") or {})
+        images_out["window"] = _tiles.get("window")
+        images_out["windows_tried"] = _tiles.get("windows_tried")
 
     # ── 2. ask the model ────────────────────────────────────────────
     #
@@ -20378,19 +20448,58 @@ def long_upload_green_rest(upload_id: int,
     # It answers both halves at once. What it finds in the BEFORE
     # frame is the balls already lying there; what is in the AFTER
     # frame and not in the BEFORE one is the shot.
-    _bsec = _b if _b is not None else 2.0
-    _asec = _a if _a is not None else 13.0
-    _f_before = ai_tracer._grab_colour_frame(path, _bsec)
-    _f_after = ai_tracer._grab_colour_frame(path, _asec)
+    # ── THE SAME LADDER THE PRODUCE WALKS ───────────────────────────
+    #
+    # The button used 2.0 and 13.0 and the produce used impact-6 and
+    # impact+14, so the two looked at DIFFERENT FRAMES -- eleven
+    # seconds apart against twenty -- and the button found balls the
+    # produce did not. An operator checking one against the other is
+    # the whole point of having the button, and it was checking a
+    # different question.
+    #
+    # Typed times still win outright: that is what the boxes are for,
+    # and an operator who has worked out which seconds show the ball
+    # is not to be overridden by a ladder.
+    _imp = None
+    try:
+        _ri = _rig_impact_sec(db, row, upload_id)
+        if _ri is not None:
+            _ev2 = (db.get(CameraEvent, row.camera_event_id)
+                    if getattr(row, "camera_event_id", None) else None)
+            _gs = getattr(_ev2, "green_recording_started_at", None)
+            _ts = getattr(_ev2, "tee_recording_started_at", None)
+            _delta = ((_gs - _ts).total_seconds()
+                      if (_gs is not None and _ts is not None) else 0.0)
+            _imp = max(0.0, float(_ri["sec"]) - _delta)
+    except Exception as _ix:  # noqa: BLE001
+        log.debug("green rest: no impact to anchor on (%s)", _ix)
+    _wins = ([(float(_b if _b is not None else 2.0),
+               float(_a if _a is not None else 13.0))]
+             if (_b is not None or _a is not None)
+             else _green_windows(_imp))
     tiles = {"ok": False, "why": "could not read both frames"}
-    if _f_before is not None and _f_after is not None:
+    _tried, _bsec, _asec = [], None, None
+    for _bs, _as in _wins:
+        _f_before = ai_tracer._grab_colour_frame(path, _bs)
+        _f_after = ai_tracer._grab_colour_frame(path, _as)
+        if _f_before is None or _f_after is None:
+            _tried.append("%.1f/%.1fs: could not read both frames"
+                          % (_bs, _as))
+            continue
         tiles = greenball.find_balls_on_green(
             _f_before, _f_after,
             polygon=roi.get("points"),
             drawn_at=[frame.get("w"), frame.get("h")] if frame else None,
             out_dir=CLIPS_DIR, stem=_stem)
-    tiles["before_sec"] = _bsec
-    tiles["after_sec"] = _asec
+        _bsec, _asec = _bs, _as
+        _tried.append("%.1f/%.1fs: %s"
+                      % (_bs, _as, tiles.get("why") or "no answer"))
+        if tiles.get("best"):
+            break
+    tiles["before_sec"] = _bsec if _bsec is not None else 0.0
+    tiles["after_sec"] = _asec if _asec is not None else 0.0
+    tiles["windows_tried"] = _tried
+    tiles["anchored_on"] = (None if _imp is None else round(_imp, 2))
 
     # ── THE PICTURES, WHETHER OR NOT IT FOUND ANYTHING ──────────────
     #
@@ -25473,7 +25582,9 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                      "nothing was lying there to be confused with the "
                      "shot."
                      + ("" if _c4.get("rest_n_before") is None else
-                        " %d found." % _c4["rest_n_before"])),
+                        " %d found." % _c4["rest_n_before"])
+                     + ("" if not _c4.get("rest_window") else
+                        " Frame at %.1fs." % _c4["rest_window"][0])),
              "url": _c4.get("rest_before_url")},
             {"name": "green-after",
              "title": "3b · ...and after it settled",
@@ -25482,6 +25593,11 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                      "detector that finds a ball at address on the tee, "
                      "each zone scaled up first because a ball a "
                      "hundred yards out is three pixels across. "
+                     + ("" if not _c4.get("rest_window") else
+                        "Frame at %.1fs. " % _c4["rest_window"][1])
+                     + ("" if not _c4.get("rest_windows_tried") else
+                        "Windows tried — "
+                        + "; ".join(_c4["rest_windows_tried"]) + ". ")
                      + str(_c4.get("rest_reason") or "")),
              "url": _c4.get("rest_after_url")},
             {"name": "descent",
@@ -26401,6 +26517,15 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                             or (_why_imgs or {}).get("after"))):
                 if _u and Path(str(_u)).exists():
                     c[_k] = _clip_url_for(Path(str(_u)).name)
+            # WHICH SECONDS IT LOOKED AT, AND WHICH IT TRIED. The one
+            # failure this has is an after frame too late -- the group
+            # on the green, the ball in a pocket -- and that is
+            # invisible without the number.
+            c["rest_window"] = ((_rest or {}).get("window")
+                                or (_why_imgs or {}).get("window"))
+            c["rest_windows_tried"] = ((_rest or {}).get("windows_tried")
+                                       or (_why_imgs or {}).get(
+                                           "windows_tried"))
             if _rest:
                 c["rest_spot"] = [int(_rest["xy"][0]), int(_rest["xy"][1])]
                 # WHICHEVER STEP ACTUALLY ANSWERED, not a guess. This

@@ -4404,8 +4404,54 @@ def find_ascents(
             _oy = float(pts[0]["y"]) - _vy * _back
             d0 = math.hypot(_ox - bx, _oy - by)
             _row["from_px"] = int(round(d0))
-            if d0 > ASCENT_START_NEAR_PX:
-                _row["why"] = (f"runs back to {int(d0)}px from the ball, {int(ASCENT_START_NEAR_PX)}px")
+            # ── THE SAME TEST TWICE, AND THE SECOND ONE IS WORSE ────
+            #
+            # When the caller has narrowed the search to a column
+            # round a MEASURED ball -- which is what left_frac and
+            # right_frac are for -- this gate asks the same question
+            # again through a linear back-run, and the back-run is
+            # the weaker instrument by a long way. The note above
+            # says why: a real ascent's first point is routinely
+            # 200px up, the heading is taken from four two-pixel
+            # centroids, and it is extrapolated back over that whole
+            # distance.
+            #
+            # Measured on a live clip: the sweep found the flight as
+            # a 12-point chain and accepted it, because the sweep
+            # only asks that the back-run reach the tee LINE inside
+            # the hitting area. The column search found a 14-point
+            # chain over the same footage and threw it away for
+            # "runs back to 393px from the ball, limit 120px" -- a
+            # chain inside a column we had already refused to look
+            # outside of.
+            #
+            # SO A NARROWED SEARCH DOES NOT RUN IT AT ALL. The gate
+            # exists to tie a chain to a ball; a search that refused
+            # to look outside a column round that ball has already
+            # done that, with a measurement, and this re-does it with
+            # an extrapolation. Widening the limit would be fitting a
+            # constant to one clip; dropping it where it is redundant
+            # is the rule.
+            #
+            # The distance is still measured and still reported --
+            # it is the single most useful number for telling a real
+            # chain from a tree edge, and an operator reading the
+            # considered list wants it. It is just not a verdict any
+            # more.
+            #
+            # Unnarrowed -- the per-candidate use, where the caller
+            # has a ball and no column -- it gates exactly as before.
+            _narrowed = (_x1 - _x0) < frame_w
+            _row["from_limit_px"] = (None if _narrowed
+                                     else int(ASCENT_START_NEAR_PX))
+            if _narrowed:
+                _row["from_note"] = (
+                    "%dpx from the ball; not gated on, because the "
+                    "search was already narrowed to a column round it"
+                    % int(d0))
+            if (not _narrowed) and d0 > ASCENT_START_NEAR_PX:
+                _row["why"] = (f"runs back to {int(d0)}px from the ball, "
+                               f"limit {int(ASCENT_START_NEAR_PX)}px")
                 continue
             span_f = max(1, int(pts[-1]["frame"]) - int(pts[0]["frame"]))
             rate = (rise / span_f) * float(fps or 30.0) / frame_h
