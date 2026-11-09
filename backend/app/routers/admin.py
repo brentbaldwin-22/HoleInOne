@@ -26139,6 +26139,184 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
          "swing searches. Two header reads; it should be instant.",
          None, None, _lap())
 
+    # ── THE GREEN RUNS BEFORE ANYTHING CAN RETURN EARLY ─────────────
+    #
+    # THIS WAS DEAD CODE ON EVERY PRODUCE. It used to sit below the
+    # descent matching, after an `if not _events: return out` that
+    # made sense when the old descent search ran and found chains to
+    # match. That search was scrapped -- `_do_descent` is False now --
+    # so `_events` is empty on EVERY run, the early return fires every
+    # time, and everything below it never executed: no ball on the
+    # green, no reverse walk, no before/after pictures, on any clip,
+    # ever. Three rounds of fixing the ladder, the pictures and the
+    # reasons changed nothing because none of that code was reached.
+    #
+    # The green does not depend on the tee half having matched
+    # anything. It needs a clip, a camera and an impact, and it has
+    # all three here.
+    _t_id, _g_id = _camera_pair_for(db, row)
+    out["n_rest"] = 0
+    if _g_id:
+        for i, c in enumerate(_clips):
+            _imp = c.get("impact_frame")
+            if _imp is None:
+                continue
+            if progress:
+                progress(f"Looking for where it came to rest, swing "
+                         f"{i + 1} of {len(_clips)}", i, len(_clips))
+            _base = float(_imp) / float(fps or 30.0) - float(out["delta_sec"] or 0.0)
+            _shot = CLIPS_DIR / f"green-rest-{row.id}-s{i + 1}.jpg"
+            _why_imgs: dict = {}
+            _rest, _why = _rest_spot_at(
+                db, row, _gp, _base, int(_g_id),
+                marks_path=_shot, landing_xy=c.get("landing_spot"),
+                images_out=_why_imgs)
+            c["rest_reason"] = _why
+            # THE BEFORE AND AFTER, WHETHER OR NOT A BALL WAS FOUND.
+            # Carried off the reason's own payload rather than the
+            # answer's, because the answer is None exactly when the
+            # pictures matter most.
+            for _k, _u in (("rest_before_url", (_rest or {}).get(
+                                "image_before") or (_why_imgs or {}).get(
+                                "before")),
+                           ("rest_after_url", (_rest or {}).get("image")
+                            or (_why_imgs or {}).get("after"))):
+                if _u and Path(str(_u)).exists():
+                    c[_k] = _clip_url_for(Path(str(_u)).name)
+            # WHICH SECONDS IT LOOKED AT, AND WHICH IT TRIED. The one
+            # failure this has is an after frame too late -- the group
+            # on the green, the ball in a pocket -- and that is
+            # invisible without the number.
+            c["rest_window"] = ((_rest or {}).get("window")
+                                or (_why_imgs or {}).get("window"))
+            c["rest_windows_tried"] = ((_rest or {}).get("windows_tried")
+                                       or (_why_imgs or {}).get(
+                                           "windows_tried"))
+            if _rest:
+                c["rest_spot"] = [int(_rest["xy"][0]), int(_rest["xy"][1])]
+                # WHICHEVER STEP ACTUALLY ANSWERED, not a guess. This
+                # was hardcoded to "plates" when the plates were the
+                # only thing `_rest_spot_at` could return; it now runs
+                # the zoned detector first and the model second, and a
+                # row that says "plates" about a measurement the
+                # detector made is a row that cannot be checked
+                # against the button.
+                c["rest_source"] = _rest.get("source") or "plates"
+                c["rest_area"] = _rest.get("area")
+                c["rest_persist"] = _rest.get("persist")
+                c["rest_n_before"] = _rest.get("n_before")
+                c["rest_n_new"] = _rest.get("n_new")
+                if _rest.get("image") and _shot.exists():
+                    c["rest_image_url"] = (
+                        f"{settings.app_base_url}/uploads/clips/{_shot.name}"
+                        f"?v={int(_shot.stat().st_mtime)}")
+                out["n_rest"] += 1
+    else:
+        out["rest_reason"] = "no green camera on this pair"
+    _sub("4b", "Finding where it came to rest",
+         "The green cut into four zones, each scaled up, and the same "
+         "white top-hat detector Test Cut uses for a ball at address — "
+         "run on a frame from before the shot and one from after it. "
+         "What is there now and was not there before is the shot. This "
+         "is now the GATE on everything below it: no ball at rest, no "
+         "descent.",
+         out.get("n_rest"), "found at rest", _lap())
+
+    # ── AND THE DESCENT, WALKED BACKWARDS FROM IT ───────────────────
+    #
+    # NO BALL AT REST, NO DESCENT. That is the whole contract, and it
+    # is the opposite of what the old search did: hunt the green and
+    # attach whatever best survived the gates, which is how a landing
+    # appeared on clips where the shot missed the green entirely. A
+    # comet drawn arriving somewhere the ball never went is worse than
+    # no comet at all.
+    #
+    # Where there IS a measured ball, the walk starts on it and steps
+    # backwards one frame at a time, searching a small zoomed window
+    # around where the ball must have been. The window is the zone --
+    # it moves with the ball, and it is the only place the detector
+    # ever looks. See services/greendescent.py.
+    from ..services import greendescent as _gdsc
+
+    out["n_descent"] = 0
+    out["descents_back"] = []
+    for i, c in enumerate(_clips):
+        if not c.get("rest_spot") or c.get("impact_frame") is None:
+            continue
+        if progress:
+            progress(f"Walking the descent back from the ball, swing "
+                     f"{i + 1} of {len(_clips)}", i, len(_clips))
+        # THE FRAME THE BALL WAS MEASURED IN, which is the after plate's
+        # own instant. Starting anywhere else would start the walk on a
+        # frame nobody has checked the ball is in.
+        _base = float(c["impact_frame"]) / float(fps or 30.0) \
+            - float(out["delta_sec"] or 0.0)
+        _rf = int(round((_base + REST_PLATE_AFTER_SEC) * float(_gfps or 60.0)))
+        _walk = _gdsc.track_descent_back(
+            _gp, c["rest_spot"], _rf,
+            out_dir=CLIPS_DIR, stem=f"gdesc-{row.id}-s{i + 1}")
+        c["descent_back_why"] = _walk.get("why")
+        _row = {"swing": i + 1, "ok": bool(_walk.get("ok")),
+                "n_points": _walk.get("n_points"),
+                "n_missed": _walk.get("n_missed"),
+                "fall_px": _walk.get("fall_px"),
+                "first_frame": _walk.get("first_frame"),
+                "pitch_frame": _walk.get("pitch_frame"),
+                "pitch_xy": _walk.get("pitch_xy"),
+                "why": _walk.get("why"),
+                "image_url": _clip_url_for(Path(_walk["image"]).name)
+                if _walk.get("image") else None,
+                "windows": [
+                    dict(w, url=_clip_url_for(Path(w["path"]).name))
+                    for w in (_walk.get("windows") or [])
+                    if w.get("path")],
+                }
+        out["descents_back"].append(_row)
+        if not _walk.get("ok"):
+            continue
+        _pts = _walk["points"]
+        # ── WHAT THE REST OF THE RUN READS ──────────────────────────
+        #
+        # `landing_spot` is the PITCH MARK where the walk could name
+        # one -- the first frame it stopped falling, which is the mark
+        # on the green -- and the resting place otherwise. Those are
+        # different events and the difference is a bounce and a roll,
+        # so the one being used is recorded rather than left to be
+        # guessed from the number.
+        if _walk.get("pitch_xy"):
+            c["landing_frame"] = int(_walk["pitch_frame"])
+            c["landing_spot"] = [int(_walk["pitch_xy"][0]),
+                                 int(_walk["pitch_xy"][1])]
+            c["landing_from"] = "the pitch mark, walked back from the ball"
+        else:
+            c["landing_frame"] = int(_pts[-1]["frame"])
+            c["landing_spot"] = [int(round(_pts[-1]["x"])),
+                                 int(round(_pts[-1]["y"]))]
+            c["landing_from"] = ("the resting place — the walk never "
+                                 "saw it stop falling")
+        c["landing_sec"] = round(
+            float(c["landing_frame"]) / float(_gfps or 60.0), 2)
+        # THE COMET IS THE WALK. Drawn in the order the ball flew, and
+        # only the frames something was actually seen in: an
+        # extrapolated point is a position nobody measured and a comet
+        # is a claim about where the ball was.
+        c["green_track"] = [{"frame": int(q["frame"]), "x": int(round(q["x"])),
+                             "y": int(round(q["y"]))}
+                            for q in _pts if q.get("found")]
+        c["landing_points"] = len(c["green_track"])
+        c["descent_first_frame"] = int(_walk["first_frame"])
+        out["n_descent"] += 1
+        out["n_matched"] += 1
+    _sub("4c", "Walking the descent back from the ball",
+         "One frame-by-frame walk per swing that has a ball at rest, "
+         "backwards from it. Each step searches a small window around "
+         "where the ball must have been, scaled up so the top-hat has "
+         "something to work with. The window is the only place the "
+         "detector looks, so nothing else on the green is ever a "
+         "candidate — a branch in the treeline is not rejected, it is "
+         "never considered.",
+         out.get("n_descent"), "walked", _lap())
+
     # ONLY THE SECONDS A BALL COULD BE IN. This is the whole reason the
     # ascent half runs first, and getting it wrong the first time was
     # instructive: scanning the entire green clip weighed 1,109 chains
@@ -26240,10 +26418,10 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         _imp = c.get("impact_frame")
         if _imp is None:
             continue
-        _base = float(_imp) / float(fps or 30.0) - float(out["delta_sec"])
+        _base = float(_imp) / float(fps or 30.0) - float(out["delta_sec"] or 0.0)
         if _from_end and c.get("last_frame") is not None:
             _end = float(c["last_frame"]) / float(fps or 30.0)
-            _lo = _end - float(out["delta_sec"])
+            _lo = _end - float(out["delta_sec"] or 0.0)
             _hi = _lo + _win_sec
             c["landing_window_sec"] = [round(_lo, 2), round(_hi, 2)]
             c["landing_window_from"] = "ascent end"
@@ -26296,7 +26474,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     out["windows"] = [[a, b] for a, b in _wins]
     out["n_frames_searched"] = sum(b - a + 1 for a, b in _wins)
     out["n_frames_green"] = _n_green
-    _sub("4b", "Placing each swing's flight window",
+    _sub("4d", "Placing each swing's flight window",
          "A struck ball is in the air five to eight seconds, so each "
          "swing names a few seconds of the green clip and nothing else "
          "is looked at. Overlapping stretches are merged so shared "
@@ -26306,7 +26484,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     if not _wins:
         _ascent_window_views(row, _gp, out, _clips, _gfps, fps,
                              _tee_start, _green_start)
-        _sub("4e", "Drawing the windows", "One picture per swing.",
+        _sub("4h", "Drawing the windows", "One picture per swing.",
              None, None, _lap())
         out["reason"] = "no swing had an impact frame to search from"
         return out
@@ -26376,7 +26554,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                   # reads, and dropping the key here meant the block
                   # explaining the gates never rendered at all.
                   "gates": _gd.get("gates")}
-    _sub("4c", "Looking for the ball coming down",
+    _sub("4g", "Looking for the ball coming down",
          "One segmentation pass per window — mog2, the plate detector "
          "and frame differencing over every frame of it, then the "
          "detections walked into chains and judged. This is the "
@@ -26429,7 +26607,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         # visible in the heat map and nowhere else.
         _ascent_window_views(row, _gp, out, _clips, _gfps, fps,
                              _tee_start, _green_start)
-        _sub("4e", "Drawing the windows",
+        _sub("4h", "Drawing the windows",
              "One picture per swing: its own few seconds of green, "
              "every detection in them, and the chains that were "
              "weighed. A re-read of the green clip per swing.",
@@ -26535,7 +26713,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                 c["descent_lag_sec"] = round(
                     float(c["landing_sec"])
                     - (float(c["last_frame"]) / float(fps or 30.0)
-                       - float(out["delta_sec"])), 2)
+                       - float(out["delta_sec"] or 0.0)), 2)
         except (TypeError, ValueError):
             pass
         # THE COMET IS THE CHAIN WE ALREADY HAVE. Without this the
@@ -26592,177 +26770,15 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     # ends where the ball stopped FALLING -- the pitch mark -- and a
     # ball bounces and rolls from there. Both are kept, because the
     # comet wants the arrival and the distance wants the finish.
-    _sub("4d", "Matching each swing to a landing",
+    _sub("4f", "Matching each swing to a landing",
          "Every possible swing-to-landing pair ranked by how far the "
          "chain actually fell, then assigned down the list so no "
          "landing is drawn twice. In memory; the cost is nil.",
          out["n_matched"], "matched", _lap())
-    _t_id, _g_id = _camera_pair_for(db, row)
-    out["n_rest"] = 0
-    if _g_id:
-        for i, c in enumerate(_clips):
-            _imp = c.get("impact_frame")
-            if _imp is None:
-                continue
-            if progress:
-                progress(f"Looking for where it came to rest, swing "
-                         f"{i + 1} of {len(_clips)}", i, len(_clips))
-            _base = float(_imp) / float(fps or 30.0) - float(out["delta_sec"])
-            _shot = CLIPS_DIR / f"green-rest-{row.id}-s{i + 1}.jpg"
-            _why_imgs: dict = {}
-            _rest, _why = _rest_spot_at(
-                db, row, _gp, _base, int(_g_id),
-                marks_path=_shot, landing_xy=c.get("landing_spot"),
-                images_out=_why_imgs)
-            c["rest_reason"] = _why
-            # THE BEFORE AND AFTER, WHETHER OR NOT A BALL WAS FOUND.
-            # Carried off the reason's own payload rather than the
-            # answer's, because the answer is None exactly when the
-            # pictures matter most.
-            for _k, _u in (("rest_before_url", (_rest or {}).get(
-                                "image_before") or (_why_imgs or {}).get(
-                                "before")),
-                           ("rest_after_url", (_rest or {}).get("image")
-                            or (_why_imgs or {}).get("after"))):
-                if _u and Path(str(_u)).exists():
-                    c[_k] = _clip_url_for(Path(str(_u)).name)
-            # WHICH SECONDS IT LOOKED AT, AND WHICH IT TRIED. The one
-            # failure this has is an after frame too late -- the group
-            # on the green, the ball in a pocket -- and that is
-            # invisible without the number.
-            c["rest_window"] = ((_rest or {}).get("window")
-                                or (_why_imgs or {}).get("window"))
-            c["rest_windows_tried"] = ((_rest or {}).get("windows_tried")
-                                       or (_why_imgs or {}).get(
-                                           "windows_tried"))
-            if _rest:
-                c["rest_spot"] = [int(_rest["xy"][0]), int(_rest["xy"][1])]
-                # WHICHEVER STEP ACTUALLY ANSWERED, not a guess. This
-                # was hardcoded to "plates" when the plates were the
-                # only thing `_rest_spot_at` could return; it now runs
-                # the zoned detector first and the model second, and a
-                # row that says "plates" about a measurement the
-                # detector made is a row that cannot be checked
-                # against the button.
-                c["rest_source"] = _rest.get("source") or "plates"
-                c["rest_area"] = _rest.get("area")
-                c["rest_persist"] = _rest.get("persist")
-                c["rest_n_before"] = _rest.get("n_before")
-                c["rest_n_new"] = _rest.get("n_new")
-                if _rest.get("image") and _shot.exists():
-                    c["rest_image_url"] = (
-                        f"{settings.app_base_url}/uploads/clips/{_shot.name}"
-                        f"?v={int(_shot.stat().st_mtime)}")
-                out["n_rest"] += 1
-    else:
-        out["rest_reason"] = "no green camera on this pair"
-    _sub("4f", "Finding where it came to rest",
-         "The green cut into four zones, each scaled up, and the same "
-         "white top-hat detector Test Cut uses for a ball at address — "
-         "run on a frame from before the shot and one from after it. "
-         "What is there now and was not there before is the shot. This "
-         "is now the GATE on everything below it: no ball at rest, no "
-         "descent.",
-         out.get("n_rest"), "found at rest", _lap())
-
-    # ── AND THE DESCENT, WALKED BACKWARDS FROM IT ───────────────────
-    #
-    # NO BALL AT REST, NO DESCENT. That is the whole contract, and it
-    # is the opposite of what the old search did: hunt the green and
-    # attach whatever best survived the gates, which is how a landing
-    # appeared on clips where the shot missed the green entirely. A
-    # comet drawn arriving somewhere the ball never went is worse than
-    # no comet at all.
-    #
-    # Where there IS a measured ball, the walk starts on it and steps
-    # backwards one frame at a time, searching a small zoomed window
-    # around where the ball must have been. The window is the zone --
-    # it moves with the ball, and it is the only place the detector
-    # ever looks. See services/greendescent.py.
-    from ..services import greendescent as _gdsc
-
-    out["n_descent"] = 0
-    out["descents_back"] = []
-    for i, c in enumerate(_clips):
-        if not c.get("rest_spot") or c.get("impact_frame") is None:
-            continue
-        if progress:
-            progress(f"Walking the descent back from the ball, swing "
-                     f"{i + 1} of {len(_clips)}", i, len(_clips))
-        # THE FRAME THE BALL WAS MEASURED IN, which is the after plate's
-        # own instant. Starting anywhere else would start the walk on a
-        # frame nobody has checked the ball is in.
-        _base = float(c["impact_frame"]) / float(fps or 30.0) \
-            - float(out["delta_sec"])
-        _rf = int(round((_base + REST_PLATE_AFTER_SEC) * float(_gfps or 60.0)))
-        _walk = _gdsc.track_descent_back(
-            _gp, c["rest_spot"], _rf,
-            out_dir=CLIPS_DIR, stem=f"gdesc-{row.id}-s{i + 1}")
-        c["descent_back_why"] = _walk.get("why")
-        _row = {"swing": i + 1, "ok": bool(_walk.get("ok")),
-                "n_points": _walk.get("n_points"),
-                "n_missed": _walk.get("n_missed"),
-                "fall_px": _walk.get("fall_px"),
-                "first_frame": _walk.get("first_frame"),
-                "pitch_frame": _walk.get("pitch_frame"),
-                "pitch_xy": _walk.get("pitch_xy"),
-                "why": _walk.get("why"),
-                "image_url": _clip_url_for(Path(_walk["image"]).name)
-                if _walk.get("image") else None,
-                "windows": [
-                    dict(w, url=_clip_url_for(Path(w["path"]).name))
-                    for w in (_walk.get("windows") or [])
-                    if w.get("path")],
-                }
-        out["descents_back"].append(_row)
-        if not _walk.get("ok"):
-            continue
-        _pts = _walk["points"]
-        # ── WHAT THE REST OF THE RUN READS ──────────────────────────
-        #
-        # `landing_spot` is the PITCH MARK where the walk could name
-        # one -- the first frame it stopped falling, which is the mark
-        # on the green -- and the resting place otherwise. Those are
-        # different events and the difference is a bounce and a roll,
-        # so the one being used is recorded rather than left to be
-        # guessed from the number.
-        if _walk.get("pitch_xy"):
-            c["landing_frame"] = int(_walk["pitch_frame"])
-            c["landing_spot"] = [int(_walk["pitch_xy"][0]),
-                                 int(_walk["pitch_xy"][1])]
-            c["landing_from"] = "the pitch mark, walked back from the ball"
-        else:
-            c["landing_frame"] = int(_pts[-1]["frame"])
-            c["landing_spot"] = [int(round(_pts[-1]["x"])),
-                                 int(round(_pts[-1]["y"]))]
-            c["landing_from"] = ("the resting place — the walk never "
-                                 "saw it stop falling")
-        c["landing_sec"] = round(
-            float(c["landing_frame"]) / float(_gfps or 60.0), 2)
-        # THE COMET IS THE WALK. Drawn in the order the ball flew, and
-        # only the frames something was actually seen in: an
-        # extrapolated point is a position nobody measured and a comet
-        # is a claim about where the ball was.
-        c["green_track"] = [{"frame": int(q["frame"]), "x": int(round(q["x"])),
-                             "y": int(round(q["y"]))}
-                            for q in _pts if q.get("found")]
-        c["landing_points"] = len(c["green_track"])
-        c["descent_first_frame"] = int(_walk["first_frame"])
-        out["n_descent"] += 1
-        out["n_matched"] += 1
-    _sub("4g", "Walking the descent back from the ball",
-         "One frame-by-frame walk per swing that has a ball at rest, "
-         "backwards from it. Each step searches a small window around "
-         "where the ball must have been, scaled up so the top-hat has "
-         "something to work with. The window is the only place the "
-         "detector looks, so nothing else on the green is ever a "
-         "candidate — a branch in the treeline is not rejected, it is "
-         "never considered.",
-         out.get("n_descent"), "walked", _lap())
 
     _ascent_window_views(row, _gp, out, _clips, _gfps, fps,
                          _tee_start, _green_start)
-    _sub("4e", "Drawing the windows",
+    _sub("4h", "Drawing the windows",
          "One picture per swing: its own few seconds of green, every "
          "detection in them, and the chains that were weighed, with "
          "the one the swing claimed marked. A re-read of the green "
