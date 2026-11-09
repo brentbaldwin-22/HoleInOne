@@ -25039,6 +25039,55 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                        "tee line, as before"
                        % (_al.get("measured_why") or "not measured"))}
 
+    # ── THE FOUR STEPS AS FOUR PICTURES ────────────────────────────
+    #
+    # SAME SHAPE THE GREEN'S DIALOG USES, for the same reason: a
+    # stage that reports a sentence is a stage nobody can check. Each
+    # entry is a title, what the picture proves, and the picture. A
+    # step with no picture is left out rather than given an empty
+    # frame -- an absence in this list is itself the finding, and the
+    # detail line above says which step produced nothing.
+    _al1 = rep.get("ai_launch") or {}
+    _ac1 = rep.get("ascent_column") or {}
+    rep["stage1_stages"] = [
+        q for q in (
+            {"name": "golfer",
+             "title": "1 · The golfer",
+             "why": ("The motion heat the swing judge is shown, with "
+                     "what this run aimed at drawn on it: green is the "
+                     "body it picked, cyan the box handed on, the cross "
+                     "the tee spot. A golfer at address is not moving "
+                     "their legs, so the heat stops at the waist -- "
+                     "where it cannot place anybody, a person detector "
+                     "does, and the line above says which answered. "
+                     + str(_al1.get("rect_from") or "")),
+             "url": ((_al1.get("swing_check") or {}).get("image_url"))},
+            {"name": "ball",
+             "title": "2 and 3 · The ball at rest, and the frame it left",
+             "why": ("Every frame the departure search judged, cropped "
+                     "to the box it searched and scaled up. A green "
+                     "ring is the ball still sitting there, a blue one "
+                     "is that spot empty, and the frame marked IMPACT "
+                     "is the first with nothing there and nothing "
+                     "there after it. The two ways this goes wrong -- "
+                     "losing a ball a club head passed in front of, "
+                     "and keeping a shoe that was never the ball -- "
+                     "read identically in words and are obvious here. "
+                     + str(_al1.get("measured_why") or "")),
+             "url": _al1.get("measured_image_url")},
+            {"name": "ascent",
+             "title": "4 · The ascent, in the ball's own column",
+             "why": ("The SAME search the whole-band sweep runs -- same "
+                     "detector, same gates, same skyline cutoff, which "
+                     "is why it never looks at the golfer -- narrowed "
+                     "to the column the ball actually crosses. Green is "
+                     "the chain taken, grey every chain considered with "
+                     "the gate it died on, and the ring is the measured "
+                     "ball every rejection is a distance from. "
+                     + str(_ac1.get("reason") or "")),
+             "url": _ac1.get("image_url")},
+        ) if q.get("url")]
+
     _stage(1, "The golfer, the ball, the impact frame and the ascent",
            "FOUR THINGS, IN ORDER, AND NOTHING ELSE. A clip the rig "
            "heard is not a clip that has to be searched from scratch: "
@@ -27038,6 +27087,28 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
         out["measured_ball"] = _dep.get("spot")
         out["measured_impact_frame"] = _dep.get("impact_frame")
         out["measured_why"] = _dep.get("why")
+        out["measured_last_seen"] = _dep.get("last_seen")
+        out["measured_checked"] = _dep.get("checked")
+        # ── AND THE FRAMES IT JUDGED, AS A PICTURE ──────────────────
+        #
+        # The sentence it returns -- "the ball sat at (870, 612) and
+        # is gone from f1536 onward" -- is not something anybody can
+        # check, and the two ways it goes wrong read identically in
+        # words: losing a ball that is still there (a club head
+        # passes it) and keeping something that was never the ball (a
+        # shoe, a tee marker, a daisy). One picture of the window
+        # settles both. A second pass of about ten seeks, only when
+        # the report is being built.
+        from ..services.ball_vanish import departure_strip as _dstrip
+        _sp = CLIPS_DIR / f"ballrest-{row.id}-{secrets.token_hex(3)}.jpg"
+        if _dstrip(src_path, _sp,
+                   rect=(None if not _rect else
+                         (_rect[0], _rect[1], _rect[0] + _rect[2],
+                          _rect[1] + _rect[3])),
+                   spot=_dep.get("spot"), impact_frame=_dep.get("impact_frame"),
+                   last_seen=_dep.get("last_seen"), fps=_fps,
+                   at_sec=float(_rig["sec"])):
+            out["measured_image_url"] = _clip_url_for(_sp.name)
         if _dep.get("impact_frame") is not None:
             out["impact_frame_rig"] = out.get("impact_frame")
             out["impact_frame"] = int(_dep["impact_frame"])

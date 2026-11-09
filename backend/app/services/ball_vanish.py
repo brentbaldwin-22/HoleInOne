@@ -888,3 +888,128 @@ def ball_departure(video_path, at_sec: float, *, rect=None, people=None,
                 cap.release()
             except Exception:  # noqa: BLE001
                 pass
+
+
+# HOW MANY FRAMES OF THE DEPARTURE WINDOW GET DRAWN. Enough to see
+# the ball sitting, the frame it goes, and that it stays gone; few
+# enough that the strip is a picture rather than a flipbook.
+DEPART_STRIP_FRAMES = 10
+
+
+def departure_strip(video_path, out_path, *, rect=None, spot=None,
+                    impact_frame=None, last_seen=None, fps=None,
+                    at_sec=None, before_sec: float = DEPART_BEFORE_SEC,
+                    after_sec: float = DEPART_AFTER_SEC,
+                    jitter_px: float = ADDRESS_JITTER_PX):
+    """The frames the departure search judged, with what it saw on them.
+
+    WHY THIS EXISTS. `ball_departure` returns a sentence -- "the ball
+    sat at (870, 612) and is gone from f1536 onward" -- and a sentence
+    is not something anybody can check. The two ways it goes wrong
+    look identical in words: it can lose a ball that is still there
+    (a club head passes it, the sun goes in) and it can keep seeing
+    something that is not the ball (a shoe, a tee marker, a daisy).
+    One picture of the window settles both, and neither can be
+    settled without one.
+
+    Read in a second pass rather than inside the search, so a produce
+    that does not ask for the picture pays nothing and the hot loop
+    stays the shape it was measured in.
+
+    Returns the path written, or None. Never raises.
+    """
+    import cv2
+    import numpy as np
+
+    cap = None
+    try:
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            return None
+        _fps = float(fps or cap.get(cv2.CAP_PROP_FPS) or 30.0)
+        W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if rect:
+            x0 = max(0, min(W - 1, int(rect[0])))
+            y0 = max(0, min(H - 1, int(rect[1])))
+            x1 = max(x0 + 1, min(W, int(rect[2])))
+            y1 = max(y0 + 1, min(H, int(rect[3])))
+        else:
+            x0, y0, x1, y1 = 0, 0, W, H
+        f_lo = max(0, int(round((float(at_sec) - float(before_sec)) * _fps)))
+        f_hi = int(round((float(at_sec) + float(after_sec)) * _fps))
+        # EVENLY SPREAD, PLUS THE TWO THAT DECIDE IT. The frame the
+        # ball was last seen on and the frame it was called gone are
+        # the only two the answer rests on; a strip that happens to
+        # skip them is a picture of everything except the decision.
+        _want = set(
+            int(round(v)) for v in
+            np.linspace(f_lo, f_hi, DEPART_STRIP_FRAMES))
+        for _k in (last_seen, impact_frame):
+            if _k is not None:
+                _want.add(int(_k))
+        tiles = []
+        for f in sorted(_want):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, float(f))
+            ok, fr = cap.read()
+            if not ok or fr is None:
+                continue
+            crop = fr[y0:y1, x0:x1].copy()
+            ch, cw = crop.shape[:2]
+            if ch < 8 or cw < 8:
+                continue
+            _sc = min(4.0, 300.0 / float(max(cw, ch)))
+            if _sc > 1.02:
+                crop = cv2.resize(crop, (int(cw * _sc), int(ch * _sc)),
+                                  interpolation=cv2.INTER_CUBIC)
+            else:
+                _sc = 1.0
+            u = max(1, int(round(max(crop.shape[:2]) / 220.0)))
+            _here = False
+            if spot:
+                g = cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY)
+                for (bx, by, _a, _c) in _detections(
+                        g, [(x0, y0, x1, y1)], rel=0.0):
+                    if ((bx - spot[0]) ** 2
+                            + (by - spot[1]) ** 2) ** 0.5 <= jitter_px:
+                        _here = True
+                        break
+                cv2.circle(crop,
+                           (int((spot[0] - x0) * _sc),
+                            int((spot[1] - y0) * _sc)),
+                           int(9 * u),
+                           (60, 230, 90) if _here else (90, 110, 230),
+                           u + 1, cv2.LINE_AA)
+            _lbl = "f%d %s" % (f, "ball" if _here else "gone")
+            if impact_frame is not None and f == int(impact_frame):
+                _lbl += "  <- IMPACT"
+            cv2.rectangle(crop, (0, 0),
+                          (crop.shape[1] - 1, int(16 * u)), (20, 20, 20), -1)
+            cv2.putText(crop, _lbl, (4 * u, int(12 * u)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.36 * u,
+                        (235, 235, 235), u, cv2.LINE_AA)
+            tiles.append(crop)
+        if not tiles:
+            return None
+        _h = max(t.shape[0] for t in tiles)
+        _w = max(t.shape[1] for t in tiles)
+        cols = min(5, len(tiles))
+        rows = (len(tiles) + cols - 1) // cols
+        sheet = np.zeros((rows * (_h + 4), cols * (_w + 4), 3), np.uint8)
+        for i, t in enumerate(tiles):
+            r, c = divmod(i, cols)
+            sheet[r * (_h + 4):r * (_h + 4) + t.shape[0],
+                  c * (_w + 4):c * (_w + 4) + t.shape[1]] = t
+        if not cv2.imwrite(str(out_path), sheet,
+                           [int(cv2.IMWRITE_JPEG_QUALITY), 88]):
+            return None
+        return str(out_path)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("departure strip failed (%s)", exc)
+        return None
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:  # noqa: BLE001
+                pass

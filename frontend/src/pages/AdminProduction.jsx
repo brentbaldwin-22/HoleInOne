@@ -645,6 +645,68 @@ function GreenRestLabel({ row, found }) {
 }
 
 /**
+ * A run's steps, each as a title, a picture, and what the picture
+ * proves.
+ *
+ * A STAGE THAT REPORTS A SENTENCE IS A STAGE NOBODY CAN CHECK. The
+ * same shape the green's dialog uses, here because the ascent half
+ * had the same gap: four steps and two pictures, with the two that
+ * MEASURE something -- the ball at rest and the frame it left --
+ * reporting a sentence and nothing else.
+ *
+ * A step with no picture is left out rather than given an empty
+ * frame. The absence is the finding, and the stage's own detail line
+ * says which step produced nothing.
+ */
+function StepPictures({ stages, title }) {
+  const [open, setOpen] = useState(null);
+  if (!stages?.length) return null;
+  return (
+    <div style={{ marginTop: 8 }}>
+      {title && <div className="small"><b>{title}</b></div>}
+      <div style={{ display: "grid", gap: 10, marginTop: 6,
+                    gridTemplateColumns:
+                      "repeat(auto-fit, minmax(260px, 1fr))" }}>
+        {stages.map((st) => (
+          <figure key={st.name} style={{ margin: 0 }}>
+            <a href={st.url} target="_blank" rel="noreferrer"
+               onClick={(e) => { e.preventDefault(); setOpen(st); }}>
+              <img src={st.url} alt={st.title}
+                   style={{ width: "100%", borderRadius: 4,
+                            background: "#111", cursor: "zoom-in",
+                            border: "1px solid var(--border, #333)" }} />
+            </a>
+            <figcaption className="tiny" style={{ marginTop: 3 }}>
+              <b>{st.title}</b>
+              <div className="muted" style={{ marginTop: 2 }}>{st.why}</div>
+            </figcaption>
+          </figure>
+        ))}
+      </div>
+      {/* FULL SIZE, BECAUSE A BALL IS FOUR PIXELS. A thumbnail of a
+          tee is a picture in which the thing being judged is not
+          visible, which makes the gallery decorative. */}
+      {open && (
+        <div onClick={() => setOpen(null)}
+             style={{ position: "fixed", inset: 0, zIndex: 95,
+                      background: "rgba(0,0,0,0.9)", display: "flex",
+                      flexDirection: "column", alignItems: "center",
+                      justifyContent: "center", padding: 12,
+                      cursor: "zoom-out" }}>
+          <img src={open.url} alt={open.title}
+               style={{ maxWidth: "100%", maxHeight: "86vh",
+                        objectFit: "contain" }} />
+          <div className="small" style={{ color: "#eee", marginTop: 8,
+                                          maxWidth: 900 }}>
+            <b>{open.title}</b> — {open.why}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * One swing's descent, walked backwards from the ball at rest.
  *
  * THE OLD SEARCH ASKED THE HARDEST VERSION OF THE QUESTION: identify
@@ -9820,6 +9882,14 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                   : " · no ascent"}
               </span>
             </div>
+            {/* THE FOUR STEPS AS FOUR PICTURES, before any of the
+                prose about them. The stage used to report four
+                answers and show two pictures -- and the two with no
+                picture were the two that MEASURE something, the ball
+                at rest and the frame it left, which were a sentence
+                and nothing else. */}
+            <StepPictures stages={rep.stage1_stages}
+                          title="What it looked at, step by step" />
             <div className="tiny muted" style={{ marginTop: 3 }}>
               {rep.ai_launch.reason}
               {/* THE SUM, COMPACTLY, WHERE THE FRAME IS USED. The

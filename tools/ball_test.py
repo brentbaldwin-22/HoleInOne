@@ -308,6 +308,57 @@ def main() -> int:
     check("  and the strongest response is reported",
           bool(_so) and _so[0]["hat_max"] > 0, True)
 
+    # ── AND THE DEPARTURE WINDOW, AS A PICTURE ──────────────────────
+    #
+    # `ball_departure` returns a sentence, and a sentence cannot be
+    # checked. Its two failure modes read identically in words: it can
+    # lose a ball that is still there (a club head passes it) and it
+    # can keep seeing something that was never the ball (a shoe, a tee
+    # marker). The strip settles both, so the thing to test is that it
+    # draws the frames the answer actually rests on -- the last one
+    # the ball was seen in and the one it was called gone.
+    from app.services.ball_vanish import departure_strip
+
+    _W, _H, _F, _GONE = 1280, 720, 30, 40
+    _ball = (640, 500)
+    _rng2 = np.random.default_rng(2)
+    vw = cv2.VideoWriter(f"{d}/dep.mp4", cv2.VideoWriter_fourcc(*"mp4v"),
+                         _F, (_W, _H))
+    for f in range(60):
+        img = np.full((_H, _W, 3), (110, 140, 112), np.uint8)
+        img[:300] = (170, 165, 150)
+        img = cv2.add(img, _rng2.integers(0, 9, img.shape, dtype=np.uint8))
+        if f < _GONE:
+            cv2.circle(img, _ball, 5, (248, 248, 250), -1)
+        vw.write(img)
+    vw.release()
+
+    _sp = f"{d}/dep-strip.jpg"
+    _got = departure_strip(f"{d}/dep.mp4", _sp,
+                           rect=(540, 420, 760, 580), spot=list(_ball),
+                           impact_frame=_GONE, last_seen=_GONE - 1,
+                           fps=_F, at_sec=_GONE / _F)
+    check("the departure window is drawn", bool(_got), True)
+    check("  and the file is really there",
+          Path(_sp).exists() and Path(_sp).stat().st_size > 0, True)
+    # THE TWO FRAMES THE ANSWER RESTS ON must be among the tiles, not
+    # skipped by an even spread that happens to miss them.
+    _img = cv2.imread(_sp)
+    check("  and it is a sheet of tiles, not one frame",
+          _img is not None and _img.shape[1] > 600, True)
+
+    # ── AND IT DOES NOT RAISE ON NONSENSE ───────────────────────────
+    # It runs inside a produce report; a failure here must cost a
+    # picture, never the run.
+    check("a missing clip costs a picture, not an exception",
+          departure_strip(f"{d}/nope.mp4", f"{d}/x.jpg", rect=(0, 0, 10, 10),
+                          spot=[5, 5], fps=30, at_sec=1.0), None)
+    check("  and so does a rect off the frame",
+          departure_strip(f"{d}/dep.mp4", f"{d}/y.jpg",
+                          rect=(9000, 9000, 9001, 9001), spot=[5, 5],
+                          fps=_F, at_sec=1.0) is None
+          or Path(f"{d}/y.jpg").exists(), True)
+
     print()
     if FAIL:
         print(f"FAILED {len(FAIL)}: " + ", ".join(FAIL))
