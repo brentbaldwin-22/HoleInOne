@@ -543,6 +543,107 @@ function Thumb({ src, alt, missing, placeholder, onClick }) {
   );
 }
 
+// HOW EACH SOURCE EARNED ITS ANSWER, in the words the operator needs
+// to decide whether to trust it. The difference between the last two
+// decides prizes: a descent chain ends where the ball stopped FALLING
+// -- the pitch mark -- and a ball bounces and rolls from there.
+const REST_SOURCE_TEXT = {
+  tiles: ["the zoned detector",
+          "The green cut into four zones, each scaled up, and the same "
+          + "white top-hat detector Test Cut uses for a ball at address. "
+          + "Measured off the pixels."],
+  plates: ["the plate comparison",
+           "Two medians of the green — before the shot and once "
+           + "everything settled — subtracted. What is there now and "
+           + "was not before."],
+  ai: ["the model",
+       "A vision model was shown the two frames and found the ball. Its "
+       + "position was snapped onto the nearest ball-sized blob."],
+  operator: ["an operator",
+             "Somebody watched the ball and clicked where it stopped. "
+             + "Nothing measured improves on that."],
+  descent: ["the descent chain",
+            "WHERE IT LANDED, NOT WHERE IT FINISHED. A descent chain "
+            + "ends where the ball stopped falling — the pitch mark — "
+            + "and a ball bounces and rolls from there."],
+};
+
+/**
+ * Where the ball finished on the green, under the green's own preview.
+ *
+ * THE ANSWER BELONGS BESIDE THE PICTURE IT CAME FROM. The resting
+ * place was readable in three places already -- the produce report's
+ * table, the distance strip, and whatever the Find ball on green
+ * dialog said while it was open -- and in none of them next to the
+ * green clip itself. So the one question the green tile exists to
+ * answer, "did we find the ball on this green", was the one thing it
+ * did not say.
+ *
+ * `found` is what this session's button turned up, which is a CHECK
+ * rather than a saving: the button reads the clip and reports, it
+ * does not write to the swing. Shown separately and said so, because
+ * a number that looks stored and is not is worse than no number.
+ */
+function GreenRestLabel({ row, found }) {
+  const sws = row.edit_metrics?.swings || [];
+  const clips = row.produced_clips || [];
+  const rows = sws
+    .map((sw, i) => ({ sw, i }))
+    .filter(({ sw }) => Array.isArray(sw?.rest_spot));
+  if (!row.dual_camera) return null;
+  return (
+    <div className="tiny" style={{ marginTop: 6, marginBottom: 4 }}>
+      {rows.length > 0 ? rows.map(({ sw, i }) => {
+        const [word, why] = REST_SOURCE_TEXT[sw.rest_source]
+          || [sw.rest_source || "an unnamed step", ""];
+        const clip = clips.find((c) => c.id === sw.clip_id);
+        return (
+          <div key={i} title={why}>
+            <span style={{ color: "#1a7f37" }}>◎</span>{" "}
+            {sws.length > 1 ? <b>swing {i + 1}: </b> : null}
+            ball at rest <b>{sw.rest_spot[0]}, {sw.rest_spot[1]}</b>
+            {clip?.distance_from_pin_feet != null
+              ? <> · <b>{clip.distance_from_pin_feet} ft</b> from the pin</>
+              : null}
+            <div className="muted">found by {word}</div>
+          </div>
+        );
+      }) : (
+        <div className="muted" title={sws.find((q) => q?.rest_reason)
+          ?.rest_reason || ""}>
+          No ball located on this green yet.
+          {sws.some((q) => q?.rest_reason)
+            ? " " + sws.find((q) => q?.rest_reason).rest_reason
+            : " Produce the swing, or press Find ball on green to check"
+              + " the clip without producing."}
+        </div>
+      )}
+      {/* WHAT THE BUTTON JUST SAID, kept apart from what is stored.
+          The button reads the green clip and reports; it does not
+          write to the swing, and a number that looks saved and is not
+          is worse than no number at all. */}
+      {found?.best && (
+        <div style={{ marginTop: 4, color: "#2f6feb" }}>
+          ◎ just checked: <b>{found.best.x}, {found.best.y}</b>
+          {" "}· {(REST_SOURCE_TEXT[found.source] || [found.source])[0]}
+          <div className="muted">
+            from the Find ball on green dialog — not saved to the swing
+          </div>
+        </div>
+      )}
+      {found && !found.best && (
+        <div style={{ marginTop: 4, color: "#b4690e" }}>
+          ◎ just checked: nothing found on the green
+          <div className="muted">
+            {found.tiles?.found_nothing_because
+              || (found.notes || []).filter(Boolean)[0] || ""}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function VideoTile({ label, thumb, durationSec, nbFrames, fps, sizeMb,
                      startsAt, missing, notUploaded, qualityLabel, width, height,
                      videoUrl, recordingStartedAt, onOpenViewer, footer }) {
@@ -16641,6 +16742,12 @@ export default function AdminProduction() {
   // THE QUEUE'S OWN STATE, polled because it changes without us: the
   // camera path queues captures on its own all day.
   const [restModal, setRestModal] = useState(null);
+  // WHAT THE BUTTON FOUND, PER UPLOAD, for the label under the green
+  // preview. Kept on the page rather than in the dialog so it
+  // survives closing it -- the point of pressing the button is to
+  // learn something, and learning it and then losing it on close is
+  // the dialog answering itself.
+  const [restFound, setRestFound] = useState({});
   const [queue, setQueue] = useState(null);
   const [pausing, setPausing] = useState(false);
   useEffect(() => {
@@ -17968,6 +18075,12 @@ export default function AdminProduction() {
                   onOpenViewer={openViewer}
                   footer={(
                     <>
+                    {/* THE ANSWER UNDER THE PICTURE IT CAME FROM.
+                        Where the ball finished was readable in the
+                        produce report, in the distance strip, and in
+                        the dialog while it was open -- and nowhere
+                        beside the green clip itself. */}
+                    <GreenRestLabel row={row} found={restFound[row.id]} />
                     <button
                       className="small ghost"
                       style={{ width: "100%" }}
@@ -18602,6 +18715,8 @@ export default function AdminProduction() {
         <GreenRestModal
           row={restModal.row}
           adminPassword={adminPassword}
+          onFound={(out) => setRestFound(
+            (m) => ({ ...m, [restModal.row.id]: out }))}
           onClose={() => setRestModal(null)}
         />
       )}

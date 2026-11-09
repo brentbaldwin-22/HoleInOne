@@ -25461,6 +25461,33 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                     {"frame": q["frame"], "found": True,
                      "x": q["x"], "y": q["y"]} for q in _apts
                 ]
+            # ── AND WHERE IT FINISHED, ONTO THE RECORD ───────────────
+            #
+            # `_green_rest_for_swing` says in its own comment that "the
+            # ascent/descent pass runs the plates for every swing it
+            # sees and writes the answer onto the swing, so in a normal
+            # produce this is a lookup". It did the first half. The
+            # answer went onto the run's report, was read once by the
+            # table that renders it, and was never put on the record --
+            # so every later reader re-ran the search on the green clip
+            # for a number that had already been measured, and the
+            # green tile could not say whether a ball had been found at
+            # all.
+            #
+            # NOT THE SAME POINT AS `landing_spot`, which is already
+            # here. A descent chain ends where the ball stopped
+            # FALLING -- the pitch mark -- and a ball bounces and
+            # rolls from there. Both are kept, because the comet wants
+            # the arrival and the distance wants the finish.
+            if c.get("rest_spot"):
+                _rec["rest_spot"] = [int(c["rest_spot"][0]),
+                                     int(c["rest_spot"][1])]
+                _rec["rest_source"] = c.get("rest_source") or "plates"
+            # The reason travels either way: "nothing was found and
+            # here is why" is the half worth keeping when there is no
+            # point to keep.
+            if c.get("rest_reason"):
+                _rec["rest_reason"] = c["rest_reason"]
             _d3_save_swing(db, row.id, _idx, _rec,
                            float((rep.get("descents") or {})
                                  .get("delta_sec") or 0.0))
@@ -26148,7 +26175,14 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
             c["rest_reason"] = _why
             if _rest:
                 c["rest_spot"] = [int(_rest["xy"][0]), int(_rest["xy"][1])]
-                c["rest_source"] = "plates"
+                # WHICHEVER STEP ACTUALLY ANSWERED, not a guess. This
+                # was hardcoded to "plates" when the plates were the
+                # only thing `_rest_spot_at` could return; it now runs
+                # the zoned detector first and the model second, and a
+                # row that says "plates" about a measurement the
+                # detector made is a row that cannot be checked
+                # against the button.
+                c["rest_source"] = _rest.get("source") or "plates"
                 c["rest_area"] = _rest.get("area")
                 c["rest_persist"] = _rest.get("persist")
                 if _rest.get("image") and _shot.exists():

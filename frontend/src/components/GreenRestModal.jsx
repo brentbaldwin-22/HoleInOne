@@ -455,7 +455,8 @@ function HowThePlatesFound({ out, st }) {
   );
 }
 
-export default function GreenRestModal({ row, adminPassword, onClose }) {
+export default function GreenRestModal({ row, adminPassword, onClose,
+                                        onFound }) {
   const [beforeSec, setBeforeSec] = useState("");
   const [afterSec, setAfterSec] = useState("");
   const [busy, setBusy] = useState(false);
@@ -466,9 +467,14 @@ export default function GreenRestModal({ row, adminPassword, onClose }) {
     setBusy(true);
     setErr(null);
     try {
-      setOut(await api.greenRestForUpload(adminPassword, row.id, {
+      const got = await api.greenRestForUpload(adminPassword, row.id, {
         before_sec: beforeSec, after_sec: afterSec,
-      }));
+      });
+      setOut(got);
+      // AND BACK TO THE PAGE, so the label under the green preview
+      // says what this run found rather than only what was stored
+      // the last time somebody produced.
+      if (onFound) onFound(got);
     } catch (e) {
       setErr(e.message || "could not run the finder");
     } finally {
