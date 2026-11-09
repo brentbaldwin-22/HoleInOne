@@ -144,6 +144,21 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
         out["picked_front"] = "%s — %s" % (pf.get("from") or "?", why)
         out["front_candidates"] = pf.get("considered")
         out["golfer_crop"] = front is not None
+        # ── THE GEOMETRY, IN ORIGINAL-FRAME PIXELS, AS NUMBERS ──────
+        #
+        # `picked_front` is a sentence for a human and `front_candidates`
+        # is a list to argue with; neither is a thing a later run can
+        # USE. The produce needs the golfer's box and the floor of the
+        # zone they are standing in, and it was re-deriving both with
+        # a fresh MOG2 pass and a fresh person detector over the same
+        # seconds of the same clip, minutes later, to reach the same
+        # answer. Numbers, named, so they can simply be handed over.
+        out["golfer_box"] = (None if front is None else
+                             [int(v) for v in front["box"]])
+        out["golfer_feet"] = (None if front is None else
+                              [int(front["feet"][0]), int(front["feet"][1])])
+        out["zone_floor_y"] = (None if floor_y is None else int(floor_y))
+        out["n_people"] = len(people)
 
         # ---- the two pictures ----------------------------------
         if front is not None:

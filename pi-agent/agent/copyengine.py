@@ -911,7 +911,14 @@ class CopyEngine:
                             getattr(runner, "roi", None), tee_roi.boxes),
                         geo=_meta.get("geo"),
                         ratio=(detail or {}).get("ratio"),
-                        attack_ms=(detail or {}).get("attack_ms"))
+                        attack_ms=(detail or {}).get("attack_ms"),
+                        # WHICH EVENT THIS IS, so the server can keep
+                        # what it works out here for the produce. It
+                        # finds the golfer, crops to them and measures
+                        # the ball at rest in order to answer us, and
+                        # without this the produce re-derives all
+                        # three from the uploaded clip minutes later.
+                        session_id=session_id)
                     _verdict = _v.get("is_swing")
                     _vconf, _vreason = _v.get("confidence"), _v.get("reason")
                     # WHEN THE TWO JUDGES CONTRADICT EACH OTHER, THE

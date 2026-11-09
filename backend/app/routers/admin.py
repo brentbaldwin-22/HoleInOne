@@ -25120,7 +25120,29 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                  or "not measured")
            + " | ascent: "
            + str((rep.get("ascent_column") or {}).get("reason")
-                 or "not run"),
+                 or "not run")
+           # ── WHERE THE TIME WENT, AND WHAT WAS NOT PAID FOR ───────
+           #
+           # One number for the stage cannot say whether the cost was
+           # the motion pass, the person detector, the departure
+           # search or the pictures -- and two of those are work the
+           # rig's verify call already did. Named, so the next run
+           # answers the question itself instead of prompting it.
+           + " | "
+           + (", ".join("%s %.1fs" % (k, v) for k, v in
+                        sorted((rep.get("ai_launch") or {})
+                               .get("timing", {}).items(),
+                               key=lambda kv: -kv[1]))
+              or "not timed")
+           + (" | REUSED from " + str(
+               ((rep.get("ai_launch") or {}).get("reused") or {}).get("from"))
+              + ", skipping " + ", ".join(
+                  ((rep.get("ai_launch") or {}).get("reused") or {})
+                  .get("skipped") or ["nothing"])
+              if (rep.get("ai_launch") or {}).get("reused") else
+              " | nothing reused — this clip has no stored verify "
+              "analysis, so the golfer and the ball were found again "
+              "from the clip"),
            len((rep.get("ascent_column") or {}).get("points") or []),
            "ascent point(s)",
            time.perf_counter() - _t)
@@ -26953,6 +26975,55 @@ def _ascent_column_image(row, src_path, impact_frame, asc, spot) -> None:
         log.debug("ascent column image failed: %s", exc)
 
 
+class _AlreadyPlaced(Exception):
+    """The golfer came from the verify call; skip the detector block.
+
+    A sentinel rather than a flag because the block it skips is a
+    `try` with its own fallbacks inside it, and threading a condition
+    through those would mean four more branches that all have to mean
+    the same thing.
+    """
+
+
+def _kept_swing_analysis(db, row) -> dict | None:
+    """What the verify call worked out for this clip, if anything.
+
+    The rig posts six frames the moment it hears a strike and the
+    server finds the golfer, crops to them and measures the ball at
+    rest, in order to decide whether the clip is worth uploading.
+    `_keep_swing_analysis` in routers/cameras stores that against the
+    camera event; this is the other end.
+
+    Returns None for an older rig, a dwell-triggered clip, an event
+    whose verify call failed, or anything that does not parse -- and
+    every caller then does what it always did. Never raises.
+    """
+    try:
+        ev_id = getattr(row, "camera_event_id", None)
+        if not ev_id:
+            return None
+        ev = db.get(CameraEvent, ev_id)
+        _sa = getattr(ev, "swing_analysis", None) if ev else None
+        if not isinstance(_sa, dict):
+            return None
+        # A BOX WITH NO NUMBERS IN IT IS NOT AN ANSWER. Stored JSON
+        # comes back as whatever was put in, and a half-written row
+        # must not send the produce down the reuse path with nothing
+        # to reuse.
+        _gb = _sa.get("golfer_box")
+        if _gb is not None and not (isinstance(_gb, (list, tuple))
+                                    and len(_gb) == 4):
+            _sa = dict(_sa, golfer_box=None, golfer_feet=None)
+        _bs = _sa.get("ball_spot")
+        if _bs is not None and not (isinstance(_bs, (list, tuple))
+                                    and len(_bs) == 2):
+            _sa = dict(_sa, ball_spot=None)
+        return _sa
+    except Exception as exc:  # noqa: BLE001
+        log.debug("kept swing analysis: %s", exc)
+        return None
+
+
 def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
     """The golfer, the ball at their feet, and the frame it left.
 
@@ -26991,7 +27062,23 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
     """
     out: dict = {"ran": False, "n_points": 0, "points": [], "rest": None,
                  "impact_frame": None, "image_url": None, "reason": None,
-                 "frame_log": [], "step": None, "frames": None}
+                 "frame_log": [], "step": None, "frames": None,
+                 "timing": {}, "reused": None}
+    # ── WHERE THE TIME GOES, PER STEP ───────────────────────────────
+    #
+    # The stage reports one number -- 15.4s on the clip that prompted
+    # this -- and one number cannot say whether the cost is the MOG2
+    # pass, the person detector, the frame-by-frame departure search
+    # or the pictures. Those have completely different answers: two of
+    # them are work the rig's verify call already did and can hand
+    # over, and two of them are not. Guessing which is which is how
+    # you optimise the wrong half.
+    _lap_t = [time.perf_counter()]
+
+    def _lap(name):
+        _now = time.perf_counter()
+        out["timing"][name] = round(_now - _lap_t[0], 2)
+        _lap_t[0] = _now
     if not bool(getattr(settings, "ascent_ai_launch", True)):
         out["reason"] = ("the AI launch plot is switched off for this "
                          "deployment (ASCENT_AI_LAUNCH=0)")
@@ -27040,7 +27127,51 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
         # in this clip, around this golfer -- which is the whole reason
         # the swing check is worth running here rather than only
         # trusting the rig's verdict.
-        _heat = _ascent_swing_heat(row, src_path, _fps, _rig)
+        # ── WHAT THE VERIFY CALL ALREADY WORKED OUT ─────────────────
+        #
+        # The rig posted six frames and a heat map the moment it heard
+        # this strike, and the server found the golfer, cropped to
+        # them and measured the ball at rest in order to decide
+        # whether the clip was worth uploading at all. All three are
+        # exactly what this stage needs, and all three used to be
+        # recomputed here -- a fresh MOG2 pass and a fresh person
+        # detector over the same seconds of the same clip, minutes
+        # later, for the same answers.
+        #
+        # THE BALL IS TAKEN, THE IMPACT FRAME IS NOT. Verify sees six
+        # frames at 0.2s apart, so it can say the ball left and it
+        # cannot say on which frame -- only which 200ms band. The
+        # departure search below still runs, but handed the spot it
+        # would otherwise have spent half its frames finding, and
+        # over a window that no longer has to be wide enough to find
+        # one.
+        #
+        # Absent for an older rig, a dwell-triggered clip, or an event
+        # whose verify call failed, and then everything below runs
+        # exactly as it always has. That fallback is the only reason
+        # it is safe to trust this at all.
+        _kept = _kept_swing_analysis(db, row)
+        out["reused"] = (None if not _kept else {
+            "from": "the rig's verify call, at %s"
+                    % (_kept.get("kept_at") or "an unrecorded time"),
+            "golfer_box": _kept.get("golfer_box"),
+            "ball_spot": _kept.get("ball_spot"),
+            "skipped": [],
+        })
+        _heat = None
+        if _kept and _kept.get("golfer_box"):
+            # The heat pass exists to place the golfer. It has been
+            # placed, by a person detector, on the frames around this
+            # very strike.
+            _heat = {"ran": False,
+                     "reason": ("not run -- the golfer was already "
+                                "placed by the verify call")}
+            out["reused"]["skipped"].append("the motion heat pass")
+            out["timing"]["the motion heat pass"] = 0.0
+            _lap_t[0] = time.perf_counter()
+        else:
+            _heat = _ascent_swing_heat(row, src_path, _fps, _rig)
+            _lap("the motion heat pass")
         out["swing_check"] = _heat
         _rect = None
         if _heat.get("ball_box"):
@@ -27091,7 +27222,25 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
             # the one standing furthest up the tee, or when they are
             # level the one holding the motion. See
             # swingjudge.pick_front_golfer and break_tie_on_motion.
+            # ── THE GOLFER, HANDED OVER ─────────────────────────
+            if _kept and _kept.get("golfer_box") and _kept.get("golfer_feet"):
+                _gb = [int(v) for v in _kept["golfer_box"]]
+                _fx, _fy = (int(_kept["golfer_feet"][0]),
+                            int(_kept["golfer_feet"][1]))
+                _side = max(24, int(_gb[3] * 0.33))
+                _rect = (max(0, _fx - _side), max(0, _fy - _side // 2),
+                         _side * 2, _side)
+                out["rect_from"] = (
+                    "the rig's verify call — " + str(_kept.get("picked_front")
+                                                     or "already picked"))
+                out["golfer_box"] = _gb
+                out["n_people"] = _kept.get("n_people")
+                out["reused"]["skipped"].append("the person detector")
+                out["timing"]["the person detector"] = 0.0
+                _lap_t[0] = time.perf_counter()
             try:
+                if _rect is not None:
+                    raise _AlreadyPlaced
                 from ..services import swingjudge as _sj2
                 from ..services.people import find_people_over_time
                 from ..services.tracer import AUDIO2_OFFSETS_SEC as _AO
@@ -27104,6 +27253,7 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
                     _zb = []
                 _ppl = find_people_over_time(
                     src_path, float(_rig["sec"]), _AO)
+                _lap("the person detector")
                 out["n_people"] = len(_ppl)
                 _pf2 = _sj2.pick_front_golfer([], _zb, people=_ppl)
                 _g2 = _pf2.get("pick")
@@ -27125,6 +27275,8 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
                     out["rect_from"] = (
                         "the person detector — %s" % _pf2["why"])
                     out["golfer_box"] = [int(v) for v in _gb]
+            except _AlreadyPlaced:
+                pass
             except Exception as _px2:  # noqa: BLE001
                 log.debug("ai launch: person detector failed: %s", _px2)
         if _rect is None and _box:
@@ -27190,6 +27342,12 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
         from ..services.ball_vanish import ball_departure
         _dep = ball_departure(
             src_path, float(_rig["sec"]),
+            # HANDED THE SPOT, so it skips finding one. That half of
+            # the search reads every other frame of the window before
+            # the strike looking for something that sits still; the
+            # verify call already found it, to the pixel, on frames
+            # cut from this very clip.
+            spot=((_kept or {}).get("ball_spot") or None),
             rect=(None if not _rect else
                   (_rect[0], _rect[1], _rect[0] + _rect[2],
                    _rect[1] + _rect[3])),
@@ -27201,6 +27359,7 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
         out["measured_why"] = _dep.get("why")
         out["measured_last_seen"] = _dep.get("last_seen")
         out["measured_checked"] = _dep.get("checked")
+        _lap("the ball and the frame it left")
         # ── AND THE FRAMES IT JUDGED, AS A PICTURE ──────────────────
         #
         # The sentence it returns -- "the ball sat at (870, 612) and
@@ -27299,6 +27458,7 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
             out["image_url"] = (
                 f"{settings.app_base_url}/uploads/clips/{_p.name}"
                 f"?v={int(_p.stat().st_mtime)}")
+    _lap("the pictures")
     log.info("ascent AI launch: upload=%s impact f%d, %d flight point(s) "
              "over %s, rest=%s (%s)", row.id, _f, out["n_points"],
              out["frames"], out["rest"], out["reason"])

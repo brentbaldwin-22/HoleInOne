@@ -578,7 +578,7 @@ class BackendClient:
     def verify_swing(self, image_path, timeout: float = 25.0,
                      frames_path=None, shots=None, crop=None,
                      zones=None, geo=None, offsets=None,
-                     ratio=None, attack_ms=None) -> dict:
+                     ratio=None, attack_ms=None, session_id=None) -> dict:
         """Ask the backend whether this composite shows a club swing.
 
         Returns {"is_swing": True|False|None, ...}. NULL IS NOT FALSE
@@ -654,6 +654,13 @@ class BackendClient:
                             _data["ratio"] = str(float(ratio))
                         if attack_ms:
                             _data["attack_ms"] = str(float(attack_ms))
+                        # WHICH EVENT, so the server can keep what it
+                        # works out here. Sent only with the six
+                        # frames, because that is the only shape
+                        # where the server does the finding; with the
+                        # old pictures there is nothing to keep.
+                        if session_id:
+                            _data["session_id"] = str(session_id)[:80]
                     elif frames_path is not None:
                         _fh2 = open(frames_path, "rb")
                         _files.append(

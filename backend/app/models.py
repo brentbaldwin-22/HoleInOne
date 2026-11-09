@@ -707,6 +707,18 @@ class CameraEvent(Base):
     # two Pis were 0.69s apart when this was built, which is most of a
     # ball flight's worth of error if nobody corrects for it.
     impact_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # WHAT THE VERIFY CALL ALREADY WORKED OUT, kept rather than
+    # thrown away. The rig posts six frames and a heat map the moment
+    # it hears a strike, and the server finds the golfer, crops to
+    # them and measures the ball at rest in order to decide whether
+    # the clip is worth uploading at all. All of that was returned to
+    # the rig and discarded -- so the produce, minutes later, ran a
+    # fresh MOG2 pass and a fresh person detector over the same
+    # seconds of the same clip to learn the same three things.
+    #
+    # Keyed by the event rather than the upload because it is written
+    # before the clip exists.
+    swing_analysis: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     tee_clock_offset_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     tee_clock_error_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     green_clock_offset_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

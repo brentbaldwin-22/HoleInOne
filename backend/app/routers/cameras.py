@@ -1495,7 +1495,79 @@ def _analyse_posted_frames(shots, heat_path, crop, zones, geo, offsets,
     out["image"] = r.get("image_zones") or r.get("image")
     out["frames_image"] = (r.get("frames_image_zones")
                            or r.get("frames_image"))
+    # ── AND WHAT THE PRODUCE WOULD OTHERWISE RE-DERIVE ──────────────
+    #
+    # Under its own key, not mixed into the rig's answer: the rig has
+    # no use for any of it and should not start depending on it. The
+    # caller stores this against the camera event, where a produce
+    # minutes later can find it instead of running a fresh motion
+    # pass and a fresh person detector over the same seconds of the
+    # same clip to learn the same three things.
+    out["_reusable"] = {
+        "golfer_box": r.get("golfer_box"),
+        "golfer_feet": r.get("golfer_feet"),
+        "zone_floor_y": r.get("zone_floor_y"),
+        "n_people": r.get("n_people"),
+        "ball_spot": r.get("ball_spot"),
+        "ball_left": r.get("ball_left"),
+        "ball_why": r.get("ball_why"),
+        "picked_front": r.get("picked_front"),
+        "crop": list(_c),
+        "offsets": _o,
+    }
     return out
+
+
+def _keep_swing_analysis(db, session_id, cam_id, reusable, verdict) -> None:
+    """Store what verify worked out, against the event it belongs to.
+
+    WHY THIS IS WORTH A COLUMN. Deciding whether a clip is a swing
+    means finding the golfer, cropping to them and measuring the ball
+    at rest -- and every one of those is a thing the produce needs
+    too. It was computed, returned to the rig, and dropped; the
+    produce then ran a fresh MOG2 pass and a fresh person detector
+    over the same seconds of the same clip, minutes later, to reach
+    the same three answers. Stage 1 of a produce measured 15.4s on
+    the clip that prompted this.
+
+    Keyed by the event, because the clip does not exist yet when this
+    runs -- the whole point of the verify call is to decide whether
+    it is worth uploading.
+
+    ONE ANALYSIS PER EVENT, which is right for the case it serves: an
+    audio-triggered clip carries one `impact_at`, and stage 1 declines
+    on anything else. A second strike on the same event overwrites,
+    and says so in `kept_at`.
+
+    Never raises. A produce that cannot find this does what it always
+    did, which is the only reason it is safe to store at all.
+    """
+    _sid = (session_id or "").strip()[:80]
+    if not _sid:
+        return
+    try:
+        ev = db.query(CameraEvent).filter(
+            CameraEvent.session_id == _sid).first()
+        if ev is None:
+            log.info("verify-swing: no event for session %s, nothing kept",
+                     _sid[:16])
+            return
+        ev.swing_analysis = {
+            "kept_at": _utcnow_naive().isoformat(),
+            "camera_id": int(cam_id),
+            "is_swing": verdict.get("is_swing"),
+            "decided_by": verdict.get("decided_by"),
+            **{k: v for k, v in (reusable or {}).items()},
+        }
+        db.add(ev)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("verify-swing: could not keep the analysis for %s: %s",
+                    _sid[:16], exc)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @router.post("/{token}/verify-swing")
@@ -1524,6 +1596,14 @@ async def verify_swing(
     offsets: str = Form(""),     # JSON [-1.2, ...], seconds
     ratio: float = Form(0.0),
     attack_ms: float = Form(0.0),
+    # WHICH EVENT THIS STRIKE BELONGS TO, so what is worked out here
+    # can be kept for the produce instead of being worked out again.
+    # Optional like everything else on this endpoint: a rig and a
+    # backend are updated separately and in either order, and an
+    # older rig that sends no session_id must be judged exactly as it
+    # was -- it simply costs the produce the fresh passes it has
+    # always paid for.
+    session_id: str = Form(""),
     db: Session = Depends(get_db),
 ):
     """Judge a motion-heat composite the rig built: swing, or not?
@@ -1616,7 +1696,15 @@ async def verify_swing(
             _r = await asyncio.to_thread(
                 _analyse_posted_frames, shots, _dest, crop, zones, geo,
                 offsets, ratio, attack_ms, cam.id)
+            # ── KEEP THE GEOMETRY, HAND THE RIG THE VERDICT ────────
+            #
+            # Popped before `out.update`, so none of it reaches the
+            # rig: the rig has no use for it and must not start
+            # depending on it. See `_keep_swing_analysis`.
+            _reuse = _r.pop("_reusable", None)
             out.update(_r)
+            if _reuse:
+                _keep_swing_analysis(db, session_id, cam.id, _reuse, out)
             log.info("verify-swing: camera=%s -> %s (%s) [analysed here]",
                      cam.id, out["is_swing"], out.get("reason"))
             await asyncio.to_thread(_sweep_rig_heat)
