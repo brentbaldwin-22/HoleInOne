@@ -3324,18 +3324,32 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
     was then resized by, so the same zone lands in the right place on
     a heat composite and on a frames tile alike.
 
-    Returns None when nothing could be drawn -- no zones, or all of
-    them outside this crop -- so a caller can tell "nothing to show"
-    from "here it is". Never raises.
+    Returns None when nothing could be drawn -- nothing to draw, or
+    all of it outside this crop -- so a caller can tell "nothing to
+    show" from "here it is". Never raises.
+
+    NOTHING TO DRAW MEANS NOTHING AT ALL, not "no zones". This used
+    to refuse whenever `zones` was empty, which made the ball marker
+    and the foot line unreachable for any caller that has a measured
+    ball and no trigger zones -- the produce report's six-frame strip
+    being exactly that, and the one picture where the ball's presence
+    frame by frame IS the finding.
     """
-    if img is None or not zones:
+    if img is None or not (zones or feet or ball):
         return None
     try:
         out = img.copy()
         h, w = out.shape[:2]
         ox, oy, sc = float(offset[0]), float(offset[1]), float(scale)
         drew = 0
-        for _i, z in enumerate(zones):
+        # `or []` BECAUSE THE GUARD ABOVE NO LONGER PROMISES ZONES.
+        # It used to refuse outright when `zones` was empty, so this
+        # loop could take it on trust; now a caller may arrive with a
+        # ball and no zones, and iterating None raises into the outer
+        # except, which swallows it and returns None -- the ring
+        # silently never drawn, on the picture whose whole point is
+        # the ring.
+        for _i, z in enumerate(zones or []):
             zx, zy, zw, zh = (float(z[0]), float(z[1]),
                               float(z[2]), float(z[3]))
             x0 = int(round((zx - ox) * sc))

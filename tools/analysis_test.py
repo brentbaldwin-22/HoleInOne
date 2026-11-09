@@ -123,6 +123,39 @@ def main() -> int:
           r3["reason"], "no pictures to judge")
     check("  and the verdict stays unknown", r3["is_swing"], None)
 
+    # ── THE MARKS GO ON WHATEVER THERE IS TO MARK ───────────────────
+    #
+    # `draw_zones` refused outright whenever `zones` was empty, which
+    # made the ball marker and the foot line unreachable for a caller
+    # that has a measured ball and no trigger zones -- the produce
+    # report's six-frame strip being exactly that, and the one
+    # picture where the ball's presence frame by frame IS the
+    # finding. It drew nothing and said nothing: the picture came out
+    # looking right, just without the ring.
+    #
+    # Two failures in one line, and the second only appeared after
+    # the first was fixed: relaxing the guard left the zone loop
+    # iterating None, which raises into the outer except, is
+    # swallowed, and returns None exactly as before.
+    from app.services.tracer import draw_zones          # noqa: E402
+
+    _img = np.full((200, 200, 3), 60, np.uint8)
+    _out = draw_zones(_img, None, ball={"spot": [100, 100]})
+    check("a ball with no zones is still drawn", _out is not None, True)
+    check("  and something really changed in the pixels",
+          bool((_out != _img).any()) if _out is not None else False, True)
+    _z = draw_zones(_img, [(10, 10, 50, 50)], ball={"spot": [100, 100]})
+    check("zones and a ball together still work", _z is not None, True)
+    check("nothing to draw is still nothing",
+          draw_zones(_img, None), None)
+    check("  including an empty list and no ball",
+          draw_zones(_img, [], ball=None, feet=None), None)
+    # A BALL OUTSIDE THE CROP IS NOT A DRAWING. Same rule as the
+    # zones: "nothing could be drawn" and "here it is" have to be
+    # distinguishable by the caller.
+    check("a ball far outside the crop draws nothing",
+          draw_zones(_img, None, ball={"spot": [9000, 9000]}), None)
+
     print()
     if FAIL:
         print(f"FAILED {len(FAIL)}: " + ", ".join(FAIL))

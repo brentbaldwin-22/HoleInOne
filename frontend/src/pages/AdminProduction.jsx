@@ -645,6 +645,87 @@ function GreenRestLabel({ row, found }) {
 }
 
 /**
+ * One swing, told in the order the ball goes.
+ *
+ * THE DIALOG HAD GROWN A STEP AT A TIME and read like it. Every
+ * improvement added its own panel beside the last, so the same
+ * swing's story was told in five places -- a card for the launch, a
+ * block for the column, a table for the descents, a strip for the
+ * plates, a note under each -- in the order they were written rather
+ * than the order anything happens.
+ *
+ * The ball is sitting there, it leaves, it climbs, it lands. Four
+ * steps, four pictures, and what each picture proves underneath it.
+ *
+ * A STEP WITH NO PICTURE IS SHOWN, GREYED, WITH ITS REASON. The
+ * absence is the finding: it says how far down the ball's own story
+ * this clip got and which step stopped it. (The green dialog's
+ * gallery hides empty steps instead -- there they are one search's
+ * internals, here they are the shot.)
+ */
+function SwingSteps({ row }) {
+  const [open, setOpen] = useState(null);
+  if (!row?.steps?.length) return null;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div className="small">
+        <b>Swing {row.swing}</b>{" "}
+        <span className={row.n_with_picture >= 4 ? "pill ok"
+          : row.n_with_picture ? "pill" : "pill warn"}>
+          {row.n_with_picture} of {row.steps.length} steps
+        </span>
+      </div>
+      <div style={{ display: "grid", gap: 10, marginTop: 6,
+                    gridTemplateColumns:
+                      "repeat(auto-fit, minmax(250px, 1fr))" }}>
+        {row.steps.map((st) => (
+          <figure key={st.name} style={{ margin: 0,
+                                         opacity: st.url ? 1 : 0.55 }}>
+            {st.url ? (
+              <a href={st.url} target="_blank" rel="noreferrer"
+                 onClick={(e) => { e.preventDefault(); setOpen(st); }}>
+                <img src={st.url} alt={st.title}
+                     style={{ width: "100%", borderRadius: 4,
+                              background: "#111", cursor: "zoom-in",
+                              border: "1px solid var(--border, #333)" }} />
+              </a>
+            ) : (
+              <div className="tiny muted"
+                   style={{ display: "flex", alignItems: "center",
+                            justifyContent: "center", minHeight: 90,
+                            borderRadius: 4, background: "#1a1a1a",
+                            border: "1px dashed var(--border, #444)" }}>
+                nothing to show — this step did not produce an answer
+              </div>
+            )}
+            <figcaption className="tiny" style={{ marginTop: 3 }}>
+              <b>{st.title}</b>
+              <div className="muted" style={{ marginTop: 2 }}>{st.why}</div>
+            </figcaption>
+          </figure>
+        ))}
+      </div>
+      {open && (
+        <div onClick={() => setOpen(null)}
+             style={{ position: "fixed", inset: 0, zIndex: 95,
+                      background: "rgba(0,0,0,0.9)", display: "flex",
+                      flexDirection: "column", alignItems: "center",
+                      justifyContent: "center", padding: 12,
+                      cursor: "zoom-out" }}>
+          <img src={open.url} alt={open.title}
+               style={{ maxWidth: "100%", maxHeight: "86vh",
+                        objectFit: "contain" }} />
+          <div className="small" style={{ color: "#eee", marginTop: 8,
+                                          maxWidth: 900 }}>
+            <b>{open.title}</b> — {open.why}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * A run's steps, each as a title, a picture, and what the picture
  * proves.
  *
@@ -9844,6 +9925,24 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
 
         <ProduceStepSummary rep={rep} />
 
+        {/* ── THE SHOT, IN THE ORDER IT HAPPENED ──────────────────
+            Before any of the panels below, which are each one
+            step's internals and were written in the order they were
+            added rather than the order the ball goes. */}
+        {(rep?.swing_steps || []).length > 0 && (
+          <div className="card" style={{ margin: "10px 0", padding: 10 }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <b>The shot, step by step</b>
+              <span className="tiny muted">
+                sitting there · leaves · climbs · lands
+              </span>
+            </div>
+            {rep.swing_steps.map((sw) => (
+              <SwingSteps key={sw.swing} row={sw} />
+            ))}
+          </div>
+        )}
+
         {/* BEFORE THE STEPS THAT USE IT. The impact frame decides where
             the AI zooms, where the sweep looks and where the tracer's
             line begins, so "which frame, and why that one" is the first
@@ -9855,11 +9954,19 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             searched, what it picked and why a frame was refused --
             which is the only way to tell "the ball was not there"
             from "the box was pointed at the wrong grass". */}
+        {/* THE SAME FOUR ANSWERS IN FULL, folded away. The gallery
+            above is what the dialog leads with; this is everything it
+            is leading with the summary OF -- the detector that placed
+            the golfer, the departure window frame by frame, the
+            chains the column search weighed and the gate each died
+            on. Nothing was removed to tidy the dialog, only moved
+            behind the picture it explains. */}
         {rep?.ai_launch && (
-          <div className="card" style={{ margin: "10px 0", padding: 10 }}>
-            <div className="row" style={{ justifyContent: "space-between" }}>
-              <b>1 · The golfer, the ball, the impact frame and the
-                ascent</b>
+          <details className="card" style={{ margin: "10px 0", padding: 10 }}>
+            <summary className="row"
+                     style={{ justifyContent: "space-between",
+                              cursor: "pointer" }}>
+              <b>How steps 1 and 2 got their answers</b>
               {/* THE FOUR ANSWERS, AS ONE PILL. A clip the rig heard
                   is not a clip to be searched from scratch: the
                   strike is confirmed, so all that is left is who
@@ -9881,15 +9988,14 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                   ? ` · ${(rep.ascent_column.points || []).length} pt ascent`
                   : " · no ascent"}
               </span>
-            </div>
-            {/* THE FOUR STEPS AS FOUR PICTURES, before any of the
-                prose about them. The stage used to report four
-                answers and show two pictures -- and the two with no
-                picture were the two that MEASURE something, the ball
-                at rest and the frame it left, which were a sentence
-                and nothing else. */}
+            </summary>
+            {/* THE WORKING PICTURES. The gallery at the top of the
+                dialog shows what each step ANSWERED; these show how
+                -- the motion heat the golfer was placed from, the
+                departure window frame by frame, the column search
+                with every chain it weighed. */}
             <StepPictures stages={rep.stage1_stages}
-                          title="What it looked at, step by step" />
+                          title="What it looked at, in more detail" />
             <div className="tiny muted" style={{ marginTop: 3 }}>
               {rep.ai_launch.reason}
               {/* THE SUM, COMPACTLY, WHERE THE FRAME IS USED. The
@@ -10095,7 +10201,7 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                 )}
               </div>
             )}
-          </div>
+          </details>
         )}
 
         {state.running && (

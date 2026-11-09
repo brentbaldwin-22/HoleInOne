@@ -10852,7 +10852,15 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
             {"xy": [float(_bb["x"]), float(_bb["y"])],
              "camera_id": int(green_camera_id), "source": "tiles",
              "on_green": True, "confidence": None,
-             "image": (_tiles.get("images") or {}).get("after")},
+             "image": (_tiles.get("images") or {}).get("after"),
+             # BOTH HALVES OF THE COMPARISON, for the report. "What
+             # is on the green now that was not on it before" is a
+             # claim about two pictures, and one of them is not
+             # enough to check it: an orange ring on the after frame
+             # says a ball is there, not that it arrived.
+             "image_before": (_tiles.get("images") or {}).get("before"),
+             "n_before": len(_tiles.get("before") or []),
+             "n_new": len(_tiles.get("new") or [])},
             ("came to rest at %d,%d — %gpx across, %g levels brighter "
              "than its surroundings, and not there before the shot. %s%s"
              % (round(_bb["x"]), round(_bb["y"]), _bb["diam_px"],
@@ -25365,6 +25373,97 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     _t = time.perf_counter()
     _desc = _ascent_descents(row, db, rep, fps, progress=progress)
     rep["descents"] = _desc
+
+    # ── THE FOUR STEPS, PER SWING, IN ORDER, EACH A PICTURE ─────────
+    #
+    # THE DIALOG HAD GROWN A STEP AT A TIME and read like it. Every
+    # improvement added its own panel next to the last one, so the
+    # same swing's story was told in five places -- a card for the
+    # launch, a block for the column, a table for the descents, a
+    # strip for the plates, a note under each -- and the order they
+    # appeared in was the order they were written, not the order the
+    # ball goes.
+    #
+    # The ball goes: it is sitting there, it leaves, it climbs, it
+    # lands. Four steps, four pictures, in that order, and the prose
+    # about each is underneath its own picture rather than in a panel
+    # somewhere else. Everything the old panels said is still in the
+    # report and still rendered -- this is what the dialog LEADS
+    # with, not a replacement for the detail.
+    _al4 = rep.get("ai_launch") or {}
+    _ac4 = rep.get("ascent_column") or {}
+    _dbacks = {int(d.get("swing") or 0): d
+               for d in (_desc.get("descents_back") or [])}
+    rep["swing_steps"] = []
+    for _i, _c4 in enumerate(rep.get("clips") or []):
+        _steps = [
+            {"name": "rest",
+             "title": "1 · The ball at rest, and the frame it left",
+             "why": ("The six frames Test Cut shows, at the same "
+                     "offsets and cropped the same way: address, two "
+                     "before the strike, the instant the rig heard it, "
+                     "and two after. The ball is ringed where it was "
+                     "measured, so the frame it stops being there is "
+                     "something you can see rather than a number to "
+                     "take on trust. "
+                     + str(_al4.get("measured_why") or "")),
+             "url": _al4.get("frames_image_url")},
+            {"name": "ascent",
+             "title": "2 · The ascent",
+             "why": ("The same search the whole-band sweep runs -- same "
+                     "detector, same gates, same skyline cutoff, which "
+                     "is why it never looks at the golfer -- narrowed "
+                     "to the column the ball actually crosses, from the "
+                     "measured ball and the measured impact frame. "
+                     "Green is the chain taken, grey every chain "
+                     "considered with the gate it died on. "
+                     + str(_ac4.get("reason") or "")),
+             "url": _ac4.get("image_url")},
+            {"name": "green-before",
+             "title": "3a · The green before the shot",
+             "why": ("Cropped to the outline and otherwise untouched. "
+                     "Orange rings are balls already lying on it -- a "
+                     "partner's, or one nobody has marked. They are in "
+                     "both pictures, so they are not this shot."
+                     + ("" if _c4.get("rest_n_before") is None else
+                        " %d found." % _c4["rest_n_before"])),
+             "url": _c4.get("rest_before_url")},
+            {"name": "green-after",
+             "title": "3b · ...and after it settled",
+             "why": ("A cyan ring is something here that was not there "
+                     "before. Found zone by zone with the same top-hat "
+                     "detector that finds a ball at address on the tee, "
+                     "each zone scaled up first because a ball a "
+                     "hundred yards out is three pixels across. "
+                     + str(_c4.get("rest_reason") or "")),
+             "url": _c4.get("rest_after_url")},
+            {"name": "descent",
+             "title": "4 · The descent, walked back from it",
+             "why": ("Backwards from the ball at rest, one frame at a "
+                     "time, through a small zoomed window that moves "
+                     "with it. Nothing else on the green is ever a "
+                     "candidate -- a branch in the treeline is not "
+                     "rejected by a gate, it is never inside the "
+                     "window. The cross is the pitch mark: the FIRST "
+                     "frame it stopped falling, which is not the last, "
+                     "because the difference is a whole bounce. "
+                     + str((_dbacks.get(_i + 1) or {}).get("why") or "")),
+             "url": (_dbacks.get(_i + 1) or {}).get("image_url")},
+        ]
+        rep["swing_steps"].append({
+            "swing": _i + 1,
+            # EVERY STEP, INCLUDING THE ONES WITH NO PICTURE. An
+            # absence is the finding here -- it says exactly how far
+            # down the ball's own story this clip got, and which step
+            # stopped it -- so the empty ones are carried with their
+            # reason and the frontend greys them rather than hiding
+            # them. That is the opposite of the rule for the green
+            # dialog's gallery, and deliberately: there the steps are
+            # one search's internals, here they are the shot.
+            "steps": _steps,
+            "n_with_picture": sum(1 for q in _steps if q["url"]),
+        })
+
     # ITS OWN STEPS, under stage 4 in the timing panel. Same reason
     # stage 2 carries `scan_stages`: one number for "the green half"
     # cannot say whether the cost was the segmentation pass, the plate
@@ -26254,6 +26353,19 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                 c["rest_source"] = _rest.get("source") or "plates"
                 c["rest_area"] = _rest.get("area")
                 c["rest_persist"] = _rest.get("persist")
+                c["rest_n_before"] = _rest.get("n_before")
+                c["rest_n_new"] = _rest.get("n_new")
+                # THE BEFORE FRAME TOO. One picture of the after frame
+                # with a ring on it says a ball is there; it does not
+                # say the ball ARRIVED, which is the entire claim.
+                if _rest.get("image_before"):
+                    _pb = Path(str(_rest["image_before"]))
+                    if _pb.exists():
+                        c["rest_before_url"] = _clip_url_for(_pb.name)
+                if _rest.get("image"):
+                    _pa = Path(str(_rest["image"]))
+                    if _pa.exists():
+                        c["rest_after_url"] = _clip_url_for(_pa.name)
                 if _rest.get("image") and _shot.exists():
                     c["rest_image_url"] = (
                         f"{settings.app_base_url}/uploads/clips/{_shot.name}"
@@ -27101,6 +27213,59 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
         # the report is being built.
         from ..services.ball_vanish import departure_strip as _dstrip
         _sp = CLIPS_DIR / f"ballrest-{row.id}-{secrets.token_hex(3)}.jpg"
+        # ── THE SIX FRAMES, THE WAY TEST CUT SHOWS THEM ─────────────
+        #
+        # SAME OFFSETS, SAME CROP, SAME LABELS. Test Cut's six tiles
+        # -- address, two before, the heard instant, two after -- are
+        # the picture every judgement in this app has been argued
+        # about for a fortnight, and an operator who has learned to
+        # read them should not have to learn a second picture to
+        # check the same thing on a produce. The ball is ringed where
+        # it was measured, so the frame it stops being there is
+        # visible rather than asserted.
+        try:
+            from ..services.tracer import (AUDIO2_OFFSETS_SEC as _A2,
+                                           frames_strip as _fstrip)
+            # THE GOLFER, NOT THE BALL BOX. The ball box is a few
+            # dozen pixels round the feet, which is the right thing
+            # to SEARCH and a useless thing to look at: a swing is
+            # not visible in it. Same padding Test Cut crops with.
+            _gb6 = out.get("golfer_box")
+            if _gb6:
+                _bx, _by, _bw, _bh = (int(v) for v in _gb6)
+                _r6 = (max(0, int(_bx - _bw * 0.69)),
+                       max(0, int(_by - _bh * 0.10)),
+                       min(_w, int(_bx + _bw + _bw * 0.69)),
+                       min(_h, int(_by + _bh + _bh * 0.08)))
+            else:
+                _pad = max(120, _rect[2] * 2)
+                _r6 = (max(0, _rect[0] - _pad), max(0, _rect[1] - _pad * 2),
+                       min(_w, _rect[0] + _rect[2] + _pad),
+                       min(_h, _rect[1] + _rect[3] + _pad // 2))
+            # TWO COPIES, AND THE MARKED ONE IS THE ONE LINKED. The
+            # clean grid is the picture a judge would be handed; the
+            # marked one carries the measured ball, and the ball's
+            # presence frame by frame is the whole finding here. See
+            # draw_zones for why they are separate pictures.
+            _tok = secrets.token_hex(3)
+            _fp = CLIPS_DIR / f"sixframe-{row.id}-{_tok}.jpg"
+            _fpm = CLIPS_DIR / f"sixframe-{row.id}-{_tok}-marked.jpg"
+            if _fstrip(src_path, float(_rig["sec"]), _fp, rect=_r6,
+                       offsets=_A2,
+                       # A DICT WITH A `spot`, which is the shape
+                       # draw_zones takes -- a bare pair raises
+                       # inside it, is swallowed, and the ring
+                       # silently never appears.
+                       ball=({"spot": out["measured_ball"]}
+                             if out.get("measured_ball") else None),
+                       zones=None, zones_out=_fpm):
+                out["frames_image_url"] = _clip_url_for(
+                    _fpm.name if _fpm.exists() else _fp.name)
+                out["frames_plain_url"] = _clip_url_for(_fp.name)
+                out["frames_offsets"] = list(_A2)
+                out["frames_rect"] = list(_r6)
+        except Exception as _fx:  # noqa: BLE001
+            log.debug("ai launch: six-frame strip failed: %s", _fx)
         if _dstrip(src_path, _sp,
                    rect=(None if not _rect else
                          (_rect[0], _rect[1], _rect[0] + _rect[2],
