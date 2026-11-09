@@ -169,6 +169,30 @@ def main():
         ok("  each at the zoom it was searched at",
            all(w["zoom"] >= 1.0 for w in r["windows"]), True)
 
+        # ── A LONG REST BEFORE THE WALK EVEN STARTS ─────────────────
+        #
+        # The walk begins at the frame the ball was MEASURED at, and
+        # that is wherever the green window ladder found it -- eight,
+        # fourteen, twenty seconds after the strike. The ball has
+        # been lying still for most of that. With one budget for the
+        # whole walk, the budget was spent on the rest: a real clip
+        # reported "241 points, falling 0px over 240 frames" and
+        # stopped, having watched a stationary ball the entire way
+        # and never reached the descent at all.
+        #
+        # A stationary frame is nearly free -- one small window, the
+        # ball exactly where it was -- so the rest gets its own
+        # generous allowance and the four seconds that matter start
+        # counting from the frame the ball is first seen to move.
+        r_late = track_descent_back(clip, REST, 299)
+        ok("a walk started long after the ball settled still reaches it",
+           r_late["first_frame"], ENTER)
+        ok("  and says when it first saw it move",
+           r_late.get("moved_at_frame") is not None, True)
+        ok("  and finds the same pitch mark",
+           abs(r_late["pitch_frame"] - (ENTER + LAND)) <= 1, True)
+        ok("  and the same fall", r_late["fall_px"], r["fall_px"])
+
         # ── NO BALL AT REST, NO DESCENT ─────────────────────────────
         # The contract. The old behaviour -- hunt the green and attach
         # whatever best survived the gates -- is what produced

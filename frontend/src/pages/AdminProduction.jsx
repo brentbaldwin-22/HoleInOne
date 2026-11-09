@@ -809,7 +809,7 @@ function StepPictures({ stages, title }) {
  * not rejected by a gate, it is never inside the window.
  */
 function DescentWalk({ walk }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   return (
     <div style={{ margin: "8px 0", paddingLeft: 10,
                   borderLeft: `2px solid ${walk.ok ? "#2f6feb" : "#b4690e"}` }}>
@@ -829,6 +829,24 @@ function DescentWalk({ walk }) {
           : " · it never saw the ball stop falling, so there is no"
             + " pitch mark and the resting place is used instead"}
       </div>
+      {/* THE WALK AS FRAMES, NOT AS A SENTENCE. "147 points walked
+          back" says nothing about where the rest ended and the
+          descent began -- and on a ball that has been lying still
+          for most of a minute, that is the only part worth looking
+          at. These three numbers bracket it. */}
+      <div className="tiny muted" style={{ marginTop: 2 }}>
+        started on f{walk.started_at_frame} (the frame the ball was
+        measured at)
+        {walk.moved_at_frame != null
+          ? ` · first seen to MOVE at f${walk.moved_at_frame}`
+          : " · never seen to move — the whole walk was a ball at rest"}
+        {walk.first_frame != null
+          ? ` · walked back to f${walk.first_frame}`
+          : ""}
+        {walk.n_missed
+          ? ` · ${walk.n_missed} frame(s) extrapolated across`
+          : " · nothing extrapolated"}
+      </div>
       {walk.image_url && (
         <a href={walk.image_url} target="_blank" rel="noreferrer">
           <img src={walk.image_url} alt="the descent walked back"
@@ -839,13 +857,18 @@ function DescentWalk({ walk }) {
       )}
       {(walk.windows || []).length > 0 && (
         <div style={{ marginTop: 4 }}>
+          {/* OPEN BY DEFAULT. These are the pictures the detector
+              actually saw, and a ball four pixels across is invisible
+              in the whole-green view above -- which makes "it lost it
+              here" unarguable with unless they are on screen. Behind
+              a button they were never looked at. */}
           <button type="button" className="small ghost"
                   style={{ width: "auto" }}
                   onClick={() => setOpen((v) => !v)}>
             {open ? "Hide" : "Show"} the {walk.windows.length} search
             window(s)
           </button>
-          {open && (
+          {open !== false && (
             <div style={{ display: "grid", gap: 6, marginTop: 6,
                           gridTemplateColumns:
                             "repeat(auto-fit, minmax(140px, 1fr))" }}>

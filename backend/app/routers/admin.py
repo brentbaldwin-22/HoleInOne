@@ -26261,8 +26261,16 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                 "n_missed": _walk.get("n_missed"),
                 "fall_px": _walk.get("fall_px"),
                 "first_frame": _walk.get("first_frame"),
+                "last_frame": _walk.get("last_frame"),
                 "pitch_frame": _walk.get("pitch_frame"),
                 "pitch_xy": _walk.get("pitch_xy"),
+                # WHEN IT FIRST SAW THE BALL MOVE. The walk starts on
+                # a ball that has been lying still for most of a
+                # minute, so "147 points" says almost nothing on its
+                # own -- this is the frame the rest ended and the
+                # part worth looking at began.
+                "moved_at_frame": _walk.get("moved_at_frame"),
+                "started_at_frame": _rf,
                 "why": _walk.get("why"),
                 "image_url": _clip_url_for(Path(_walk["image"]).name)
                 if _walk.get("image") else None,
@@ -27124,7 +27132,8 @@ def _rect_overlap_px(a, b):
     return (int(_x0), int(_y0), int(_x1 - _x0), int(_y1 - _y0))
 
 
-def _ascent_swing_heat(row, src_path, fps, rig) -> dict:
+def _ascent_swing_heat(row, src_path, fps, rig, people=None,
+                       zones=None) -> dict:
     """The swing check, run here for its COORDINATES.
 
     THE RIG ALREADY ASKED WHETHER THIS WAS A SWING, and its answer is
@@ -27149,8 +27158,28 @@ def _ascent_swing_heat(row, src_path, fps, rig) -> dict:
     try:
         from ..services.tracer import swing_heat_check
 
+        # ── THE SAME CALL TEST CUT MAKES ────────────────────────────
+        #
+        # It was not. Test Cut runs this in "golfer" style with the
+        # person detector's answer handed in, which is what produces
+        # `frames_rect` -- the crop round the golfer -- and
+        # `front_feet`. Produce called it bare: no style, no people,
+        # no zones. So it got no crop, had to invent one from the
+        # golfer's box, and invented a box a third of a body-height
+        # square round the FEET.
+        #
+        # That is the whole reason the two disagree about the ball.
+        # On the clip the operator sent, Test Cut rings the ball a
+        # clear distance to the right of the foot marker -- inside
+        # its crop, outside produce's little box -- so produce
+        # reported "no ball at rest before the strike" about a ball
+        # that is plainly there in both pictures.
         _chk = swing_heat_check(
             src_path, float(rig["sec"]), float(fps or 30.0),
+            zones=zones,
+            style=("golfer" if people else "zone"),
+            people=(people or None),
+            max_candidates=2,
             debug_dir=CLIPS_DIR,
             debug_prefix=f"ailaunch-heat-{row.id}-{secrets.token_hex(3)}",
         ) or {}
@@ -27170,7 +27199,11 @@ def _ascent_swing_heat(row, src_path, fps, rig) -> dict:
                  # and the spot was never worked out at all, so the
                  # one thing that wants to aim at a ball at rest was
                  # left guessing from a body's feet.
-                 "tee_spot", "chain_points")})
+                 "tee_spot", "chain_points",
+                 # THE CROP AND THE FEET, which only exist in golfer
+                 # style and are what the ball search is aimed with.
+                 "frames_rect", "front_feet", "front_h", "golfer_crop",
+                 "picked_front", "front_candidates")})
     out["ran"] = bool(_chk.get("available"))
     _img = _chk.get("image") or _chk.get("image_clean")
     if _img:
@@ -27454,6 +27487,32 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
             "ball_spot": _kept.get("ball_spot"),
             "skipped": [],
         })
+        # ── THE PEOPLE FIRST, LIKE TEST CUT ─────────────────────────
+        #
+        # Test Cut detects, hands the answer to the heat check and
+        # gets a golfer crop back. Produce ran the heat check bare,
+        # got no crop, and only reached for the detector as a
+        # fallback -- so the two were never going to agree about
+        # where to look for the ball.
+        _ppl0 = []
+        _zb0 = []
+        try:
+            _zb0 = [(int(z["x"]), int(z["y"]), int(z["w"]), int(z["h"]))
+                    for z in (_tee_trigger_zones(db, row) or [])]
+        except Exception:  # noqa: BLE001
+            _zb0 = []
+        if _kept and _kept.get("golfer_box"):
+            pass          # handed over; no need to detect again
+        else:
+            try:
+                from ..services.people import find_people_over_time as _fpot
+                from ..services.tracer import AUDIO2_OFFSETS_SEC as _AO0
+                _ppl0 = _fpot(src_path, float(_rig["sec"]), _AO0) or []
+                out["n_people"] = len(_ppl0)
+            except Exception as _p0:  # noqa: BLE001
+                log.debug("ai launch: person detect failed: %s", _p0)
+                _ppl0 = []
+            _lap("the person detector")
         _heat = None
         if _kept and _kept.get("golfer_box"):
             # The heat pass exists to place the golfer. It has been
@@ -27466,11 +27525,32 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
             out["timing"]["the motion heat pass"] = 0.0
             _lap_t[0] = time.perf_counter()
         else:
-            _heat = _ascent_swing_heat(row, src_path, _fps, _rig)
+            _heat = _ascent_swing_heat(row, src_path, _fps, _rig,
+                                       people=_ppl0, zones=_zb0)
             _lap("the motion heat pass")
         out["swing_check"] = _heat
         _rect = None
-        if _heat.get("ball_box"):
+        # ── THE GOLFER CROP, WHICH IS WHAT TEST CUT SEARCHES ────────
+        #
+        # `frames_rect` is the crop the six tiles are cut to -- the
+        # golfer, padded, from their feet to just above their head.
+        # Test Cut hands exactly this to `ball_at_address` and finds
+        # the ball; produce was handing a box a third of a
+        # body-height square round the FEET, and a teed ball sits a
+        # clear step to the side of them. Same clip, same frames,
+        # same detector, different rectangle -- and that is the whole
+        # of the disagreement the operator kept reporting.
+        #
+        # Taken FIRST, before the heat's own `ball_box`, because it
+        # is the one the answer was measured against.
+        if _heat.get("golfer_crop") and _heat.get("frames_rect"):
+            _fr = [int(v) for v in _heat["frames_rect"]]
+            _rect = (_fr[0], _fr[1], _fr[2] - _fr[0], _fr[3] - _fr[1])
+            out["rect_from"] = (
+                "the golfer crop Test Cut searches — "
+                + str(_heat.get("picked_front") or "golfer picked"))
+            out["golfer_box"] = out.get("golfer_box") or _fr
+        if _rect is None and _heat.get("ball_box"):
             _rect = tuple(int(v) for v in _heat["ball_box"])
             out["rect_from"] = (_heat.get("ball_box_from")
                                 or "the swing check's motion heat")
@@ -27634,6 +27714,38 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
     # BOTH ARE REPORTED. This is cheap, deterministic and has never
     # been scored against the AI on a corpus, so it does not replace
     # it; it stands beside it where they can be compared.
+    # ── TEST CUT'S OWN BALL CHECK, FIRST AND ON THE SAME RECT ───────
+    #
+    # `ball_at_address` over the six AUDIO2 frames is the call Test
+    # Cut makes, and the only reason produce had a different answer
+    # was a different rectangle. Same rect now, same offsets, same
+    # people, same anchor -- so a disagreement would have to be a
+    # disagreement about pixels, which it cannot be.
+    #
+    # It gives the SPOT. It cannot give the frame: six frames 0.2s
+    # apart can say a ball left and not on which of twelve frames,
+    # and twelve frames is a quarter of a second of tracer. The
+    # departure scan below answers that, handed this spot so it
+    # skips the half of its work that finds one.
+    _addr = None
+    try:
+        from ..services.ball_vanish import ball_at_address as _baa
+        from ..services.tracer import AUDIO2_OFFSETS_SEC as _AO1
+        if _rect is not None:
+            _anc1 = None
+            if _heat.get("front_feet") and _heat.get("front_h"):
+                _anc1 = (_heat["front_feet"][1], _heat["front_h"])
+            _addr = _baa(src_path, float(_rig["sec"]), _AO1,
+                         rect=(_rect[0], _rect[1],
+                               _rect[0] + _rect[2], _rect[1] + _rect[3]),
+                         people=(_ppl0 or None), anchor=_anc1)
+            out["address_ball"] = _addr.get("spot")
+            out["address_left"] = _addr.get("left")
+            out["address_why"] = _addr.get("why")
+            out["address_balls"] = _addr.get("balls")
+    except Exception as _ax:  # noqa: BLE001
+        log.debug("ai launch: the address check failed: %s", _ax)
+    _lap("the ball at address")
     try:
         from ..services.ball_vanish import ball_departure
         _dep = ball_departure(
@@ -27641,18 +27753,22 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
             # HANDED THE SPOT, so it skips finding one. That half of
             # the search reads every other frame of the window before
             # the strike looking for something that sits still; the
-            # verify call already found it, to the pixel, on frames
-            # cut from this very clip.
-            spot=((_kept or {}).get("ball_spot") or None),
+            # address check above already found it on the six frames
+            # Test Cut judges, and the rig's verify call before that.
+            spot=((_addr or {}).get("spot")
+                  or (_kept or {}).get("ball_spot") or None),
             rect=(None if not _rect else
                   (_rect[0], _rect[1], _rect[0] + _rect[2],
                    _rect[1] + _rect[3])),
             anchor=(None if not out.get("golfer_box") else
                     (out["golfer_box"][1] + out["golfer_box"][3],
                      out["golfer_box"][3])))
-        out["measured_ball"] = _dep.get("spot")
+        out["measured_ball"] = (_dep.get("spot")
+                                or (_addr or {}).get("spot"))
         out["measured_impact_frame"] = _dep.get("impact_frame")
-        out["measured_why"] = _dep.get("why")
+        out["measured_why"] = (
+            str((_addr or {}).get("why") or "")
+            + ((" · " + str(_dep.get("why"))) if _dep.get("why") else ""))
         out["measured_last_seen"] = _dep.get("last_seen")
         out["measured_checked"] = _dep.get("checked")
         _lap("the ball and the frame it left")

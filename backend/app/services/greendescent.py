@@ -50,6 +50,23 @@ log = logging.getLogger("golfreelz.greendescent")
 # the walk is extrapolating into nothing.
 MAX_BACK_SEC = 4.0
 
+# ...AND HOW LONG THE BALL MAY HAVE BEEN SITTING THERE FIRST.
+#
+# THE BUDGET WAS BEING SPENT ON THE REST. The walk starts at the
+# frame the ball was MEASURED at, which is wherever the green window
+# ladder found it -- eight, fourteen, twenty seconds after the
+# strike. The ball has been lying still for most of that, so four
+# seconds of walking back never reached the descent: on a real clip
+# it reported "241 points, falling 0px over 240 frames" and stopped
+# at the budget, having watched a stationary ball the whole way.
+#
+# A stationary frame costs one small window and finds the ball
+# exactly where it was, so it is nearly free. The four-second budget
+# is for the part that matters -- the fall, the bounce and the roll
+# -- and it starts counting from the frame the ball is first seen to
+# have moved.
+MAX_STILL_SEC = 30.0
+
 # HOW MANY FRAMES ARE HELD IN MEMORY AT ONCE. The walk is backwards
 # and decoders are forwards, so the clip is read in chunks: one seek
 # per chunk, the chunk read forwards, then walked in reverse. Seeking
@@ -82,7 +99,36 @@ ZOOM_MAX = 6.0
 # HOW MANY FRAMES IN A ROW MAY FIND NOTHING before the walk gives up.
 # A ball passes behind the flagstick, a player, or its own shadow on
 # the way down; it does not vanish for half a second.
-MAX_MISSES = 8
+#
+# WAS 8, AND IT GAVE UP ON THE REST RATHER THAN THE DESCENT. On a
+# real clip the walk reported "147 points walked back from the ball
+# at rest, falling -1px over 146 frames; stopped because lost it for
+# 8 frames in a row" -- a hundred and forty-six frames of a ball
+# sitting perfectly still, and then it stopped. It never reached the
+# descent at all.
+#
+# Two things were wrong. A stationary ball holds the velocity
+# estimate at zero, so the window stays at its 48px minimum right up
+# to the moment the ball was rolling -- and then the first frame of
+# the roll is a step the small window cannot cover. And eight frames
+# is an eighth of a second at 60fps, which is less than a ball
+# spends behind a flagstick.
+MAX_MISSES = 20
+
+# ...AND THE WALK DOES NOT GIVE UP WHILE THE BALL HAS NEVER MOVED.
+# Giving up during the rest is giving up before the question has
+# been asked: the whole point of walking back is to reach the part
+# where it was moving. Until the chain has travelled this far from
+# where it started, a run of misses widens the window and keeps
+# going rather than ending the walk.
+STILL_PX = 12.0
+
+# HOW WIDE THE WINDOW OPENS WHILE THE BALL IS STILL. A ball at rest
+# is exactly where it was, so the window is small -- which is right
+# until the frame the roll begins, where it is the reason the ball
+# is lost. Through a stationary run the window grows anyway, so the
+# first moving frame has somewhere to be found.
+WINDOW_STILL_GROWTH_PX = 14
 
 # HOW FAST THE BALL MUST STILL BE FALLING, in pixels per frame, for a
 # point to count as part of the fall rather than the roll. Used only
@@ -173,7 +219,7 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                  "first_frame": None, "last_frame": int(rest_frame),
                  "fall_px": 0, "pitch_frame": None, "pitch_xy": None,
                  "why": None, "windows": [], "image": None,
-                 "n_missed": 0}
+                 "n_missed": 0, "moved_at_frame": None}
     cap = None
     try:
         if not rest_xy:
@@ -187,7 +233,11 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         f_end = int(max(0, min(int(rest_frame),
                                (total - 1) if total else int(rest_frame))))
-        f_start = max(0, f_end - int(round(float(max_back_sec) * fps)))
+        # THE FAR FLOOR covers the rest AND the flight; the tight one
+        # is applied from the frame the ball is first seen to move.
+        f_start = max(0, f_end - int(round(
+            (float(max_back_sec) + MAX_STILL_SEC) * fps)))
+        _moving_floor = None
 
         px, py = float(rest_xy[0]), float(rest_xy[1])
         vx = vy = 0.0
@@ -206,6 +256,11 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
         # the rest. Measured on a fixture with a stationary ball: 26
         # found and 66 extrapolated before this, a clean run after.
         seen_f, seen_x, seen_y = f_end, px, py
+        # HAS IT MOVED AT ALL YET? Until it has, a run of misses is
+        # not evidence the walk is lost -- it is evidence the ball is
+        # still sitting there and the detector blinked.
+        _moved = False
+        _start_x, _start_y = px, py
         tiles: list = []
         _stop = None
 
@@ -226,9 +281,16 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                 # velocity rather than add it.
                 qx, qy = px - vx, py - vy
                 _speed = (vx * vx + vy * vy) ** 0.5
+                # ...PLUS ROOM FOR A BALL THAT HAS NOT MOVED YET.
+                # See STILL_PX: the roll begins at some frame, and
+                # that frame is the one the minimum window cannot
+                # cover.
+                _still = (not _moved) and len(chain) > 4
                 half = int(min(WINDOW_MAX_PX,
                                WINDOW_BASE_PX + WINDOW_PER_SPEED * _speed
-                               + WINDOW_PER_MISS_PX * misses))
+                               + WINDOW_PER_MISS_PX * misses
+                               + (WINDOW_STILL_GROWTH_PX * min(20, len(chain))
+                                  if _still else 0)))
                 dets, sub, scale, box = _detect_in_window(gray, qx, qy, half)
                 best, bd = None, None
                 _lim = MATCH_FRAC * half
@@ -261,6 +323,17 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                     px, py = best["x"], best["y"]
                     seen_f, seen_x, seen_y = fi, px, py
                     misses = 0
+                    if not _moved and (
+                            (px - _start_x) ** 2 + (py - _start_y) ** 2
+                            > STILL_PX * STILL_PX):
+                        _moved = True
+                        out["moved_at_frame"] = int(fi)
+                        # FROM HERE THE REAL BUDGET APPLIES. Walking
+                        # back from the first moving frame is the
+                        # thing four seconds was ever meant to cover.
+                        _moving_floor = max(
+                            f_start,
+                            int(fi) - int(round(float(max_back_sec) * fps)))
                     chain.append({"frame": fi, "x": px, "y": py,
                                   "area": best["area"],
                                   "contrast": best["contrast"],
@@ -271,9 +344,16 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                     chain.append({"frame": fi, "x": px, "y": py,
                                   "area": None, "contrast": None,
                                   "found": False, "window": list(box)})
-                    if misses > MAX_MISSES:
-                        _stop = ("lost it for %d frames in a row"
-                                 % MAX_MISSES)
+                    if misses > MAX_MISSES and _moved:
+                        _stop = ("lost it for %d frames in a row, after "
+                                 "it had started moving" % MAX_MISSES)
+                        break
+                    if misses > MAX_MISSES * 3:
+                        _stop = ("lost it for %d frames in a row without "
+                                 "ever seeing it move — the ball sat "
+                                 "still for the whole window, so the "
+                                 "descent is further back than %.1fs"
+                                 % (MAX_MISSES * 3, max_back_sec))
                         break
                 if out_dir is not None and sub is not None:
                     tiles.append((fi, sub, scale, box,
@@ -281,9 +361,18 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                 if not (0 <= px < w and 0 <= py < h):
                     _stop = "the walk left the frame"
                     break
+                if _moving_floor is not None and fi <= _moving_floor:
+                    _stop = ("%.1fs of walking back from the frame it "
+                             "started moving" % max_back_sec)
+                    break
             if _stop:
                 break
             f = c0 - 1
+            if not _moved and (f_end - f) > int(MAX_STILL_SEC * fps):
+                _stop = ("%.0fs of walking back and the ball never "
+                         "moved — it was already at rest when this "
+                         "window begins" % MAX_STILL_SEC)
+                break
 
         # TRIM THE TAIL OF MISSES. A chain that ends in eight
         # extrapolated points ends eight frames after it stopped
