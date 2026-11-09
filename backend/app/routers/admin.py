@@ -25902,7 +25902,27 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     # the search does not merely fail, it answers wrongly -- a landing
     # in the fairway above the green, a comet along a path the ball
     # never took. The resting-ball pass below needs none of it.
-    _do_descent = bool(int(_gates.get("ascent_descent_search", 1)))
+    # ── THE OLD SEARCH NO LONGER RUNS. AT ALL. ──────────────────────
+    #
+    # It segmented every frame of a window of green footage, built
+    # chains out of everything that moved, and tried to pick the ball
+    # out of them with gates -- on a green ringed with brush, where
+    # the wind moves more of the frame than the ball does. It asked
+    # the hardest version of the question: identify an unknown object
+    # among many, with no anchor. It worked often enough to be worth
+    # keeping and not often enough to be trusted, and every gate that
+    # made it stricter was a gate that lost real descents.
+    #
+    # The walk below asks the easy version. The resting place is
+    # MEASURED now, so the descent is not a search for an unknown
+    # object: it is a walk backwards from a known one, and at every
+    # step there is a position, a velocity and a small window. A
+    # branch waving in the treeline is never inside the window --
+    # not rejected by a gate, never considered.
+    #
+    # `ascent_descent_search` is no longer read. A hole that set it
+    # is not re-enabling this.
+    _do_descent = False
     out["descent_search"] = _do_descent
     for i, (_flo, _fhi) in enumerate(_wins if _do_descent else []):
         if progress:
@@ -26193,11 +26213,108 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     else:
         out["rest_reason"] = "no green camera on this pair"
     _sub("4f", "Finding where it came to rest",
-         "Two plates of the green compared — before the shot, and once "
-         "the ball is down and still. No tracking and no chain, but a "
-         "handful of frames decoded per swing, so this grows with the "
-         "number of swings rather than with the clip.",
+         "The green cut into four zones, each scaled up, and the same "
+         "white top-hat detector Test Cut uses for a ball at address — "
+         "run on a frame from before the shot and one from after it. "
+         "What is there now and was not there before is the shot. This "
+         "is now the GATE on everything below it: no ball at rest, no "
+         "descent.",
          out.get("n_rest"), "found at rest", _lap())
+
+    # ── AND THE DESCENT, WALKED BACKWARDS FROM IT ───────────────────
+    #
+    # NO BALL AT REST, NO DESCENT. That is the whole contract, and it
+    # is the opposite of what the old search did: hunt the green and
+    # attach whatever best survived the gates, which is how a landing
+    # appeared on clips where the shot missed the green entirely. A
+    # comet drawn arriving somewhere the ball never went is worse than
+    # no comet at all.
+    #
+    # Where there IS a measured ball, the walk starts on it and steps
+    # backwards one frame at a time, searching a small zoomed window
+    # around where the ball must have been. The window is the zone --
+    # it moves with the ball, and it is the only place the detector
+    # ever looks. See services/greendescent.py.
+    from ..services import greendescent as _gdsc
+
+    out["n_descent"] = 0
+    out["descents_back"] = []
+    for i, c in enumerate(_clips):
+        if not c.get("rest_spot") or c.get("impact_frame") is None:
+            continue
+        if progress:
+            progress(f"Walking the descent back from the ball, swing "
+                     f"{i + 1} of {len(_clips)}", i, len(_clips))
+        # THE FRAME THE BALL WAS MEASURED IN, which is the after plate's
+        # own instant. Starting anywhere else would start the walk on a
+        # frame nobody has checked the ball is in.
+        _base = float(c["impact_frame"]) / float(fps or 30.0) \
+            - float(out["delta_sec"])
+        _rf = int(round((_base + REST_PLATE_AFTER_SEC) * float(_gfps or 60.0)))
+        _walk = _gdsc.track_descent_back(
+            _gp, c["rest_spot"], _rf,
+            out_dir=CLIPS_DIR, stem=f"gdesc-{row.id}-s{i + 1}")
+        c["descent_back_why"] = _walk.get("why")
+        _row = {"swing": i + 1, "ok": bool(_walk.get("ok")),
+                "n_points": _walk.get("n_points"),
+                "n_missed": _walk.get("n_missed"),
+                "fall_px": _walk.get("fall_px"),
+                "first_frame": _walk.get("first_frame"),
+                "pitch_frame": _walk.get("pitch_frame"),
+                "pitch_xy": _walk.get("pitch_xy"),
+                "why": _walk.get("why"),
+                "image_url": _clip_url_for(Path(_walk["image"]).name)
+                if _walk.get("image") else None,
+                "windows": [
+                    dict(w, url=_clip_url_for(Path(w["path"]).name))
+                    for w in (_walk.get("windows") or [])
+                    if w.get("path")],
+                }
+        out["descents_back"].append(_row)
+        if not _walk.get("ok"):
+            continue
+        _pts = _walk["points"]
+        # ── WHAT THE REST OF THE RUN READS ──────────────────────────
+        #
+        # `landing_spot` is the PITCH MARK where the walk could name
+        # one -- the first frame it stopped falling, which is the mark
+        # on the green -- and the resting place otherwise. Those are
+        # different events and the difference is a bounce and a roll,
+        # so the one being used is recorded rather than left to be
+        # guessed from the number.
+        if _walk.get("pitch_xy"):
+            c["landing_frame"] = int(_walk["pitch_frame"])
+            c["landing_spot"] = [int(_walk["pitch_xy"][0]),
+                                 int(_walk["pitch_xy"][1])]
+            c["landing_from"] = "the pitch mark, walked back from the ball"
+        else:
+            c["landing_frame"] = int(_pts[-1]["frame"])
+            c["landing_spot"] = [int(round(_pts[-1]["x"])),
+                                 int(round(_pts[-1]["y"]))]
+            c["landing_from"] = ("the resting place — the walk never "
+                                 "saw it stop falling")
+        c["landing_sec"] = round(
+            float(c["landing_frame"]) / float(_gfps or 60.0), 2)
+        # THE COMET IS THE WALK. Drawn in the order the ball flew, and
+        # only the frames something was actually seen in: an
+        # extrapolated point is a position nobody measured and a comet
+        # is a claim about where the ball was.
+        c["green_track"] = [{"frame": int(q["frame"]), "x": int(round(q["x"])),
+                             "y": int(round(q["y"]))}
+                            for q in _pts if q.get("found")]
+        c["landing_points"] = len(c["green_track"])
+        c["descent_first_frame"] = int(_walk["first_frame"])
+        out["n_descent"] += 1
+        out["n_matched"] += 1
+    _sub("4g", "Walking the descent back from the ball",
+         "One frame-by-frame walk per swing that has a ball at rest, "
+         "backwards from it. Each step searches a small window around "
+         "where the ball must have been, scaled up so the top-hat has "
+         "something to work with. The window is the only place the "
+         "detector looks, so nothing else on the green is ever a "
+         "candidate — a branch in the treeline is not rejected, it is "
+         "never considered.",
+         out.get("n_descent"), "walked", _lap())
 
     _ascent_window_views(row, _gp, out, _clips, _gfps, fps,
                          _tee_start, _green_start)
@@ -26211,10 +26328,14 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     out["ok"] = out["n_matched"] > 0 or out.get("n_rest", 0) > 0
     if not _do_descent:
         out["descent_skipped_reason"] = (
-            "The descent search is off for this hole — the ball is found "
-            "where it came to REST instead, which needs no tracking. There "
-            "is no pitch mark and no comet on the green half; turn "
-            "ascent_descent_search back on to get them.")
+            "The old descent search — segment every frame of a window, "
+            "build chains out of everything that moved, pick the ball "
+            "out with gates — does not run any more. The ball is found "
+            "at REST first, and the descent is then walked BACKWARDS "
+            "from it, one frame at a time, through a small zoomed "
+            "window that moves with the ball. No ball at rest, no "
+            "descent: a comet drawn arriving somewhere the ball never "
+            "went is worse than no comet.")
     if not _do_descent:
         # NO CLOCK WARNING HERE. That warning is about the three-second
         # flight window, and with the descent search off there is no
@@ -26223,10 +26344,9 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         # ball on the grass.
         out["reason"] = (
             f"{out.get('n_rest', 0)} of {len(_clips)} swing(s) found at "
-            "rest on the green. The descent search is off for this hole, "
-            "so nothing was tracked through the fall — see the note "
-            "below. The two clocks are "
-            f"{out['delta_sec']}s apart ({out['delta_source']})")
+            f"rest on the green, and {out.get('n_descent', 0)} of those "
+            "had the descent walked back from the ball. The two clocks "
+            f"are {out['delta_sec']}s apart ({out['delta_source']})")
         return out
     out["reason"] = (
         ("" if out["delta_measured"] else

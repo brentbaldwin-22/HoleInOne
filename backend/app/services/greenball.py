@@ -84,6 +84,28 @@ OUTLINE_SLACK_FRAC = 0.06
 # is not a report. The ones worth reading are the biggest.
 MAX_REJECTS_PER_ZONE = 8
 
+# THE SMALLEST THING ON A GREEN THAT CAN BE A BALL, in square pixels
+# of the FRAME.
+#
+# `BALL_MIN_AREA` is 3, which is a diameter of about two pixels. That
+# is right for the tee camera, where the ball is a few feet away and
+# the floor exists only to throw out single-pixel noise. On a green it
+# is far too permissive, and what it lets through is not noise but
+# STRUCTURE: the lit top edge of a bunker, a sprinkler lip, a mowing
+# boundary, all sliced by the threshold into a row of two-pixel
+# fragments that are round, bright and ball-sized by that floor.
+#
+# Measured on a synthetic green with a bunker inside the outline: the
+# ball came back 7.3px across with a top-hat response of 182, and the
+# twenty-one false candidates were every one of them 2.0 to 2.3px
+# across with responses of 46 to 55. There is no overlap. Six square
+# pixels is a diameter of 2.8 -- above every fragment, below any ball
+# a green camera can resolve at all.
+#
+# PROVISIONAL, like every constant in this corner of the app: fitted
+# to one fixture, not scored on a corpus.
+GREEN_BALL_MIN_AREA = 6
+
 
 def _scaled_polygon(polygon, shape, drawn_at=None):
     """[[x,y], ...] in THIS frame's pixels, or None."""
@@ -154,23 +176,28 @@ def _detect_in_zone(frame_bgr, rect):
     # back empty with nothing to look at.
     _rej: list = []
     _stat: list = []
-    for cx, cy, area, contrast in _detections(gray, [(0, 0, zw, zh)],
-                                              rel=0.0, rejects=_rej,
-                                              stats_out=_stat):
-        # ── THE SIZE GATE BELONGS IN ORIGINAL PIXELS ────────────────
-        #
-        # `_detections` applies BALL_MIN_AREA in the pixels of the
-        # image it is handed, and the image it is handed here has been
-        # scaled up. At 2.5x its floor of 3px of area means 0.5px of
-        # area in the frame -- so every re-quantised speck on a
-        # mowing stripe passes it. Measured on a synthetic green with
-        # real-ish turf noise: 59 "balls" before this line, 1 after,
-        # and the one is the ball. The zoom exists to give the
-        # top-hat's 15px kernel something to work with, not to make
-        # the detector less fussy about size.
-        _oa = float(area) / (scale * scale)
-        if not (BALL_MIN_AREA <= _oa <= BALL_MAX_AREA):
-            continue
+    # ── THE SIZE GATE BELONGS IN ORIGINAL PIXELS ────────────────────
+    #
+    # `_detections` applies its bounds in the pixels of the image it
+    # is handed, and the image it is handed here has been scaled up.
+    # At 2.5x a floor of 3px of area means 0.5px of area in the frame,
+    # so every re-quantised speck on a mowing stripe passes it:
+    # measured on a synthetic green with real-ish turf noise, 59
+    # "balls" before this was corrected and 1 after, and the one is
+    # the ball. The ceiling fails the same way in the other direction
+    # and is worse, because it throws the ball away before the caller
+    # can see it -- at 6x a 50px ball is 1800px of area against a
+    # limit of 400.
+    #
+    # SO THE BOUNDS GO IN SCALED rather than the results being judged
+    # afterwards. The zoom exists to give the top-hat's 15px kernel
+    # something to work with, not to change what counts as a ball.
+    _s2 = scale * scale
+    for cx, cy, area, contrast in _detections(
+            gray, [(0, 0, zw, zh)], rel=0.0, rejects=_rej,
+            stats_out=_stat, min_area=GREEN_BALL_MIN_AREA * _s2,
+            max_area=BALL_MAX_AREA * _s2, kernel_px=15 * scale):
+        _oa = float(area) / _s2
         out.append({
             "x": float(ax + cx / scale), "y": float(ay + cy / scale),
             # AREA AND DIAMETER IN ORIGINAL PIXELS. The numbers the
@@ -188,11 +215,25 @@ def _detect_in_zone(frame_bgr, rect):
     _rows = []
     for r in _rej:
         _oa = float(r["area"]) / (scale * scale)
+        # THE REASON IN THE SAME UNITS AS THE ROW. The detector
+        # measures in the zoomed zone's pixels, which is right for it
+        # and meaningless to a reader looking at a frame: "1800px of
+        # area, over 2500" beside a row saying the thing is 50px is
+        # two numbers that cannot both be about the same object. Size
+        # reasons are rewritten in the frame's pixels; shape reasons
+        # are ratios and carry over unchanged.
+        _why = r["why"]
+        if "px of area" in _why:
+            _why = ("%gpx of area, %s %g in the frame's own pixels"
+                    % (round(_oa, 1),
+                       "under" if "under" in _why else "over",
+                       GREEN_BALL_MIN_AREA if "under" in _why
+                       else BALL_MAX_AREA))
         _rows.append({"x": float(ax + r["x"] / scale),
                       "y": float(ay + r["y"] / scale),
                       "area": round(_oa, 1),
                       "diam_px": round(2.0 * (_oa / 3.14159) ** 0.5, 1),
-                      "why": r["why"]})
+                      "why": _why})
     _rows.sort(key=lambda z: -z["area"])
     _diag = {
         "rejected": _rows[:MAX_REJECTS_PER_ZONE],

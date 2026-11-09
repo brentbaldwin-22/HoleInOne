@@ -644,6 +644,78 @@ function GreenRestLabel({ row, found }) {
   );
 }
 
+/**
+ * One swing's descent, walked backwards from the ball at rest.
+ *
+ * THE OLD SEARCH ASKED THE HARDEST VERSION OF THE QUESTION: identify
+ * an unknown object among everything that moves on a windy green. This
+ * asks the easy one. The resting place is measured first, so the walk
+ * starts on a known ball and every step is a short extrapolation from
+ * the step before, through a small window that moves with it. Nothing
+ * else on the green is ever a candidate -- a branch in the treeline is
+ * not rejected by a gate, it is never inside the window.
+ */
+function DescentWalk({ walk }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ margin: "8px 0", paddingLeft: 10,
+                  borderLeft: `2px solid ${walk.ok ? "#2f6feb" : "#b4690e"}` }}>
+      <div className="small">
+        <b>Swing {walk.swing} · the descent, walked back</b>{" "}
+        <span className={walk.ok ? "pill ok" : "pill warn"}>
+          {walk.ok
+            ? `${walk.n_points} point(s), fell ${walk.fall_px}px`
+            : "no walk"}
+        </span>
+      </div>
+      <div className="tiny muted" style={{ marginTop: 2 }}>
+        {walk.why}
+        {walk.pitch_xy
+          ? ` · pitch mark f${walk.pitch_frame} at `
+            + `${walk.pitch_xy[0]}, ${walk.pitch_xy[1]}`
+          : " · it never saw the ball stop falling, so there is no"
+            + " pitch mark and the resting place is used instead"}
+      </div>
+      {walk.image_url && (
+        <a href={walk.image_url} target="_blank" rel="noreferrer">
+          <img src={walk.image_url} alt="the descent walked back"
+               style={{ width: "100%", maxWidth: 900, marginTop: 4,
+                        borderRadius: 4,
+                        border: "1px solid var(--border, #333)" }} />
+        </a>
+      )}
+      {(walk.windows || []).length > 0 && (
+        <div style={{ marginTop: 4 }}>
+          <button type="button" className="small ghost"
+                  style={{ width: "auto" }}
+                  onClick={() => setOpen((v) => !v)}>
+            {open ? "Hide" : "Show"} the {walk.windows.length} search
+            window(s)
+          </button>
+          {open && (
+            <div style={{ display: "grid", gap: 6, marginTop: 6,
+                          gridTemplateColumns:
+                            "repeat(auto-fit, minmax(140px, 1fr))" }}>
+              {walk.windows.map((w) => (
+                <figure key={w.frame} style={{ margin: 0 }}>
+                  <a href={w.url} target="_blank" rel="noreferrer">
+                    <img src={w.url} alt={`window at f${w.frame}`}
+                         style={{ width: "100%", borderRadius: 3,
+                                  border: "1px solid var(--border, #333)" }} />
+                  </a>
+                  <figcaption className="tiny muted">
+                    f{w.frame} · {w.zoom}×{w.found ? "" : " · NOTHING"}
+                  </figcaption>
+                </figure>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function VideoTile({ label, thumb, durationSec, nbFrames, fps, sizeMb,
                      startsAt, missing, notUploaded, qualityLabel, width, height,
                      videoUrl, recordingStartedAt, onOpenViewer, footer }) {
@@ -10218,6 +10290,15 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                 {rep.descents.rest_reason}
               </div>
             )}
+            {/* THE WALK, PER SWING. The chain picture is the whole
+                answer -- the fall, the pitch mark, the bounce, the
+                roll and the ball it started from, on one frame -- and
+                the window tiles below it are what the detector
+                actually saw, which is the only way to argue with "it
+                lost it here" when a ball is four pixels across. */}
+            {(rep.descents.descents_back || []).map((d) => (
+              <DescentWalk key={d.swing} walk={d} />
+            ))}
             {/* ONE PICTURE PER SWING, of its own three seconds. The
                 single all-candidates frame it replaces could not answer
                 the question anyone actually asks, which is always about

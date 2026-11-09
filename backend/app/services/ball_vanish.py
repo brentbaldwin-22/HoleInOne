@@ -117,7 +117,8 @@ SPLIT_GAP_SEC = 8.0
 
 
 def _detections(gray, roi_boxes, rel: float = 0.55, rejects=None,
-                stats_out=None):
+                stats_out=None, min_area=None, max_area=None,
+                kernel_px: int = 15):
     """Small, round, locally bright things inside the boxes.
 
     `rel` scales the threshold off the BRIGHTEST thing in the box.
@@ -145,6 +146,37 @@ def _detections(gray, roi_boxes, rel: float = 0.55, rejects=None,
     was a blob the size of a shirt. They need opposite fixes, and the
     old output could not tell them apart -- which is how a green that
     plainly has a ball on it comes back empty with nothing to look at.
+
+    `min_area` and `max_area` override BALL_MIN_AREA / BALL_MAX_AREA
+    FOR THIS CALL, in the pixels of the image handed in. They exist
+    for callers that scale a crop up before calling -- the green's
+    zoned search and the reverse descent walk both do, because a ball
+    a hundred yards out is three pixels across and the top-hat's 15px
+    kernel swallows it. Those callers must scale the bounds by the
+    square of the zoom, or the gate means something different from
+    what it says: at 6x a 50px ball becomes 1800px of area and is
+    thrown out by a MAX_AREA written for 400. Not a hypothetical --
+    it is how the first reverse walk found the ball at rest in zero
+    of the twenty-two frames it was plainly sitting in.
+
+    `kernel_px` is the width of the top-hat's structuring element, and
+    a caller that scales a crop up MUST scale this with it. The
+    top-hat is "what is brighter than its own neighbourhood", and the
+    neighbourhood is the kernel: once the ball is wider than the
+    kernel, the opening keeps the ball's own interior and the top-hat
+    returns a thin rim, which fragments into specks and fails the
+    roundness and fill tests. Measured on one frame of a ball sitting
+    on a green, at a fixed 15px kernel:
+
+        1x  one blob, 49px, fill 0.60   -- the ball
+        2x  one blob, 242px             -- still the ball
+        3x  twenty-odd blobs of ~20px   -- the rim, in pieces
+        6x  eighty-odd blobs of ~85px   -- the rim, in more pieces
+
+    With the kernel scaled alongside, every zoom from 1x to 6x returns
+    one blob with the same area and the same fill in the frame's own
+    pixels. The detector becomes scale-free, which is the only thing
+    that makes zooming worth doing.
     """
     import cv2
     import numpy as np
@@ -158,7 +190,8 @@ def _detections(gray, roi_boxes, rel: float = 0.55, rejects=None,
         # A plain threshold picks up the whole sunlit half of the box;
         # this picks up only things that stand out from what surrounds
         # them, which is the definition being used here anyway.
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        _kp = max(3, int(kernel_px) | 1)
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_kp, _kp))
         hat = cv2.morphologyEx(sub, cv2.MORPH_TOPHAT, k)
         if stats_out is not None:
             stats_out.append({"box": [x0, y0, x1, y1],
@@ -183,11 +216,13 @@ def _detections(gray, roi_boxes, rel: float = 0.55, rejects=None,
                                     "area": _a, "w": _w, "h": _h,
                                     "why": why})
 
-            if area < BALL_MIN_AREA:
-                _no(f"{area}px of area, under {BALL_MIN_AREA}")
+            _lo = BALL_MIN_AREA if min_area is None else float(min_area)
+            _hi = BALL_MAX_AREA if max_area is None else float(max_area)
+            if area < _lo:
+                _no(f"{area}px of area, under {_lo:g}")
                 continue
-            if area > BALL_MAX_AREA:
-                _no(f"{area}px of area, over {BALL_MAX_AREA}")
+            if area > _hi:
+                _no(f"{area}px of area, over {_hi:g}")
                 continue
             if w == 0 or h == 0:
                 _no("no width or no height")
