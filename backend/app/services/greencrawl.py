@@ -1346,20 +1346,73 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
             # for four more blocks.
             _bend = _straightness(_blk) if len(_blk) >= LINK_MIN_CHAIN else 0.0
             if len(_blk) >= LINK_MIN_CHAIN and _bend > LINK_MAX_BEND_PX:
-                _row["n_kept"] = len(_blk)
-                _row["straightness_px"] = round(_bend, 2)
-                _row["why"] = (
-                    "%d candidate(s) on %d frame(s); the best run through "
-                    "them is %d point(s) but bends %.1fpx off straight, "
-                    "over the %gpx a falling ball bends in a tenth of a "
-                    "second — that is a thread through speckle, not a "
-                    "flight"
-                    % (len(got), len(_per), len(_blk), _bend,
-                       LINK_MAX_BEND_PX))
-                out["blocks"].append(_row)
-                _stop = ("block %d linked %d point(s) but they bent %.1fpx "
-                         "off straight" % (_b + 1, len(_blk), _bend))
-                break
+                # ── A BENT BLOCK IS A BLOCK WITH A BOUNCE IN IT ─────
+                #
+                # AND BREAKING HERE IS WHY THE CRAWL RAN FOR EXACTLY
+                # ONE BLOCK ON THE OPERATOR'S CLIP: "block 1 linked 3
+                # point(s) but they bent 13.3px off straight", and
+                # that was the end of it. A ten-frame block spanning a
+                # contact is bent BY DEFINITION -- the ball comes down
+                # and goes back up -- and block 1 is anchored in the
+                # roll, which is where contacts are densest. The bend
+                # test is right for telling a flight from a thread
+                # through speckle and wrong as a reason to stop.
+                #
+                # So a bent block is halved: the latest few frames
+                # alone are much less likely to span the contact, and
+                # if they link straight the crawl keeps going and
+                # finds the contact properly in the next block.
+                _half = max(LINK_MIN_CHAIN,
+                            int(round(CRAWL_BLOCK / 2.0)))
+                _recent = sorted({int(q["frame"]) for q in got},
+                                 reverse=True)[:_half]
+                _sub = [q for q in got if int(q["frame"]) in set(_recent)]
+                _blk3, _nstep3, _ = _link_block(_sub, (cx, cy, cf), None)
+                _bend3 = (_straightness(_blk3)
+                          if len(_blk3) >= LINK_MIN_CHAIN else 1e9)
+                _row["halved"] = {
+                    "frames": _half, "linked": len(_blk3),
+                    "bend_px": (None if _bend3 >= 1e9
+                                else round(_bend3, 2)),
+                    "why": ("the whole block bent %.1fpx, so the latest %d "
+                            "frame(s) were tried alone — %s"
+                            % (_bend, _half,
+                               ("%d linked at %.1fpx off straight"
+                                % (len(_blk3), _bend3))
+                               if _bend3 < 1e9 else "nothing linked")),
+                }
+                if len(_blk3) >= LINK_MIN_CHAIN and _bend3 <= LINK_MAX_BEND_PX:
+                    _bounces += 1
+                    _contacts.append({
+                        "frame": int(cf),
+                        "xy": [int(round(cx)), int(round(cy))],
+                        "block": _b + 1,
+                        "why": ("the ten frames before this point bend "
+                                "%.1fpx as one path and the latest %d of "
+                                "them are straight — the ball changed "
+                                "direction in here, which is a bounce"
+                                % (_bend, _half)),
+                    })
+                    _row["bounce"] = True
+                    _blk, _nstep, _bend = _blk3, _nstep3, _bend3
+                    _step = None
+                else:
+                    _row["n_kept"] = len(_blk)
+                    _row["straightness_px"] = round(_bend, 2)
+                    _row["why"] = (
+                        "%d candidate(s) on %d frame(s); the best run "
+                        "through them is %d point(s) but bends %.1fpx off "
+                        "straight, over the %gpx a falling ball bends in a "
+                        "tenth of a second — and the latest %d frame(s) on "
+                        "their own did not link either, so this is a "
+                        "thread through speckle rather than a bounce"
+                        % (len(got), len(_per), len(_blk), _bend,
+                           LINK_MAX_BEND_PX, _half))
+                    out["blocks"].append(_row)
+                    _stop = ("block %d linked %d point(s) but they bent "
+                             "%.1fpx off straight, and halving the block "
+                             "did not help" % (_b + 1, len(_blk), _bend))
+                    break
             if len(_blk) < LINK_MIN_CHAIN and _step is not None \
                     and _bounces < CRAWL_MAX_BOUNCES:
                 # ── A FAILED LINK IS A BOUNCE, NOT THE END ──────────

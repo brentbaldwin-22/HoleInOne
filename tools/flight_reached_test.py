@@ -162,6 +162,41 @@ def main():
     ok("  with every chain it considered",
        "fl.chains" in _jsx and "setShowChains" in _jsx, True)
 
+    # ── THE THREE FRAMES ARE STATED, NOT RECONSTRUCTED ──────────────
+    #
+    # ASKED DIRECTLY: which frame is the ball at rest, which is the
+    # pitch mark, and which frames does each pass scan. All three
+    # existed and none was stated -- they had to be pieced together
+    # from a sentence, a block table and a constant.
+    ok("the report states the three frames", '"frames": {' in src, True)
+    for _k in ("at_rest", "pitch", "walk_searched", "crawl_searched",
+               "crawl_blocks", "anchor"):
+        ok("  including %s" % _k, '"%s"' % _k in src, True)
+    # "EACH TIME WE SCAN" IS A LIST, NOT A RANGE. The crawl searches
+    # ten frames, moves, and searches ten more.
+    ok("  with every crawl block's own range",
+       'b["frames"] for b in' in src, True)
+
+    # ── AND THE REST FRAME IS THE ONE THE BALL WAS MEASURED IN ──────
+    #
+    # IT WAS NOT, UNDER A COMMENT SAYING IT WAS. The walk started at
+    # impact + REST_PLATE_AFTER_SEC, a flat 14 seconds, while the ball
+    # is found by walking GREEN_AFTER_LADDER_SEC = (8, 14, 20, 5) and
+    # whichever rung answers is the frame it was seen in. On any clip
+    # answering on rung 1, 3 or 4 the walk began six to fifteen
+    # seconds from the measurement -- on a ball that may have been
+    # marked, moved or putted out in between.
+    ok("the walk starts on the frame the ball was measured in",
+       '_after = float(_win[1]) - _base' in src, True)
+    ok("  and says which window that came from",
+       'c["rest_frame_from"]' in src, True)
+
+    _jsx2 = (_adm.resolve().parents[3] / "frontend" / "src" / "pages"
+             / "AdminProduction.jsx").read_text(encoding="utf-8")
+    ok("the page shows the three frames", "The frames" in _jsx2, True)
+    ok("  and every block the crawl scanned",
+       "block by block:" in _jsx2, True)
+
     print()
     if _fails:
         print("%d FAILED: %s" % (len(_fails), ", ".join(_fails)))

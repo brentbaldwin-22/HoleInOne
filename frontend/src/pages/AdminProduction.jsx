@@ -866,6 +866,91 @@ function DescentWalk({ walk }) {
           ? ` · ${walk.n_missed} frame(s) extrapolated across`
           : " · nothing extrapolated"}
       </div>
+      {/* ── THE THREE FRAMES, FIRST AND PLAINLY ──────────────────
+          ASKED DIRECTLY: which frame is the ball at rest, which is
+          the pitch mark, and which frames does each pass actually
+          scan. All three existed and none was stated — they had to be
+          reconstructed from a sentence, a block table and a constant,
+          and the rest frame was being computed wrongly under a
+          comment claiming otherwise. */}
+      {walk.frames && (
+        <div style={{ marginTop: 6, padding: "6px 8px", borderRadius: 4,
+                      background: "var(--surface-alt)",
+                      border: "1px solid var(--border)" }}>
+          <div className="small"><b>The frames</b></div>
+          <table className="tiny" style={{ width: "100%", marginTop: 3,
+                                           borderCollapse: "collapse" }}>
+            <tbody>
+              <tr>
+                <td style={{ padding: "2px 6px", whiteSpace: "nowrap" }}>
+                  <b>Ball at rest</b>
+                </td>
+                <td style={{ padding: "2px 6px", whiteSpace: "nowrap" }}>
+                  f{walk.frames.at_rest}
+                  {walk.frames.at_rest_sec != null
+                    ? ` (${walk.frames.at_rest_sec}s)` : ""}
+                </td>
+                <td style={{ padding: "2px 6px" }} className="muted">
+                  {walk.frames.at_rest_from}
+                </td>
+              </tr>
+              <tr>
+                <td style={{ padding: "2px 6px", whiteSpace: "nowrap" }}>
+                  <b>Pitch mark</b>
+                </td>
+                <td style={{ padding: "2px 6px", whiteSpace: "nowrap" }}>
+                  {walk.frames.pitch != null
+                    ? `f${walk.frames.pitch}` : "not found"}
+                </td>
+                <td style={{ padding: "2px 6px" }} className="muted">
+                  {walk.frames.pitch_from}
+                </td>
+              </tr>
+              <tr>
+                <td style={{ padding: "2px 6px", whiteSpace: "nowrap" }}>
+                  <b>Walk scanned</b>
+                </td>
+                <td style={{ padding: "2px 6px", whiteSpace: "nowrap" }}>
+                  {walk.frames.walk_searched
+                    ? `f${walk.frames.walk_searched[0]}–f${
+                        walk.frames.walk_searched[1]}`
+                    : "—"}
+                </td>
+                <td style={{ padding: "2px 6px" }} className="muted">
+                  backwards from the ball at rest, one frame at a time
+                  {walk.frames.walk_first_moved != null
+                    ? ` · first saw it move at f${
+                        walk.frames.walk_first_moved}` : ""}
+                </td>
+              </tr>
+              <tr>
+                <td style={{ padding: "2px 6px", whiteSpace: "nowrap" }}>
+                  <b>Crawl scanned</b>
+                </td>
+                <td style={{ padding: "2px 6px", whiteSpace: "nowrap" }}>
+                  {walk.frames.crawl_searched
+                    ? `f${walk.frames.crawl_searched[0]}–f${
+                        walk.frames.crawl_searched[1]}`
+                    : "—"}
+                </td>
+                <td style={{ padding: "2px 6px" }} className="muted">
+                  backwards from f{walk.frames.anchor}, the earliest frame
+                  the walk actually saw the ball
+                  {/* EVERY BLOCK, IN ORDER. "Which frames are we
+                      scanning — each time we scan" is a list, not a
+                      range: the crawl searches ten frames, moves, and
+                      searches ten more. */}
+                  {(walk.frames.crawl_blocks || []).length > 0
+                    ? ` · block by block: ${
+                        walk.frames.crawl_blocks
+                          .map((f) => `f${f[0]}–f${f[1]}`).join(", ")}`
+                    : ""}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
       {/* ── PHASE B: THE FLIGHT, FOUND FORWARDS ──────────────────
           FIRST, BECAUSE IT IS THE PART THAT WAS MISSING. The walk
           below stops at the bounce and always will -- a bounce is an

@@ -26299,12 +26299,35 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         if progress:
             progress(f"Walking the descent back from the ball, swing "
                      f"{i + 1} of {len(_clips)}", i, len(_clips))
-        # THE FRAME THE BALL WAS MEASURED IN, which is the after plate's
-        # own instant. Starting anywhere else would start the walk on a
-        # frame nobody has checked the ball is in.
+        # ── THE FRAME THE BALL WAS ACTUALLY MEASURED IN ─────────
+        #
+        # AND IT WAS NOT, WHICH IS A REAL BUG WITH A COMMENT ON TOP OF
+        # IT CLAIMING OTHERWISE. This read "the after plate's own
+        # instant" and then computed impact + REST_PLATE_AFTER_SEC,
+        # a flat 14 seconds -- while the ball is found by walking a
+        # LADDER of after-frames, GREEN_AFTER_LADDER_SEC = (8, 14, 20,
+        # 5), and whichever rung answers is the frame the ball was
+        # seen in. On every clip that answered on rung 1, 3 or 4 the
+        # walk therefore started six to fifteen seconds away from the
+        # frame the measurement came from, on a ball that had been
+        # marked, moved or putted out in between.
+        #
+        # `rest_window` carries the rung that actually answered. Using
+        # it is the difference between starting the walk on the ball
+        # and starting it where the ball used to be.
         _base = float(c["impact_frame"]) / float(fps or 30.0) \
             - float(out["delta_sec"] or 0.0)
-        _rf = int(round((_base + REST_PLATE_AFTER_SEC) * float(_gfps or 60.0)))
+        _after = REST_PLATE_AFTER_SEC
+        _win = c.get("rest_window")
+        if _win and len(_win) == 2 and _win[1] is not None:
+            _after = float(_win[1]) - _base
+        _rf = int(round((_base + _after) * float(_gfps or 60.0)))
+        c["rest_frame"] = _rf
+        c["rest_frame_from"] = (
+            "the after frame of the window that found it (%.1fs)" % _win[1]
+            if _win and len(_win) == 2 and _win[1] is not None else
+            "impact + %.0fs, the default — no window was recorded"
+            % REST_PLATE_AFTER_SEC)
         _walk = _gdsc.track_descent_back(
             _gp, c["rest_spot"], _rf,
             out_dir=CLIPS_DIR, stem=f"gdesc-{row.id}-s{i + 1}")
@@ -26324,6 +26347,32 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                 # part worth looking at began.
                 "moved_at_frame": _walk.get("moved_at_frame"),
                 "started_at_frame": _rf,
+                # ── THE THREE FRAMES, STATED OUTRIGHT ─────────────
+                #
+                # ASKED DIRECTLY: which frame is the ball at rest,
+                # which is the pitch mark, and which frames does each
+                # scan actually look at. All three existed and none
+                # was stated -- they had to be reconstructed from a
+                # sentence, a block table and a constant, and one of
+                # them (the rest frame) was being computed wrongly
+                # under a comment claiming otherwise.
+                "frames": {
+                    "at_rest": _rf,
+                    "at_rest_from": c.get("rest_frame_from"),
+                    "at_rest_sec": round(float(_rf)
+                                         / float(_gfps or 60.0), 2),
+                    # THE WALK: from the ball at rest, backwards, to
+                    # wherever it lost it.
+                    "walk_searched": (
+                        [int(_walk["first_frame"]), int(_rf)]
+                        if _walk.get("first_frame") is not None else None),
+                    "walk_first_moved": _walk.get("moved_at_frame"),
+                    # AND THE CRAWL: backwards again from the earliest
+                    # frame the walk really saw the ball, which is a
+                    # measurement where the walk's own pitch mark is
+                    # an inference.
+                    "anchor": (int(_anchor["frame"]) if _anchor else None),
+                },
                 "why": _walk.get("why"),
                 # ── WHAT IT ACTUALLY DID, CARRIED OUT WHOLE ───────
                 #
@@ -26521,6 +26570,23 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         # touch. On the fixture it lands within one frame and 17px of
         # the truth from an anchor 22 frames past it, where the walk's
         # own rule was 13 frames and 90px out.
+        # THE CRAWL'S OWN RANGES, FOLDED IN BESIDE THE WALK'S, so one
+        # block answers "what did each pass look at" instead of three.
+        _row["frames"]["crawl_searched"] = (_flight or {}).get("searched")
+        _row["frames"]["crawl_blocks"] = [
+            b["frames"] for b in ((_flight or {}).get("blocks") or [])]
+        _row["frames"]["pitch"] = ((_flight or {}).get("pitch_frame")
+                                   if (_flight or {}).get("pitch_frame")
+                                   is not None
+                                   else _walk.get("pitch_frame"))
+        _row["frames"]["pitch_from"] = (
+            (_flight or {}).get("pitch_from")
+            if (_flight or {}).get("pitch_frame") is not None
+            else ("the reverse walk's own rule — the first frame it "
+                  "stopped falling, which is an inference over a chain "
+                  "that may contain no fall"
+                  if _walk.get("pitch_frame") is not None else
+                  "nothing measured one"))
         if (_flight or {}).get("pitch_xy"):
             c["landing_frame"] = int(_flight["pitch_frame"])
             c["landing_spot"] = [int(_flight["pitch_xy"][0]),
