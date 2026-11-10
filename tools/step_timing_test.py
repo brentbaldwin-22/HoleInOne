@@ -161,6 +161,7 @@ for _n, _what in (("4a", "opening the green and reading the clocks"),
                   ("4b", "finding where it came to rest"),
                   ("4c", "walking the descent back from the ball"),
                   ("4d", "placing the flight windows"),
+                  ("4e", "finding the flight forwards from the pitch mark"),
                   ("4f", "matching swings to landings"),
                   ("4g", "the old descent search, off by default"),
                   ("4h", "drawing the window views")):

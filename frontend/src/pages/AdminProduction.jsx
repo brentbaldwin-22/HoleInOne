@@ -827,11 +827,13 @@ function DescentWalk({ walk }) {
   const log = walk.log || [];
   const lost = walk.lost_at || null;
   const lostWins = walk.lost_windows || [];
+  const fl = walk.flight || null;
+  const [showChains, setShowChains] = useState(false);
   return (
     <div style={{ margin: "8px 0", paddingLeft: 10,
                   borderLeft: `2px solid ${walk.ok ? "#2f6feb" : "#b4690e"}` }}>
       <div className="small">
-        <b>Swing {walk.swing} · the descent, walked back</b>{" "}
+        <b>Swing {walk.swing} · the descent</b>{" "}
         <span className={walk.ok ? "pill ok" : "pill warn"}>
           {walk.ok
             ? `${walk.n_points} point(s), fell ${walk.fall_px}px`
@@ -864,6 +866,132 @@ function DescentWalk({ walk }) {
           ? ` · ${walk.n_missed} frame(s) extrapolated across`
           : " · nothing extrapolated"}
       </div>
+      {/* ── PHASE B: THE FLIGHT, FOUND FORWARDS ──────────────────
+          FIRST, BECAUSE IT IS THE PART THAT WAS MISSING. The walk
+          below stops at the bounce and always will -- a bounce is an
+          impulse, and no smooth motion model crosses one in either
+          direction. The flight is searched forwards and TOLD WHERE IT
+          ENDS, which turns a hunt for an unknown object into one
+          question: which chain's own arc lands on the pitch mark. */}
+      {fl && (
+        <div style={{ marginTop: 6, padding: "6px 8px", borderRadius: 4,
+                      background: "var(--panel2, #1b1b1b)",
+                      borderLeft: `3px solid ${fl.ok ? "#5ae0ff" : "#b4690e"}` }}>
+          <div className="small">
+            <b>The flight, found forwards</b>{" "}
+            <span className={fl.ok ? "pill ok" : "pill warn"}>
+              {fl.ok
+                ? `${fl.n_points} point(s), fell ${fl.fell_px}px`
+                : "no flight"}
+            </span>
+            {fl.rung != null && (
+              <span className="pill" style={{ marginLeft: 4 }}>
+                rung {fl.rung} · {(fl.ladder?.[fl.rung - 1]?.detectors
+                                   || []).join("+")}
+              </span>
+            )}
+          </div>
+          <div className="tiny muted" style={{ marginTop: 2 }}>{fl.why}</div>
+          {fl.taken && (
+            <div className="tiny muted" style={{ marginTop: 2 }}>
+              Its arc lands at {fl.taken.lands_at?.[0]},{" "}
+              {fl.taken.lands_at?.[1]} — <b>{fl.taken.miss_px}px</b> from the
+              pitch mark, after being carried{" "}
+              <b>{fl.taken.extrap_frames}</b> frame(s). Fits its own
+              parabola to {fl.taken.resid_px}px. Detected by{" "}
+              {(fl.taken.srcs || []).join(" + ")}.
+            </div>
+          )}
+          {fl.image_url && (
+            <a href={fl.image_url} target="_blank" rel="noreferrer">
+              <img src={fl.image_url} alt="the flight, found forwards"
+                   style={{ width: "100%", maxWidth: 900, marginTop: 4,
+                            borderRadius: 4,
+                            border: "1px solid var(--border, #333)" }} />
+            </a>
+          )}
+          {/* EVERY RUNG THAT WAS PAID FOR. Escalating is three decodes
+              of the same footage; whether each earned its pass is
+              worth knowing rather than assuming. */}
+          {(fl.ladder || []).length > 0 && (
+            <div className="tiny muted" style={{ marginTop: 3 }}>
+              {fl.ladder.map((L, i) => (
+                <div key={i}>
+                  {L.detectors.join("+")} (diff sens {L.diff_sens}) — {L.why}
+                </div>
+              ))}
+            </div>
+          )}
+          {/* AND EVERY CHAIN, WITH WHY. The refused ones are what gets
+              read when the answer is wrong: 60px off is a tolerance
+              question, 900px off is a different object. */}
+          {(fl.chains || []).length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              <button type="button" className="small ghost"
+                      style={{ width: "auto" }}
+                      onClick={() => setShowChains((v) => !v)}>
+                {showChains ? "Hide" : "Show"} all {fl.chains.length} chain(s)
+                considered
+              </button>
+              {showChains && (
+                <div style={{ marginTop: 6, maxHeight: 320,
+                              overflow: "auto",
+                              border: "1px solid var(--border, #333)",
+                              borderRadius: 4 }}>
+                  <table className="tiny" style={{ width: "100%",
+                                                   borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ textAlign: "left", position: "sticky",
+                                   top: 0,
+                                   background: "var(--panel2, #1b1b1b)" }}>
+                        <th style={{ padding: "3px 6px" }}>pts</th>
+                        <th style={{ padding: "3px 6px" }}>frames</th>
+                        <th style={{ padding: "3px 6px" }}>fell</th>
+                        <th style={{ padding: "3px 6px" }}>miss</th>
+                        <th style={{ padding: "3px 6px" }}>carried</th>
+                        <th style={{ padding: "3px 6px" }}>fit</th>
+                        <th style={{ padding: "3px 6px" }}>by</th>
+                        <th style={{ padding: "3px 6px" }}>verdict</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {fl.chains.map((q, i) => (
+                        <tr key={i}
+                            style={{ borderTop:
+                                       "1px solid var(--border, #2a2a2a)",
+                                     opacity: q.ok ? 1 : 0.7 }}>
+                          <td style={{ padding: "2px 6px" }}>{q.n_points}</td>
+                          <td style={{ padding: "2px 6px" }}>
+                            f{q.first_frame}–{q.last_frame}
+                          </td>
+                          <td style={{ padding: "2px 6px" }}>{q.fell_px}px</td>
+                          <td style={{ padding: "2px 6px" }}>
+                            {q.miss_px == null ? "—" : `${q.miss_px}px`}
+                          </td>
+                          <td style={{ padding: "2px 6px" }}>
+                            {q.extrap_frames == null
+                              ? "—" : `${q.extrap_frames}f`}
+                          </td>
+                          <td style={{ padding: "2px 6px" }}>
+                            {q.resid_px == null ? "—" : `${q.resid_px}px`}
+                          </td>
+                          <td style={{ padding: "2px 6px" }}>
+                            {(q.srcs || []).join("+")}
+                          </td>
+                          <td style={{ padding: "2px 6px" }}
+                              className={q.ok ? "" : "muted"}>
+                            {q.ok ? "TAKEN — " : ""}{q.why}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {/* ── WHERE IT LOST IT ─────────────────────────────────────
           THE ONE QUESTION A 316-POINT WALK RAISES, and the report
           used to answer every question but this one. "316 point(s)

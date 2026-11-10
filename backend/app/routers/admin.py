@@ -25611,8 +25611,26 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                         + "; ".join(_c4["rest_windows_tried"]) + ". ")
                      + str(_c4.get("rest_reason") or "")),
              "url": _c4.get("rest_after_url")},
+            {"name": "flight",
+             "title": "4a · The flight, found forwards",
+             "why": ("THE WALK BELOW STOPS AT THE BOUNCE AND ALWAYS "
+                     "WILL — a bounce is an impulse, and no smooth "
+                     "motion model crosses one in either direction. So "
+                     "the flight is searched FORWARDS and told where "
+                     "it ends: the only question asked of a chain is "
+                     "whether its own fitted arc lands on the pitch "
+                     "mark, carried as a parabola and never as a "
+                     "straight line. Cyan is the chain taken, grey "
+                     "every chain refused with how far its arc missed, "
+                     "the dashed tail is the part carried rather than "
+                     "measured, and the cross is the pitch mark the "
+                     "walk handed over. "
+                     + str(((_dbacks.get(_i + 1) or {}).get("flight")
+                            or {}).get("why") or "")),
+             "url": (((_dbacks.get(_i + 1) or {}).get("flight")
+                      or {}).get("image_url"))},
             {"name": "descent",
-             "title": "4 · The descent, walked back from it",
+             "title": "4b · The roll, walked back from the ball at rest",
              "why": ("Backwards from the ball at rest, one frame at a "
                      "time, through a small zoomed window that moves "
                      "with it. Nothing else on the green is ever a "
@@ -25653,6 +25671,12 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                 continue
             if _st["name"].startswith("green"):
                 _st["reason"] = _greenwhy
+            elif _st["name"] == "flight":
+                _st["reason"] = (
+                    ((_dbacks.get(_i + 1) or {}).get("flight") or {})
+                    .get("why")
+                    or "no pitch mark, so there was nothing to anchor "
+                       "a flight search on")
             elif _st["name"] == "descent":
                 _st["reason"] = ((_dbacks.get(_i + 1) or {}).get("why")
                                  or _c4.get("descent_back_why")
@@ -26182,8 +26206,10 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     # it moves with the ball, and it is the only place the detector
     # ever looks. See services/greendescent.py.
     from ..services import greendescent as _gdsc
+    from ..services import greenflight as _gfly
 
     out["n_descent"] = 0
+    out["n_flight"] = 0
     out["descents_back"] = []
     for i, c in enumerate(_clips):
         if not c.get("rest_spot") or c.get("impact_frame") is None:
@@ -26273,16 +26299,114 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                                  "saw it stop falling")
         c["landing_sec"] = round(
             float(c["landing_frame"]) / float(_gfps or 60.0), 2)
-        # THE COMET IS THE WALK. Drawn in the order the ball flew, and
-        # only the frames something was actually seen in: an
-        # extrapolated point is a position nobody measured and a comet
-        # is a claim about where the ball was.
-        c["green_track"] = [{"frame": int(q["frame"]), "x": int(round(q["x"])),
-                             "y": int(round(q["y"]))}
-                            for q in _pts if q.get("found")]
+        # ── PHASE B: THE FLIGHT, FOUND FORWARDS ─────────────────────
+        #
+        # THE WALK STOPS AT THE BOUNCE AND ALWAYS WILL. Not for want
+        # of a better detector -- a bounce is an IMPULSE, the velocity
+        # reverses in y and jumps in magnitude over one frame, and no
+        # smooth motion model crosses that in either direction.
+        # Measured on the smeared fixture with the elongation gate and
+        # without it: both walks stop at the frame before the bounce.
+        #
+        # So the flight is not walked back to. It is searched FORWARD
+        # and told where it ends, which turns a hunt for an unknown
+        # object into one question -- which chain's arc lands on the
+        # pitch mark -- and that is the same move that fixed the tee's
+        # ascent. See services/greenflight.py.
+        # ── ANCHOR ON A MEASUREMENT, NOT ON AN INFERENCE ────────
+        #
+        # The obvious thing to hand over is the walk's PITCH MARK, and
+        # it is the wrong thing. That mark is derived -- "the first
+        # frame it stopped falling" -- from a chain that, whenever the
+        # walk gave up at the bounce, does not contain the fall at
+        # all, so the rule names a point somewhere in the roll.
+        # Measured on the smeared fixture: pitch mark f181 (1502,
+        # 1045) against a real pitch of f168 (1427, 994), thirteen
+        # frames and ninety pixels out, and anchored on it this search
+        # returned eight points of roll. The earliest point the walk
+        # actually SAW was f169 (1430, 987) -- eight pixels from the
+        # truth -- and anchored on that it returned fifty-two points
+        # of real flight falling 856px.
+        _flight = None
+        _seen = [q for q in (_walk.get("points") or []) if q.get("found")]
+        _anchor = _seen[0] if _seen else None
+        if _anchor:
+            _flight = _gfly.find_flight_to(
+                _gp, (_anchor["x"], _anchor["y"]), int(_anchor["frame"]),
+                out_dir=CLIPS_DIR, stem=f"gfly-{row.id}-s{i + 1}")
+            _row["flight_anchor"] = {
+                "frame": int(_anchor["frame"]),
+                "xy": [int(round(_anchor["x"])), int(round(_anchor["y"]))],
+                "why": ("the earliest frame the walk actually saw the "
+                        "ball — a measurement, where the pitch mark is "
+                        "an inference over a chain that may not contain "
+                        "the fall"),
+            }
+            _row["flight"] = {
+                "ok": bool(_flight.get("ok")),
+                "n_points": _flight.get("n_points"),
+                "first_frame": _flight.get("first_frame"),
+                "last_frame": _flight.get("last_frame"),
+                "fell_px": _flight.get("fell_px"),
+                "why": _flight.get("why"),
+                "how": _flight.get("how"),
+                "rung": _flight.get("rung"),
+                "ladder": _flight.get("ladder"),
+                "counts": _flight.get("counts"),
+                "taken": _flight.get("taken"),
+                "window_sec": _flight.get("window_sec"),
+                # EVERY CHAIN CONSIDERED, WITH WHY. The refused ones
+                # are what gets read when the answer is wrong: a chain
+                # that missed by 60px is a tolerance question and one
+                # that missed by 900 is a different object.
+                "chains": _flight.get("chains"),
+                "image_url": (_clip_url_for(Path(_flight["image"]).name)
+                              if _flight.get("image") else None),
+            }
+        else:
+            _row["flight"] = {
+                "ok": False,
+                "why": ("the walk never actually saw the ball on any "
+                        "frame, so there is no measured position to "
+                        "anchor a flight search on"),
+            }
+        # THE COMET IS THE FLIGHT AND THEN THE WALK, merged on frame
+        # number. Drawn in the order the ball flew, and only the
+        # frames something was actually seen in: an extrapolated point
+        # is a position nobody measured and a comet is a claim about
+        # where the ball was.
+        #
+        # MERGED, NOT CONCATENATED, AND THE PITCH MARK IS NOT THE
+        # SEAM. I joined these by cutting the flight at
+        # `landing_frame` and appending the whole walk, on the
+        # assumption that the walk BEGINS at the pitch mark. It does
+        # not: the walk runs from the resting place backwards past the
+        # pitch to wherever it gave up, so the pitch sits in the
+        # MIDDLE of it. On the fixture that produced seven duplicated
+        # frames and a comet that went backwards in time.
+        #
+        # The walk wins every frame they share. Both are measurements,
+        # but the walk tracked a known ball through a moving window
+        # while the flight chain is detections a linker joined up, and
+        # where those disagree the tracked one is the better claim.
+        _fpts = list(((_flight or {}).get("points") or []))
+        _by_frame = {int(q["frame"]): (int(round(q["x"])),
+                                       int(round(q["y"])))
+                     for q in _fpts}
+        _n_flight_only = len(_by_frame)
+        for q in _pts:
+            if q.get("found"):
+                _by_frame[int(q["frame"])] = (int(round(q["x"])),
+                                              int(round(q["y"])))
+        c["green_track"] = [{"frame": f, "x": xy[0], "y": xy[1]}
+                            for f, xy in sorted(_by_frame.items())]
         c["landing_points"] = len(c["green_track"])
-        c["descent_first_frame"] = int(_walk["first_frame"])
+        c["flight_points"] = _n_flight_only
+        c["descent_first_frame"] = (c["green_track"][0]["frame"]
+                                    if c["green_track"]
+                                    else int(_walk["first_frame"]))
         out["n_descent"] += 1
+        out["n_flight"] += 1 if (_flight or {}).get("ok") else 0
         out["n_matched"] += 1
     _sub("4c", "Walking the descent back from the ball",
          "One frame-by-frame walk per swing that has a ball at rest, "
@@ -26293,6 +26417,18 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
          "candidate — a branch in the treeline is not rejected, it is "
          "never considered.",
          out.get("n_descent"), "walked", _lap())
+    _sub("4e", "Finding the flight, forwards from the pitch mark",
+         "THE WALK STOPS AT THE BOUNCE AND ALWAYS WILL — a bounce is "
+         "an impulse, and no smooth motion model crosses one in either "
+         "direction. So the flight is not walked back to. It is "
+         "searched forwards and TOLD WHERE IT ENDS, which turns a hunt "
+         "for an unknown object into one question: which chain's own "
+         "fitted arc lands on the pitch mark. Everything that does not "
+         "land there is discarded without being judged on how straight "
+         "it is or how fast it fell — which is what the old unanchored "
+         "search did, and why it was scrapped. Same detectors as that "
+         "search used, cheapest first.",
+         out.get("n_flight"), "flights found", _lap())
 
     # ONLY THE SECONDS A BALL COULD BE IN. This is the whole reason the
     # ascent half runs first, and getting it wrong the first time was
