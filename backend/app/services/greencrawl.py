@@ -64,7 +64,7 @@ from .debug3 import (
     detect_movers_by_plate,
 )
 
-log = logging.getLogger("golfreelz.greenflight")
+log = logging.getLogger("golfreelz.greencrawl")
 
 # HOW FAR BACK FROM THE PITCH MARK TO LOOK, in seconds. A ball is
 # visible falling onto a green for about a second; the rest of this is
@@ -315,7 +315,7 @@ def _judge(chain, anchor_xy, pitch_frame):
 
 def find_flight_to(green_path, anchor_xy, anchor_frame: int, *,
                    max_flight_sec: float = MAX_FLIGHT_SEC,
-                   out_dir=None, stem="greenflight") -> dict:
+                   out_dir=None, stem="greencrawl") -> dict:
     """The flight that lands on this pixel at this frame.
 
     ANCHOR ON A MEASUREMENT, NOT ON AN INFERENCE. The obvious thing to
@@ -509,7 +509,7 @@ def find_flight_to(green_path, anchor_xy, anchor_frame: int, *,
             out["image"] = _flight_image(green_path, out, anchor_xy, _pf,
                                          Path(out_dir), stem)
     except Exception as exc:  # noqa: BLE001
-        log.warning("greenflight: failed: %s", exc)
+        log.warning("greencrawl: failed: %s", exc)
         out["why"] = f"the forward flight search failed: {exc}"
     finally:
         if cap is not None:
@@ -600,7 +600,7 @@ def _flight_image(green_path, info, anchor_xy, pitch_frame, out_dir, stem):
             return None
         return str(_p)
     except Exception as exc:  # noqa: BLE001
-        log.warning("greenflight: image failed: %s", exc)
+        log.warning("greencrawl: image failed: %s", exc)
         return None
 
 
@@ -658,8 +658,43 @@ CRAWL_MAX = 1200
 # EVERY CROP IS BLOWN UP TO THIS before the detector runs, capped.
 # A ball a hundred yards out is three or four pixels across and a
 # fifteen-pixel top-hat kernel swallows it whole.
-CRAWL_ZOOM_TARGET = 1600
+CRAWL_ZOOM_TARGET = 2800
 CRAWL_ZOOM_MAX = 7.0
+
+# ── AND THE DETECTOR THE WIZARD'S MAP USES, ALONGSIDE IT ────────────
+#
+# THE OPERATOR POINTED AT IT AND WAS RIGHT. The add/edit wizard's
+# click-to-plot map finds this descent on footage where everything
+# here failed, and it does something completely different: a plain
+# FRAME DIFFERENCE against the previous frame, at native resolution,
+# no zoom and no top-hat. Its own note says why, and the reasoning
+# holds -- "the green camera is bolted down looking at grass; a plain
+# frame difference against the previous frame is enough".
+#
+# The two detectors answer different questions and neither covers the
+# other:
+#
+#   top-hat   brighter than its own NEIGHBOURHOOD. Finds a ball that
+#             is not moving, which is what the reverse walk needs, and
+#             needs the zoom because its kernel swallows a ball three
+#             pixels across.
+#   diff      brighter than the SAME PIXEL a frame ago. Finds a ball
+#             that is moving, which is what a descent is, and wants no
+#             zoom at all: there is no kernel to swallow anything, so
+#             a two-pixel blob is found at native resolution.
+#
+# So they are unioned, the way debug3 unions MOG2 with its plate
+# medians for the same reason: "neither detector finds every descent
+# alone". The diff is nearly free, so this costs almost nothing.
+#
+# The constants are the wizard's own, not re-tuned: changing them
+# would mean this finds a different descent from the map the operator
+# checks it against, which is the mistake that cost five rounds on the
+# tee and three on the green window.
+DIFF_THRESH = 10
+DIFF_MIN_AREA = 2
+DIFF_MAX_AREA = 900
+DIFF_BLUR = 3
 
 # ...AND HOW DEEP THE RETRY GOES, on a block that found nothing.
 #
@@ -680,8 +715,15 @@ CRAWL_ZOOM_MAX = 7.0
 # answer is not to pick one number. It is to run cheap where cheap
 # works and spend the depth on the block that FAILED, which is the
 # only block where it can change the answer.
-CRAWL_DEEP_TARGET = 2800
-CRAWL_DEEP_MAX = 9.0
+# RAISED WHEN THE NORMAL PASS WENT DEEP. The operator asked for the
+# deep scan everywhere, so CRAWL_ZOOM_TARGET now reaches about 6x on a
+# normal crop -- which left the "retry deeper" rung computing the same
+# zoom as the pass it was retrying, a rung that could not change
+# anything. These keep it genuinely deeper than whatever the normal
+# pass managed; it fires on at most one block, the one that ends the
+# crawl, so its cost is bounded however steep it is.
+CRAWL_DEEP_TARGET = 4600
+CRAWL_DEEP_MAX = 10.0
 
 # HOW MANY BLOCKS BEFORE GIVING UP. Ten frames each, so this is the
 # real budget: at 60fps, 24 blocks is four seconds.
@@ -713,6 +755,36 @@ def _crop_for(cx, cy, w, h, fw, fh):
     return x0, y0, x1, y1
 
 
+def _diff_blobs(cur, prev, box):
+    """Moving things in the crop, by frame difference. ORIGINAL pixels.
+
+    THE WIZARD'S OWN DETECTOR, with the wizard's own constants. Not
+    re-tuned: a different threshold here would find a different
+    descent from the map the operator checks this against, and two
+    answers that disagree is the failure this project keeps paying
+    for.
+    """
+    x0, y0, x1, y1 = box
+    a = cur[y0:y1, x0:x1]
+    b = prev[y0:y1, x0:x1]
+    if a.size == 0 or a.shape != b.shape:
+        return []
+    k = DIFF_BLUR | 1
+    a = cv2.GaussianBlur(a, (k, k), 0)
+    b = cv2.GaussianBlur(b, (k, k), 0)
+    d = cv2.absdiff(a, b)
+    _, th = cv2.threshold(d, DIFF_THRESH, 255, cv2.THRESH_BINARY)
+    th = cv2.dilate(th, None, iterations=1)
+    n, _lbl, stats, cents = cv2.connectedComponentsWithStats(th)
+    out = []
+    for i in range(1, n):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if DIFF_MIN_AREA <= area <= DIFF_MAX_AREA:
+            out.append((x0 + float(cents[i][0]), y0 + float(cents[i][1]),
+                        area))
+    return out
+
+
 def _scan_block(frames, f_lo, box, cursor, out_rejects,
                 target=None, zoom_max=None):
     """Every accepted candidate in one block of frames.
@@ -732,7 +804,12 @@ def _scan_block(frames, f_lo, box, cursor, out_rejects,
     _s2 = scale * scale
     cx, cy, cf = cursor
     got: list = []
+    # frames[0] is the PRIMER -- the frame before the block starts --
+    # so every frame in the block has a previous one to difference
+    # against. It is not searched itself.
     for i, gray in enumerate(frames):
+        if i == 0:
+            continue
         fi = f_lo + i
         if fi >= cf:
             continue
@@ -751,13 +828,13 @@ def _scan_block(frames, f_lo, box, cursor, out_rejects,
         _tx = (float(cx) - x0) * scale
         _ty = (float(cy) - y0) * scale
         _ahead = max(1, int(cf) - int(fi))
-        for dx, dy, area, contrast in _detections(
+        for _k, (dx, dy, area, contrast) in enumerate(_detections(
                 sub, [(0, 0, zw, zh)], rel=0.0,
                 min_area=GREEN_BALL_MIN_AREA * _s2,
                 max_area=BALL_MAX_AREA * _s2,
                 kernel_px=15 * scale,
                 motion_toward=(_tx, _ty, _ahead),
-                rejects=_rej, shapes_out=_sh):
+                rejects=_rej, shapes_out=_sh)):
             _ox = x0 + dx / scale
             _oy = y0 + dy / scale
             _dist = math.hypot(float(cx) - _ox, float(cy) - _oy)
@@ -776,7 +853,18 @@ def _scan_block(frames, f_lo, box, cursor, out_rejects,
             # at or below it on an earlier frame is something else.
             if _oy >= float(cy):
                 continue
-            _s = next((q for q in _sh), None)
+            # ── THE SHAPE FOR *THIS* BLOB ───────────────────────
+            #
+            # `shapes_out` is appended once per ACCEPTED blob, in the
+            # same order the detections come back, so the k-th shape
+            # belongs to the k-th detection. I was taking the first
+            # one every time, which labelled every blob in a frame
+            # with whatever the first one happened to be -- and since
+            # a round blob is usually found first, the smears the
+            # elongation gate had just gone to the trouble of
+            # accepting were all reported as round. `smears: 0` on a
+            # run that was full of them.
+            _s = _sh[_k] if _k < len(_sh) else None
             got.append({
                 "frame": int(fi), "x": _ox, "y": _oy,
                 "area": area, "contrast": round(float(contrast), 1),
@@ -785,6 +873,7 @@ def _scan_block(frames, f_lo, box, cursor, out_rejects,
                 "streak": bool((_s or {}).get("streak")),
                 "ratio": (_s or {}).get("ratio"),
                 "off_by_deg": (_s or {}).get("off_by_deg"),
+                "src": "tophat",
             })
         for q in _rej[:2]:
             if len(out_rejects) < CRAWL_MAX_REJECTS:
@@ -792,6 +881,47 @@ def _scan_block(frames, f_lo, box, cursor, out_rejects,
                                     "x": int(x0 + q["x"] / scale),
                                     "y": int(y0 + q["y"] / scale),
                                     "why": q["why"]})
+
+        # ── AND THE WIZARD'S DETECTOR, OVER THE SAME CROP ───────────
+        #
+        # Brighter than the SAME PIXEL a frame ago, rather than than
+        # its own neighbourhood. No zoom: a frame difference has no
+        # kernel to swallow a small ball, so it works at native
+        # resolution, which is also why it is nearly free. The same
+        # journey test applies -- direction and implied speed -- so a
+        # waving branch inside the crop is still refused.
+        for bx, by, barea in _diff_blobs(gray, frames[i - 1], box):
+            if by >= float(cy):
+                continue
+            _dist = math.hypot(float(cx) - bx, float(cy) - by)
+            _spd = _dist / max(1.0, float(cf - fi))
+            if _spd < CRAWL_MIN_SPEED or _spd > CRAWL_MAX_SPEED:
+                continue
+            # NOT A DUPLICATE OF SOMETHING THE TOP-HAT ALREADY HAS.
+            # The two detectors see the same ball on most frames; a
+            # union that counted it twice would report a density the
+            # footage does not have.
+            # THE RADIUS IS HALF A STEP, NOT A CONSTANT. A frame
+            # difference lights up where the ball WAS and where it IS,
+            # so its centroid sits about half a step from the top-hat's
+            # reading of the ball itself -- which at 30px/frame is 15px
+            # and sails past any fixed six-pixel test. Counting the
+            # same ball twice reports a density the footage does not
+            # have, and worse, lets the less precise of the two win
+            # the frame.
+            _dup = max(6.0, _spd * 0.6)
+            if any(q["frame"] == int(fi)
+                   and math.hypot(q["x"] - bx, q["y"] - by) < _dup
+                   for q in got):
+                continue
+            got.append({
+                "frame": int(fi), "x": bx, "y": by,
+                "area": int(barea), "contrast": None,
+                "implied_speed": round(_spd, 1),
+                "rose_px": int(round(float(cy) - by)),
+                "streak": False, "ratio": None, "off_by_deg": None,
+                "src": "diff",
+            })
     return got, scale
 
 
@@ -836,12 +966,23 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
                      "capped at %gx, with the top-hat kernel and the "
                      "area bounds scaled alongside it"
                      % (CRAWL_ZOOM_TARGET, CRAWL_ZOOM_MAX)),
-            "detector": ("white top-hat — brightness against the "
-                         "immediate neighbourhood — with the "
+            "detector": ("TWO, unioned, because neither finds every "
+                         "descent alone. A white top-hat — brighter "
+                         "than its own NEIGHBOURHOOD — with the "
                          "elongation gate, because a ball in flight "
                          "is a capsule and the roundness gates refuse "
                          "a capsule from whichever side its angle "
-                         "falls on"),
+                         "falls on; and a plain FRAME DIFFERENCE "
+                         "against the previous frame, which is what "
+                         "the add/edit wizard's click-to-plot map "
+                         "uses and what finds this descent on real "
+                         "footage. The top-hat finds a ball that is "
+                         "not moving and needs the zoom because its "
+                         "kernel swallows a ball three pixels across; "
+                         "the difference finds a ball that IS moving "
+                         "and needs no zoom at all, because there is "
+                         "no kernel to swallow anything. Both are "
+                         "held to the same journey test."),
         },
     }
     cap = None
@@ -869,9 +1010,14 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
                 _stop = "reached the start of the clip"
                 break
             box = _crop_for(cx, cy, _w, _h, fw, fh)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, f_lo)
+            # ONE FRAME EARLIER THAN THE BLOCK, as the primer the
+            # frame difference needs. Without it the first frame of
+            # every block is searched by the top-hat alone, which is
+            # a tenth of the block's evidence thrown away for nothing.
+            _f_read = max(0, f_lo - 1)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, _f_read)
             frames = []
-            for _ in range(f_hi - f_lo + 1):
+            for _ in range(f_hi - _f_read + 1):
                 _ok, _fr = cap.read()
                 if not _ok or _fr is None:
                     break
@@ -880,7 +1026,8 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
                 _stop = "the clip would not read that far back"
                 break
             _rej: list = []
-            got, scale = _scan_block(frames, f_lo, box, (cx, cy, cf), _rej)
+            got, scale = _scan_block(frames, _f_read, box, (cx, cy, cf),
+                                     _rej)
             _row = {
                 "block": _b + 1,
                 "frames": [int(f_lo), int(f_hi)],
@@ -905,7 +1052,7 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
                 # what a deeper look is for.
                 _rej2: list = []
                 got, scale = _scan_block(
-                    frames, f_lo, box, (cx, cy, cf), _rej2,
+                    frames, _f_read, box, (cx, cy, cf), _rej2,
                     target=CRAWL_DEEP_TARGET, zoom_max=CRAWL_DEEP_MAX)
                 _row["deep_retry"] = {
                     "zoom": round(float(scale), 2),
@@ -938,10 +1085,30 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
             # the footage allows; the HIGHEST of them all becomes the
             # next known point, because that is the earliest the ball
             # can have been and the next block has to reach past it.
+            # ── THE TOP-HAT WINS A FRAME THEY BOTH SEE ──────────
+            #
+            # Both are measurements and they are not equally precise.
+            # The top-hat reads the BALL -- the bright thing itself --
+            # while a frame difference lights up where the ball was
+            # AND where it is, so its centroid sits half a step behind
+            # the truth. Measured on the fixture: letting the
+            # difference win frames took the worst error from 13px to
+            # 27px while adding nothing the top-hat had not already
+            # found on those frames.
+            #
+            # The difference earns its place on the frames the top-hat
+            # misses entirely, which on this footage is most of them.
             _per: dict = {}
+
+            def _better(a, b):
+                """Is `a` a better reading of this frame than `b`?"""
+                if (a.get("src") == "tophat") != (b.get("src") == "tophat"):
+                    return a.get("src") == "tophat"
+                return a["y"] < b["y"]
+
             for q in got:
                 _k = q["frame"]
-                if _k not in _per or q["y"] < _per[_k]["y"]:
+                if _k not in _per or _better(q, _per[_k]):
                     _per[_k] = q
             _blk = sorted(_per.values(), key=lambda q: q["frame"])
             _top = min(_blk, key=lambda q: q["y"])
@@ -950,6 +1117,15 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
             _row["rose_px"] = int(_top["rose_px"])
             _row["implied_speed"] = _top["implied_speed"]
             _row["n_kept"] = len(_blk)
+            # WHICH DETECTOR EARNED ITS PASS. Two detectors means two
+            # ways of looking at the same crop, and whether each one
+            # contributes is worth knowing rather than assuming -- a
+            # detector that never contributes a kept point is work
+            # being paid for and thrown away.
+            _row["by"] = {
+                "tophat": sum(1 for q in _blk if q.get("src") == "tophat"),
+                "diff": sum(1 for q in _blk if q.get("src") == "diff"),
+            }
             _row["why"] = ("%d candidate(s) on %d frame(s); highest is f%d "
                            "at %d,%d — %dpx above, %gpx/frame implied%s"
                            % (len(got), len(_blk), _top["frame"],
@@ -983,7 +1159,8 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
         out["points"] = [{"frame": int(q["frame"]), "x": float(q["x"]),
                           "y": float(q["y"]), "area": q.get("area"),
                           "contrast": q.get("contrast"),
-                          "streak": q.get("streak"), "found": True}
+                          "streak": q.get("streak"),
+                          "src": q.get("src"), "found": True}
                          for q in pts]
         out["n_points"] = len(pts)
         out["counts"] = {
@@ -991,6 +1168,8 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
             "frames_searched": sum(
                 (b["frames"][1] - b["frames"][0] + 1) for b in out["blocks"]),
             "smears": sum(1 for q in pts if q.get("streak")),
+            "by_tophat": sum(1 for q in pts if q.get("src") == "tophat"),
+            "by_diff": sum(1 for q in pts if q.get("src") == "diff"),
             "stopped_because": _stop,
             "deepest_zoom": max([b["zoom"] for b in out["blocks"]] or [1.0]),
         }
@@ -1001,11 +1180,15 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
             out["rose_px"] = int(round(float(anchor_xy[1]) - pts[0]["y"]))
             out["why"] = (
                 "%d point(s) crawled back from the ball over %d block(s) "
-                "of %d frames, rising %dpx to f%d; %d of them were smears "
-                "a round gate would have refused. Stopped because %s."
+                "of %d frames, rising %dpx to f%d — %d from the top-hat "
+                "(%d of those smears a round gate would have refused) and "
+                "%d from the frame difference the wizard's map uses. "
+                "Stopped because %s."
                 % (len(pts), len(out["blocks"]), CRAWL_BLOCK,
                    out["rose_px"], out["first_frame"],
-                   out["counts"]["smears"], _stop or "the budget ran out"))
+                   out["counts"]["by_tophat"], out["counts"]["smears"],
+                   out["counts"]["by_diff"],
+                   _stop or "the budget ran out"))
         else:
             out["why"] = (
                 "nothing above the ball in the %d frame(s) before it could "
@@ -1016,7 +1199,7 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
                                         int(anchor_frame), Path(out_dir),
                                         stem)
     except Exception as exc:  # noqa: BLE001
-        log.warning("greenflight: crawl failed: %s", exc)
+        log.warning("greencrawl: crawl failed: %s", exc)
         out["why"] = f"the crawl failed: {exc}"
     finally:
         if cap is not None:
@@ -1091,5 +1274,5 @@ def _crawl_image(green_path, info, anchor_xy, anchor_frame, out_dir, stem):
             return None
         return str(_p)
     except Exception as exc:  # noqa: BLE001
-        log.warning("greenflight: crawl image failed: %s", exc)
+        log.warning("greencrawl: crawl image failed: %s", exc)
         return None

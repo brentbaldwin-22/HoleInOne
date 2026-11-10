@@ -15,7 +15,7 @@ fast it fell. It is the same move that fixed the tee's ascent, and the
 opposite of the unanchored green descent search the operator scrapped
 as too inconsistent.
 
-    python3 tools/greenflight_test.py
+    python3 tools/greencrawl_test.py
 """
 import io
 import sys
@@ -56,8 +56,8 @@ def _fixture():
 
 
 def main():
-    from app.services.greenflight import find_flight_to
-    from app.services import greenflight as GF
+    from app.services.greencrawl import find_flight_to
+    from app.services import greencrawl as GF
 
     ns = _fixture()
     ENTER, LAND, REST, REST_FRAME = (ns["ENTER"], ns["LAND"], ns["REST"],
@@ -245,7 +245,7 @@ def main():
         # The crawl has NO MOTION MODEL AT ALL, which is exactly why
         # it crosses the bounce: nothing is predicted, so there is
         # nothing for an impulse to break.
-        from app.services.greenflight import crawl_flight_back
+        from app.services.greencrawl import crawl_flight_back
         cr = crawl_flight_back(clip, (_anch["x"], _anch["y"]),
                                int(_anch["frame"]), out_dir=d, stem="cr")
         ok("the crawl finds the flight", cr["ok"], True)
@@ -265,12 +265,48 @@ def main():
                 _tx, _ty = truth(_t)
                 _err.append(((q["x"] - _tx) ** 2 + (q["y"] - _ty) ** 2) ** .5)
         ok("  every one of them on the real arc",
-           len(_err) == cr["n_points"] and max(_err) < 20, True)
+           len(_err) == cr["n_points"] and max(_err) < 35, True)
+        # AND MOST OF THEM FAR CLOSER THAN THAT. The loose ones are
+        # the frame difference's: its blob lights up where the ball
+        # WAS and where it IS, so the centroid sits about half a step
+        # behind the truth. They are kept because they are on frames
+        # the top-hat could not see at all, and a reading 27px out
+        # beats no reading.
+        _sorted = sorted(_err)
+        ok("    with the median within a few pixels",
+           _sorted[len(_sorted) // 2] < 12, True)
         # AND THE ELONGATION GATE EARNS ITS KEEP HERE. A ball in
         # flight is a capsule; without the gate these frames are
         # refused for not being round.
         ok("  and a good share of them are smears",
            cr["counts"]["smears"] >= 8, True)
+
+        # ── TWO DETECTORS, UNIONED ──────────────────────────────────
+        #
+        # THE OPERATOR POINTED AT THE SECOND ONE AND WAS RIGHT. The
+        # add/edit wizard's click-to-plot map finds this descent on
+        # footage where everything here failed, using a plain frame
+        # difference against the previous frame -- no zoom, no top-hat.
+        # The two answer different questions: brighter than its own
+        # NEIGHBOURHOOD finds a ball that is not moving, brighter than
+        # the SAME PIXEL a frame ago finds one that is. Neither covers
+        # the other, so they are unioned, the way debug3 unions MOG2
+        # with its plate medians for the same measured reason.
+        ok("both detectors are reported separately",
+           set(("by_tophat", "by_diff")) <= set(cr["counts"]), True)
+        ok("  and the frame difference contributes frames of its own",
+           cr["counts"]["by_diff"] > 0, True)
+        ok("  with every point saying which found it",
+           all(q.get("src") in ("tophat", "diff") for q in cr["points"]),
+           True)
+        # THE TOP-HAT WINS A FRAME THEY BOTH SEE, because it reads the
+        # BALL while the difference reads the ball's smear across two
+        # frames. Letting the difference win took the worst error from
+        # 13px to 27px while adding nothing on those frames.
+        _f_diff = {q["frame"] for q in cr["points"] if q["src"] == "diff"}
+        _f_hat = {q["frame"] for q in cr["points"] if q["src"] == "tophat"}
+        ok("  and never the same frame twice",
+           _f_diff & _f_hat, set())
 
         # ── IT STOPS WHEN THE BALL IS NOT THERE, NOT BEFORE ─────────
         ok("it stops where the ball entered the frame",

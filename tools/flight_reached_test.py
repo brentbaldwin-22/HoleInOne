@@ -12,7 +12,7 @@ a comet that starts at the bounce.
 
 A SOURCE-ORDER TEST, because the failure is about statement order and
 nothing about behaviour -- anything that reads like a test of the
-flight's logic passes throughout (greenflight_test does, and did while
+flight's logic passes throughout (greencrawl_test does, and did while
 nothing called it).
 
     python3 tools/flight_reached_test.py
@@ -47,7 +47,7 @@ def main():
                 return i
         return None
 
-    _call = first(r"_gfly\.crawl_flight_back\(")
+    _call = first(r"_gcrawl\.crawl_flight_back\(")
     ok("produce calls the crawl", _call is not None, True)
     # ── THE CRAWL IS THE METHOD, THE CHAINS ARE A FALLBACK RUNG ─────
     #
@@ -58,7 +58,7 @@ def main():
     # opinion running beside it -- one answer is produced, by
     # whichever ran. Two searches reporting separately is what cost
     # five rounds on the tee.
-    _alt = first(r"_gfly\.find_flight_to\(")
+    _alt = first(r"_gcrawl\.find_flight_to\(")
     ok("  with the chain search only beneath it",
        _alt is not None and _alt > _call, True)
     ok("  and only when the crawl found nothing",

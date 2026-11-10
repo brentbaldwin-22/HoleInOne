@@ -26206,7 +26206,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     # it moves with the ball, and it is the only place the detector
     # ever looks. See services/greendescent.py.
     from ..services import greendescent as _gdsc
-    from ..services import greenflight as _gfly
+    from ..services import greencrawl as _gcrawl
 
     out["n_descent"] = 0
     out["n_flight"] = 0
@@ -26312,7 +26312,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         # and told where it ends, which turns a hunt for an unknown
         # object into one question -- which chain's arc lands on the
         # pitch mark -- and that is the same move that fixed the tee's
-        # ascent. See services/greenflight.py.
+        # ascent. See services/greencrawl.py.
         # ── ANCHOR ON A MEASUREMENT, NOT ON AN INFERENCE ────────
         #
         # The obvious thing to hand over is the walk's PITCH MARK, and
@@ -26348,7 +26348,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
             # puts the known point at the bottom of a crop, searches
             # the ten frames before it, takes the highest thing it
             # accepts and goes again. See crawl_flight_back.
-            _flight = _gfly.crawl_flight_back(
+            _flight = _gcrawl.crawl_flight_back(
                 _gp, (_anchor["x"], _anchor["y"]), int(_anchor["frame"]),
                 out_dir=CLIPS_DIR, stem=f"gcrawl-{row.id}-s{i + 1}")
             _flight["method"] = "crawl"
@@ -26357,7 +26357,7 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                 # opinion running beside it. One answer is produced,
                 # by whichever ran; two searches reporting separately
                 # is the thing that cost five rounds on the tee.
-                _alt = _gfly.find_flight_to(
+                _alt = _gcrawl.find_flight_to(
                     _gp, (_anchor["x"], _anchor["y"]), int(_anchor["frame"]),
                     out_dir=CLIPS_DIR, stem=f"gfly-{row.id}-s{i + 1}")
                 _alt["crawl_why"] = _flight.get("why")

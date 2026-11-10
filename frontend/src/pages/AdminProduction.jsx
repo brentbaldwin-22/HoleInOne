@@ -896,6 +896,27 @@ function DescentWalk({ walk }) {
             <div className="tiny muted" style={{ marginTop: 2 }}>
               <b>Method:</b> {fl.method}
               {fl.rose_px ? ` · rose ${fl.rose_px}px` : ""}
+              {/* WHICH DETECTOR EARNED ITS PASS. Two detectors means
+                  two ways of looking at the same crop, and one that
+                  never contributes a kept point is work being paid
+                  for and thrown away. The frame difference is the
+                  add/edit wizard's own, unchanged. */}
+              {fl.counts?.by_tophat != null && (
+                <>
+                  {" · "}
+                  <span className="pill">
+                    {fl.counts.by_tophat} by top-hat
+                    {fl.counts.smears
+                      ? ` (${fl.counts.smears} smears)` : ""}
+                  </span>{" "}
+                  <span className={fl.counts.by_diff ? "pill ok" : "pill"}>
+                    {fl.counts.by_diff} by frame difference
+                  </span>{" "}
+                  <span className="pill">
+                    up to {fl.counts.deepest_zoom}× zoom
+                  </span>
+                </>
+              )}
             </div>
           )}
           {fl.taken && (
@@ -938,7 +959,10 @@ function DescentWalk({ walk }) {
                     <th style={{ padding: "3px 6px" }}>frames</th>
                     <th style={{ padding: "3px 6px" }}>crop</th>
                     <th style={{ padding: "3px 6px" }}>zoom</th>
-                    <th style={{ padding: "3px 6px" }}>found</th>
+                    <th style={{ padding: "3px 6px" }}
+                        title="total (top-hat + frame difference)">
+                      found
+                    </th>
                     <th style={{ padding: "3px 6px" }}>took</th>
                     <th style={{ padding: "3px 6px" }}>what happened</th>
                   </tr>
@@ -962,7 +986,12 @@ function DescentWalk({ walk }) {
                           ? ` → ${b.deep_retry.zoom}×`
                           : ""}
                       </td>
-                      <td style={{ padding: "2px 6px" }}>{b.n_found}</td>
+                      <td style={{ padding: "2px 6px" }}>
+                        {b.n_found}
+                        {b.by
+                          ? ` (${b.by.tophat}+${b.by.diff})`
+                          : ""}
+                      </td>
                       <td style={{ padding: "2px 6px" }}>
                         {b.took
                           ? `f${b.took_frame} · ${b.took[0]},${b.took[1]}`
