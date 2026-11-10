@@ -123,6 +123,7 @@ def main():
     ns = _fixture()
     ENTER, LAND, REST, REST_FRAME = (ns["ENTER"], ns["LAND"], ns["REST"],
                                      ns["REST_FRAME"])
+    ROLL = ns["ROLL"]
     truth = ns["truth"]
     pitch_f = ENTER + LAND
     pitch_xy = truth(LAND)
@@ -453,6 +454,71 @@ def main():
            nz["searched"][1] < nz["anchor_frame"], True)
         ok("  with the anchor named too",
            nz.get("anchor_frame") == int(_a2["frame"]), True)
+
+        # ── ANCHORED IN THE ROLL, AS THE REAL CLIP ACTUALLY IS ──────
+        #
+        # EVERY TEST ABOVE ANCHORS ONE FRAME PAST THE PITCH MARK,
+        # which is where the clean fixture's walk happens to stop, and
+        # that is not where a real walk stops. The operator read a
+        # typical clip frame by frame: first contact f465, a bounce to
+        # f509, another hop, rolling from f523, not still until f590.
+        # The walk gives up at f524 -- the frame the roll begins,
+        # sixty frames past the pitch mark -- because going backwards
+        # from there the ball HOPS, and no smooth model crosses that.
+        #
+        # So the crawl's real job starts inside the roll and has to
+        # cross the bounces to reach the descent. A failed link is a
+        # BOUNCE, not the end of the ball: the continuity rule is
+        # right inside an arc and exactly wrong at a contact, where
+        # the vertical direction reverses over one frame.
+        _af = ENTER + ROLL + 8
+        _u = min(1.0, (_af - ENTER - ROLL) / 26.0)
+        _x0 = truth(LAND)[0] + 6.0 * 14
+        _y0 = truth(LAND)[1]
+        _axy = (_x0 + (REST[0] - _x0) * _u, _y0 + (REST[1] - _y0) * _u)
+        rl = crawl_flight_back(clip, _axy, _af)
+        ok("anchored in the roll it still reaches the flight",
+           rl["ok"] and rl["first_frame"] <= ENTER + 3, True)
+        ok("  by crossing the bounce rather than stopping at it",
+           (rl["counts"].get("bounces_crossed") or 0) >= 1, True)
+        ok("  and a block is marked where it did",
+           sum(1 for b in rl["blocks"] if b.get("bounce")) >= 1, True)
+
+        # ── AND IT PRODUCES THE PITCH MARK ──────────────────────────
+        #
+        # THE DEPENDENCY INVERTED, AND THE WHOLE POINT. The pitch mark
+        # used to come from the reverse walk -- "the first frame it
+        # stopped falling" -- applied to a chain containing no fall,
+        # so it named a point in the roll and everything downstream
+        # was anchored on it. The crawl has to cross the contacts to
+        # get where it is going, so it knows where they are, and the
+        # earliest is the first time the ball touched the green.
+        ok("the crawl names the pitch mark", rl.get("pitch_frame") is not None,
+           True)
+        ok("  within a frame or two of the truth",
+           abs(rl["pitch_frame"] - (ENTER + LAND)) <= 3, True)
+        ok("  and within a few pixels of it",
+           (abs(rl["pitch_xy"][0] - truth(LAND)[0]) < 25
+            and abs(rl["pitch_xy"][1] - truth(LAND)[1]) < 30), True)
+        # AND IT IS BETTER THAN THE RULE IT REPLACES, measured on the
+        # same clip rather than asserted: the walk's own pitch mark,
+        # from an anchor it reached by itself.
+        _wp = track_descent_back(clip, REST, REST_FRAME)
+        ok("  beating the walk's inference on the same clip",
+           abs(rl["pitch_frame"] - (ENTER + LAND))
+           < abs((_wp.get("pitch_frame") or 0) - (ENTER + LAND)), True)
+
+        # ── AND A ROLLING BALL IS NOT REFUSED FOR BEING LEVEL ───────
+        #
+        # "The ball came from above" is true of a flight and false of
+        # everything after the first bounce: a rolling ball is at the
+        # same height as where it ends up, and a bounce arc comes down
+        # TO the green. With no slack, every candidate in the first
+        # blocks of a real crawl was thrown out for not being high
+        # enough.
+        from app.services import greencrawl as _GC
+        ok("there is slack below the known point",
+           _GC.CRAWL_BELOW_SLACK > 0, True)
 
         # ── NOTHING TO ANCHOR ON ────────────────────────────────────
         ok("no anchor means no crawl",

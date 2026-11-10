@@ -738,6 +738,23 @@ CRAWL_MAX_SPEED = 320.0
 # HOW MANY REJECTED CANDIDATES EACH BLOCK REPORTS.
 CRAWL_MAX_REJECTS = 6
 
+# HOW FAR BELOW THE KNOWN POINT A CANDIDATE MAY STILL SIT.
+#
+# THIS WAS ZERO AND IT THREW AWAY THE WHOLE ROLL. "The ball came from
+# above" is true of a flight and false of everything after the first
+# bounce: a ROLLING ball is at the same height as where it ends up,
+# and a bounce arc comes down TO the green, so near a contact the
+# previous frames are level with the known point rather than above it.
+#
+# The operator's frame-by-frame reading of a typical clip is what made
+# this obvious -- first contact f465, second contact f509, rolling
+# from f523, not still until f590. The walk gives up at f524, which is
+# the frame the roll begins, so the crawl starts INSIDE the roll and
+# every candidate in its first blocks was at the same height and
+# refused. Slack enough for a roll and a bounce, tight enough that the
+# search still cannot wander down the green away from the ball.
+CRAWL_BELOW_SLACK = 26.0
+
 
 def _crop_for(cx, cy, w, h, fw, fh):
     """A crop with (cx, cy) at the middle of its BOTTOM edge.
@@ -851,7 +868,7 @@ def _scan_block(frames, f_lo, box, cursor, out_rejects,
                 continue
             # ABOVE THE KNOWN POINT. The ball fell onto it; anything
             # at or below it on an earlier frame is something else.
-            if _oy >= float(cy):
+            if _oy >= float(cy) + CRAWL_BELOW_SLACK:
                 continue
             # ── THE SHAPE FOR *THIS* BLOB ───────────────────────
             #
@@ -891,7 +908,7 @@ def _scan_block(frames, f_lo, box, cursor, out_rejects,
         # journey test applies -- direction and implied speed -- so a
         # waving branch inside the crop is still refused.
         for bx, by, barea in _diff_blobs(gray, frames[i - 1], box):
-            if by >= float(cy):
+            if by >= float(cy) + CRAWL_BELOW_SLACK:
                 continue
             _dist = math.hypot(float(cx) - bx, float(cy) - by)
             _spd = _dist / max(1.0, float(cf - fi))
@@ -971,6 +988,25 @@ LINK_MIN_CHAIN = 3
 # 0.18 to 0.61px of bend against a chain of unrelated speckle at
 # 18.65. The bar sits well clear of both.
 LINK_MAX_BEND_PX = 6.0
+
+# HOW MANY TIMES THE CRAWL MAY REACQUIRE A DIRECTION, i.e. how many
+# bounces it may cross.
+#
+# A FAILED LINK IS A BOUNCE, NOT THE END, AND STOPPING THERE IS WHY
+# THE DESCENT WAS NEVER REACHED. The continuity rule requires each hop
+# to continue the one before it -- which is right inside an arc and
+# exactly wrong at a contact, where the ball's vertical direction
+# REVERSES over one frame. The operator's clip has two of them before
+# the roll even starts: first contact f465, second f509, rolling from
+# f523. Walking back from the roll, the link must break twice before
+# the descent is in view, and the old code treated the first break as
+# the end of the ball.
+#
+# So a block that will not link is tried again with the direction
+# constraint dropped, which is what a bounce actually looks like from
+# here. Bounded, because a crawl that reacquires on every block is not
+# following anything.
+CRAWL_MAX_BOUNCES = 4
 
 
 def _link_from(per, seed, cx, cy, cf, step):
@@ -1090,6 +1126,16 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
         "ok": False, "points": [], "n_points": 0, "first_frame": None,
         "last_frame": None, "rose_px": 0, "blocks": [], "why": None,
         "image": None, "counts": {},
+        # ── THE PITCH MARK, WHICH THIS PRODUCES ───────────────────
+        #
+        # Each contact is a place the crawl had to reacquire a
+        # direction, which is what a bounce looks like from here. The
+        # earliest is the first time the ball touched the green, and
+        # that is the pitch mark -- measured, where it used to be
+        # inferred from a fall-rate rule over a chain containing no
+        # fall.
+        "contacts": [], "pitch_frame": None, "pitch_xy": None,
+        "pitch_from": None,
         "how": {
             "shape": ("up and back a block at a time, with NO motion "
                       "model: the known point goes at the middle of "
@@ -1151,6 +1197,12 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
         # search is free to pick any candidate above the ball and the
         # continuity rule starts from whatever it chooses.
         _step = None
+        # WHERE THE BALL TOUCHED THE GREEN. Each time the crawl has to
+        # reacquire a direction it has crossed a contact; the earliest
+        # of them is the pitch mark, which is the number this whole
+        # stage exists to produce and which was being inferred instead.
+        _contacts: list = []
+        _bounces = 0
         pts: list = []
         _stop = None
         for _b in range(int(max_blocks)):
@@ -1284,14 +1336,52 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
                 _stop = ("block %d linked %d point(s) but they bent %.1fpx "
                          "off straight" % (_b + 1, len(_blk), _bend))
                 break
+            if len(_blk) < LINK_MIN_CHAIN and _step is not None \
+                    and _bounces < CRAWL_MAX_BOUNCES:
+                # ── A FAILED LINK IS A BOUNCE, NOT THE END ──────────
+                #
+                # See CRAWL_MAX_BOUNCES. The continuity rule is right
+                # inside an arc and exactly wrong at a contact, where
+                # the ball's vertical direction reverses over one
+                # frame. Walking back from the roll on a typical clip
+                # the link MUST break twice before the descent is in
+                # view, and treating the first break as the end of the
+                # ball is why the descent was never reached.
+                _blk2, _nstep2, _ = _link_block(got, (cx, cy, cf), None)
+                _bend2 = (_straightness(_blk2)
+                          if len(_blk2) >= LINK_MIN_CHAIN else 1e9)
+                if len(_blk2) >= LINK_MIN_CHAIN and _bend2 <= LINK_MAX_BEND_PX:
+                    _bounces += 1
+                    # THE CONTACT IS THE JOIN. Where the arc the crawl
+                    # was following ends and a new direction begins is
+                    # where the ball touched the green -- which is the
+                    # pitch mark, if it turns out to be the earliest
+                    # one. This is the number the whole descent hangs
+                    # on and it was being INFERRED from a fall-rate
+                    # rule over a chain that contained no fall.
+                    _contacts.append({
+                        "frame": int(cf),
+                        "xy": [int(round(cx)), int(round(cy))],
+                        "block": _b + 1,
+                        "why": ("the direction had to be reacquired here "
+                                "— the arc before it comes down to this "
+                                "point and the one after leaves it going "
+                                "the other way, which is a bounce"),
+                    })
+                    _row["bounce"] = True
+                    _blk, _nstep = _blk2, _nstep2
+                    _step = None
             if len(_blk) < LINK_MIN_CHAIN:
                 _row["n_kept"] = len(_blk)
                 _row["why"] = (
                     "%d candidate(s) on %d frame(s), and no %d of them "
                     "link into a path — every hop has to continue the one "
                     "before it in direction and length, and a field of "
-                    "speckle does not"
-                    % (len(got), len(_per), LINK_MIN_CHAIN))
+                    "speckle does not%s"
+                    % (len(got), len(_per), LINK_MIN_CHAIN,
+                       ("; tried again with the direction dropped, in "
+                        "case this was a bounce, and that did not link "
+                        "either" if _step is not None else "")))
                 out["blocks"].append(_row)
                 _stop = ("block %d found %d candidate(s) before f%d but "
                          "none of them linked into a path"
@@ -1362,6 +1452,7 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
             "by_tophat": sum(1 for q in pts if q.get("src") == "tophat"),
             "by_diff": sum(1 for q in pts if q.get("src") == "diff"),
             "stopped_because": _stop,
+            "bounces_crossed": len(_contacts),
             "deepest_zoom": max([b["zoom"] for b in out["blocks"]] or [1.0]),
         }
         # ── WHICH FRAMES WERE SEARCHED, SAID PLAINLY ───────────────
@@ -1374,6 +1465,35 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
         if out["blocks"]:
             out["searched"] = [min(b["frames"][0] for b in out["blocks"]),
                                max(b["frames"][1] for b in out["blocks"])]
+        # ── THE PITCH MARK, PRODUCED RATHER THAN CONSUMED ──────────
+        #
+        # THIS IS THE DEPENDENCY INVERTED, AND IT IS THE FIX. Until
+        # now the pitch mark came from the reverse walk -- "the first
+        # frame it stopped falling" -- applied to a chain which, on
+        # every real clip, contains no fall at all, because the walk
+        # gives up at the first bounce. Measured against the
+        # operator's own frame-by-frame reading of a typical clip:
+        # first contact f465, second f509, rolling from f523, still
+        # from f590. The walk reaches f524 -- the frame the roll
+        # begins -- and calls f545 the moment it started moving.
+        # Everything downstream was anchored sixty frames out, which
+        # is why the crawl kept searching the bounce instead of the
+        # descent.
+        #
+        # The crawl has to cross those contacts to get here, so it
+        # KNOWS where they are: each is a place it had to reacquire a
+        # direction. The earliest is the first time the ball touched
+        # the green, which is the pitch mark by definition -- a
+        # measurement now, not an inference.
+        out["contacts"] = _contacts
+        if _contacts:
+            _first = min(_contacts, key=lambda q: q["frame"])
+            out["pitch_frame"] = _first["frame"]
+            out["pitch_xy"] = _first["xy"]
+            out["pitch_from"] = (
+                "the earliest of %d contact(s) the crawl crossed — where "
+                "the arc coming down ends and the first bounce begins"
+                % len(_contacts))
         out["anchor_frame"] = int(anchor_frame)
         out["anchor_xy"] = [int(round(float(anchor_xy[0]))),
                             int(round(float(anchor_xy[1])))]

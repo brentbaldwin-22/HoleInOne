@@ -26392,6 +26392,10 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                 # the ball sitting inside an empty box.
                 "blocks": _flight.get("blocks"),
                 "searched": _flight.get("searched"),
+                "pitch_frame": _flight.get("pitch_frame"),
+                "pitch_xy": _flight.get("pitch_xy"),
+                "pitch_from": _flight.get("pitch_from"),
+                "contacts": _flight.get("contacts"),
                 "anchor_frame": _flight.get("anchor_frame"),
                 "anchor_xy": _flight.get("anchor_xy"),
                 "crawl_why": _flight.get("crawl_why"),
@@ -26418,6 +26422,36 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                         "frame, so there is no measured position to "
                         "anchor a flight search on"),
             }
+        # ── AND THE CRAWL'S PITCH MARK WINS ─────────────────────
+        #
+        # A MEASUREMENT BEATS THE INFERENCE IT REPLACES. The walk's
+        # pitch mark is "the first frame it stopped falling" applied
+        # to a chain which, on every real clip, contains no fall --
+        # the walk gives up at the first bounce, so the rule names a
+        # point somewhere in the roll. On the operator's own
+        # frame-by-frame reading of a typical clip the ball first
+        # touches at f465, again at f509, rolls from f523 and is not
+        # still until f590; the walk reaches f524 and calls f545 the
+        # moment it started moving.
+        #
+        # The crawl has to cross those contacts to reach the descent,
+        # so it knows where they are, and the earliest is the first
+        # touch. On the fixture it lands within one frame and 17px of
+        # the truth from an anchor 22 frames past it, where the walk's
+        # own rule was 13 frames and 90px out.
+        if (_flight or {}).get("pitch_xy"):
+            c["landing_frame"] = int(_flight["pitch_frame"])
+            c["landing_spot"] = [int(_flight["pitch_xy"][0]),
+                                 int(_flight["pitch_xy"][1])]
+            c["landing_from"] = (
+                "the pitch mark the crawl measured — "
+                + str(_flight.get("pitch_from") or ""))
+            c["landing_sec"] = round(
+                float(c["landing_frame"]) / float(_gfps or 60.0), 2)
+            _row["pitch_frame"] = c["landing_frame"]
+            _row["pitch_xy"] = c["landing_spot"]
+            _row["pitch_from"] = c["landing_from"]
+            _row["contacts"] = _flight.get("contacts")
         # THE COMET IS THE FLIGHT AND THEN THE WALK, merged on frame
         # number. Drawn in the order the ball flew, and only the
         # frames something was actually seen in: an extrapolated point

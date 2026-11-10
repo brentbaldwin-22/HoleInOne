@@ -897,6 +897,25 @@ function DescentWalk({ walk }) {
               AN UNREADABLE TABLE. The crawl runs BACKWARDS from the
               earliest frame the walk really saw the ball, so the
               range is before that frame, not after it. */}
+          {/* ── THE PITCH MARK THE CRAWL MEASURED ────────────────
+              THE NUMBER THE WHOLE DESCENT HANGS ON, and it used to be
+              inferred: "the first frame it stopped falling", applied
+              to a chain that on every real clip contains no fall,
+              because the walk gives up at the first bounce. The crawl
+              has to cross those contacts to reach the descent, so it
+              knows where they are. */}
+          {fl.pitch_frame != null && (
+            <div className="tiny" style={{ marginTop: 3 }}>
+              <b>Pitch mark: f{fl.pitch_frame}</b>
+              {fl.pitch_xy ? ` at ${fl.pitch_xy[0]},${fl.pitch_xy[1]}` : ""}
+              {" — "}{fl.pitch_from}
+              {(fl.contacts || []).length > 1
+                ? ` · the ball touched down ${fl.contacts.length} time(s)`
+                  + ` before it settled: `
+                  + fl.contacts.map((q) => `f${q.frame}`).join(", ")
+                : ""}
+            </div>
+          )}
           {fl.searched && (
             <div className="tiny" style={{ marginTop: 3 }}>
               <b>Frames searched: f{fl.searched[0]}–f{fl.searched[1]}</b>
