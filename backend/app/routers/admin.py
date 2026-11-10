@@ -26367,11 +26367,10 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                         [int(_walk["first_frame"]), int(_rf)]
                         if _walk.get("first_frame") is not None else None),
                     "walk_first_moved": _walk.get("moved_at_frame"),
-                    # AND THE CRAWL: backwards again from the earliest
-                    # frame the walk really saw the ball, which is a
-                    # measurement where the walk's own pitch mark is
-                    # an inference.
-                    "anchor": (int(_anchor["frame"]) if _anchor else None),
+                    # The crawl's own ranges are filled in below, once
+                    # it has run -- `_anchor` does not exist yet here,
+                    # and referencing it is exactly what broke every
+                    # produce on this path.
                 },
                 "why": _walk.get("why"),
                 # ── WHAT IT ACTUALLY DID, CARRIED OUT WHOLE ───────
@@ -26572,6 +26571,11 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         # own rule was 13 frames and 90px out.
         # THE CRAWL'S OWN RANGES, FOLDED IN BESIDE THE WALK'S, so one
         # block answers "what did each pass look at" instead of three.
+        # AND THE CRAWL: backwards again from the earliest frame the
+        # walk really saw the ball, which is a measurement where the
+        # walk's own pitch mark is an inference.
+        _row["frames"]["anchor"] = (int(_anchor["frame"]) if _anchor
+                                    else None)
         _row["frames"]["crawl_searched"] = (_flight or {}).get("searched")
         _row["frames"]["crawl_blocks"] = [
             b["frames"] for b in ((_flight or {}).get("blocks") or [])]
