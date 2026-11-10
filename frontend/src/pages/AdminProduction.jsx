@@ -11176,6 +11176,35 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                 the window tiles below it are what the detector
                 actually saw, which is the only way to argue with "it
                 lost it here" when a ball is four pixels across. */}
+            {/* ── WHICH PATH THIS CLIP TOOK, AND WHY ─────────────
+                A dwell clip and an audio clip go different routes
+                through this stage now, and a run that silently took a
+                different path is the same problem as a stage that
+                reports a sentence: nobody can check it. */}
+            {rep.descent_method && (
+              <div style={{ margin: "6px 0", padding: "6px 8px",
+                            borderRadius: 4,
+                            background: "var(--surface-alt)",
+                            border: "1px solid var(--border)" }}>
+                <div className="small">
+                  <b>Descent method</b>{" "}
+                  <span className={rep.descent_method === "search"
+                    ? "pill warn" : "pill ok"}>
+                    {rep.descent_method === "search"
+                      ? "the older whole-window search"
+                      : "walk back, then crawl"}
+                  </span>{" "}
+                  <span className="pill">
+                    {rep.trigger_kind
+                      ? `${rep.trigger_kind} trigger`
+                      : "trigger kind not recorded"}
+                  </span>
+                </div>
+                <div className="tiny muted" style={{ marginTop: 2 }}>
+                  {rep.descent_method_why}
+                </div>
+              </div>
+            )}
             {(rep.descents.descents_back || []).map((d) => (
               <DescentWalk key={d.swing} walk={d} />
             ))}

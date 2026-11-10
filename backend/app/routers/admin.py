@@ -25793,6 +25793,15 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # comparison or the pictures, and those want different fixes.
     rep["descent_stages"] = [x for x in (_desc.get("stages") or [])
                              if float(x.get("seconds") or 0.0) > 0.004]
+    # ── WHICH DESCENT PATH THIS CLIP TOOK ───────────────────────────
+    #
+    # A dwell clip and an audio clip now take different routes through
+    # stage 4, and a run that silently took a different path is the
+    # same problem as a stage that reports a sentence: nobody can
+    # check it. Carried up so the report leads with it.
+    rep["trigger_kind"] = _desc.get("trigger_kind")
+    rep["descent_method"] = _desc.get("descent_method")
+    rep["descent_method_why"] = _desc.get("descent_method_why")
     _ascent_trim_considered(_desc.get("sweep") or {})
     _stage(4, "Balls coming down",
            "One pass over the green camera, which is the easy half: "
@@ -26069,6 +26078,28 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     return rep
 
 
+def _trigger_kind(db, row) -> Optional[str]:
+    """How this clip came to exist: "audio", "dwell", or None.
+
+    The tee Pi records it on the camera event as `trigger_detail.kind`.
+    Null on a manual upload, and on any event from a Pi too old to
+    describe itself -- which is a real answer, not a missing one, and
+    is why this returns None rather than guessing "audio".
+    """
+    _eid = getattr(row, "camera_event_id", None)
+    if not _eid:
+        return None
+    try:
+        ev = db.get(CameraEvent, _eid)
+    except Exception:  # noqa: BLE001
+        return None
+    _d = getattr(ev, "trigger_detail", None) if ev is not None else None
+    if not isinstance(_d, dict):
+        return None
+    _k = _d.get("kind")
+    return str(_k).strip().lower() if _k else None
+
+
 def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     """Match each ball that left the tee to the one that came down.
 
@@ -26106,6 +26137,59 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
 
     out: dict = {"ok": False, "n_matched": 0, "events": [], "reason": None,
                  "delta_sec": None, "delta_source": None, "stages": []}
+
+    # ── WHICH DESCENT PATH THIS CLIP GETS, AND WHY ──────────────────
+    #
+    # TWO MECHANISMS FIRE THESE CLIPS AND THEY GIVE THE DESCENT
+    # COMPLETELY DIFFERENT GROUND TO STAND ON.
+    #
+    # An AUDIO trigger means the rig HEARD the strike, so the impact
+    # frame is a measured instant. Everything the new path does is
+    # anchored on it: the green window ladder is impact+8/14/20/5, the
+    # frame the ball is measured at rest comes off whichever rung
+    # answered, the walk starts there and the crawl works back from
+    # where the walk last saw the ball. Anchors on a measurement, all
+    # the way down.
+    #
+    # A DWELL trigger means somebody stood in a zone. Nothing heard
+    # anything. The impact frame still exists, but it is FITTED --
+    # the ascent chain run back along its own heading through a
+    # deceleration to where it crosses the tee line -- and this file's
+    # own note on the audio override says that fit "lands early or
+    # late by however much the fit is wrong... on #1265 the equivalent
+    # fit in the produce path landed eleven frames after the strike".
+    # Every anchor the new path uses is then built on that estimate,
+    # and an estimate eleven frames out moves the whole green window
+    # with it.
+    #
+    # The old search does not need a good impact frame, because it
+    # does not anchor on one: it sweeps the flight windows for
+    # anything falling and matches what it finds to the swings. That
+    # is exactly the imprecision it was scrapped for on audio clips,
+    # and exactly what makes it the better tool where the anchor
+    # itself is a guess.
+    #
+    # Unknown kind keeps the new path, which is the status quo: a
+    # manual upload and a Pi too old to describe itself both land
+    # here, and neither is a reason to change what already runs.
+    _kind = _trigger_kind(db, row)
+    _old_way = (_kind == "dwell")
+    out["trigger_kind"] = _kind
+    out["descent_method"] = "search" if _old_way else "walk+crawl"
+    out["descent_method_why"] = (
+        "this clip was fired by a DWELL — nobody heard a strike, so the "
+        "impact frame is fitted from the ascent chain rather than "
+        "measured. The walk and the crawl are anchored on that frame all "
+        "the way down, and an estimate a dozen frames out moves every "
+        "window with it; the older whole-window search does not anchor "
+        "on it at all."
+        if _old_way else
+        "this clip was fired by AUDIO — the rig heard the strike, so the "
+        "impact frame is a measured instant and every anchor below it "
+        "stands on a measurement"
+        if _kind == "audio" else
+        "no trigger kind recorded on this clip (a manual upload, or a rig "
+        "too old to describe itself), so it gets the default path")
 
     # ── INSIDE STAGE 4 ───────────────────────────────────────────────
     #
@@ -26293,7 +26377,14 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     out["n_descent"] = 0
     out["n_flight"] = 0
     out["descents_back"] = []
-    for i, c in enumerate(_clips):
+    # ── ONE PATH PER CLIP, NEVER BOTH ───────────────────────────────
+    #
+    # A dwell clip gets the older whole-window search below and skips
+    # this entirely. Running both and picking would be two answers
+    # that can disagree about the same ball, which is the failure this
+    # project has paid for over and over -- the two ascent searches,
+    # the button and the produce on the green window, the two pickers.
+    for i, c in enumerate(_clips if not _old_way else []):
         if not c.get("rest_spot") or c.get("impact_frame") is None:
             continue
         if progress:
@@ -26650,7 +26741,10 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
          "detector looks, so nothing else on the green is ever a "
          "candidate — a branch in the treeline is not rejected, it is "
          "never considered.",
-         out.get("n_descent"), "walked", _lap())
+         out.get("n_descent"),
+         "walked" if not _old_way else
+         "walked — SKIPPED, this is a dwell clip and gets the older "
+         "whole-window search instead", _lap())
     _sub("4e", "Finding the flight, forwards from the pitch mark",
          "THE WALK STOPS AT THE BOUNCE AND ALWAYS WILL — a bounce is "
          "an impulse, and no smooth motion model crosses one in either "
@@ -26867,7 +26961,11 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     #
     # `ascent_descent_search` is no longer read. A hole that set it
     # is not re-enabling this.
-    _do_descent = False
+    # THE OLDER SEARCH, FOR DWELL CLIPS ONLY. See `_old_way` at the
+    # top: a dwell heard nothing, so the impact frame everything below
+    # it would be anchored on is a fit rather than a measurement, and
+    # this search does not anchor on it at all.
+    _do_descent = _old_way
     out["descent_search"] = _do_descent
     for i, (_flo, _fhi) in enumerate(_wins if _do_descent else []):
         if progress:

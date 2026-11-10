@@ -92,11 +92,31 @@ def main():
     ok("  and the walk runs after the rest, which it needs",
        _rest < _walk, True)
 
-    # ── AND IT DOES NOT DEPEND ON THE SWEEP HAVING FOUND ANYTHING ───
-    # The old search is off; anything that gates the green on its
-    # output is the same bug wearing a different condition.
-    _dod = first(r"_do_descent = False")
-    ok("the old descent search is still off", _dod is not None, True)
+    # ── AND IT DOES NOT DEPEND ON THE SEARCH HAVING FOUND ANYTHING ──
+    #
+    # THE ORIGINAL BUG IN ONE LINE. The green pass sat below an `if
+    # not _events: return out`, and `_events` is whatever the old
+    # whole-window descent search produced -- so once that search was
+    # scrapped the condition was true on every run and the green pass
+    # never executed at all.
+    #
+    # The old search is no longer unconditionally off: a DWELL clip
+    # gets it, because a dwell heard nothing and the impact frame the
+    # newer path anchors on is a fit rather than a measurement. So
+    # `_events` can be non-empty again, and the thing this test is
+    # really for -- that the green pass runs whatever the search did
+    # or did not find -- is the ordering above, not the constant.
+    #
+    # What must stay true is that the choice is made from the trigger
+    # kind rather than hard-wired, and that the green pass is above
+    # every return it could be gated by. Both are checked already; the
+    # constant itself is not the guarantee and asserting on it was
+    # testing the symptom.
+    _dod = first(r"_do_descent = _old_way")
+    ok("the old search is chosen by trigger kind, not hard-wired",
+       _dod is not None, True)
+    ok("  and the green pass still runs before it either way",
+       _rest < _dod, True)
     ok("  and the green pass does not wait for it", _green < _dod, True)
 
     print()
