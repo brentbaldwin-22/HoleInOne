@@ -55,6 +55,67 @@ def _fixture():
     return ns
 
 
+def _build_noisy(ns, path, seed=7, leaves_n=400):
+    """The smeared flight, over a treeline that will not hold still.
+
+    THE CLEAN FIXTURE CANNOT FAIL. Its only moving thing is the ball,
+    so any rule at all finds it -- which is why this suite was green
+    while the operator's clip was taking, in order, three points
+    hundreds of pixels apart. Four hundred bright specks jittering
+    every frame is what a real treeline looks like to both detectors,
+    and telling the ball from them is the whole job.
+    """
+    import numpy as np
+    W, H, FPS, N = ns["W"], ns["H"], ns["FPS"], ns["N"]
+    ENTER, LAND, ROLL = ns["ENTER"], ns["LAND"], ns["ROLL"]
+    REST, truth = ns["REST"], ns["truth"]
+    rng = np.random.default_rng(seed)
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"),
+                         FPS, (W, H))
+
+    def _at(f):
+        t = f - ENTER
+        if t < 0:
+            return None
+        if t < LAND:
+            return truth(t)
+        if t < ROLL:
+            u = t - LAND
+            return (truth(LAND)[0] + 6.0 * u,
+                    truth(LAND)[1] - 16.0 * u + 1.6 * u * u)
+        u = min(1.0, (t - ROLL) / 26.0)
+        x0 = truth(LAND)[0] + 6.0 * 14
+        y0 = truth(LAND)[1]
+        return (x0 + (REST[0] - x0) * u, y0 + (REST[1] - y0) * u)
+
+    leaves = rng.integers([0, 200], [W, 620], size=(leaves_n, 2))
+    for f in range(N):
+        img = np.full((H, W, 3), 60, np.uint8)
+        img[:330] = (175, 182, 192)
+        img[330:600] = (42, 58, 44)
+        for y in range(600, H):
+            b = 80 + 7 * ((y // 26) % 2)
+            img[y, :] = (b - 12, b + 10, b - 6)
+        img[600:] = cv2.add(
+            img[600:], rng.integers(0, 7, (H - 600, W, 3), dtype=np.uint8))
+        for lx, ly in leaves:
+            jx, jy = rng.integers(-3, 4, 2)
+            cv2.circle(img, (int(lx + jx), int(ly + jy)), 2,
+                       (205, 210, 205), -1)
+        xy = _at(f)
+        prev = _at(f - 1)
+        if xy:
+            if prev:
+                cv2.line(img, (int(prev[0]), int(prev[1])),
+                         (int(xy[0]), int(xy[1])), (240, 242, 244), 8,
+                         cv2.LINE_AA)
+            else:
+                cv2.circle(img, (int(xy[0]), int(xy[1])), 4,
+                           (240, 242, 244), -1)
+        vw.write(img)
+    vw.release()
+
+
 def main():
     from app.services.greencrawl import find_flight_to
     from app.services import greencrawl as GF
@@ -338,6 +399,60 @@ def main():
            all(b["crop"][1] + b["crop"][3] >= b["from"][1] - 2
                for b in cr["blocks"]), True)
         ok("  with the picture drawn", bool(cr["image"]), True)
+
+        # ── AND THE REAL TEST: A CROP FULL OF SPECKLE ───────────────
+        #
+        # THE CLEAN FIXTURE CANNOT FAIL THIS AND THE OPERATOR'S CLIP
+        # DID. On real footage a 460x380 crop over a treeline returns
+        # 243 candidates in one block and 737 in the next, and the
+        # rule here was "take the highest" -- so it took, in order,
+        # f514 at x=1513, f504 at x=1249, f494 at x=1327. That is not
+        # a ball. Every block after the first was anchored on noise.
+        #
+        # This fixture reproduces that: four hundred bright specks
+        # that jitter every frame, which both detectors report and
+        # neither can tell from a ball on its own.
+        noisy = Path(d) / "noisy.mp4"
+        _build_noisy(ns, noisy)
+        _w2 = track_descent_back(noisy, REST, REST_FRAME)
+        _a2 = [q for q in _w2["points"] if q.get("found")][0]
+        nz = crawl_flight_back(noisy, (_a2["x"], _a2["y"]),
+                               int(_a2["frame"]))
+        ok("the crawl survives a crop full of speckle", nz["ok"], True)
+        ok("  finding the flight anyway", nz["n_points"] >= 40, True)
+        ok("  and reaching the frame the ball entered",
+           nz["first_frame"] <= ENTER + 3, True)
+        _ne = []
+        for q in nz["points"]:
+            _t = q["frame"] - ENTER
+            if 0 <= _t < LAND:
+                _tx, _ty = truth(_t)
+                _ne.append(((q["x"] - _tx) ** 2 + (q["y"] - _ty) ** 2) ** .5)
+        # NOT ONE POINT OFF THE ARC. Before the linking, the chain
+        # went 595px wrong on this fixture.
+        ok("  with every point still on the real arc",
+           len(_ne) == nz["n_points"] and max(_ne) < 35, True)
+        # AND IT REALLY WAS DROWNING IN CANDIDATES -- otherwise this
+        # fixture is not reproducing the thing it exists for.
+        _busiest = max(b.get("n_found", 0) for b in nz["blocks"])
+        ok("  out of hundreds of candidates in a block",
+           _busiest > 200, True)
+        ok("  linked into a path that is near dead straight",
+           max(b.get("straightness_px", 0) for b in nz["blocks"]
+               if b.get("took")) < 2.0, True)
+
+        # ── AND IT SAYS WHICH FRAMES IT SEARCHED ────────────────────
+        #
+        # Asked directly, and the answer was only ever in a column of
+        # a table that rendered unreadable. The crawl runs BACKWARDS
+        # from the anchor, so the range is BEFORE that frame -- the
+        # opposite of the natural guess.
+        ok("the run says which frames it searched",
+           bool(nz.get("searched")) and len(nz["searched"]) == 2, True)
+        ok("  and they are before the anchor, not after",
+           nz["searched"][1] < nz["anchor_frame"], True)
+        ok("  with the anchor named too",
+           nz.get("anchor_frame") == int(_a2["frame"]), True)
 
         # ── NOTHING TO ANCHOR ON ────────────────────────────────────
         ok("no anchor means no crawl",

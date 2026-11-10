@@ -26391,6 +26391,9 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                 # completely differently from one that stopped with
                 # the ball sitting inside an empty box.
                 "blocks": _flight.get("blocks"),
+                "searched": _flight.get("searched"),
+                "anchor_frame": _flight.get("anchor_frame"),
+                "anchor_xy": _flight.get("anchor_xy"),
                 "crawl_why": _flight.get("crawl_why"),
                 "crawl_blocks": _flight.get("crawl_blocks"),
                 "crawl_image_url": _flight.get("crawl_image_url"),

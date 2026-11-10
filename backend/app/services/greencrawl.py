@@ -925,6 +925,151 @@ def _scan_block(frames, f_lo, box, cursor, out_rejects,
     return got, scale
 
 
+# ── LINKING INSIDE A BLOCK ──────────────────────────────────────────
+#
+# "TAKE THE HIGHEST" IS NOT STRONG ENOUGH AND THE OPERATOR'S CLIP
+# PROVED IT. On real footage a 460x380 crop over a treeline returns
+# 243 candidates in one block and 737 in the next, and the highest of
+# several hundred specks is a speck. The blocks it took read:
+#
+#     blk1  f514 at 1513,456
+#     blk2  f504 at 1249,307
+#     blk3  f494 at 1327,281
+#
+# -- x jumping 1513, 1249, 1327. That is not a ball, it is noise, and
+# every block after it was anchored on noise.
+#
+# The wizard's own walker does not have this problem, and the reason
+# is the one thing it has that the crawl did not: CONTINUITY. Each hop
+# must agree with the hop before it in direction, and be about the
+# same length. A ball keeps coming from the same way at about the same
+# speed; a field of speckle does not. So the block is linked rather
+# than skimmed, with the wizard's rule, and only then does the chain's
+# earliest point become the next known position.
+
+# HOW CLOSELY A HOP MUST AGREE IN DIRECTION with the one before it, as
+# a cosine. The wizard's own number: about 57 degrees of slack, which
+# is loose enough for a bouncing ball and tight enough that a
+# reversal -- grass, a shadow, a branch swinging back -- is refused.
+LINK_COS_MIN = 0.55
+
+# HOW MUCH LONGER OR SHORTER A HOP MAY BE than the last one scaled by
+# the frames between, as a multiple. A ball on a green accelerates
+# gently over ten frames; it does not double its speed between frames.
+LINK_STEP_TOL = 2.2
+
+# A BLOCK MUST LINK AT LEAST THIS MANY FRAMES to count. Two points is
+# a pair of specks that happen to line up; four is a path. The same
+# reasoning as MIN_DESCENT_POINTS, which was raised from three after a
+# three-point chain beat a real descent beside it.
+LINK_MIN_CHAIN = 3
+
+# AND HOW FAR OFF STRAIGHT ITS POINTS MAY SIT, RMS, in pixels. Over
+# the tenth of a second a block covers, gravity bends a flight far
+# less than the picture is wide, so a falling ball is very nearly a
+# line. debug3 measured exactly this on real clips: real descents at
+# 0.18 to 0.61px of bend against a chain of unrelated speckle at
+# 18.65. The bar sits well clear of both.
+LINK_MAX_BEND_PX = 6.0
+
+
+def _link_from(per, seed, cx, cy, cf, step):
+    """Walk back through one block's candidates from `seed`.
+
+    Returns (chain, step). Each hop must continue the one before it --
+    the wizard's rule, with the wizard's constants.
+    """
+    chain = [seed]
+    px, py, pf = seed["x"], seed["y"], seed["frame"]
+    st = ((seed["x"] - cx, seed["y"] - cy) if step is None else step)
+    for f in sorted((k for k in per if k < seed["frame"]), reverse=True):
+        gap = max(1, pf - f)
+        _sl = math.hypot(*st) or 1.0
+        best, bs = None, None
+        for q in per[f]:
+            dx, dy = q["x"] - px, q["y"] - py
+            dist = math.hypot(dx, dy)
+            if dist < 0.5:
+                continue
+            cos = (dx * st[0] + dy * st[1]) / (dist * _sl)
+            if cos < LINK_COS_MIN:
+                continue
+            if dist > LINK_STEP_TOL * _sl * gap:
+                continue
+            sc = abs(dist - _sl * gap) * 2.0 + dist * 0.2
+            if bs is None or sc < bs:
+                bs, best = sc, q
+        if best is None:
+            continue
+        chain.append(best)
+        st = ((best["x"] - px) / gap, (best["y"] - py) / gap)
+        px, py, pf = best["x"], best["y"], f
+    return chain, st
+
+
+def _link_block(got, cursor, step):
+    """The best linked run in one block, and the step it ends on.
+
+    EVERY CANDIDATE ON THE LATEST FRAMES IS TRIED AS A SEED, rather
+    than seeding on the nearest or the highest. With hundreds of
+    specks in a crop the nearest is whatever noise sits next to the
+    ball and the highest is whatever noise sits at the top; the ball
+    is the one that leads somewhere, so the seeds are judged by what
+    they lead to.
+    """
+    cx, cy, cf = cursor
+    per: dict = {}
+    for q in got:
+        per.setdefault(int(q["frame"]), []).append(q)
+    if not per:
+        return [], step, 0
+    _frames = sorted(per, reverse=True)
+    # Seeds come from the three latest frames that hold anything, so a
+    # ball missing from the very first frame of the block does not
+    # cost the whole block.
+    _seeds = [q for f in _frames[:3] for q in per[f]]
+    best, bscore = None, None
+    for sd in _seeds:
+        ch, st = _link_from(per, sd, cx, cy, cf, step)
+        if len(ch) < LINK_MIN_CHAIN:
+            continue
+        # LONGEST FIRST, THEN STRAIGHTEST. A falling ball over ten
+        # frames is very nearly a line; a run of unrelated specks the
+        # continuity rule happened to thread is not.
+        _rms = _straightness(ch)
+        _score = (-len(ch), _rms)
+        if bscore is None or _score < bscore:
+            bscore, best = _score, (ch, st)
+    if best is None:
+        return [], step, len(_seeds)
+    _ch, _st = best
+    _ch.sort(key=lambda q: q["frame"])
+    return _ch, _st, len(_seeds)
+
+
+def _straightness(chain):
+    """RMS distance of the chain's points from its own best-fit line."""
+    if len(chain) < 3:
+        return 0.0
+    xs = np.array([float(q["x"]) for q in chain])
+    ys = np.array([float(q["y"]) for q in chain])
+    # Fit against whichever axis the chain spans more of, so a vertical
+    # fall is not fitted as y against a constant x.
+    if xs.max() - xs.min() >= ys.max() - ys.min():
+        try:
+            c = np.polyfit(xs, ys, 1)
+            r = ys - np.polyval(c, xs)
+        except (np.linalg.LinAlgError, ValueError):
+            return 0.0
+    else:
+        try:
+            c = np.polyfit(ys, xs, 1)
+            r = xs - np.polyval(c, ys)
+        except (np.linalg.LinAlgError, ValueError):
+            return 0.0
+    return float(np.sqrt(np.mean(r * r)))
+
+
 def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
                       max_blocks: int = CRAWL_MAX_BLOCKS,
                       out_dir=None, stem="greencrawl") -> dict:
@@ -1001,6 +1146,11 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
         cx, cy = float(anchor_xy[0]), float(anchor_xy[1])
         cf = int(anchor_frame)
         _w, _h = float(CRAWL_W), float(CRAWL_H)
+        # THE DIRECTION THE LAST BLOCK ENDED ON. None for the first
+        # block -- there is no established direction yet, so the seed
+        # search is free to pick any candidate above the ball and the
+        # continuity rule starts from whatever it chooses.
+        _step = None
         pts: list = []
         _stop = None
         for _b in range(int(max_blocks)):
@@ -1078,45 +1228,84 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
                          % (_b + 1, len(frames), cf, _row["zoom"],
                             (_row.get("deep_retry") or {}).get("zoom", 0.0)))
                 break
-            # ── ONE POINT PER FRAME, AND THE HIGHEST LEADS ──────────
+            # ── THE BLOCK IS LINKED, NOT SKIMMED ───────────────────
             #
-            # Every frame that holds an acceptable candidate
-            # contributes its best one, so the comet is as dense as
-            # the footage allows; the HIGHEST of them all becomes the
-            # next known point, because that is the earliest the ball
-            # can have been and the next block has to reach past it.
-            # ── THE TOP-HAT WINS A FRAME THEY BOTH SEE ──────────
+            # See _link_block. Taking the highest of several hundred
+            # specks takes a speck; the ball is the one candidate that
+            # LEADS somewhere, so every candidate on the latest frames
+            # is tried as a seed and the run that goes furthest,
+            # straightest, wins. Its earliest point is the next known
+            # position and its last hop is the direction the next
+            # block has to continue.
+            # ── EVERY CANDIDATE GOES TO THE LINKER ─────────────────
             #
-            # Both are measurements and they are not equally precise.
-            # The top-hat reads the BALL -- the bright thing itself --
-            # while a frame difference lights up where the ball was
-            # AND where it is, so its centroid sits half a step behind
-            # the truth. Measured on the fixture: letting the
-            # difference win frames took the worst error from 13px to
-            # 27px while adding nothing the top-hat had not already
-            # found on those frames.
-            #
-            # The difference earns its place on the frames the top-hat
-            # misses entirely, which on this footage is most of them.
-            _per: dict = {}
-
-            def _better(a, b):
-                """Is `a` a better reading of this frame than `b`?"""
-                if (a.get("src") == "tophat") != (b.get("src") == "tophat"):
-                    return a.get("src") == "tophat"
-                return a["y"] < b["y"]
-
+            # AND I NEARLY THREW THEM ALL AWAY. The old "take the
+            # highest" rule wanted one candidate per frame, so this
+            # kept the best of each and handed those on. With linking
+            # that is catastrophic: on the speckled fixture a block
+            # holds 748 candidates over ten frames, the per-frame
+            # pick keeps ten of them, and the ball is not among them
+            # on most frames -- so the linker threaded noise and the
+            # chain went 595px off the truth. The ball is not the
+            # best-looking blob on its frame, it is the blob that
+            # LEADS somewhere, and only the linker can tell which
+            # that is. The duplicate top-hat/difference readings of
+            # one ball are already merged inside _scan_block.
+            _per = {}
             for q in got:
-                _k = q["frame"]
-                if _k not in _per or _better(q, _per[_k]):
-                    _per[_k] = q
-            _blk = sorted(_per.values(), key=lambda q: q["frame"])
-            _top = min(_blk, key=lambda q: q["y"])
+                _per.setdefault(int(q["frame"]), []).append(q)
+            _blk, _nstep, _nseeds = _link_block(got, (cx, cy, cf), _step)
+            _row["n_cands"] = len(got)
+            _row["n_seeds"] = _nseeds
+            # ── AND A LINKED CHAIN STILL HAS TO BE STRAIGHT ────────
+            #
+            # Over the tenth of a second a block covers, gravity bends
+            # a flight far less than the picture is wide, so a falling
+            # ball is very nearly a line. debug3 measured the same
+            # thing on real clips: real descents 0.18 to 0.61px of
+            # bend, a chain of unrelated speckle 18.65. On the
+            # speckled fixture the block that went wrong linked three
+            # points at 30.2px off straight -- refusing that is the
+            # difference between stopping honestly and following noise
+            # for four more blocks.
+            _bend = _straightness(_blk) if len(_blk) >= LINK_MIN_CHAIN else 0.0
+            if len(_blk) >= LINK_MIN_CHAIN and _bend > LINK_MAX_BEND_PX:
+                _row["n_kept"] = len(_blk)
+                _row["straightness_px"] = round(_bend, 2)
+                _row["why"] = (
+                    "%d candidate(s) on %d frame(s); the best run through "
+                    "them is %d point(s) but bends %.1fpx off straight, "
+                    "over the %gpx a falling ball bends in a tenth of a "
+                    "second — that is a thread through speckle, not a "
+                    "flight"
+                    % (len(got), len(_per), len(_blk), _bend,
+                       LINK_MAX_BEND_PX))
+                out["blocks"].append(_row)
+                _stop = ("block %d linked %d point(s) but they bent %.1fpx "
+                         "off straight" % (_b + 1, len(_blk), _bend))
+                break
+            if len(_blk) < LINK_MIN_CHAIN:
+                _row["n_kept"] = len(_blk)
+                _row["why"] = (
+                    "%d candidate(s) on %d frame(s), and no %d of them "
+                    "link into a path — every hop has to continue the one "
+                    "before it in direction and length, and a field of "
+                    "speckle does not"
+                    % (len(got), len(_per), LINK_MIN_CHAIN))
+                out["blocks"].append(_row)
+                _stop = ("block %d found %d candidate(s) before f%d but "
+                         "none of them linked into a path"
+                         % (_b + 1, len(got), cf))
+                break
+            _top = _blk[0]
+            _step = _nstep
             _row["took"] = [int(round(_top["x"])), int(round(_top["y"]))]
             _row["took_frame"] = int(_top["frame"])
-            _row["rose_px"] = int(_top["rose_px"])
+            _row["rose_px"] = int(round(cy - _top["y"]))
             _row["implied_speed"] = _top["implied_speed"]
             _row["n_kept"] = len(_blk)
+            _row["straightness_px"] = round(_straightness(_blk), 2)
+            _row["step"] = [round(_nstep[0], 1), round(_nstep[1], 1)]
             # WHICH DETECTOR EARNED ITS PASS. Two detectors means two
             # ways of looking at the same crop, and whether each one
             # contributes is worth knowing rather than assuming -- a
@@ -1126,11 +1315,13 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
                 "tophat": sum(1 for q in _blk if q.get("src") == "tophat"),
                 "diff": sum(1 for q in _blk if q.get("src") == "diff"),
             }
-            _row["why"] = ("%d candidate(s) on %d frame(s); highest is f%d "
+            _row["why"] = ("%d candidate(s) on %d frame(s) → %d linked into "
+                           "a path (%.1fpx off straight); earliest is f%d "
                            "at %d,%d — %dpx above, %gpx/frame implied%s"
-                           % (len(got), len(_blk), _top["frame"],
+                           % (len(got), len(_per), len(_blk),
+                              _row["straightness_px"], _top["frame"],
                               round(_top["x"]), round(_top["y"]),
-                              _top["rose_px"], _top["implied_speed"],
+                              _row["rose_px"], _top["implied_speed"],
                               (", a %.1f:1 smear %.0fdeg off"
                                % (_top["ratio"], _top["off_by_deg"]))
                               if _top.get("streak") else ""))
@@ -1173,6 +1364,19 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
             "stopped_because": _stop,
             "deepest_zoom": max([b["zoom"] for b in out["blocks"]] or [1.0]),
         }
+        # ── WHICH FRAMES WERE SEARCHED, SAID PLAINLY ───────────────
+        #
+        # ASKED DIRECTLY, AND THE ANSWER WAS ONLY EVER IN A COLUMN OF
+        # A TABLE THAT RENDERED UNREADABLE. The crawl runs BACKWARDS
+        # from the anchor, so the range is BEFORE that frame -- which
+        # is the opposite of the natural guess, and worth stating
+        # rather than leaving to be worked out from block rows.
+        if out["blocks"]:
+            out["searched"] = [min(b["frames"][0] for b in out["blocks"]),
+                               max(b["frames"][1] for b in out["blocks"])]
+        out["anchor_frame"] = int(anchor_frame)
+        out["anchor_xy"] = [int(round(float(anchor_xy[0]))),
+                            int(round(float(anchor_xy[1])))]
         if pts:
             out["ok"] = True
             out["first_frame"] = int(pts[0]["frame"])

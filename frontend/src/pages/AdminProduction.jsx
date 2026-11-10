@@ -698,7 +698,7 @@ function SwingSteps({ row }) {
                 <img src={st.url} alt={st.title}
                      style={{ width: "100%", borderRadius: 4,
                               background: "#111", cursor: "zoom-in",
-                              border: "1px solid var(--border, #333)" }} />
+                              border: "1px solid var(--border)" }} />
               </a>
             ) : (
               // AN EMPTY BOX THAT SAYS WHY IT IS EMPTY. "This step did
@@ -776,7 +776,7 @@ function StepPictures({ stages, title }) {
               <img src={st.url} alt={st.title}
                    style={{ width: "100%", borderRadius: 4,
                             background: "#111", cursor: "zoom-in",
-                            border: "1px solid var(--border, #333)" }} />
+                            border: "1px solid var(--border)" }} />
             </a>
             <figcaption className="tiny" style={{ marginTop: 3 }}>
               <b>{st.title}</b>
@@ -875,7 +875,7 @@ function DescentWalk({ walk }) {
           question: which chain's own arc lands on the pitch mark. */}
       {fl && (
         <div style={{ marginTop: 6, padding: "6px 8px", borderRadius: 4,
-                      background: "var(--panel2, #1b1b1b)",
+                      background: "var(--surface-alt)",
                       borderLeft: `3px solid ${fl.ok ? "#5ae0ff" : "#b4690e"}` }}>
           <div className="small">
             <b>The flight, found forwards</b>{" "}
@@ -892,6 +892,23 @@ function DescentWalk({ walk }) {
             )}
           </div>
           <div className="tiny muted" style={{ marginTop: 2 }}>{fl.why}</div>
+          {/* ── WHICH FRAMES WERE SEARCHED ───────────────────────
+              ASKED DIRECTLY AND THE ANSWER WAS ONLY IN A COLUMN OF
+              AN UNREADABLE TABLE. The crawl runs BACKWARDS from the
+              earliest frame the walk really saw the ball, so the
+              range is before that frame, not after it. */}
+          {fl.searched && (
+            <div className="tiny" style={{ marginTop: 3 }}>
+              <b>Frames searched: f{fl.searched[0]}–f{fl.searched[1]}</b>
+              {fl.anchor_frame != null
+                ? ` — backwards from f${fl.anchor_frame}, the earliest`
+                  + " frame the walk actually saw the ball"
+                : ""}
+              {fl.counts?.frames_searched
+                ? ` · ${fl.counts.frames_searched} frames looked at`
+                : ""}
+            </div>
+          )}
           {fl.method && (
             <div className="tiny muted" style={{ marginTop: 2 }}>
               <b>Method:</b> {fl.method}
@@ -934,7 +951,7 @@ function DescentWalk({ walk }) {
               <img src={fl.image_url} alt="the flight, found forwards"
                    style={{ width: "100%", maxWidth: 900, marginTop: 4,
                             borderRadius: 4,
-                            border: "1px solid var(--border, #333)" }} />
+                            border: "1px solid var(--border)" }} />
             </a>
           )}
           {/* ── EVERY BLOCK, AND THE CROP IT SEARCHED ────────────
@@ -947,14 +964,14 @@ function DescentWalk({ walk }) {
               apart. */}
           {(fl.blocks || []).length > 0 && (
             <div style={{ marginTop: 6, maxHeight: 300, overflow: "auto",
-                          border: "1px solid var(--border, #333)",
+                          border: "1px solid var(--border)",
                           borderRadius: 4 }}>
               <table className="tiny" style={{ width: "100%",
                                                borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ textAlign: "left", position: "sticky",
                                top: 0,
-                               background: "var(--panel2, #1b1b1b)" }}>
+                               background: "var(--surface-alt)" }}>
                     <th style={{ padding: "3px 6px" }}>blk</th>
                     <th style={{ padding: "3px 6px" }}>frames</th>
                     <th style={{ padding: "3px 6px" }}>crop</th>
@@ -971,7 +988,7 @@ function DescentWalk({ walk }) {
                   {fl.blocks.map((b) => (
                     <tr key={b.block}
                         style={{ borderTop:
-                                   "1px solid var(--border, #2a2a2a)",
+                                   "1px solid var(--border)",
                                  opacity: b.took ? 1 : 0.75 }}>
                       <td style={{ padding: "2px 6px" }}>{b.block}</td>
                       <td style={{ padding: "2px 6px" }}>
@@ -1030,7 +1047,7 @@ function DescentWalk({ walk }) {
                   <img src={fl.crawl_image_url} alt="the crawl"
                        style={{ width: "100%", maxWidth: 900, marginTop: 4,
                                 borderRadius: 4,
-                                border: "1px solid var(--border, #333)" }} />
+                                border: "1px solid var(--border)" }} />
                 </a>
               )}
             </div>
@@ -1061,14 +1078,14 @@ function DescentWalk({ walk }) {
               {showChains && (
                 <div style={{ marginTop: 6, maxHeight: 320,
                               overflow: "auto",
-                              border: "1px solid var(--border, #333)",
+                              border: "1px solid var(--border)",
                               borderRadius: 4 }}>
                   <table className="tiny" style={{ width: "100%",
                                                    borderCollapse: "collapse" }}>
                     <thead>
                       <tr style={{ textAlign: "left", position: "sticky",
                                    top: 0,
-                                   background: "var(--panel2, #1b1b1b)" }}>
+                                   background: "var(--surface-alt)" }}>
                         <th style={{ padding: "3px 6px" }}>pts</th>
                         <th style={{ padding: "3px 6px" }}>frames</th>
                         <th style={{ padding: "3px 6px" }}>fell</th>
@@ -1083,7 +1100,7 @@ function DescentWalk({ walk }) {
                       {fl.chains.map((q, i) => (
                         <tr key={i}
                             style={{ borderTop:
-                                       "1px solid var(--border, #2a2a2a)",
+                                       "1px solid var(--border)",
                                      opacity: q.ok ? 1 : 0.7 }}>
                           <td style={{ padding: "2px 6px" }}>{q.n_points}</td>
                           <td style={{ padding: "2px 6px" }}>
@@ -1131,7 +1148,7 @@ function DescentWalk({ walk }) {
           because it is the thing being looked for. */}
       {lost && (
         <div style={{ marginTop: 6, padding: "6px 8px", borderRadius: 4,
-                      background: "var(--panel2, #1b1b1b)",
+                      background: "var(--surface-alt)",
                       borderLeft: "3px solid #5aa9ff" }}>
           <div className="small"><b>Where it lost it</b></div>
           <div className="tiny" style={{ marginTop: 2 }}>
@@ -1172,7 +1189,7 @@ function DescentWalk({ walk }) {
                   <a href={w.url} target="_blank" rel="noreferrer">
                     <img src={w.url} alt={`window at f${w.frame}`}
                          style={{ width: "100%", borderRadius: 3,
-                                  border: "1px solid var(--border, #333)" }} />
+                                  border: "1px solid var(--border)" }} />
                   </a>
                   <figcaption className="tiny muted">
                     f{w.frame} · {w.zoom}×{w.found ? "" : " · NOTHING"}
@@ -1194,7 +1211,7 @@ function DescentWalk({ walk }) {
       {det.kind && (
         <div className="tiny" style={{ marginTop: 6, padding: "6px 8px",
                                        borderRadius: 4,
-                                       background: "var(--panel2, #1b1b1b)" }}>
+                                       background: "var(--surface-alt)" }}>
           <div><b>Detector — {det.kind}.</b> {det.how}</div>
           <div style={{ marginTop: 3 }} className="muted">{det.not}</div>
           <div style={{ marginTop: 3 }} className="muted">
@@ -1270,7 +1287,7 @@ function DescentWalk({ walk }) {
           <img src={walk.image_url} alt="the descent walked back"
                style={{ width: "100%", maxWidth: 900, marginTop: 4,
                         borderRadius: 4,
-                        border: "1px solid var(--border, #333)" }} />
+                        border: "1px solid var(--border)" }} />
         </a>
       )}
       {(walk.windows || []).length > 0 && (
@@ -1295,7 +1312,7 @@ function DescentWalk({ walk }) {
                   <a href={w.url} target="_blank" rel="noreferrer">
                     <img src={w.url} alt={`window at f${w.frame}`}
                          style={{ width: "100%", borderRadius: 3,
-                                  border: "1px solid var(--border, #333)" }} />
+                                  border: "1px solid var(--border)" }} />
                   </a>
                   <figcaption className="tiny muted">
                     f{w.frame} · {w.zoom}×{w.found ? "" : " · NOTHING"}
@@ -1326,14 +1343,14 @@ function DescentWalk({ walk }) {
           </button>
           {showLog && (
             <div style={{ marginTop: 6, maxHeight: 420, overflow: "auto",
-                          border: "1px solid var(--border, #333)",
+                          border: "1px solid var(--border)",
                           borderRadius: 4 }}>
               <table className="tiny" style={{ width: "100%",
                                                borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ textAlign: "left",
                                position: "sticky", top: 0,
-                               background: "var(--panel2, #1b1b1b)" }}>
+                               background: "var(--surface-alt)" }}>
                     <th style={{ padding: "3px 6px" }}>frame</th>
                     <th style={{ padding: "3px 6px" }}>looked at</th>
                     <th style={{ padding: "3px 6px" }}>window</th>
@@ -1349,7 +1366,7 @@ function DescentWalk({ walk }) {
                 <tbody>
                   {log.map((q) => (
                     <tr key={q.frame}
-                        style={{ borderTop: "1px solid var(--border, #2a2a2a)",
+                        style={{ borderTop: "1px solid var(--border)",
                                  opacity: q.took ? 1 : 0.72 }}>
                       <td style={{ padding: "2px 6px" }}>f{q.frame}</td>
                       <td style={{ padding: "2px 6px" }}>
@@ -5298,7 +5315,7 @@ function EditWizard({
               style={{
                 marginBottom: 8, padding: "4px 8px", borderRadius: 4,
                 background: "rgba(34,197,94,0.08)",
-                border: "1px solid var(--border, #2a2a2a)",
+                border: "1px solid var(--border)",
               }}
             >
               Engine:{" "}
@@ -5522,7 +5539,7 @@ function SwingSelectorBar({ swings, selectedSwing, setSelectedSwing, onDeleteSwi
         overflowX: "auto",
         marginBottom: 10,
         paddingBottom: 4,
-        borderBottom: "1px solid var(--border, #2a2a2a)",
+        borderBottom: "1px solid var(--border)",
       }}
     >
       {swings.map((sw, i) => {
@@ -5535,7 +5552,7 @@ function SwingSelectorBar({ swings, selectedSwing, setSelectedSwing, onDeleteSwi
               display: "inline-flex", alignItems: "center", gap: 4,
               padding: "4px 6px 4px 10px",
               flex: "0 0 auto", fontSize: "0.82rem",
-              border: "1px solid var(--border, #2a2a2a)",
+              border: "1px solid var(--border)",
               borderRadius: 6,
               background: active ? "var(--primary-soft, rgba(34,197,94,0.12))" : "transparent",
               cursor: "pointer",
@@ -5583,7 +5600,7 @@ function SwingSelectorBar({ swings, selectedSwing, setSelectedSwing, onDeleteSwi
           style={{
             width: "auto", padding: "4px 12px",
             flex: "0 0 auto", fontSize: "0.82rem",
-            border: "1px dashed var(--border, #2a2a2a)",
+            border: "1px dashed var(--border)",
             borderRadius: 6,
           }}
         >
@@ -6537,7 +6554,7 @@ function EditableRow({ label, value, active, onActivate, children }) {
   return (
     <div
       style={{
-        border: "1px solid var(--border, #2a2a2a)",
+        border: "1px solid var(--border)",
         borderRadius: 6,
         padding: 6,
         background: active ? "rgba(34,197,94,0.06)" : "transparent",
