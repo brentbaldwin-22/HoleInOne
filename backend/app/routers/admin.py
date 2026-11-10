@@ -26331,9 +26331,42 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         _seen = [q for q in (_walk.get("points") or []) if q.get("found")]
         _anchor = _seen[0] if _seen else None
         if _anchor:
-            _flight = _gfly.find_flight_to(
+            # ── THE CRAWL FIRST, AND IT IS THE METHOD NOW ───────────
+            #
+            # THE CHAIN SEARCH DOES NOT WORK ON REAL FOOTAGE. On the
+            # operator's own clip it considered 383 chains over the
+            # four seconds before the pitch mark and took NONE, with
+            # the nearest arc 5px away. The shape is wrong: detecting
+            # everything in a four-second window over a treeline gives
+            # thousands of detections, the linker builds hundreds of
+            # chains out of them, and the ball's own dozen faint
+            # smudges are one candidate among them with no particular
+            # claim.
+            #
+            # The crawl has no motion model at all, which is why it
+            # crosses the bounce that stopped the reverse walk: it
+            # puts the known point at the bottom of a crop, searches
+            # the ten frames before it, takes the highest thing it
+            # accepts and goes again. See crawl_flight_back.
+            _flight = _gfly.crawl_flight_back(
                 _gp, (_anchor["x"], _anchor["y"]), int(_anchor["frame"]),
-                out_dir=CLIPS_DIR, stem=f"gfly-{row.id}-s{i + 1}")
+                out_dir=CLIPS_DIR, stem=f"gcrawl-{row.id}-s{i + 1}")
+            _flight["method"] = "crawl"
+            if not _flight.get("ok"):
+                # THE CHAIN SEARCH AS A FALLBACK RUNG, not as a second
+                # opinion running beside it. One answer is produced,
+                # by whichever ran; two searches reporting separately
+                # is the thing that cost five rounds on the tee.
+                _alt = _gfly.find_flight_to(
+                    _gp, (_anchor["x"], _anchor["y"]), int(_anchor["frame"]),
+                    out_dir=CLIPS_DIR, stem=f"gfly-{row.id}-s{i + 1}")
+                _alt["crawl_why"] = _flight.get("why")
+                _alt["crawl_blocks"] = _flight.get("blocks")
+                _alt["crawl_image_url"] = (
+                    _clip_url_for(Path(_flight["image"]).name)
+                    if _flight.get("image") else None)
+                _alt["method"] = "chains (the crawl found nothing)"
+                _flight = _alt
             _row["flight_anchor"] = {
                 "frame": int(_anchor["frame"]),
                 "xy": [int(round(_anchor["x"])), int(round(_anchor["y"]))],
@@ -26350,6 +26383,18 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                 "fell_px": _flight.get("fell_px"),
                 "why": _flight.get("why"),
                 "how": _flight.get("how"),
+                "method": _flight.get("method"),
+                # THE CRAWL'S OWN WORKING: every block, the crop it
+                # searched, the zoom, what it took and what it
+                # refused. The crops are the argument -- a crawl that
+                # stopped because the ball left the box reads
+                # completely differently from one that stopped with
+                # the ball sitting inside an empty box.
+                "blocks": _flight.get("blocks"),
+                "crawl_why": _flight.get("crawl_why"),
+                "crawl_blocks": _flight.get("crawl_blocks"),
+                "crawl_image_url": _flight.get("crawl_image_url"),
+                "rose_px": _flight.get("rose_px"),
                 "rung": _flight.get("rung"),
                 "ladder": _flight.get("ladder"),
                 "counts": _flight.get("counts"),

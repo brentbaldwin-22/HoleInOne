@@ -232,6 +232,81 @@ def main():
            far["counts"].get("nearest_miss_px") is not None
            or far["counts"].get("chains_considered") == 0, True)
 
+        # ── THE CRAWL: UP AND BACK, A BLOCK AT A TIME ───────────────
+        #
+        # THE CHAIN SEARCH ABOVE DOES NOT WORK ON REAL FOOTAGE AND THE
+        # OPERATOR'S OWN CLIP SAYS SO: 383 chains considered over the
+        # four seconds before the pitch mark, NONE taken, nearest arc
+        # 5px away. Detecting everything in a four-second window over
+        # a treeline gives thousands of detections, the linker builds
+        # hundreds of chains, and the ball's dozen faint smudges are
+        # one candidate among them with no particular claim.
+        #
+        # The crawl has NO MOTION MODEL AT ALL, which is exactly why
+        # it crosses the bounce: nothing is predicted, so there is
+        # nothing for an impulse to break.
+        from app.services.greenflight import crawl_flight_back
+        cr = crawl_flight_back(clip, (_anch["x"], _anch["y"]),
+                               int(_anch["frame"]), out_dir=d, stem="cr")
+        ok("the crawl finds the flight", cr["ok"], True)
+        ok("  reaching the frame the ball entered",
+           cr["first_frame"] <= ENTER + 3, True)
+        ok("  with a point on most frames of it",
+           cr["n_points"] >= 40, True)
+        ok("  rising a long way", cr["rose_px"] > 500, True)
+        # EVERY POINT ON THE REAL ARC. The chain search managed 27px
+        # at worst; this does better because it never has to pick one
+        # chain out of hundreds -- it only ever looks where the ball
+        # must be.
+        _err = []
+        for q in cr["points"]:
+            _t = q["frame"] - ENTER
+            if 0 <= _t < LAND:
+                _tx, _ty = truth(_t)
+                _err.append(((q["x"] - _tx) ** 2 + (q["y"] - _ty) ** 2) ** .5)
+        ok("  every one of them on the real arc",
+           len(_err) == cr["n_points"] and max(_err) < 20, True)
+        # AND THE ELONGATION GATE EARNS ITS KEEP HERE. A ball in
+        # flight is a capsule; without the gate these frames are
+        # refused for not being round.
+        ok("  and a good share of them are smears",
+           cr["counts"]["smears"] >= 8, True)
+
+        # ── IT STOPS WHEN THE BALL IS NOT THERE, NOT BEFORE ─────────
+        ok("it stops where the ball entered the frame",
+           cr["first_frame"] >= ENTER - 2, True)
+        ok("  and says which block ended it",
+           "found nothing" in (cr["counts"]["stopped_because"] or ""), True)
+        # THE DEEP RETRY RUNS ON THE BLOCK THAT FAILED, and only
+        # there: depth costs the crop's area times the square of the
+        # zoom, and run everywhere it took 1.3s to 41.5s on this very
+        # fixture for not one extra point.
+        _last = cr["blocks"][-1]
+        ok("  having looked again, deeper, before giving up",
+           (_last.get("deep_retry") or {}).get("zoom", 0) > _last["zoom"],
+           True)
+        ok("  and only on that block",
+           sum(1 for b in cr["blocks"] if b.get("deep_retry")), 1)
+
+        # ── THE CROPS ARE THE ARGUMENT ──────────────────────────────
+        #
+        # A line of dots proves nothing when the answer is wrong. What
+        # settles it is where the search actually LOOKED: a crawl that
+        # stopped because the ball left the box reads completely
+        # differently from one that stopped with the ball sitting
+        # inside an empty box.
+        ok("every block reports the crop it searched",
+           all(b.get("crop") and b.get("zoom") and b.get("why")
+               for b in cr["blocks"]), True)
+        ok("  and the crop puts the known point at its bottom edge",
+           all(b["crop"][1] + b["crop"][3] >= b["from"][1] - 2
+               for b in cr["blocks"]), True)
+        ok("  with the picture drawn", bool(cr["image"]), True)
+
+        # ── NOTHING TO ANCHOR ON ────────────────────────────────────
+        ok("no anchor means no crawl",
+           crawl_flight_back(clip, None, 100)["ok"], False)
+
     print()
     if _fails:
         print("%d FAILED: %s" % (len(_fails), ", ".join(_fails)))

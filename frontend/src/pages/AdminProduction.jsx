@@ -892,6 +892,12 @@ function DescentWalk({ walk }) {
             )}
           </div>
           <div className="tiny muted" style={{ marginTop: 2 }}>{fl.why}</div>
+          {fl.method && (
+            <div className="tiny muted" style={{ marginTop: 2 }}>
+              <b>Method:</b> {fl.method}
+              {fl.rose_px ? ` · rose ${fl.rose_px}px` : ""}
+            </div>
+          )}
           {fl.taken && (
             <div className="tiny muted" style={{ marginTop: 2 }}>
               Its arc lands at {fl.taken.lands_at?.[0]},{" "}
@@ -909,6 +915,96 @@ function DescentWalk({ walk }) {
                             borderRadius: 4,
                             border: "1px solid var(--border, #333)" }} />
             </a>
+          )}
+          {/* ── EVERY BLOCK, AND THE CROP IT SEARCHED ────────────
+              THE CROPS ARE THE ARGUMENT. A line of dots proves
+              nothing when the answer is wrong; what settles it is
+              where the search actually LOOKED. A crawl that stopped
+              because the ball had left the box reads completely
+              differently from one that stopped with the ball sitting
+              inside an empty box, and only the crop tells them
+              apart. */}
+          {(fl.blocks || []).length > 0 && (
+            <div style={{ marginTop: 6, maxHeight: 300, overflow: "auto",
+                          border: "1px solid var(--border, #333)",
+                          borderRadius: 4 }}>
+              <table className="tiny" style={{ width: "100%",
+                                               borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ textAlign: "left", position: "sticky",
+                               top: 0,
+                               background: "var(--panel2, #1b1b1b)" }}>
+                    <th style={{ padding: "3px 6px" }}>blk</th>
+                    <th style={{ padding: "3px 6px" }}>frames</th>
+                    <th style={{ padding: "3px 6px" }}>crop</th>
+                    <th style={{ padding: "3px 6px" }}>zoom</th>
+                    <th style={{ padding: "3px 6px" }}>found</th>
+                    <th style={{ padding: "3px 6px" }}>took</th>
+                    <th style={{ padding: "3px 6px" }}>what happened</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {fl.blocks.map((b) => (
+                    <tr key={b.block}
+                        style={{ borderTop:
+                                   "1px solid var(--border, #2a2a2a)",
+                                 opacity: b.took ? 1 : 0.75 }}>
+                      <td style={{ padding: "2px 6px" }}>{b.block}</td>
+                      <td style={{ padding: "2px 6px" }}>
+                        f{b.frames[0]}–{b.frames[1]}
+                      </td>
+                      <td style={{ padding: "2px 6px" }}>
+                        {b.crop[2]}×{b.crop[3]}
+                      </td>
+                      <td style={{ padding: "2px 6px" }}>
+                        {b.zoom}×
+                        {b.deep_retry
+                          ? ` → ${b.deep_retry.zoom}×`
+                          : ""}
+                      </td>
+                      <td style={{ padding: "2px 6px" }}>{b.n_found}</td>
+                      <td style={{ padding: "2px 6px" }}>
+                        {b.took
+                          ? `f${b.took_frame} · ${b.took[0]},${b.took[1]}`
+                          : "—"}
+                      </td>
+                      <td style={{ padding: "2px 6px" }} className="muted">
+                        {b.why}
+                        {/* WHAT IT REFUSED, on the block that ended
+                            the crawl. "Nothing was there" and
+                            "something was there and was turned down"
+                            need opposite fixes. */}
+                        {!b.took && (b.rejects || []).length > 0 && (
+                          <div style={{ marginTop: 2 }}>
+                            {b.rejects.slice(0, 4).map((q, j) => (
+                              <div key={j}>
+                                f{q.frame} at {q.x},{q.y} — {q.why}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {/* AND WHERE THE CRAWL GOT TO BEFORE THE CHAINS TOOK OVER.
+              Only present when the crawl found nothing and the chain
+              search ran as a fallback rung. */}
+          {fl.crawl_why && (
+            <div className="tiny muted" style={{ marginTop: 4 }}>
+              <b>The crawl ran first and found nothing:</b> {fl.crawl_why}
+              {fl.crawl_image_url && (
+                <a href={fl.crawl_image_url} target="_blank" rel="noreferrer">
+                  <img src={fl.crawl_image_url} alt="the crawl"
+                       style={{ width: "100%", maxWidth: 900, marginTop: 4,
+                                borderRadius: 4,
+                                border: "1px solid var(--border, #333)" }} />
+                </a>
+              )}
+            </div>
           )}
           {/* EVERY RUNG THAT WAS PAID FOR. Escalating is three decodes
               of the same footage; whether each earned its pass is

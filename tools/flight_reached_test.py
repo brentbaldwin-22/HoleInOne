@@ -47,8 +47,24 @@ def main():
                 return i
         return None
 
-    _call = first(r"_gfly\.find_flight_to\(")
-    ok("produce calls the forward flight search", _call is not None, True)
+    _call = first(r"_gfly\.crawl_flight_back\(")
+    ok("produce calls the crawl", _call is not None, True)
+    # ── THE CRAWL IS THE METHOD, THE CHAINS ARE A FALLBACK RUNG ─────
+    #
+    # The chain search does not work on real footage: on the
+    # operator's own clip it considered 383 chains over the four
+    # seconds before the pitch mark and took none, nearest arc 5px
+    # away. It stays as a rung beneath the crawl, not as a second
+    # opinion running beside it -- one answer is produced, by
+    # whichever ran. Two searches reporting separately is what cost
+    # five rounds on the tee.
+    _alt = first(r"_gfly\.find_flight_to\(")
+    ok("  with the chain search only beneath it",
+       _alt is not None and _alt > _call, True)
+    ok("  and only when the crawl found nothing",
+       'if not _flight.get("ok"):' in src, True)
+    ok("  producing one answer, not two",
+       "_flight = _alt" in src, True)
 
     # ── AND NOT BEHIND AN EARLY RETURN ──────────────────────────────
     #
@@ -135,6 +151,14 @@ def main():
             / "AdminProduction.jsx").read_text(encoding="utf-8")
     ok("the production page renders the flight block",
        "walk.flight" in _jsx, True)
+    # EVERY BLOCK AND THE CROP IT SEARCHED. The crops are the
+    # argument: a crawl that stopped because the ball left the box
+    # reads completely differently from one that stopped with the
+    # ball sitting inside an empty box.
+    ok("  with every block's crop, zoom and verdict",
+       "fl.blocks" in _jsx and "what happened" in _jsx, True)
+    ok("  and what the block that ended it refused",
+       "b.rejects" in _jsx, True)
     ok("  with every chain it considered",
        "fl.chains" in _jsx and "setShowChains" in _jsx, True)
 

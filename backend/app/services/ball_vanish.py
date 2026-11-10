@@ -234,7 +234,8 @@ def _axis_gap_deg(a, b):
 
 def _detections(gray, roi_boxes, rel: float = 0.55, rejects=None,
                 stats_out=None, min_area=None, max_area=None,
-                kernel_px: int = 15, motion=None, shapes_out=None):
+                kernel_px: int = 15, motion=None, motion_toward=None,
+                shapes_out=None):
     """Small, round, locally bright things inside the boxes.
 
     `rel` scales the threshold off the BRIGHTEST thing in the box.
@@ -338,6 +339,32 @@ def _detections(gray, roi_boxes, rel: float = 0.55, rejects=None,
             w = int(stats[i, cv2.CC_STAT_WIDTH])
             h = int(stats[i, cv2.CC_STAT_HEIGHT])
             cx, cy = cents[i]
+
+            # ── THE DIRECTION A CANDIDATE WOULD HAVE TO BE GOING ────
+            #
+            # `motion` is one velocity for the whole call, which suits
+            # a tracker that already knows where the ball is going.
+            # `motion_toward` suits a SEARCH, and is stronger: given
+            # that the ball is known to be at (tx, ty) `frames_ahead`
+            # frames later, a blob here can only be the ball if it is
+            # travelling towards that point, at the speed that trip
+            # implies. Both are then fully determined by the blob's own
+            # position -- nothing is guessed and nothing is carried
+            # over from a previous frame.
+            #
+            # So the test becomes self-consistent: a blob is the ball
+            # only if its own smear matches the journey it would have
+            # had to make to BE the ball. A branch lying at the wrong
+            # angle fails; a speck too far away to have got there
+            # fails on the speed its own distance implies.
+            if motion_toward is not None:
+                _tx, _ty, _fa = motion_toward
+                _ddx = float(_tx) - (float(cx) + x0)
+                _ddy = float(_ty) - (float(cy) + y0)
+                _dist = (_ddx * _ddx + _ddy * _ddy) ** 0.5
+                _spd = _dist / max(1.0, float(_fa))
+                _mang = math.degrees(math.atan2(_ddy, _ddx)) % 180.0
+                _streaking = _spd >= STREAK_MIN_SPEED
 
             def _no(why, _cx=cx, _cy=cy, _a=area, _w=w, _h=h):
                 if rejects is not None:
