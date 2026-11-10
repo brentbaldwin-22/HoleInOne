@@ -13463,6 +13463,88 @@ def find_green_flight(
             "n": len(pts) if pts else 0}
 
 
+@router.post("/long-uploads/{upload_id}/green-crawl")
+def crawl_green_descent(
+    upload_id: int,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_db),
+):
+    """The crawl, run from a point the operator marked, for the map.
+
+    Body: {"anchor_frame", "anchor_xy": [x, y]} — in green terms,
+    which is where the operator clicked.
+
+    THE SAME SEARCH PRODUCE RUNS, EXPOSED ON THE MAP THE OPERATOR
+    ALREADY TRUSTS. The crawl's own picture shows where it looked and
+    what it took; it cannot show what it ALMOST took, or let anybody
+    click the ball it missed. The click-to-plot map does both, and it
+    is the view the operator checks everything else against -- so the
+    crawl's candidates come back in the same {frame, x, y, area} shape
+    the region scan returns and drop straight into it.
+    #
+    # Every blob every block weighed comes back, not just the chain:
+    # the operator is the filter here, the way they are on the region
+    # scan. Seeing the ball sitting among the dots the crawl refused
+    # is the one thing that separates "the detector never saw it" from
+    # "the linker would not take it", and those need opposite fixes.
+    """
+    from ..services import greencrawl as gc
+
+    row = db.get(LongVideoUpload, upload_id)
+    if not row:
+        raise HTTPException(404, "long upload not found")
+    if not row.green_filename:
+        raise HTTPException(400, "no green video on this upload")
+    src = _local_green(row)
+    if not src or not src.exists():
+        raise HTTPException(404, "green video missing on disk")
+    _xy = payload.get("anchor_xy")
+    _af = payload.get("anchor_frame")
+    if _af is None or not _xy:
+        return {"dots": [], "points": None,
+                "reason": ("click the ball on the green first — the crawl "
+                           "runs BACKWARDS from a point it is told, and "
+                           "without one there is nothing to run from")}
+    try:
+        _blocks = int(payload.get("blocks") or gc.CRAWL_MAX_BLOCKS)
+    except (TypeError, ValueError):
+        _blocks = gc.CRAWL_MAX_BLOCKS
+    _blocks = max(1, min(40, _blocks))
+    try:
+        out = gc.crawl_flight_back(
+            src, (float(_xy[0]), float(_xy[1])), int(_af),
+            max_blocks=_blocks, keep_candidates=True,
+            out_dir=CLIPS_DIR, stem=f"gcrawl-map-{upload_id}")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("green-crawl for %s failed: %s", upload_id, exc)
+        return {"dots": [], "points": None, "reason": str(exc)}
+    log.info("green-crawl upload=%s from f%s — %d block(s), %d candidate(s), "
+             "%d point(s), pitch=%s",
+             upload_id, _af, len(out.get("blocks") or []),
+             len(out.get("candidates") or []), out.get("n_points"),
+             out.get("pitch_frame"))
+    return {
+        # THE SAME SHAPE THE REGION SCAN RETURNS, so the map needs no
+        # second code path to draw them.
+        "dots": out.get("candidates") or [],
+        "points": [{"frame": q["frame"], "x": int(round(q["x"])),
+                    "y": int(round(q["y"]))}
+                   for q in (out.get("points") or [])],
+        "blocks": out.get("blocks") or [],
+        "contacts": out.get("contacts") or [],
+        "pitch_frame": out.get("pitch_frame"),
+        "pitch_xy": out.get("pitch_xy"),
+        "pitch_from": out.get("pitch_from"),
+        "searched": out.get("searched"),
+        "anchor_frame": out.get("anchor_frame"),
+        "counts": out.get("counts") or {},
+        "image_url": (_clip_url_for(Path(out["image"]).name)
+                      if out.get("image") else None),
+        "reason": out.get("why"),
+        "ok": bool(out.get("ok")),
+    }
+
+
 @router.post("/long-uploads/{upload_id}/map-landing")
 def map_landing_to_tee(
     upload_id: int,

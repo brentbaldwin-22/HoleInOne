@@ -1025,6 +1025,19 @@ export const api = {
       adminPassword: key,
       timeoutMs: 90_000,
     }),
+  greenCrawl: (key, uploadId, payload = {}) =>
+    // The crawl, run backwards from a point on the green, returning
+    // both its linked chain AND every candidate it weighed — the
+    // second is the point: the operator is the filter here, and
+    // seeing the ball sitting among the dots the crawl refused is
+    // what separates "never detected" from "detected and not taken".
+    // Deep-zooms several blocks of video, so it is slow.
+    request(`/api/admin/long-uploads/${uploadId}/green-crawl`, {
+      method: "POST",
+      body: payload,
+      adminPassword: key,
+      timeoutMs: 5 * 60_000,
+    }),
   mapLanding: (key, uploadId, payload = {}) =>
     request(`/api/admin/long-uploads/${uploadId}/map-landing`, {
       method: "POST",

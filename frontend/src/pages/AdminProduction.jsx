@@ -2379,6 +2379,8 @@ function ClickToPlotModal({
   const [greenErr, setGreenErr] = useState(null);
   const [greenDots, setGreenDots] = useState([]);
   const [greenScanning, setGreenScanning] = useState(false);
+  const [crawlBusy, setCrawlBusy] = useState(false);
+  const [crawlNote, setCrawlNote] = useState(null);
   const [greenNote, setGreenNote] = useState(null);
   const [greenLevel, setGreenLevel] = useState(2);
   // Whatever landing is already on record FOR THIS SWING — from the
@@ -2749,7 +2751,17 @@ function ClickToPlotModal({
   const leadVerdict = (landing && cometPoints.length > 1)
     ? leadInVerdict(cometPoints, landing.frame, Number(row.green_fps) || 0)
     : null;
-  const cometStatus = cometBusy
+  // THE CRAWL'S OWN LINE, ABOVE EVERYTHING ELSE IT MIGHT SAY. It
+  // reports which frames it searched and where it put the pitch mark,
+  // and both are things no other status here can tell you -- the
+  // crawl runs BACKWARDS from the marked point, so its window is
+  // before that frame rather than after it, which is the opposite of
+  // the natural guess.
+  const cometStatus = crawlBusy
+    ? "🐛 crawling back, a block of ten frames at a time…"
+    : crawlNote
+    ? `🐛 ${crawlNote}`
+    : cometBusy
     ? "☄ walking back from the landing…"
     : cometPoints.length > 1
       ? `☄ ${cometPoints.length} frames (f${cometPoints[0].frame}→f${
@@ -2906,6 +2918,69 @@ function ClickToPlotModal({
   // ordinary plotted points the operator can edit rather than as a
   // separate thing to accept or reject. Run automatically off the first
   // click, and by the button after that.
+  // ── THE CRAWL, ONTO THIS MAP ─────────────────────────────────────
+  //
+  // THE SAME SEARCH PRODUCE RUNS, drawn where the operator already
+  // checks everything else. Its own picture shows where it looked and
+  // what it took; it cannot show what it ALMOST took, or let anybody
+  // click the ball it missed. This map does both.
+  //
+  // The dots are every blob every block weighed, in the same shape the
+  // region scan returns, so they are clickable exactly as those are --
+  // and the chain it linked goes straight into the marks, where it can
+  // be corrected by hand like anything else.
+  async function crawlDescent(from) {
+    const at = from || landing;
+    if (!at || crawlBusy) return;
+    setCrawlBusy(true);
+    setCrawlNote(null);
+    try {
+      const out = await api.greenCrawl(adminPassword, row.id, {
+        anchor_frame: at.frame,
+        anchor_xy: [at.x, at.y],
+      });
+      // THE CANDIDATES GO ON WHETHER OR NOT IT FOUND A PATH. A crawl
+      // that came back empty with its dots on screen is readable --
+      // the ball is either among them or it is not, and those are
+      // different problems. A crawl that came back empty with nothing
+      // on screen is just a sentence.
+      if (out?.dots?.length) setGreenDots(out.dots);
+      if (out?.points?.length) {
+        setGreenMarks((m) => {
+          const next = { ...m };
+          for (const q of out.points) {
+            next[q.frame] = { x: Math.round(q.x), y: Math.round(q.y) };
+          }
+          return next;
+        });
+      }
+      setCrawlNote(
+        [
+          out?.ok
+            ? `${out.points.length} point(s) linked`
+            : "no path linked",
+          out?.searched
+            ? `searched f${out.searched[0]}–f${out.searched[1]}`
+              + ` (backwards from f${out.anchor_frame})`
+            : null,
+          out?.dots?.length ? `${out.dots.length} candidates drawn` : null,
+          out?.pitch_frame != null
+            ? `pitch mark f${out.pitch_frame}`
+              + (out.contacts?.length > 1
+                  ? ` · touched down at ${
+                      out.contacts.map((q) => `f${q.frame}`).join(", ")}`
+                  : "")
+            : null,
+          out?.reason || null,
+        ].filter(Boolean).join(" · "),
+      );
+    } catch (e) {
+      setCrawlNote(e?.message || String(e));
+    } finally {
+      setCrawlBusy(false);
+    }
+  }
+
   async function findComet(from) {
     const at = from || landing;
     if (!at || cometBusy) return;
@@ -3604,6 +3679,28 @@ function ClickToPlotModal({
                   title="Walk the ball's descent backwards from the last marked point and plot every frame it finds. Whatever comes back is added to the marks, so it can be corrected by hand."
                 >
                   {cometBusy ? "Looking…" : "☄ Find descent"}
+                </button>
+                {/* ── THE CRAWL, ON THIS MAP ──────────────────────
+                    THE SAME SEARCH PRODUCE RUNS, drawn where the
+                    operator already checks everything else. Its own
+                    picture shows where it looked and what it took; it
+                    cannot show what it ALMOST took, or let anybody
+                    click the ball it missed. This map does both.
+
+                    The dots are every blob every block weighed, in
+                    the same shape the region scan returns, so they
+                    are clickable exactly as those are — and the chain
+                    it linked goes into the marks, where it can be
+                    corrected by hand like anything else. */}
+                <button
+                  type="button"
+                  className="ghost small"
+                  style={{ width: "auto" }}
+                  disabled={!landing || crawlBusy}
+                  onClick={() => crawlDescent()}
+                  title="Crawl backwards from the marked point, ten frames at a time, through a zoomed crop that moves with the ball — crossing bounces rather than stopping at them. Draws every candidate it weighed as a clickable dot and the path it linked as marks."
+                >
+                  {crawlBusy ? "Crawling…" : "🐛 Crawl descent"}
                 </button>
                 <button
                   type="button"

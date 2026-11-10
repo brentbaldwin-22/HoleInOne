@@ -1106,8 +1106,17 @@ def _straightness(chain):
     return float(np.sqrt(np.mean(r * r)))
 
 
+# HOW MANY CANDIDATES COME BACK FOR THE MAP. Every blob every block
+# weighed, for the click-to-plot view to draw -- which is the whole
+# point of showing them: the operator can see the ball on the picture
+# and only needs something clickable on it. Capped so a treeline
+# cannot make the response enormous; a busy block alone is 748.
+CRAWL_MAX_CANDIDATES = 6000
+
+
 def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
                       max_blocks: int = CRAWL_MAX_BLOCKS,
+                      keep_candidates: bool = False,
                       out_dir=None, stem="greencrawl") -> dict:
     """Walk up and back from a known point, a block of frames at a time.
 
@@ -1135,7 +1144,7 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
         # inferred from a fall-rate rule over a chain containing no
         # fall.
         "contacts": [], "pitch_frame": None, "pitch_xy": None,
-        "pitch_from": None,
+        "pitch_from": None, "candidates": [],
         "how": {
             "shape": ("up and back a block at a time, with NO motion "
                       "model: the known point goes at the middle of "
@@ -1203,6 +1212,10 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
         # stage exists to produce and which was being inferred instead.
         _contacts: list = []
         _bounces = 0
+        # EVERY BLOB EVERY BLOCK WEIGHED, for the map to draw. Off
+        # unless asked for: produce does not need them and a treeline
+        # makes them large.
+        _cands: list = []
         pts: list = []
         _stop = None
         for _b in range(int(max_blocks)):
@@ -1308,6 +1321,17 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
                 _per.setdefault(int(q["frame"]), []).append(q)
             _blk, _nstep, _nseeds = _link_block(got, (cx, cy, cf), _step)
             _row["n_cands"] = len(got)
+            if keep_candidates and len(_cands) < CRAWL_MAX_CANDIDATES:
+                for q in got[:CRAWL_MAX_CANDIDATES - len(_cands)]:
+                    _cands.append({
+                        "frame": int(q["frame"]),
+                        "x": int(round(q["x"])), "y": int(round(q["y"])),
+                        "area": int(q.get("area") or 0),
+                        "src": q.get("src"),
+                        "block": _b + 1,
+                        "implied_speed": q.get("implied_speed"),
+                        "streak": bool(q.get("streak")),
+                    })
             _row["n_seeds"] = _nseeds
             # ── AND A LINKED CHAIN STILL HAS TO BE STRAIGHT ────────
             #
@@ -1485,6 +1509,7 @@ def crawl_flight_back(green_path, anchor_xy, anchor_frame: int, *,
         # direction. The earliest is the first time the ball touched
         # the green, which is the pitch mark by definition -- a
         # measurement now, not an inference.
+        out["candidates"] = _cands
         out["contacts"] = _contacts
         if _contacts:
             _first = min(_contacts, key=lambda q: q["frame"])
