@@ -190,7 +190,7 @@ LOST_WINDOW_TILES = 6
 MAX_LOG_ROWS = 300
 
 
-def _detect_in_window(gray, cx, cy, half):
+def _detect_in_window(gray, cx, cy, half, motion=None, shapes_out=None):
     """Ball-shaped things in a zoomed window. ORIGINAL-pixel results.
 
     THE SIZE GATE IS HELD IN THE FRAME'S PIXELS. `_detections` applies
@@ -223,14 +223,53 @@ def _detect_in_window(gray, cx, cy, half):
     # function ever sees it. Judging the result afterwards cannot
     # recover something that was already thrown away.
     _s2 = scale * scale
+    # ── THE SMEAR GOES IN SCALED TOO ────────────────────────────────
+    #
+    # `motion` is the ball's velocity in the FRAME's pixels, and the
+    # detector is looking at a crop blown up by `scale`, so the smear
+    # it should expect is that much longer. Handing it the unscaled
+    # velocity would have it allow a 6x-magnified streak only as much
+    # elongation as the unmagnified ball earns -- the same class of
+    # mistake as the area bounds and the kernel, in a third place.
+    _mot = None
+    if motion is not None:
+        _mot = (float(motion[0]) * scale, float(motion[1]) * scale)
+    # THE KERNEL DOES NOT GROW WITH THE SMEAR, and I had this wrong.
+    #
+    # I widened it with the speed, reasoning that a streak longer than
+    # the kernel would be opened away in its middle and come back as
+    # two end-caps -- the same failure as a ball wider than the
+    # kernel, which is real and is why the kernel scales with the
+    # zoom. Measured, it is not the same failure at all: a 20, 40, 80
+    # and 120px streak all came back as exactly one blob at every
+    # kernel from 15 to 120px. Morphological opening removes what
+    # cannot CONTAIN the kernel, and a five-pixel-wide streak never
+    # contains a fifteen-pixel ellipse however long it is. Only the
+    # SHORT axis has to clear it, and a smear is stretched, not
+    # fattened.
+    #
+    # Left in for a round ball's sake, where it genuinely matters, and
+    # the growth is gone: on the descent fixture it cost two of the
+    # fifty-eight in-flight frames and bought nothing anywhere.
+    _kern = 15 * scale
     for dx, dy, area, contrast in _detections(
             sub, [(0, 0, zw, zh)], rel=0.0,
             min_area=GREEN_BALL_MIN_AREA * _s2,
             max_area=BALL_MAX_AREA * _s2,
-            kernel_px=15 * scale):
+            kernel_px=_kern, motion=_mot, shapes_out=shapes_out):
         out.append({"x": x0 + dx / scale, "y": y0 + dy / scale,
                     "area": round(float(area) / _s2, 1),
                     "contrast": round(float(contrast), 1)})
+    # SHAPES COME BACK IN THE FRAME'S OWN PIXELS, like everything else
+    # that leaves this file.
+    for _sh in (shapes_out or []):
+        for _k in ("long", "short"):
+            if _sh.get(_k) is not None:
+                _sh[_k] = round(float(_sh[_k]) / scale, 1)
+        if _sh.get("speed") is not None:
+            _sh["speed"] = round(float(_sh["speed"]) / scale, 1)
+        if _sh.get("area") is not None:
+            _sh["area"] = round(float(_sh["area"]) / _s2, 1)
     return out, sub, scale, (x0, y0, x1, y1)
 
 
@@ -332,6 +371,32 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                               "returns the ball's RIM and fragments "
                               "it into eighty blobs."
                               % (ZOOM_TARGET_PX, ZOOM_MAX)),
+                     # ── AND WHY A BALL IN FLIGHT IS NOT ROUND ──
+                     #
+                     # The gate that was refusing every frame of the
+                     # descent, named in the dialog rather than left
+                     # in the module for somebody to find.
+                     "shape": ("a ball SITTING STILL is round, and a "
+                               "ball crossing thirty pixels while the "
+                               "shutter is open is a capsule thirty "
+                               "pixels long. The roundness gates "
+                               "refuse a capsule from whichever side "
+                               "its angle falls on — along an axis it "
+                               "is too long, diagonally its bounding "
+                               "box is square but barely filled — so "
+                               "between them they rejected every "
+                               "frame of a ball in the air. A "
+                               "stretched blob is now allowed, but "
+                               "only as far as this speed could have "
+                               "stretched it and only if it is "
+                               "stretched ALONG the travel, measured "
+                               "on the blob's own axes rather than a "
+                               "box drawn round it. That second "
+                               "condition is what keeps a fence rail "
+                               "or a bunker lip out: they are far "
+                               "longer than any speed allows and none "
+                               "of them points where the ball is "
+                               "going."),
                      "cadence": ("every frame, backwards, one window "
                                  "per frame — no stride and no "
                                  "sampling. The clip is read in "
@@ -425,7 +490,18 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
         # blind, and the fix is the velocity model, not the gates.
         _ct = {"frames": 0, "with_cands": 0, "cands": 0, "taken": 0,
                "none_at_all": 0, "too_far": 0, "nearest_too_far_px": None,
-               "widest_window_px": 0, "min_zoom": None, "max_zoom": None}
+               "widest_window_px": 0, "min_zoom": None, "max_zoom": None,
+               # ── WHAT THE ELONGATION GATE BOUGHT ────────────────
+               #
+               # `streaks` is the number of frames whose accepted
+               # candidate was a SMEAR -- a blob the round gates
+               # would have refused outright. On a walk that never
+               # reaches the flight this is zero and the gate is
+               # irrelevant; the moment it is non-zero, the detector
+               # is seeing the ball in the air, which it could not
+               # do before at all.
+               "streaks": 0, "longest_streak": None,
+               "fastest_streak_px": None}
         _stop = None
 
         f = f_end - 1
@@ -456,7 +532,22 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                                + (WINDOW_STILL_GROWTH_PX * min(20, len(chain))
                                   if _still else 0)))
                 _last_half = half
-                dets, sub, scale, box = _detect_in_window(gray, qx, qy, half)
+                # ── TELL THE DETECTOR WHICH WAY THE BALL IS GOING ──
+                #
+                # This is the whole point of the elongation gate and
+                # the one caller that can supply it: the walk already
+                # holds a velocity, measured from the last frame the
+                # ball was actually seen. A ball crossing thirty
+                # pixels in one exposure is a capsule, and the round
+                # gates refuse a capsule from whichever side its
+                # angle happens to fall on -- which is why 315 frames
+                # of ROLL tracked perfectly and the first frame of
+                # flight did not. The sign does not matter: the walk
+                # runs backwards and a smear has no arrow on it.
+                _shapes: list = []
+                dets, sub, scale, box = _detect_in_window(
+                    gray, qx, qy, half, motion=(vx, vy),
+                    shapes_out=_shapes)
                 best, bd = None, None
                 _lim = MATCH_FRAC * half
                 for d in dets:
@@ -484,6 +575,14 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                         _near = _dd
                 _ct["frames"] += 1
                 _ct["cands"] += len(dets)
+                _smear = next((q for q in _shapes if q.get("streak")), None)
+                if _smear:
+                    _ct["streaks"] += 1
+                    _ct["longest_streak"] = max(
+                        _ct["longest_streak"] or 0.0, float(_smear["ratio"]))
+                    _ct["fastest_streak_px"] = max(
+                        _ct["fastest_streak_px"] or 0.0,
+                        float(_smear.get("speed") or 0.0))
                 _ct["widest_window_px"] = max(_ct["widest_window_px"],
                                               int(half) * 2)
                 if scale:
@@ -518,6 +617,20 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                     "area": None if best is None else best.get("area"),
                     "contrast": (None if best is None
                                  else best.get("contrast")),
+                    # ── THE SHAPE, AND WHETHER IT WAS A SMEAR ──────
+                    #
+                    # The single most useful column on a frame the
+                    # walk is about to lose: a round blob at 2px/frame
+                    # is the ball rolling, a 5:1 capsule at 38px/frame
+                    # is the ball in the air, and before the
+                    # elongation gate the second one was simply never
+                    # reported because it was never accepted.
+                    "shape": (None if not _shapes else {
+                        k: _shapes[0].get(k) for k in
+                        ("streak", "ratio", "allowed", "angle", "travel",
+                         "off_by_deg", "long", "short", "fill", "speed")
+                        if _shapes[0].get(k) is not None}),
+                    "n_smears": sum(1 for q in _shapes if q.get("streak")),
                     "why": ("took the nearest of %d" % len(dets)
                             if best is not None else
                             ("nothing bright and ball-shaped in the "
@@ -666,6 +779,16 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
         # AND A SENTENCE FOR THE TOP OF THE BOX, built from the
         # totals rather than from the chain, so it is true even when
         # the chain is one point long.
+        _ct["streak_note"] = (
+            "no frame needed the elongation gate — nothing the walk "
+            "reached was moving fast enough to smear, which means it "
+            "never got to the flight"
+            if not _ct["streaks"] else
+            "%d frame(s) were accepted as a SMEAR rather than a round "
+            "blob, up to %.1f:1 at %.0fpx/frame — every one of those is "
+            "a frame the roundness gates would have thrown away"
+            % (_ct["streaks"], _ct["longest_streak"] or 0.0,
+               _ct["fastest_streak_px"] or 0.0))
         out["work"] = (
             "%d frame(s) looked at, every frame, backwards; windows "
             "%d-%dpx wide at %sx-%sx zoom; %d candidate(s) in %d "
@@ -678,7 +801,8 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                _ct["none_at_all"], _ct["too_far"],
                ("" if _ct.get("nearest_too_far_px") is None else
                 " (nearest such was %.1fpx away)"
-                % _ct["nearest_too_far_px"])))
+                % _ct["nearest_too_far_px"]))
+            + ". " + _ct["streak_note"])
         if len(chain) < 2:
             out["why"] = ("the ball at rest was found but nothing before "
                           "it was — " + (_stop or "no earlier frame "

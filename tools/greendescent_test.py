@@ -111,6 +111,68 @@ def build(path):
     return seen
 
 
+def build_smeared(path):
+    """The same flight, drawn the way a real exposure draws it.
+
+    THE OLD FIXTURE DREW A PERFECT CIRCLE ON EVERY FRAME, which is
+    why the round gates passed it and why nothing in this file ever
+    caught what the field kept reporting. A camera does not work that
+    way: the shutter is open while the ball moves, so a ball crossing
+    thirty pixels in one frame is painted as a capsule thirty pixels
+    long. Here that is drawn literally -- a line from where the ball
+    was to where it is -- which near the landing is a smear of about
+    30px against a 8px ball.
+
+    That single change is the difference between a fixture that
+    always passed and the clip that never worked.
+    """
+    rng = np.random.default_rng(5)
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"),
+                         FPS, (W, H))
+    def _at(f):
+        t = f - ENTER
+        if t < 0:
+            return None
+        if t < LAND:
+            return truth(t)
+        if t < ROLL:
+            u = t - LAND
+            return (truth(LAND)[0] + 6.0 * u,
+                    truth(LAND)[1] - 16.0 * u + 1.6 * u * u)
+        u = min(1.0, (t - ROLL) / 26.0)
+        x0 = truth(LAND)[0] + 6.0 * 14
+        y0 = truth(LAND)[1]
+        return (x0 + (REST[0] - x0) * u, y0 + (REST[1] - y0) * u)
+
+    seen = {}
+    for f in range(N):
+        img = np.full((H, W, 3), 60, np.uint8)
+        img[:330] = (175, 182, 192)
+        img[330:600] = (42, 58, 44)
+        for y in range(600, H):
+            b = 80 + 7 * ((y // 26) % 2)
+            img[y, :] = (b - 12, b + 10, b - 6)
+        img[600:] = cv2.add(
+            img[600:], rng.integers(0, 7, (H - 600, W, 3), dtype=np.uint8))
+        bx = 500 + int(26 * np.sin(f / 4.0))
+        cv2.line(img, (bx, 380), (bx + 50, 430), (150, 160, 150), 3)
+        xy = _at(f)
+        prev = _at(f - 1)
+        if xy:
+            seen[f] = xy
+            if prev:
+                # THE EXPOSURE. From where it was to where it is.
+                cv2.line(img, (int(prev[0]), int(prev[1])),
+                         (int(xy[0]), int(xy[1])), (240, 242, 244), 8,
+                         cv2.LINE_AA)
+            else:
+                cv2.circle(img, (int(xy[0]), int(xy[1])), 4,
+                           (240, 242, 244), -1)
+        vw.write(img)
+    vw.release()
+    return seen
+
+
 def main():
     from app.services.greendescent import track_descent_back
 
@@ -343,6 +405,103 @@ def main():
         ok("  and the thinning cannot drop the frames at the loss",
            _long["lost_windows"][0]["frame"]
            <= _long["lost_at"]["frame"], True)
+
+        # ── THE ELONGATION GATE, ON A BALL THAT IS ACTUALLY BLURRED
+        #
+        # THE FIXTURE ABOVE PAINTS A PERFECT CIRCLE ON EVERY FRAME,
+        # which is why the round gates pass it and why nothing in this
+        # file ever caught what the field kept reporting. A real
+        # exposure smears a ball crossing thirty pixels into a
+        # thirty-pixel capsule, and MAX_ASPECT rejects exactly that --
+        # from one side if the smear lies along an axis, and from the
+        # other, via MIN_FILL, if it lies diagonally.
+        #
+        # TESTED AT THE DETECTOR, WHICH IS WHAT CHANGED. The walk is
+        # tested separately below, and does not reach the flight for a
+        # reason that has nothing to do with the gate.
+        from app.services import ball_vanish as _bv
+        from app.services.greendescent import _detect_in_window
+        clip2 = Path(d) / "smeared.mp4"
+        build_smeared(clip2)
+        _cap = cv2.VideoCapture(str(clip2))
+        _round_found = _motion_found = _streaks = _worse = 0
+        _offs = []
+        for _t in range(3, LAND, 3):
+            _cap.set(cv2.CAP_PROP_POS_FRAMES, ENTER + _t)
+            _okf, _fr = _cap.read()
+            if not _okf:
+                continue
+            _g = cv2.cvtColor(_fr, cv2.COLOR_BGR2GRAY)
+            _x, _y = truth(_t)
+            _px, _py = truth(_t - 1)
+            _a, _, _, _ = _detect_in_window(_g, _x, _y, 60)
+            _sh = []
+            _b, _, _, _ = _detect_in_window(_g, _x, _y, 60,
+                                            motion=(_x - _px, _y - _py),
+                                            shapes_out=_sh)
+            _round_found += 1 if _a else 0
+            _motion_found += 1 if _b else 0
+            if len(_b) < len(_a):
+                _worse += 1
+            if _sh and _sh[0].get("streak"):
+                _streaks += 1
+                _offs.append(_sh[0]["off_by_deg"])
+        _cap.release()
+
+        ok("the round gates lose the blurred ball as it speeds up",
+           _round_found < 14, True)
+        ok("  the elongation gate finds it on every frame",
+           _motion_found, len(range(3, LAND, 3)))
+        ok("  and recovers it as a SMEAR, not by loosening roundness",
+           _streaks >= 6, True)
+        # THE PROPERTY THAT MAKES THIS SAFE TO SHIP. The motion branch
+        # is reached only by a blob the round gates have already
+        # refused, so a caller that passes `motion` gets a strict
+        # SUPERSET of what the same call returns without it. Written
+        # as two independent tests this was quietly violated at the
+        # boundary -- a capsule measuring 2.23:1 on its own axes
+        # failed the motion branch while the same blob measured 2.2:1
+        # on its bounding box and passed the round one.
+        ok("  and never finds LESS than the round gates did", _worse, 0)
+        # AND IT IS THE ALIGNMENT DOING THE WORK, not a blanket
+        # relaxation: every smear accepted lies along the travel.
+        ok("  every smear it took lies along the direction of travel",
+           max(_offs) <= 5.0, True)
+
+        # ── AND THE WALK STILL CANNOT CROSS THE BOUNCE ──────────────
+        #
+        # THE GATE IS NECESSARY AND NOT SUFFICIENT, recorded here so
+        # it is not mistaken for finished. Walking backwards, the ball
+        # goes roll -> bounce -> flight, and a bounce is an IMPULSE:
+        # the velocity reverses in y and jumps in magnitude over one
+        # frame, which no smooth motion model crosses in either
+        # direction. On this fixture both walks stop at the frame
+        # before the bounce, so the gate never gets a frame to fire
+        # on, and `streaks` is zero for both.
+        #
+        # The fix is structural, not a constant: find the flight
+        # FORWARD as a ballistic arc anchored on the pitch mark this
+        # walk hands over, the way the tee's ascent sweep is anchored
+        # on the measured ball. Until that exists this assertion
+        # documents the wall rather than pretending it is not there.
+        _w = track_descent_back(clip2, REST, REST_FRAME)
+        _sv = _bv.STREAK_MIN_SPEED
+        try:
+            _bv.STREAK_MIN_SPEED = 1e9          # round gates alone
+            _wo = track_descent_back(clip2, REST, REST_FRAME)
+        finally:
+            _bv.STREAK_MIN_SPEED = _sv
+        ok("the walk stops at the bounce, with the gate or without",
+           (_w["first_frame"] >= ENTER + LAND - 2,
+            _wo["first_frame"] >= ENTER + LAND - 2), (True, True))
+        ok("  so it never reaches a frame fast enough to smear",
+           _w["counts"]["streaks"], 0)
+        # NO WORSE, THOUGH. The gate must not cost the walk anything
+        # on the part it already handled.
+        ok("  and the gate costs the walk nothing it had",
+           _w["first_frame"] <= _wo["first_frame"], True)
+        ok("  nor any of its points",
+           _w["n_points"] >= _wo["n_points"], True)
 
     print()
     if _fails:

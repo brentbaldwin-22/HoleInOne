@@ -36,6 +36,7 @@ THE TWO WAYS THIS HAS FAILED BEFORE, and what answers them here:
 from __future__ import annotations
 
 import logging
+import math
 from typing import Optional
 
 log = logging.getLogger(__name__)
@@ -55,6 +56,61 @@ MAX_ASPECT = 2.2
 # How much brighter than its surroundings. Mown grass in low sun has
 # bright patches; they are not brighter than what is right beside them.
 MIN_LOCAL_CONTRAST = 18.0
+
+# ── A BALL IN FLIGHT IS NOT ROUND ───────────────────────────────────
+#
+# AND MAX_ASPECT THREW EVERY ONE OF THEM AWAY. The two gates above
+# describe a ball SITTING STILL, which is what they were written for
+# and what they are measured against. A ball crossing thirty or forty
+# pixels during one exposure is smeared into a capsule, and the two
+# gates reject it from opposite directions depending only on which way
+# it happens to be travelling:
+#
+#   along an axis   a 15x4 streak is 3.75:1 and dies on MAX_ASPECT
+#   diagonally      the same streak has a near-square bounding box, so
+#                   it passes MAX_ASPECT and dies on MIN_FILL instead,
+#                   because a thin diagonal line fills about a third
+#                   of the box drawn around it
+#
+# That is the whole reason the reverse descent walk has never once
+# reached the flight: on the clip that prompted this it tracked 315
+# frames of a ball ROLLING, where the gates are right, and lost it at
+# the first frame the ball was in the air, where they are guaranteed
+# to refuse it.
+#
+# So when a caller knows which way the ball is going, a stretched blob
+# is allowed -- but only as far as that speed could have stretched it,
+# and only if it is stretched ALONG the direction of travel. That
+# second condition is what keeps a fence rail, a cart path edge or a
+# bunker lip out: they are all far more elongated than any speed
+# allows, and none of them points where the ball is going.
+#
+# Off unless a caller passes `motion`. Every existing caller -- the
+# tee's ball at address, the green's ball at rest -- is asking about a
+# stationary ball and gets exactly the behaviour it had before.
+
+# Below this, in pixels per frame, the ball is not moving enough to
+# smear and the round gates are simply correct. A ball rolling on a
+# green is 1-2px/frame.
+STREAK_MIN_SPEED = 6.0
+
+# HOW MUCH OF THE FRAME INTERVAL THE SHUTTER IS OPEN, as a fraction,
+# for working out how long a streak that speed could have produced.
+# A capsule from a ball of width W moving s pixels per frame is about
+# W + s*duty long, so the allowed elongation is 1 + s*duty/W.
+#
+# Set to 1.0, the widest it can physically be: the alignment test is
+# what does the discriminating, and a too-generous length bound only
+# admits longer streaks pointing exactly the right way. Too TIGHT a
+# bound, on the other hand, silently refuses the real ball on any
+# camera with a slower shutter than guessed -- which is the failure
+# that is impossible to see from the outside.
+STREAK_DUTY = 1.0
+
+# HOW CLOSELY THE SMEAR MUST POINT ALONG THE TRAVEL, in degrees, on an
+# axis (so 180 degrees out is the same line -- the walk runs backwards
+# and a streak has no arrow on it).
+STREAK_ALIGN_DEG = 30.0
 
 # A detection this far from a track joins it rather than starting a new
 # one. Generous enough for sampling jitter, tight enough that two balls
@@ -116,9 +172,69 @@ GONE_SEC = 0.8
 SPLIT_GAP_SEC = 8.0
 
 
+def _oriented(lab, label, x, y, w, h):
+    """The component's real long axis, short axis and angle.
+
+    A BOUNDING BOX CANNOT MEASURE A DIAGONAL. That is the whole reason
+    the two round gates disagree with each other about the same
+    streak: `w` and `h` come from an axis-aligned box, so a 15x4
+    capsule lying along x reads 3.75:1 and the same capsule at 45
+    degrees reads about 1:1. One dies on aspect, the other on fill,
+    and neither number describes the shape.
+
+    These come from the component's own second moments, so they
+    describe the blob and not the rectangle somebody drew round it.
+    Returns (long, short, angle_deg, fill) with the lengths as the
+    pixel EXTENT along each axis -- the oriented bounding box -- and
+    `fill` the share of that box the component actually occupies.
+    """
+    import numpy as np
+
+    sub = (lab[y:y + h, x:x + w] == label)
+    ys, xs = np.nonzero(sub)
+    n = xs.size
+    if n < 2:
+        return 1.0, 1.0, 0.0, 1.0
+    fx = xs.astype(np.float64)
+    fy = ys.astype(np.float64)
+    mx, my = fx.mean(), fy.mean()
+    dx, dy = fx - mx, fy - my
+    cxx = float((dx * dx).mean())
+    cyy = float((dy * dy).mean())
+    cxy = float((dx * dy).mean())
+    # Principal axis of the covariance: the direction the blob is
+    # longest in. The factor of a half is the usual one for the
+    # double-angle form.
+    ang = 0.5 * math.atan2(2.0 * cxy, cxx - cyy)
+    ca, sa = math.cos(ang), math.sin(ang)
+    # Project every pixel onto the two axes and take the real extent,
+    # rather than inferring a length from the variance -- a capsule
+    # and a dumbbell have the same variance and very different ends.
+    p1 = dx * ca + dy * sa
+    p2 = -dx * sa + dy * ca
+    long_ = float(p1.max() - p1.min()) + 1.0
+    short = float(p2.max() - p2.min()) + 1.0
+    if short > long_:
+        long_, short = short, long_
+        ang += math.pi / 2.0
+    fill = float(n) / max(1.0, long_ * short)
+    return long_, short, math.degrees(ang) % 180.0, fill
+
+
+def _axis_gap_deg(a, b):
+    """Angle between two directions treated as AXES, 0..90.
+
+    A streak has no arrow on it, and the reverse walk reads its
+    velocity backwards anyway, so a smear 180 degrees from the
+    travel is the same line and must not be refused for it.
+    """
+    d = abs((float(a) - float(b)) % 180.0)
+    return min(d, 180.0 - d)
+
+
 def _detections(gray, roi_boxes, rel: float = 0.55, rejects=None,
                 stats_out=None, min_area=None, max_area=None,
-                kernel_px: int = 15):
+                kernel_px: int = 15, motion=None, shapes_out=None):
     """Small, round, locally bright things inside the boxes.
 
     `rel` scales the threshold off the BRIGHTEST thing in the box.
@@ -203,6 +319,20 @@ def _detections(gray, roi_boxes, rel: float = 0.55, rejects=None,
         _, mask = cv2.threshold(hat, thr, 255, cv2.THRESH_BINARY)
         n, _lab, stats, cents = cv2.connectedComponentsWithStats(
             mask.astype(np.uint8), 8)
+        # ── WHICH WAY IS THE BALL GOING, IF THE CALLER KNOWS ────
+        #
+        # Everything below falls back to the round gates when it does
+        # not. See STREAK_MIN_SPEED: a caller that passes no motion,
+        # or motion too slow to smear anything, gets exactly the
+        # behaviour this detector has always had.
+        _spd = 0.0
+        _mang = 0.0
+        if motion:
+            _mvx, _mvy = float(motion[0]), float(motion[1])
+            _spd = (_mvx * _mvx + _mvy * _mvy) ** 0.5
+            _mang = math.degrees(math.atan2(_mvy, _mvx)) % 180.0
+        _streaking = _spd >= STREAK_MIN_SPEED
+
         for i in range(1, n):
             area = int(stats[i, cv2.CC_STAT_AREA])
             w = int(stats[i, cv2.CC_STAT_WIDTH])
@@ -221,20 +351,121 @@ def _detections(gray, roi_boxes, rel: float = 0.55, rejects=None,
             if area < _lo:
                 _no(f"{area}px of area, under {_lo:g}")
                 continue
-            if area > _hi:
-                _no(f"{area}px of area, over {_hi:g}")
-                continue
             if w == 0 or h == 0:
                 _no("no width or no height")
                 continue
-            if max(w / h, h / w) > MAX_ASPECT:
-                _no(f"{w}x{h} — {max(w / h, h / w):.1f}:1, a sliver "
-                    f"(limit {MAX_ASPECT}:1)")
+
+            # ── THE ROUND GATES DECIDE FIRST, ALWAYS ────────────────
+            #
+            # Byte for byte what they were, and asked before anything
+            # about motion. Everything the detector accepted before
+            # the elongation gate existed, it still accepts: a caller
+            # that passes `motion` gets a strict SUPERSET of what the
+            # same call returned without it, and no clip can detect
+            # less than it used to.
+            #
+            # THAT IS A PROPERTY, NOT AN INTENTION. Written as two
+            # independent tests it was quietly violated at the
+            # boundary -- a capsule measuring 2.23:1 on its own axes
+            # failed the motion branch while the same blob measured
+            # 2.2:1 on its bounding box and passed the round one, so
+            # turning the gate ON lost a frame it used to find. The
+            # two ratios are different measurements and MAX_ASPECT is
+            # calibrated against the bounding box; comparing the
+            # oriented one to it was never going to agree. Structured
+            # this way the question cannot arise.
+            _why_round = None
+            if area > _hi:
+                _why_round = f"{area}px of area, over {_hi:g}"
+            elif max(w / h, h / w) > MAX_ASPECT:
+                _why_round = (f"{w}x{h} — {max(w / h, h / w):.1f}:1, a "
+                              f"sliver (limit {MAX_ASPECT}:1)")
+            elif area / float(w * h) < MIN_FILL:
+                _why_round = (f"fills {area / float(w * h):.2f} of its "
+                              f"{w}x{h} box, needs {MIN_FILL} — not round")
+
+            if _why_round is None:
+                if shapes_out is not None:
+                    shapes_out.append({"x": float(cx) + x0,
+                                       "y": float(cy) + y0,
+                                       "area": area, "streak": False,
+                                       "ratio": round(max(w / h, h / w), 2),
+                                       "why": "round"})
+            elif not _streaking:
+                _no(_why_round)
                 continue
-            if area / float(w * h) < MIN_FILL:
-                _no(f"fills {area / float(w * h):.2f} of its {w}x{h} box, "
-                    f"needs {MIN_FILL} — not round")
-                continue
+            else:
+                # ── THE ELONGATION GATE: A SECOND CHANCE, NOT A SECOND
+                #    HURDLE ────────────────────────────────────────────
+                #
+                # Reached only by a blob the round gates have already
+                # turned down. Measured on the blob's own axes,
+                # because a bounding box cannot describe a diagonal --
+                # see `_oriented`, and see the two ways the round
+                # gates refuse the same capsule depending purely on
+                # which way it is pointing.
+                _L, _W, _ang, _fill = _oriented(
+                    _lab, i,
+                    int(stats[i, cv2.CC_STAT_LEFT]),
+                    int(stats[i, cv2.CC_STAT_TOP]), w, h)
+                _ratio = _L / max(_W, 1.0)
+                # HOW LONG THAT SPEED COULD HAVE DRAWN IT. A ball of
+                # width W crossing s pixels in one exposure is about
+                # W + s*duty long, so this is the elongation the
+                # motion itself accounts for.
+                _allow = max(MAX_ASPECT, 1.0 + STREAK_DUTY * _spd
+                             / max(_W, 1.0))
+                _gap = _axis_gap_deg(_ang, _mang)
+                # THE AREA BOUND GROWS WITH THE SMEAR, because a
+                # streak of a ball IS bigger than the ball. Bounded
+                # by the elongation actually measured, not the one
+                # allowed, so a long smear cannot buy itself room.
+                if area > _hi * max(1.0, _ratio):
+                    _no(f"{area}px of area, over "
+                        f"{_hi * max(1.0, _ratio):g} even allowing a "
+                        f"{_ratio:.1f}:1 smear at {_spd:.0f}px/frame")
+                    continue
+                # THE WIDTH IS STILL A BALL'S WIDTH. Motion stretches
+                # a ball along one axis and leaves the other alone,
+                # so the short axis says whether this was ever
+                # ball-sized. A bush does not pass.
+                _w_hi = 2.0 * (_hi / math.pi) ** 0.5
+                if _W > _w_hi:
+                    _no(f"{_W:.0f}px across its short axis, wider than a "
+                        f"ball ({_w_hi:.0f}px) — a smear is stretched, "
+                        f"not fattened")
+                    continue
+                if _ratio > _allow:
+                    _no(f"{_L:.0f}x{_W:.0f} — {_ratio:.1f}:1, longer than "
+                        f"{_spd:.0f}px/frame could smear it "
+                        f"({_allow:.1f}:1)")
+                    continue
+                if _gap > STREAK_ALIGN_DEG:
+                    _no(f"{_ratio:.1f}:1 smear lying at {_ang:.0f}deg, "
+                        f"{_gap:.0f}deg off the {_mang:.0f}deg it is "
+                        f"travelling (limit {STREAK_ALIGN_DEG:.0f}deg)")
+                    continue
+                # FILL, ON THE ORIENTED BOX. The axis-aligned one is
+                # what makes a diagonal streak fail while an identical
+                # horizontal one passes.
+                if _fill < MIN_FILL:
+                    _no(f"fills {_fill:.2f} of its own {_L:.0f}x{_W:.0f} "
+                        f"box, needs {MIN_FILL} — a smear is solid, an "
+                        f"edge is not")
+                    continue
+                if shapes_out is not None:
+                    shapes_out.append({
+                        "x": float(cx) + x0, "y": float(cy) + y0,
+                        "area": area, "streak": True,
+                        "ratio": round(_ratio, 2),
+                        "allowed": round(_allow, 2),
+                        "angle": round(_ang, 1),
+                        "travel": round(_mang, 1),
+                        "off_by_deg": round(_gap, 1),
+                        "long": round(_L, 1), "short": round(_W, 1),
+                        "fill": round(_fill, 2),
+                        "speed": round(_spd, 1),
+                        "round_said": _why_round})
             out.append((float(cx) + x0, float(cy) + y0, area,
                         float(hat[int(cents[i][1]), int(cents[i][0])])))
     return out

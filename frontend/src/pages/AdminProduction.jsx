@@ -950,6 +950,15 @@ function DescentWalk({ walk }) {
           <div style={{ marginTop: 3 }} className="muted">
             <b>Cadence:</b> {det.cadence}
           </div>
+          {/* THE GATE THAT WAS REFUSING EVERY FRAME OF THE DESCENT.
+              Named here rather than left in the module: a ball in
+              flight is a capsule, and the roundness gates reject a
+              capsule from whichever side its angle falls on. */}
+          {det.shape && (
+            <div style={{ marginTop: 3 }} className="muted">
+              <b>Shape:</b> {det.shape}
+            </div>
+          )}
         </div>
       )}
       {/* ── AND WHAT IT SAW, AS TOTALS ───────────────────────────
@@ -986,6 +995,21 @@ function DescentWalk({ walk }) {
           <span className="pill">
             window {ct.widest_window_px}px at its widest
           </span>
+          {/* ── WHAT THE ELONGATION GATE BOUGHT ──────────────────
+              Zero is itself the finding: it means nothing the walk
+              reached was moving fast enough to smear, so it never
+              got to the flight at all and no detector change can
+              help until the walk can cross the bounce. */}
+          <span className={ct.streaks ? "pill ok" : "pill"}>
+            {ct.streaks
+              ? `${ct.streaks} smear(s) taken, up to ${ct.longest_streak}:1`
+              : "no smears — never reached flight speed"}
+          </span>
+        </div>
+      )}
+      {ct.streak_note && (
+        <div className="tiny muted" style={{ marginTop: 3 }}>
+          {ct.streak_note}
         </div>
       )}
       {walk.image_url && (
@@ -1065,6 +1089,7 @@ function DescentWalk({ walk }) {
                     <th style={{ padding: "3px 6px" }}>nearest</th>
                     <th style={{ padding: "3px 6px" }}>took</th>
                     <th style={{ padding: "3px 6px" }}>area / contrast</th>
+                    <th style={{ padding: "3px 6px" }}>shape</th>
                     <th style={{ padding: "3px 6px" }}>why</th>
                   </tr>
                 </thead>
@@ -1090,6 +1115,19 @@ function DescentWalk({ walk }) {
                         {q.area == null
                           ? "—"
                           : `${q.area} / ${q.contrast}`}
+                      </td>
+                      {/* ROUND BLOB AT 2px/FRAME IS THE BALL ROLLING.
+                          A 5:1 capsule at 38px/frame is the ball in
+                          the air — and before the elongation gate
+                          that second row could not exist, because the
+                          blob was never accepted to be reported. */}
+                      <td style={{ padding: "2px 6px" }}>
+                        {!q.shape ? "—" : q.shape.streak ? (
+                          <span style={{ color: "#5aa9ff" }}>
+                            {q.shape.ratio}:1 smear, {q.shape.off_by_deg}°
+                            off travel
+                          </span>
+                        ) : `round (${q.shape.ratio}:1)`}
                       </td>
                       <td style={{ padding: "2px 6px" }} className="muted">
                         {q.why}
