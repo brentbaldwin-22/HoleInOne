@@ -311,6 +311,20 @@ def find_balls_on_green(before_bgr, after_bgr, polygon=None, drawn_at=None,
     """
     out: dict = {"ok": False, "crop": None, "zones": [], "before": [],
                  "after": [], "new": [], "best": None, "images": {},
+                 # ── WHETHER AN OUTLINE BOUNDED THIS SEARCH ────────
+                 #
+                 # The module happily runs without one -- `poly is
+                 # None` means "search the whole frame" -- which is
+                 # right for an operator pressing a button and looking
+                 # at the result, and wrong for a caller turning the
+                 # answer into a distance from the pin, because
+                 # unbounded it cannot tell a white dot on the putting
+                 # surface from an identical one ten yards short of
+                 # it. Reported so the caller can decide instead of
+                 # having to re-derive it from `crop.from` prose, and
+                 # so `on_green` downstream is a fact rather than an
+                 # assertion.
+                 "outline": False,
                  "why": None}
     try:
         h, w = after_bgr.shape[:2]
@@ -326,6 +340,7 @@ def find_balls_on_green(before_bgr, after_bgr, polygon=None, drawn_at=None,
         if x1 - x0 < 32 or y1 - y0 < 32:
             out["why"] = "the green's outline is too small to search"
             return out
+        out["outline"] = poly is not None
         out["crop"] = {"rect": [x0, y0, x1 - x0, y1 - y0],
                        "from": ("the green's outline" if poly is not None
                                 else "the whole frame — no outline drawn")}

@@ -140,6 +140,34 @@ PITCH_MIN_DY = 2.5
 # at rest, mid-roll, at the bounce and in the air.
 MAX_WINDOW_TILES = 8
 
+# HOW MANY ZOOMED WINDOWS ARE HELD IN MEMORY WHILE THE WALK RUNS.
+#
+# THIS WAS UNBOUNDED, AND IT IS THE LIKELIEST REASON A LONG CLIP CAME
+# BACK WITH NOTHING. Eight tiles are drawn, so the loop kept a tile
+# per frame and `_window_tiles` picked eight at the end -- which is
+# fine over a 60-frame fall and not fine over the rest. A 48px window
+# at 6x is 576x576 of uint8, 332KB; the still budget is 30 seconds,
+# which at 60fps is 1,800 frames, which is 600MB of grayscale crops
+# held for the length of the walk. On a box already holding the
+# decoder, the plates and the frontend's clips that is an allocation
+# failure, and an allocation failure in here surfaces as the generic
+# "the reverse descent walk failed" -- a sentence that says nothing
+# about memory and sent five rounds of debugging at the detector.
+#
+# So the list is thinned as it grows: at the cap every second tile is
+# dropped and the keep-stride doubles, which costs resolution in the
+# middle of a long walk and keeps the spread the eight pictures are
+# chosen from. The cap is in tiles, not megabytes, because the tile
+# size is fixed by ZOOM_TARGET_PX.
+MAX_TILES_HELD = 96
+
+# AND HOW MANY PER-FRAME LOG ROWS SURVIVE INTO THE REPORT. The log is
+# the answer to "what did it actually look at" and it is per frame,
+# so it is thinned the same way. The counts beside it are NOT
+# thinned: they are totals over every frame the walk looked at, which
+# is what the question "did it ever see the ball" needs.
+MAX_LOG_ROWS = 300
+
 
 def _detect_in_window(gray, cx, cy, half):
     """Ball-shaped things in a zoomed window. ORIGINAL-pixel results.
@@ -201,6 +229,22 @@ def _chunk(cap, f0, n, total):
     return out
 
 
+def _thin(seq, keep_every, cap):
+    """Append-side thinning: halve the list, double the stride.
+
+    HOLDING EVERYTHING AND CHOOSING AT THE END ONLY WORKS IF
+    EVERYTHING FITS. It does not here -- see MAX_TILES_HELD. Dropping
+    the oldest would keep the end of the walk and throw away the
+    descent, which is the part being looked for; dropping every second
+    keeps the whole span at half the density, and halving again keeps
+    it at a quarter. Returns the new stride.
+    """
+    if len(seq) < cap:
+        return keep_every
+    del seq[1::2]
+    return keep_every * 2
+
+
 def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                        max_back_sec: float = MAX_BACK_SEC,
                        out_dir=None, stem="greendescent") -> dict:
@@ -219,7 +263,65 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                  "first_frame": None, "last_frame": int(rest_frame),
                  "fall_px": 0, "pitch_frame": None, "pitch_xy": None,
                  "why": None, "windows": [], "image": None,
-                 "n_missed": 0, "moved_at_frame": None}
+                 "n_missed": 0, "moved_at_frame": None,
+                 # ── WHAT THIS ACTUALLY DOES, SAID OUT LOUD ────────
+                 #
+                 # Asked directly, five rounds in: is it zooming, is
+                 # it every frame or every few, and is the detector
+                 # MOG, a model or brightness. All three were
+                 # answerable only by reading this file, which means
+                 # the report was not showing its work. They are
+                 # constants, so they cost nothing to carry, and a
+                 # number that disagrees with the prose is a bug the
+                 # report now reveals rather than hides.
+                 "detector": {
+                     "kind": "brightness",
+                     "how": ("white top-hat — each pixel against the "
+                             "median of its own neighbourhood, so a "
+                             "ball is kept for being brighter than "
+                             "the grass immediately around it, not "
+                             "brighter than some threshold. Then four "
+                             "gates: area, roundness, how filled the "
+                             "blob is, and local contrast. The SAME "
+                             "function that finds a ball at address "
+                             "on the tee and a ball at rest on the "
+                             "green — ball_vanish._detections."),
+                     "not": ("no MOG2 and no background subtractor — "
+                             "the camera pans and a subtractor on a "
+                             "panning green lights up the whole "
+                             "treeline. No model and no AI anywhere "
+                             "in this walk: nothing here is asked, "
+                             "everything is measured."),
+                     "zoom": ("every window is scaled so its long "
+                              "edge is %dpx, capped at %gx — a ball a "
+                              "hundred yards out is three pixels "
+                              "across and the top-hat's kernel would "
+                              "swallow it whole. The kernel and the "
+                              "area bounds are scaled with it, which "
+                              "is the thing that was wrong the first "
+                              "three times: a fixed kernel at 6x "
+                              "returns the ball's RIM and fragments "
+                              "it into eighty blobs."
+                              % (ZOOM_TARGET_PX, ZOOM_MAX)),
+                     "cadence": ("every frame, backwards, one window "
+                                 "per frame — no stride and no "
+                                 "sampling. The clip is read in "
+                                 "chunks of %d so there is one seek "
+                                 "per chunk rather than one per "
+                                 "frame; the chunk is decoded "
+                                 "forwards and walked in reverse."
+                                 % CHUNK_FRAMES),
+                 },
+                 # ── AND WHAT IT SAW, FRAME BY FRAME ───────────────
+                 #
+                 # The chain says where the ball went. This says what
+                 # was in the window on every frame, including the
+                 # frames the chain has nothing on -- which is where
+                 # a walk that "still is not working" actually goes
+                 # wrong, and the one thing none of the five previous
+                 # rounds could see.
+                 "log": [], "log_every": 1,
+                 "counts": {}}
     cap = None
     try:
         if not rest_xy:
@@ -262,6 +364,21 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
         _moved = False
         _start_x, _start_y = px, py
         tiles: list = []
+        _tile_every = 1
+        _log: list = []
+        _log_every = 1
+        # ── THE TOTALS, WHICH ARE NEVER THINNED ────────────────────
+        #
+        # "did it ever see the ball" and "was the ball in the window
+        # but too far from where the walk was pointing" are different
+        # failures with different fixes, and neither is visible in a
+        # chain. `n_too_far` is the important one: candidates existed
+        # and every one was beyond MATCH_FRAC of the window, which
+        # means the prediction is wrong rather than the detector
+        # blind, and the fix is the velocity model, not the gates.
+        _ct = {"frames": 0, "with_cands": 0, "cands": 0, "taken": 0,
+               "none_at_all": 0, "too_far": 0, "nearest_too_far_px": None,
+               "widest_window_px": 0, "min_zoom": None, "max_zoom": None}
         _stop = None
 
         f = f_end - 1
@@ -306,6 +423,63 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                     _sc = (_dd, -d["contrast"])
                     if bd is None or _sc < bd:
                         best, bd = d, _sc
+                # ── BOOK IT BEFORE ACTING ON IT ────────────────────
+                #
+                # Counted here rather than in the two branches below,
+                # because the branch that finds nothing is the branch
+                # that matters and it is the one that kept getting
+                # less reporting than the other.
+                _near = None
+                for d in dets:
+                    _dd = ((d["x"] - qx) ** 2 + (d["y"] - qy) ** 2) ** 0.5
+                    if _near is None or _dd < _near:
+                        _near = _dd
+                _ct["frames"] += 1
+                _ct["cands"] += len(dets)
+                _ct["widest_window_px"] = max(_ct["widest_window_px"],
+                                              int(half) * 2)
+                if scale:
+                    _ct["min_zoom"] = (scale if _ct["min_zoom"] is None
+                                       else min(_ct["min_zoom"], scale))
+                    _ct["max_zoom"] = (scale if _ct["max_zoom"] is None
+                                       else max(_ct["max_zoom"], scale))
+                if dets:
+                    _ct["with_cands"] += 1
+                else:
+                    _ct["none_at_all"] += 1
+                if best is not None:
+                    _ct["taken"] += 1
+                elif dets:
+                    _ct["too_far"] += 1
+                    if _near is not None:
+                        _ct["nearest_too_far_px"] = (
+                            round(_near, 1)
+                            if _ct["nearest_too_far_px"] is None
+                            else min(_ct["nearest_too_far_px"],
+                                     round(_near, 1)))
+                _log.append({
+                    "frame": int(fi),
+                    "looked_at": [int(round(qx)), int(round(qy))],
+                    "window_px": int(half) * 2,
+                    "zoom": round(float(scale), 2),
+                    "match_within_px": round(float(_lim), 1),
+                    "n_cands": len(dets),
+                    "nearest_px": None if _near is None else round(_near, 1),
+                    "took": (None if best is None else
+                             [int(round(best["x"])), int(round(best["y"]))]),
+                    "area": None if best is None else best.get("area"),
+                    "contrast": (None if best is None
+                                 else best.get("contrast")),
+                    "why": ("took the nearest of %d" % len(dets)
+                            if best is not None else
+                            ("nothing bright and ball-shaped in the "
+                             "window" if not dets else
+                             "%d candidate(s), nearest %.1fpx away, "
+                             "match limit %.1fpx — the window was "
+                             "pointing at the wrong place, not blind"
+                             % (len(dets), _near or 0.0, _lim))),
+                })
+                _log_every = _thin(_log, _log_every, MAX_LOG_ROWS)
                 if best is not None:
                     # PER FRAME, OVER THE REAL GAP. `seen_f - fi` is
                     # how many frames back this detection is from the
@@ -358,6 +532,7 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                 if out_dir is not None and sub is not None:
                     tiles.append((fi, sub, scale, box,
                                   best, bool(best is not None)))
+                    _tile_every = _thin(tiles, _tile_every, MAX_TILES_HELD)
                 if not (0 <= px < w and 0 <= py < h):
                     _stop = "the walk left the frame"
                     break
@@ -384,10 +559,48 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
         out["points"] = chain
         out["n_points"] = len(chain)
         out["n_missed"] = sum(1 for q in chain if not q["found"])
+        # ── THE WORK GOES OUT ON BOTH BRANCHES ─────────────────────
+        #
+        # ESPECIALLY THE ONE THAT FAILED. Three separate stages in
+        # this system have now computed their pictures and their
+        # reasons inside the success branch and dropped them on the
+        # failure branch -- exactly the branch somebody is reading
+        # them for. Attached here, above the early return, so there
+        # is no branch left for it to fall off.
+        out["log"] = _log
+        out["log_every"] = _log_every
+        _ct["log_every"] = _log_every
+        _ct["frames_per_second_looked_at"] = round(float(fps), 1)
+        _ct["stopped_because"] = _stop
+        for _k in ("min_zoom", "max_zoom"):
+            if _ct.get(_k) is not None:
+                _ct[_k] = round(float(_ct[_k]), 2)
+        out["counts"] = _ct
+        # AND A SENTENCE FOR THE TOP OF THE BOX, built from the
+        # totals rather than from the chain, so it is true even when
+        # the chain is one point long.
+        out["work"] = (
+            "%d frame(s) looked at, every frame, backwards; windows "
+            "%d-%dpx wide at %sx-%sx zoom; %d candidate(s) in %d "
+            "frame(s); %d taken, %d frame(s) had nothing bright and "
+            "ball-shaped at all, %d had candidates that were all too "
+            "far from where the walk was pointing%s"
+            % (_ct["frames"], WINDOW_BASE_PX * 2, _ct["widest_window_px"],
+               _ct.get("min_zoom"), _ct.get("max_zoom"),
+               _ct["cands"], _ct["with_cands"], _ct["taken"],
+               _ct["none_at_all"], _ct["too_far"],
+               ("" if _ct.get("nearest_too_far_px") is None else
+                " (nearest such was %.1fpx away)"
+                % _ct["nearest_too_far_px"])))
         if len(chain) < 2:
             out["why"] = ("the ball at rest was found but nothing before "
                           "it was — " + (_stop or "no earlier frame "
                                          "matched"))
+            if out_dir is not None and tiles:
+                # THE WINDOWS, ON THE BRANCH THAT FOUND NOTHING. The
+                # question here is "what was in the window", and
+                # these are the only pictures that answer it.
+                out["windows"] = _window_tiles(tiles, Path(out_dir), stem)
             return out
         out["first_frame"] = int(chain[0]["frame"])
         out["fall_px"] = int(round(chain[-1]["y"] - chain[0]["y"]))

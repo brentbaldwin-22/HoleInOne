@@ -552,10 +552,21 @@ const REST_SOURCE_TEXT = {
           "The green cut into four zones, each scaled up, and the same "
           + "white top-hat detector Test Cut uses for a ball at address. "
           + "Measured off the pixels."],
+  "tiles+ai": ["the zoned detector, with the model breaking the tie",
+               "Two new things appeared on the green between the two "
+               + "frames, so the pixels could not say which one was this "
+               + "shot. The model was shown the numbered before/after "
+               + "pair — the same picture an operator would be — and "
+               + "picked one. A weaker answer than a single arrival: "
+               + "check it on the pair."],
   plates: ["the plate comparison",
            "Two medians of the green — before the shot and once "
            + "everything settled — subtracted. What is there now and "
            + "was not before."],
+  "plates+ai": ["the plate comparison, with the model breaking the tie",
+                "Two new things appeared between the two medians, so the "
+                + "pixels could not say which was this shot; the model "
+                + "was shown the numbered pair and picked one."],
   ai: ["the model",
        "A vision model was shown the two frames and found the ball. Its "
        + "position was snapped onto the nearest ball-sized blob."],
@@ -810,6 +821,10 @@ function StepPictures({ stages, title }) {
  */
 function DescentWalk({ walk }) {
   const [open, setOpen] = useState(true);
+  const [showLog, setShowLog] = useState(false);
+  const det = walk.detector || {};
+  const ct = walk.counts || {};
+  const log = walk.log || [];
   return (
     <div style={{ margin: "8px 0", paddingLeft: 10,
                   borderLeft: `2px solid ${walk.ok ? "#2f6feb" : "#b4690e"}` }}>
@@ -847,6 +862,64 @@ function DescentWalk({ walk }) {
           ? ` · ${walk.n_missed} frame(s) extrapolated across`
           : " · nothing extrapolated"}
       </div>
+      {/* ── WHAT IT IS DOING, SAID OUT LOUD ──────────────────────
+          THREE QUESTIONS, ASKED DIRECTLY, AFTER FIVE ROUNDS OF THIS
+          BOX NOT ANSWERING THEM: is it zooming in, is it looking at
+          every frame or some iteration, and is it MOG, AI or
+          brightness. All three were answerable only by reading the
+          module. They are constants, so they are printed, and if the
+          prose ever stops matching the numbers beside it that is now
+          visible instead of buried. */}
+      {det.kind && (
+        <div className="tiny" style={{ marginTop: 6, padding: "6px 8px",
+                                       borderRadius: 4,
+                                       background: "var(--panel2, #1b1b1b)" }}>
+          <div><b>Detector — {det.kind}.</b> {det.how}</div>
+          <div style={{ marginTop: 3 }} className="muted">{det.not}</div>
+          <div style={{ marginTop: 3 }} className="muted">
+            <b>Zoom:</b> {det.zoom}
+          </div>
+          <div style={{ marginTop: 3 }} className="muted">
+            <b>Cadence:</b> {det.cadence}
+          </div>
+        </div>
+      )}
+      {/* ── AND WHAT IT SAW, AS TOTALS ───────────────────────────
+          THE TWO FAILURES THAT READ IDENTICALLY IN A CHAIN. A frame
+          with nothing bright and ball-shaped in the window is the
+          detector being blind, and the fix is the gates. A frame
+          whose candidates were ALL too far from where the walk was
+          pointing is the prediction being wrong, and the fix is the
+          velocity model. They are counted apart. */}
+      {walk.work && (
+        <div className="tiny muted" style={{ marginTop: 4 }}>
+          {walk.work}
+        </div>
+      )}
+      {ct.frames > 0 && (
+        <div className="tiny" style={{ marginTop: 3,
+                                       display: "flex", gap: 6,
+                                       flexWrap: "wrap" }}>
+          <span className="pill">{ct.frames} frame(s) searched</span>
+          <span className={ct.taken ? "pill ok" : "pill warn"}>
+            {ct.taken} taken
+          </span>
+          <span className={ct.none_at_all ? "pill warn" : "pill"}>
+            {ct.none_at_all} saw nothing at all
+          </span>
+          <span className={ct.too_far ? "pill warn" : "pill"}>
+            {ct.too_far} had candidates but all too far
+            {ct.nearest_too_far_px != null
+              ? ` (nearest ${ct.nearest_too_far_px}px)` : ""}
+          </span>
+          <span className="pill">
+            zoom {ct.min_zoom}×–{ct.max_zoom}×
+          </span>
+          <span className="pill">
+            window {ct.widest_window_px}px at its widest
+          </span>
+        </div>
+      )}
       {walk.image_url && (
         <a href={walk.image_url} target="_blank" rel="noreferrer">
           <img src={walk.image_url} alt="the descent walked back"
@@ -884,6 +957,79 @@ function DescentWalk({ walk }) {
                   </figcaption>
                 </figure>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+      {/* ── EVERY FRAME, AS A TABLE ──────────────────────────────
+          EIGHT PICTURES CANNOT SHOW WHERE A WALK WENT WRONG. They
+          are eight of a thousand frames, chosen for spread, so the
+          frame it lost the ball on is almost certainly not among
+          them. This is the whole log: where the walk was pointing,
+          how wide the window was, what zoom it searched at, how many
+          candidates were in it, how far the nearest one was, and
+          whether it was taken. Behind a button because it is long,
+          and that is the only reason. */}
+      {log.length > 0 && (
+        <div style={{ marginTop: 6 }}>
+          <button type="button" className="small ghost"
+                  style={{ width: "auto" }}
+                  onClick={() => setShowLog((v) => !v)}>
+            {showLog ? "Hide" : "Show"} the frame-by-frame log
+            ({log.length} row{log.length === 1 ? "" : "s"}
+            {walk.log_every > 1 ? `, every ${walk.log_every}th` : ""})
+          </button>
+          {showLog && (
+            <div style={{ marginTop: 6, maxHeight: 420, overflow: "auto",
+                          border: "1px solid var(--border, #333)",
+                          borderRadius: 4 }}>
+              <table className="tiny" style={{ width: "100%",
+                                               borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ textAlign: "left",
+                               position: "sticky", top: 0,
+                               background: "var(--panel2, #1b1b1b)" }}>
+                    <th style={{ padding: "3px 6px" }}>frame</th>
+                    <th style={{ padding: "3px 6px" }}>looked at</th>
+                    <th style={{ padding: "3px 6px" }}>window</th>
+                    <th style={{ padding: "3px 6px" }}>zoom</th>
+                    <th style={{ padding: "3px 6px" }}>cands</th>
+                    <th style={{ padding: "3px 6px" }}>nearest</th>
+                    <th style={{ padding: "3px 6px" }}>took</th>
+                    <th style={{ padding: "3px 6px" }}>area / contrast</th>
+                    <th style={{ padding: "3px 6px" }}>why</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {log.map((q) => (
+                    <tr key={q.frame}
+                        style={{ borderTop: "1px solid var(--border, #2a2a2a)",
+                                 opacity: q.took ? 1 : 0.72 }}>
+                      <td style={{ padding: "2px 6px" }}>f{q.frame}</td>
+                      <td style={{ padding: "2px 6px" }}>
+                        {q.looked_at[0]}, {q.looked_at[1]}
+                      </td>
+                      <td style={{ padding: "2px 6px" }}>{q.window_px}px</td>
+                      <td style={{ padding: "2px 6px" }}>{q.zoom}×</td>
+                      <td style={{ padding: "2px 6px" }}>{q.n_cands}</td>
+                      <td style={{ padding: "2px 6px" }}>
+                        {q.nearest_px == null ? "—" : `${q.nearest_px}px`}
+                      </td>
+                      <td style={{ padding: "2px 6px" }}>
+                        {q.took ? `${q.took[0]}, ${q.took[1]}` : "—"}
+                      </td>
+                      <td style={{ padding: "2px 6px" }}>
+                        {q.area == null
+                          ? "—"
+                          : `${q.area} / ${q.contrast}`}
+                      </td>
+                      <td style={{ padding: "2px 6px" }} className="muted">
+                        {q.why}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
@@ -10000,26 +10146,23 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                      style={{ justifyContent: "space-between",
                               cursor: "pointer" }}>
               <b>How steps 1 and 2 got their answers</b>
-              {/* THE FOUR ANSWERS, AS ONE PILL. A clip the rig heard
+              {/* THE THREE ANSWERS, AS ONE PILL. A clip the rig heard
                   is not a clip to be searched from scratch: the
-                  strike is confirmed, so all that is left is who
-                  hit, what they hit, when, and where it went. The
-                  pill says how far down that list this clip got,
-                  because every step after the first depends on the
-                  one before it -- no golfer means no box to look for
-                  a ball in, and no ball at rest means no column to
-                  search for the ascent. */}
+                  strike is confirmed, so all this stage has to say is
+                  who hit, what they hit and when. Every step depends
+                  on the one before it -- no golfer means no box to
+                  look for a ball in -- so the pill says how far down
+                  that list this clip got. The ascent is NOT here any
+                  more: it is the sweep's, in stage 2, and it was the
+                  one thing this stage kept getting wrong. */}
               <span className={
-                rep.ascent_column?.ok ? "pill ok"
+                rep.ai_launch.measured_impact_frame != null ? "pill ok"
                   : (rep.ai_launch.measured_ball ? "pill" : "pill warn")}>
                 {rep.ai_launch.rect_from ? "golfer" : "no golfer"}
                 {rep.ai_launch.measured_ball ? " · ball" : " · no ball"}
                 {rep.ai_launch.measured_impact_frame != null
                   ? ` · f${rep.ai_launch.measured_impact_frame}`
                   : " · no impact"}
-                {rep.ascent_column?.ok
-                  ? ` · ${(rep.ascent_column.points || []).length} pt ascent`
-                  : " · no ascent"}
               </span>
             </summary>
             {/* THE WORKING PICTURES. The gallery at the top of the
@@ -10182,55 +10325,6 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                       </li>
                     ))}
                   </ul>
-                )}
-              </div>
-            )}
-            {/* ── 4. AND THE ASCENT ─────────────────────────────
-                THE SAME SEARCH THE SWEEP RUNS, narrowed. Not a new
-                detector: find_ascents, whose gates every verdict so
-                far was measured against, with the same skyline
-                cutoff -- which is why it never looks at the golfer,
-                who is below that line -- run over a column round the
-                measured ball instead of the full width of the frame.
-                The window-by-window walk that was here counted
-                movers and duly found the golfer's own swing; these
-                gates are about rising far enough, fast enough and
-                straight enough, which is what a swing fails.
-
-                WHERE THIS ANSWERS, THE WHOLE-BAND SWEEP BELOW DOES
-                NOT RUN. It would be asking the same question from a
-                guessed start and a fitted frame, and it is the most
-                expensive step in the run. */}
-            {rep?.ascent_column && (
-              <div style={{ marginTop: 10 }}>
-                <b>4 · The ascent, in the ball&apos;s own column</b>{" "}
-                <span className={rep.ascent_column.ok ? "pill ok" : "pill"}>
-                  {(rep.ascent_column.points || []).length} point(s) ·{" "}
-                  {(rep.ascent_column.considered || []).length} chain(s)
-                </span>
-                <div className="tiny muted" style={{ marginTop: 3 }}>
-                  {rep.ascent_column.reason}
-                  {rep.ascent_column.fallback
-                    ? ` · falling back to ${rep.ascent_column.fallback}`
-                    : ""}
-                  {rep.ascent_column.from_ball
-                    ? ` · from the measured ball at (${
-                        rep.ascent_column.from_ball[0]}, ${
-                        rep.ascent_column.from_ball[1]}), impact f${
-                        rep.ascent_column.impact_frame}`
-                    : ""}
-                  {rep.ascent_column.seconds != null
-                    ? ` · ${rep.ascent_column.seconds}s` : ""}
-                </div>
-                {rep.ascent_column.image_url && (
-                  <a href={rep.ascent_column.image_url} target="_blank"
-                     rel="noreferrer">
-                    <img src={rep.ascent_column.image_url}
-                         alt="the narrowed ascent search"
-                         style={{ width: "100%", maxWidth: 900,
-                                  marginTop: 4, borderRadius: 4,
-                                  border: "1px solid var(--border, #333)" }} />
-                  </a>
                 )}
               </div>
             )}

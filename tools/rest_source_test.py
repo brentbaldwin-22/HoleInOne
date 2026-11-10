@@ -193,12 +193,32 @@ def run_finder(balls, outline=OUTLINE, direct=False):
             (admin.CLIPS_DIR, admin.storage) = saved
 
 
+# WHAT "THE PIXEL COMPARISON" IS NAMED NOW.
+#
+# It used to be the plate diff -- the whole before frame against the
+# whole after frame -- and it is now the zoned tile detector, which
+# cuts the outline's box into four overlapping zones, scales each up
+# and runs the same top-hat that finds a ball at address on the tee.
+# The plates are still there, behind it, as the fallback. These tests
+# are about PRECEDENCE and about the refusals, not about which of the
+# two measured it, so they accept either and the source is printed
+# when one fails.
+PIXELS = ("tiles", "plates")
+
+
 def test_it_finds_one_ball_on_a_real_clip():
     got = run_finder([BALL])
-    check("the plates answer", got and got["source"], "plates")
-    check("  at the ball", 
+    check("the pixel comparison answers",
+          got and got["source"] in PIXELS, True)
+    check("  at the ball",
           got and (abs(got["xy"][0] - BALL[0]) <= 6
                    and abs(got["xy"][1] - BALL[1]) <= 6), True)
+    # AND IT SAYS WHETHER AN OUTLINE BOUNDED IT. This was hardcoded
+    # True on a branch reachable with no outline at all, so a ball
+    # found on the fairway was reported as being on the putting
+    # surface -- the one thing the flag exists to prevent.
+    check("  and on_green is read back, not claimed",
+          got and got["on_green"], True)
 
 
 def test_two_things_arriving_is_not_an_answer():
@@ -212,12 +232,12 @@ def test_two_things_arriving_is_not_an_answer():
     # CONTROL: either ball alone IS answered, so the None above is the
     # ambiguity and not a detector that failed on this clip.
     check("control, the first alone is answered",
-          run_finder([BALL])["source"], "plates")
+          run_finder([BALL])["source"] in PIXELS, True)
     check("control, the second alone is answered",
-          run_finder([(240, 200)])["source"], "plates")
+          run_finder([(240, 200)])["source"] in PIXELS, True)
 
 
-def test_the_after_plate_follows_the_impact_and_is_not_pushed_later():
+def test_the_search_window_follows_the_impact_and_is_not_pushed_later():
     """And a note on why, because I got this wrong once.
 
     I made this take whichever was later of impact+14 and the
@@ -229,63 +249,40 @@ def test_the_after_plate_follows_the_impact_and_is_not_pushed_later():
 
     Later is not safer on a green in partial shade. Every extra second
     is more shadow travel, and shadow travel is a real difference
-    between two plates — so a later after plate competes the ball
+    between two frames -- so a later after frame competes the ball
     against more clutter, not less.
+
+    THE WINDOW IS A LADDER NOW, not a single pair, and the ladder's
+    own shape is `green_window_test`'s business. What is tested here
+    is the WIRING: that the finder walks that ladder rather than a
+    constant of its own, and that the window it answers from is the
+    one it reports. The two drifted apart once already -- the button
+    ran 2.0/13.0 while produce ran impact-6/+14, twenty seconds
+    against eleven, and the button found balls produce did not.
     """
-    seen = {}
-    real = G.find_rest_spot
-
-    def spy(*a, **kw):
-        seen.update(kw)
-        return real(*a, **kw)
-
-    class Cam:
-        green_roi = OUTLINE
-
-    class DB:
-        def get(self, _model, _pk):
-            return Cam()
-
-    class Store:
-        @staticmethod
-        def ensure_local(*_a, **_k):
-            return True
-
-    with tempfile.TemporaryDirectory() as td:
-        d = Path(td)
-        green_clip(d / "g.mp4", [BALL])
-        saved = (admin.CLIPS_DIR, admin.storage, G.find_rest_spot)
-        try:
-            admin.CLIPS_DIR = d
-            admin.storage = Store()
-            G.find_rest_spot = spy
-            # An impact that resolves EARLY, as the field case did.
-            admin._rest_spot_at(DB(), Row(SWING), d / "g.mp4", -0.4, 20)
-        finally:
-            (admin.CLIPS_DIR, admin.storage,
-             G.find_rest_spot) = saved
-
-    check("an early impact keeps an early after plate",
-          seen.get("after_sec"), -0.4 + 14.0)
-    # CONTROL: a late impact moves it late, so the number above is the
-    # impact and not a constant.
-    seen.clear()
-    with tempfile.TemporaryDirectory() as td:
-        d = Path(td)
-        green_clip(d / "g.mp4", [BALL])
-        saved = (admin.CLIPS_DIR, admin.storage, G.find_rest_spot)
-        try:
-            admin.CLIPS_DIR = d
-            admin.storage = Store()
-            G.find_rest_spot = spy
-            admin._rest_spot_at(DB(), Row(SWING), d / "g.mp4", 50.0, 20)
-        finally:
-            (admin.CLIPS_DIR, admin.storage,
-             G.find_rest_spot) = saved
-    check("control, a late impact gives a late one",
-          seen.get("after_sec"), 64.0)
-    check("  and the before plate still follows the impact",
-          seen.get("before_sec"), 44.0)
+    # THE FINDER'S OWN ANSWER CARRIES THE WINDOW IT USED.
+    got = run_finder([BALL])
+    _w = got and got.get("window")
+    check("the answer names the window it came from",
+          bool(_w) and len(_w) == 2, True)
+    # AND THAT WINDOW IS ONE OF THE LADDER'S RUNGS FOR THIS IMPACT --
+    # not a constant, and not a rung for some other impact. run_finder
+    # passes an impact of 10.0s.
+    _rungs = [[a, b] for a, b in admin._green_windows(10.0)]
+    check("  and it is a rung of the ladder for this impact",
+          [float(_w[0]), float(_w[1])] in _rungs, True)
+    check("  which is the FIRST rung, the soonest after settling",
+          [float(_w[0]), float(_w[1])], _rungs[0])
+    # CONTROL: a different impact gives a different rung, so the match
+    # above is the impact and not a constant that happens to agree.
+    check("control, the ladder moves with the impact",
+          admin._green_windows(50.0)[0] != _rungs[0], True)
+    # AND EVERY RUNG IT TRIED IS REPORTED, so a clip that needed the
+    # fourth rung can be told apart from one that answered on the
+    # first -- the difference is how much shadow travel was competing
+    # with the ball.
+    check("  and every rung it tried is listed",
+          len(got.get("windows_tried") or []) >= 1, True)
 
 
 def test_the_picker_resolves_two_arrivals_or_leaves_the_refusal():
@@ -309,7 +306,12 @@ def test_the_picker_resolves_two_arrivals_or_leaves_the_refusal():
 
     one = with_picker({"index": 1, "confidence": 0.9, "why": "round"})
     two = with_picker({"index": 2, "confidence": 0.9, "why": "round"})
-    check("a choice is taken", one and one["source"], "plates+ai")
+    # THE SOURCE SAYS THE MODEL WAS INVOLVED. Two new things that a
+    # model resolved is a weaker answer than one new thing nobody had
+    # to choose between, and a report that spells both the same cannot
+    # tell them apart.
+    check("a choice is taken",
+          one and one["source"] in ("tiles+ai", "plates+ai"), True)
 
     def near_one_of(got, wanted):
         return any(abs(got["xy"][0] - x) <= 6 and abs(got["xy"][1] - y) <= 6
@@ -336,7 +338,8 @@ def test_the_picker_is_not_consulted_when_there_is_one_arrival():
     finally:
         admin._ai_pick_ball = saved
     check("no call for a single candidate", calls, [])
-    check("  and the answer is the plates alone", got["source"], "plates")
+    check("  and the answer is the pixels alone",
+          got["source"] in PIXELS, True)
 
 
 # ---- AI first, and no outline needed ------------------------------
@@ -409,7 +412,8 @@ def test_a_ball_off_the_green_is_reported_as_such():
 def test_the_plates_are_the_fallback_and_still_need_one():
     # Model declines, outline present: the plates answer.
     got, _why = run_with_ai(AI_BLANK, outline=OUTLINE)
-    check("the plates pick it up", got and got["source"], "plates")
+    check("the pixel comparison picks it up",
+          got and got["source"] in PIXELS, True)
     # Model declines, no outline: nothing to fall back to, said plainly.
     none, why = run_with_ai(AI_BLANK, outline=None)
     check("  with no outline there is nowhere to go", none, None)
@@ -417,10 +421,18 @@ def test_the_plates_are_the_fallback_and_still_need_one():
           "model did not find a ball" in why and "no fallback" in why, True)
 
 
-def test_the_plate_fallback_still_needs_an_outline():
-    """It is the PLATES that need one, not the measurement.
+def test_the_pixel_fallback_still_needs_an_outline():
+    """It is the PIXELS that need one, not the measurement.
 
-    Unbounded, the plate comparison cannot tell the green from the
+    Both of them: the zoned tile detector in front and the plate diff
+    behind it. The detector was put in front of this guard and walked
+    straight past it -- `find_balls_on_green` runs without a polygon,
+    searching the whole frame and saying so, which is right for the
+    operator's button and wrong where the answer becomes a distance.
+    It also hardcoded `on_green: True` on that same branch, so a ball
+    found on the fairway was reported as being on the putting surface.
+
+    Unbounded, a pixel comparison cannot tell the green from the
     ground short of it — fine when an operator is looking at the
     picture and judging, not fine when the answer becomes a measured
     distance on a prize. The model has no such problem: it is asked
@@ -441,7 +453,7 @@ def test_the_plate_fallback_still_needs_an_outline():
     # CONTROL: the same clip with an outline answers, so the refusal is
     # the policy and not a clip the finder could not read.
     check("control, with an outline the same clip answers",
-          run_finder([BALL])["source"], "plates")
+          run_finder([BALL])["source"] in PIXELS, True)
 
 
 def test_the_plate_finder_refuses_without_an_outline():
@@ -506,13 +518,13 @@ for fn in (test_the_descent_search_is_off_by_default,
            test_a_swing_with_nothing_at_all_answers_nothing,
            test_it_finds_one_ball_on_a_real_clip,
            test_two_things_arriving_is_not_an_answer,
-           test_the_after_plate_follows_the_impact_and_is_not_pushed_later,
+           test_the_search_window_follows_the_impact_and_is_not_pushed_later,
            test_the_picker_resolves_two_arrivals_or_leaves_the_refusal,
            test_the_picker_is_not_consulted_when_there_is_one_arrival,
            test_the_model_answers_and_no_outline_is_needed,
            test_a_ball_off_the_green_is_reported_as_such,
            test_the_plates_are_the_fallback_and_still_need_one,
-           test_the_plate_fallback_still_needs_an_outline,
+           test_the_pixel_fallback_still_needs_an_outline,
            test_the_plate_finder_refuses_without_an_outline):
     print(f"\n-- {fn.__name__}")
     fn()

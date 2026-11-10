@@ -208,6 +208,83 @@ def main():
         ok("a spot with no ball on it yields no chain",
            r3["n_points"] <= 3, True)
 
+        # ── AND IT SHOWS ITS WORK, ON BOTH BRANCHES ─────────────────
+        #
+        # ASKED DIRECTLY, FIVE ROUNDS IN: is it zooming, is it every
+        # frame or every few, and is the detector MOG, a model or
+        # brightness. All three were answerable only by reading the
+        # module, which means the walk was not showing its work --
+        # and the branch where the question gets asked is the branch
+        # that FAILED, which is the one that used to carry least.
+        for _lbl, _r in (("on a walk that worked", r),
+                         ("on a walk that found nothing", r3)):
+            ok("the work log is there %s" % _lbl,
+               len(_r.get("log") or []) > 0, True)
+            ok("  and the totals beside it",
+               bool(_r.get("counts") or {}), True)
+            ok("  counting every frame it looked at",
+               (_r["counts"].get("frames") or 0) > 0, True)
+            ok("  and saying so in a sentence",
+               "every frame, backwards" in (_r.get("work") or ""), True)
+            # THE THREE ANSWERS, AS DATA RATHER THAN PROSE.
+            _d = _r.get("detector") or {}
+            ok("  the detector names itself brightness",
+               _d.get("kind"), "brightness")
+            _not = (_d.get("not") or "").lower()
+            ok("  and says it is not MOG and not a model",
+               ("mog2" in _not and "no model" in _not
+                and "no ai" in _not), True)
+            ok("  and that it zooms", "capped at" in (_d.get("zoom") or ""),
+               True)
+            ok("  and that it reads every frame",
+               "every frame" in (_d.get("cadence") or ""), True)
+            # EVERY ROW SAYS WHAT WAS IN THE WINDOW AND WHY IT WAS
+            # TAKEN OR NOT -- including the rows that took nothing.
+            ok("  every row carries a window, a zoom and a reason",
+               all(q.get("window_px") and q.get("zoom")
+                   and q.get("why") for q in _r["log"]), True)
+
+        # A FRAME WITH CANDIDATES THAT WERE ALL TOO FAR IS A DIFFERENT
+        # FAILURE FROM A FRAME WITH NONE, and the fixes are different:
+        # the first is the velocity model, the second is the gates.
+        # Counted separately so the report can say which happened.
+        for _k in ("none_at_all", "too_far", "taken", "with_cands",
+                   "widest_window_px", "min_zoom", "max_zoom"):
+            ok("the totals break down %s" % _k,
+               _k in r["counts"], True)
+        ok("  and the zoom it reports is a real zoom",
+           (r["counts"]["max_zoom"] or 0) > 1.0, True)
+
+        # ── THE WALK DOES NOT HOLD A CROP PER FRAME ─────────────────
+        #
+        # THIS WAS UNBOUNDED AND IT IS THE LIKELIEST REASON A LONG
+        # CLIP CAME BACK WITH NOTHING. Eight window pictures are
+        # drawn, so the loop kept one zoomed crop per frame and chose
+        # eight at the end. A 48px window at 6x is 332KB; the still
+        # budget is thirty seconds, which at 60fps is 1,800 frames,
+        # which is 600MB of grayscale crops held for the length of
+        # the walk -- and an allocation failure in there surfaces as
+        # the generic "the reverse descent walk failed".
+        from app.services import greendescent as _gd
+        ok("the held-tile count is capped",
+           _gd.MAX_TILES_HELD <= 128, True)
+        ok("  and the log row count with it",
+           _gd.MAX_LOG_ROWS <= 600, True)
+        # A WALK LONG ENOUGH TO TRIP THE CAP STILL SPANS THE CHAIN.
+        # Thinning drops every second row rather than the oldest, so
+        # the descent -- the far end, the part being looked for -- is
+        # still represented.
+        _long = track_descent_back(clip, REST, 299, out_dir=d, stem="u")
+        ok("a long walk thins rather than grows without bound",
+           len(_long["log"]) <= _gd.MAX_LOG_ROWS, True)
+        ok("  and still reaches the entry frame",
+           _long["first_frame"], ENTER)
+        ok("  with its log still spanning the whole walk",
+           (min(q["frame"] for q in _long["log"]) <= ENTER + 3
+            and max(q["frame"] for q in _long["log"]) >= 295), True)
+        ok("  and still draws its windows",
+           1 <= len(_long["windows"]) <= 8, True)
+
     print()
     if _fails:
         print("%d FAILED: %s" % (len(_fails), ", ".join(_fails)))

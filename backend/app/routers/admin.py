@@ -10874,8 +10874,52 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
     # held against each other.
     _tiles = {"ok": False, "why": "could not read both frames"}
     _tried = []
-    _bsec = _asec = None
-    for _bs, _as in _green_windows(green_impact_sec):
+    # ── THE TWO FRAME TIMES, SET BEFORE THE LADDER RUNS ─────────────
+    #
+    # THESE WERE None UNTIL THE TILE LOOP SET THEM, AND THE MODEL IS
+    # HANDED THEM. So on a green with no outline -- where the loop
+    # does not run at all -- `find_ball_at_rest` got before_sec=None
+    # and died on `float(None)`, and the one caller with a catch-all
+    # around it reported that as a polite "could not tell". A crash
+    # that reads as a refusal is the exact failure this file's own
+    # tests were written to catch, and it had moved into the lines
+    # above them.
+    #
+    # The ladder's FIRST rung is the right default for both: it is
+    # the soonest look after the ball has settled, which is the one
+    # with the least shadow travel competing with it. The loop
+    # overwrites them with whichever rung it actually read.
+    _ladder = _green_windows(green_impact_sec)
+    _bsec, _asec = _ladder[0] if _ladder else (2.0, 13.0)
+    # ── THE PIXEL COMPARISON STILL NEEDS AN OUTLINE ─────────────────
+    #
+    # THE ZONED DETECTOR WAS PUT IN FRONT OF THIS GUARD AND WALKED
+    # STRAIGHT PAST IT. The rule is as old as the plate search and it
+    # is in this function's own docstring: unbounded, a pixel
+    # comparison cannot tell a white dot on the putting surface from
+    # an identical one ten yards short of it. `find_balls_on_green`
+    # does run without a polygon -- it searches the whole frame and
+    # says so -- which is right for the operator's button, where
+    # somebody is looking at the picture and judging, and wrong here,
+    # where the answer becomes a measured distance on somebody's
+    # prize.
+    #
+    # The model is exempt and always was: it is ASKED whether the ball
+    # is on the putting surface and it can see, which is why it
+    # reports `on_green` instead of assuming it. So a green with no
+    # outline drops through to the model rather than being refused
+    # outright, and only fails if the model has nothing either.
+    if pts is None or not pts:
+        _tiles = {"ok": False, "best": None,
+                  "why": ("no outline is drawn on this green, so the "
+                          "pixel comparison was not run — unbounded it "
+                          "cannot tell the putting surface from the "
+                          "ground short of it, and this answer becomes "
+                          "a distance on a prize"),
+                  "found_nothing_because": ("no green outline — draw one "
+                                            "on the camera and the zoned "
+                                            "detector can run")}
+    for _bs, _as in (_ladder if (pts is not None and pts) else ()):
         _fb = ai_tracer._grab_colour_frame(green_path, _bs)
         _fa = ai_tracer._grab_colour_frame(green_path, _as)
         if _fb is None or _fa is None:
@@ -10896,31 +10940,86 @@ def _rest_spot_at(db, row, green_path, green_impact_sec: float,
         # more things have had time to happen on.
         if _try.get("best"):
             break
-    _tiles["window"] = (None if _bsec is None else [_bsec, _asec])
+    _tiles["window"] = [_bsec, _asec]
     _tiles["windows_tried"] = _tried
     if _tiles.get("best"):
         # MORE THAN ONE NEW THING, SO ASK WHICH -- and only then. The
         # detector says where, which a model estimates badly; the
         # model says which, which it is reliably good at.
+        # ── ONE PICKER, NOT TWO ─────────────────────────────────────
+        #
+        # This branch had its own inline copy: read the bytes, call
+        # `pick_ball_among`, catch everything. `_ai_pick_ball` already
+        # does exactly that for the plate branch, with the missing-path
+        # case, the unresolved case and the logging -- so there were
+        # two ways of asking the model the same question, and the
+        # inline one had no log line, which is how "the model declined"
+        # and "the file was not there" became indistinguishable. Every
+        # divergence like this, all week, has turned into a
+        # user-visible inconsistency.
         _pick = None
-        if len(_tiles.get("new") or []) > 1 and \
-                (_tiles.get("images") or {}).get("picker"):
-            try:
-                _pick = ai_tracer.pick_ball_among(
-                    Path(_tiles["images"]["picker"]).read_bytes(),
-                    len(_tiles["new"]))
-                _i = _pick.get("index")
-                if _i and 1 <= int(_i) <= len(_tiles["new"]):
-                    _tiles["best"] = _tiles["new"][int(_i) - 1]
-            except Exception as exc:  # noqa: BLE001
-                log.warning("rest spot: picker failed: %s", exc)
+        _ambiguous = len(_tiles.get("new") or []) > 1
+        if _ambiguous:
+            _pick = _ai_pick_ball(_tiles["new"],
+                                  (_tiles.get("images") or {}).get("picker"))
+            _i = (_pick or {}).get("index")
+            if _i and 1 <= int(_i) <= len(_tiles["new"]):
+                _tiles["best"] = _tiles["new"][int(_i) - 1]
+                _ambiguous = False
+        # ── TWO ARRIVALS IS NOT AN ANSWER ───────────────────────────
+        #
+        # AND THE ZONED DETECTOR WAS GIVING ONE. Two new things on the
+        # green between the plates means two balls arrived, or one
+        # arrived and something else moved; picking the brighter of
+        # them is picking at random with extra steps, and the number
+        # it produces is a distance on somebody's prize. The plate
+        # search refused here and asked a human. The detector
+        # inherited the picker but not the refusal: where the picker
+        # declines, is not configured, or throws, `best` was simply
+        # left standing.
+        #
+        # So the refusal is restored, with both candidates named, and
+        # the pictures still go out -- the operator resolves it on the
+        # before/after pair, which is exactly what they are for.
+        if _ambiguous:
+            if images_out is not None:
+                images_out.update(_tiles.get("images") or {})
+                images_out["window"] = _tiles.get("window")
+                images_out["windows_tried"] = _tiles.get("windows_tried")
+            return None, (
+                "%d new things appeared on the green between the two "
+                "frames, so which one is this shot is not something the "
+                "pixels can settle%s — at %s. Pick one on the "
+                "before/after pair. %s"
+                % (len(_tiles["new"]),
+                   (" and the model declined to choose"
+                    if (_tiles.get("images") or {}).get("picker") else
+                    " and no model is configured to choose"),
+                   "; ".join("%d,%d" % (round(q["x"]), round(q["y"]))
+                             for q in _tiles["new"][:4]),
+                   _tiles.get("why") or ""))
         _bb = _tiles["best"]
         if images_out is not None:
             images_out.update(_tiles.get("images") or {})
         return (
             {"xy": [float(_bb["x"]), float(_bb["y"])],
-             "camera_id": int(green_camera_id), "source": "tiles",
-             "on_green": True, "confidence": None,
+             "camera_id": int(green_camera_id),
+             # AND THE SOURCE SAYS WHETHER THE MODEL WAS INVOLVED, as
+             # the plate branch's "plates+ai" always did. Two new
+             # things that a model resolved is a weaker answer than one
+             # new thing nobody had to choose between, and a report
+             # that spells both "tiles" cannot tell them apart.
+             "source": ("tiles+ai" if _pick and _pick.get("index")
+                        else "tiles"),
+             # A FACT, NOT AN ASSERTION. This was hardcoded True, on a
+             # branch that could be reached with no outline at all --
+             # so a ball found on the fairway was reported as being on
+             # the putting surface, which is the one thing `on_green`
+             # exists to prevent. The branch now requires an outline
+             # and the detector rejects everything outside it, so the
+             # value is read back from the search rather than claimed.
+             "on_green": bool(_tiles.get("outline")),
+             "confidence": None,
              "image": (_tiles.get("images") or {}).get("after"),
              # BOTH HALVES OF THE COMPARISON, for the report. "What
              # is on the green now that was not on it before" is a
@@ -23926,59 +24025,41 @@ def _ball_scan_sweep_image(row, src_path, sweep) -> None:
             cv2.LINE_AA)
         _b = sweep.get("band") or [0, 0, 0, 0]
         _cf = sweep.get("cap_hit_frac")
-        # ── A SWEEP THAT DID NOT RUN HAS NO NUMBERS ─────────────────
-        #
-        # When stage 1 answers, this picture is drawn from a stand-in
-        # dict that carries the chain and nothing else -- so the line
-        # below printed "0 detections -> ? chains -> ? weighed | keep
-        # ?/frame | 3-frame diff", which is not a report of anything.
-        # Worse, every one of those is a plausible-looking lie: 3-frame
-        # is the default the format string falls back to and the sweep
-        # has not used it for weeks.
-        if sweep.get("skipped_for_column"):
-            cv2.putText(
-                im,
-                "the whole-band sweep did not run - stage 1 measured "
-                "this ascent in the ball's own column, and the chain "
-                "drawn here is that one",
-                (12, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                (200, 200, 200), 1, cv2.LINE_AA)
-        else:
-            cv2.putText(
-                im,
-                f"{sweep.get('n_dets', '?')} detections -> "
-                f"{sweep.get('n_tracks', '?')} chains -> "
-                f"{sweep.get('n_considered', '?')} weighed  |  "
-                f"keep {sweep.get('per_frame_cap', '?')}/frame"
-                + (f", capped on {_cf:.0%} of frames "
-                   f"(worst {sweep.get('max_hits_in_a_frame', '?')})"
-                   if _cf is not None else "")
-                + f"  |  {'3-frame' if sweep.get('three_frame', True) else '2-frame'}"
-                f" diff"
-                # WHETHER THE SMEAR WAS REAL. A ball crossing 26px in one
-                # exposure thresholds into two or three blobs, each its own
-                # detection -- and "merged 1,840" next to the detection
-                # count says how much of that cloud was one object twice.
-                + (f"  |  merged {sweep.get('merged_away'):,} at "
-                   f"{sweep.get('merge_px'):g}px"
-                   if sweep.get("merged_away") is not None
-                   and sweep.get("merge_px") else "")
-                # HOW MANY CHAINS WERE ONE FLIGHT. #768 came back as four
-                # chains of one ball, each traced to the tee as its own
-                # swing 0.14s apart; "joined 3" is that not happening.
-                + (f", joined {sweep.get('n_stitched')}"
-                   if sweep.get("n_stitched") else "")
-                # AND WHAT THE RE-READ FOUND IN THE HOLES. "refilled 6 in
-                # 2 holes" says the ball was there all along and the
-                # three-frame pass was the only reason it was missing;
-                # nothing says the hole was really empty.
-                + (f", refilled {sweep.get('n_refilled')}"
-                   f" in {sweep.get('n_holes_read')} hole(s)"
-                   if sweep.get("n_holes_read") else "")
-                + f"  |  band x{int(_b[0])}-{int(_b[0]) + int(_b[2])}"
-                f" y0-{int(_b[3])}",
-                (12, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 230, 255), 1,
-                cv2.LINE_AA)
+        cv2.putText(
+            im,
+            f"{sweep.get('n_dets', '?')} detections -> "
+            f"{sweep.get('n_tracks', '?')} chains -> "
+            f"{sweep.get('n_considered', '?')} weighed  |  "
+            f"keep {sweep.get('per_frame_cap', '?')}/frame"
+            + (f", capped on {_cf:.0%} of frames "
+               f"(worst {sweep.get('max_hits_in_a_frame', '?')})"
+               if _cf is not None else "")
+            + f"  |  {'3-frame' if sweep.get('three_frame', True) else '2-frame'}"
+            f" diff"
+            # WHETHER THE SMEAR WAS REAL. A ball crossing 26px in one
+            # exposure thresholds into two or three blobs, each its own
+            # detection -- and "merged 1,840" next to the detection
+            # count says how much of that cloud was one object twice.
+            + (f"  |  merged {sweep.get('merged_away'):,} at "
+               f"{sweep.get('merge_px'):g}px"
+               if sweep.get("merged_away") is not None
+               and sweep.get("merge_px") else "")
+            # HOW MANY CHAINS WERE ONE FLIGHT. #768 came back as four
+            # chains of one ball, each traced to the tee as its own
+            # swing 0.14s apart; "joined 3" is that not happening.
+            + (f", joined {sweep.get('n_stitched')}"
+               if sweep.get("n_stitched") else "")
+            # AND WHAT THE RE-READ FOUND IN THE HOLES. "refilled 6 in
+            # 2 holes" says the ball was there all along and the
+            # three-frame pass was the only reason it was missing;
+            # nothing says the hole was really empty.
+            + (f", refilled {sweep.get('n_refilled')}"
+               f" in {sweep.get('n_holes_read')} hole(s)"
+               if sweep.get("n_holes_read") else "")
+            + f"  |  band x{int(_b[0])}-{int(_b[0]) + int(_b[2])}"
+            f" y0-{int(_b[3])}",
+            (12, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 230, 255), 1,
+            cv2.LINE_AA)
         nm = f"ballscan-{row.id}-sweep.jpg"
         if cv2.imwrite(str(CLIPS_DIR / nm), im,
                        [int(cv2.IMWRITE_JPEG_QUALITY), 86]):
@@ -25076,152 +25157,42 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
         progress("Finding the golfer, the ball at their feet and the "
                  "frame it left", 0, 0)
     rep["ai_launch"] = _ascent_ai_launch(db, row, src_path, fps, rep, _roi)
-    # ── THE SAME SEARCH, NARROWED TO THE BALL'S OWN COLUMN ──────
+    # ── THE ASCENT IS THE SWEEP'S. THERE IS NO SECOND SEARCH. ──────
     #
-    # NOT A NEW SEARCH. The zoomed window-by-window walk that was here
-    # found 83 "points" on the clip that killed it, and the picture
-    # showed what they were: 45 in the window over the golfer and 33
-    # in the one above, which is his body and his club, not a ball.
-    # The old search found the flight -- a clean 26-point chain --
-    # because its gates are about rising far enough, fast enough and
-    # straight enough, and those gates are what a swing fails. A
-    # window that counts movers has no such test.
+    # There was one, and it was wrong every way it could be. It ran
+    # `find_ascents` over a column round the measured ball -- a
+    # different function from the sweep, with a different detector,
+    # different gates, a different acceptance test and no stitching,
+    # no hole-refilling, no chain extension and no fitted back-run.
+    # Every round of making it "the same search" closed one gap and
+    # left the next: the settings, then the gates, then the column
+    # width, then the start-near test. On the clip that ended it the
+    # sweep found a 44-point chain rising 430px with 1.8px of bend,
+    # and the column search looked at the same 1029 detections,
+    # built 66 tracks out of them and took none -- because it
+    # back-runs LINEARLY to the impact frame, and the chain starts
+    # 31 frames after it, so the extrapolation overshot by 1361px.
     #
-    # So the logic is the proven one, run again with the two things
-    # stage 1 now knows: where the ball was sitting, to the pixel, and
-    # which frame it left. find_ascents already takes left_frac and
-    # right_frac -- the narrowing is a refusal to LOOK outside the
-    # column the ball crosses, which is cheaper than any gate and
-    # cannot be argued with by one.
-    _al = rep.get("ai_launch") or {}
-    _zspot = _al.get("measured_ball")
-    _zimp = _al.get("measured_impact_frame")
-    if _zspot and _zimp is not None:
-        _t_zoom = time.perf_counter()
-        try:
-            # THE CLIP'S OWN WIDTH. left_frac and right_frac are
-            # fractions of it, and _tee_box_roi_fractions does not
-            # carry one -- assuming 1920 would quietly search the
-            # wrong columns on any camera that is not.
-            import cv2 as _cv2
-            _cp = _cv2.VideoCapture(str(src_path))
-            _fw = int(_cp.get(_cv2.CAP_PROP_FRAME_WIDTH) or 0)
-            _fh = int(_cp.get(_cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-            _cp.release()
-            if _fw <= 0:
-                raise ValueError("the clip reports no frame width")
-            _gb = _al.get("golfer_box")
-            # ── THE COLUMN HAS TO BE AS WIDE AS THE BALL DRIFTS ─────
-            #
-            # "Six golfer-widths either side, because a ball climbs
-            # very nearly straight up from a camera behind the
-            # hitting area" was wrong, and the picture says so. On
-            # this tee the flight rises through a 497px band and
-            # moves most of 650px across it -- better than 45 degrees
-            # off vertical. Six widths is 305px, so the column cut
-            # the flight in half: the sweep saw it over x641-1900 and
-            # found 303 detections and 18 chains, and the column saw
-            # x1310-1920 and found 5 points.
-            #
-            # HOW FAR IT CAN DRIFT SCALES WITH HOW FAR UP YOU LOOK,
-            # which is the band's own height -- so that is the
-            # number, not a count of golfers. A ball cannot climb
-            # 500px and move 1000px sideways without being a different
-            # kind of object; at one band-height either side the
-            # column is still less than half the frame on a 1920 view
-            # and still refuses the far side of the picture, which is
-            # all the narrowing was ever for.
-            # THE BAND'S OWN HEIGHT, from the same function the search
-            # uses -- not a guess at it from the tee box's fraction,
-            # which is a different line.
-            _area0 = _search_area_for(db, row)
-            _band_h = _d3._ascent_band(
-                _fh or 1080, _roi.get("roi"), _area0.get("sky_frac"))[0]
-            # ...AND HALF AGAIN. 650px of drift over a 497px band is
-            # 1.3 times the height; at 1.5 a ball would have to leave
-            # at better than 56 degrees off vertical to escape the
-            # column, which is not a golf shot from behind the tee.
-            _halfw = max(80, int((_gb[2] if _gb else _fw // 24) * 6.0),
-                         int(_band_h * 1.5))
-            _lf = max(0.0, (float(_zspot[0]) - _halfw) / float(_fw))
-            _rf = min(1.0, (float(_zspot[0]) + _halfw) / float(_fw))
-            _area = dict(_area0)
-            _area["left_frac"] = _lf
-            _area["right_frac"] = _rf
-            # THE HOLE'S OWN GATES, the same ones the sweep is given a
-            # few lines down. Without them this ran the module
-            # defaults while the sweep ran the tuned ones -- so a
-            # hole tuned to find its balls was tuned for only one of
-            # the two searches that look for them.
-            rep["ascent_column"] = _d3.find_ascents(
-                src_path, fps, int(_zimp), (_zspot[0], _zspot[1]),
-                roi=_roi.get("roi"),
-                gates=_gate_tuning_for(db, row, hole_hint=hole_number)[0],
-                **_area) or {}
-        except Exception as exc:  # noqa: BLE001
-            log.warning("ball scan: column ascent failed on %s: %s",
-                        row.id, exc)
-            rep["ascent_column"] = {"ok": False, "reason": f"failed: {exc}"}
-        rep["ascent_column"]["seconds"] = round(
-            time.perf_counter() - _t_zoom, 2)
-        rep["ascent_column"]["from_ball"] = list(_zspot)
-        rep["ascent_column"]["impact_frame"] = int(_zimp)
-        _ascent_column_image(row, src_path, int(_zimp),
-                             rep["ascent_column"], _zspot)
-        # ── AND THAT IS THE ASCENT, NOT A SECOND OPINION ON ONE ──
-        #
-        # Shaped into the entry the rest of the run reads. The sweep
-        # builds the same dict from a chain it found over the whole
-        # band and then has to GUESS the two fields this one measured:
-        # `from_x`/`from_y` by running the chain back along its own
-        # heading to the tee line, and `from_frame` by fitting a
-        # deceleration to it. Stage 1 has both off the pixels, so they
-        # go in as measurements and `from_is_approx` is false --
-        # which is the whole point of having looked.
-        _cpts = (rep["ascent_column"].get("points") or []) if \
-            rep["ascent_column"].get("ok") else []
-        if _cpts:
-            rep["ascent_column"]["entry"] = {
-                "first_frame": int(_cpts[0]["frame"]),
-                "last_frame": int(_cpts[-1]["frame"]),
-                "first_sec": round(int(_cpts[0]["frame"]) / max(fps, 1.0), 2),
-                "last_sec": round(int(_cpts[-1]["frame"]) / max(fps, 1.0), 2),
-                "n_points": len(_cpts),
-                "points": [{"frame": int(q["frame"]), "x": int(q["x"]),
-                            "y": int(q["y"]), "area": None}
-                           for q in _cpts],
-                "rise_px": rep["ascent_column"].get("rise_px"),
-                "rate": rep["ascent_column"].get("rate"),
-                "bend_px": rep["ascent_column"].get("bend_px"),
-                "bend_limit_px": rep["ascent_column"].get("bend_limit_px"),
-                "from_x": int(_zspot[0]),
-                "from_y": int(_zspot[1]),
-                "from_frame": int(_zimp),
-                "from_sec": round(int(_zimp) / max(fps, 1.0), 2),
-                # NOT APPROXIMATE. The ball was seen sitting at that
-                # pixel and seen to be gone on that frame.
-                "from_is_approx": False,
-                "from_model": "measured",
-                "why": None,
-                "source": "the ball's own column, from a measured ball "
-                          "and a measured impact",
-            }
-    else:
-        # NO BALL AT REST, SO NO COLUMN TO SEARCH -- and that is the
-        # one case the old way is still needed for. The sweep below
-        # finds the chain over the whole band, runs it back along its
-        # own heading to the tee line for the spot, and takes the
-        # frame from the chain's speed. That is a FIT rather than a
-        # measurement and it is why the measurement was worth adding;
-        # it is also right often enough to be the fallback rather
-        # than a failure.
-        rep["ascent_column"] = {
-            "ok": False,
-            "fallback": "the sweep's chain, run back to the tee line",
-            "reason": ("no ball at rest to climb from (%s) — falling "
-                       "back to running the sweep's chain back to the "
-                       "tee line, as before"
-                       % (_al.get("measured_why") or "not measured"))}
+    # The sweep solves that with a deceleration fitted to the chain
+    # itself, and a dozen other things besides. None of it is worth
+    # reimplementing beside it.
+    #
+    # So stage 1 measures the golfer, the ball and the frame it
+    # left, and stops. The ascent is whatever the sweep finds -- the
+    # same object, rendered by the same code, in both places -- and
+    # the measured ball's job is to say WHICH of the sweep's chains
+    # belongs to this swing, which is a question it answers far
+    # better than a second search ever did.
+    rep["ascent_column"] = {
+        "ok": False,
+        "superseded": True,
+        "reason": ("not run — the ascent is the whole-band sweep's, "
+                   "the same search and the same chain the report "
+                   "shows below. A second search beside it was wrong "
+                   "in five different ways over five rounds; the "
+                   "measured ball now picks among the sweep's chains "
+                   "instead of running its own."),
+    }
 
     # ── THE FOUR STEPS AS FOUR PICTURES ────────────────────────────
     #
@@ -25232,7 +25203,6 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # frame -- an absence in this list is itself the finding, and the
     # detail line above says which step produced nothing.
     _al1 = rep.get("ai_launch") or {}
-    _ac1 = rep.get("ascent_column") or {}
     rep["stage1_stages"] = [
         q for q in (
             {"name": "golfer",
@@ -25259,21 +25229,10 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                      "read identically in words and are obvious here. "
                      + str(_al1.get("measured_why") or "")),
              "url": _al1.get("measured_image_url")},
-            {"name": "ascent",
-             "title": "4 · The ascent, in the ball's own column",
-             "why": ("The SAME search the whole-band sweep runs -- same "
-                     "detector, same gates, same skyline cutoff, which "
-                     "is why it never looks at the golfer -- narrowed "
-                     "to the column the ball actually crosses. Green is "
-                     "the chain taken, grey every chain considered with "
-                     "the gate it died on, and the ring is the measured "
-                     "ball every rejection is a distance from. "
-                     + str(_ac1.get("reason") or "")),
-             "url": _ac1.get("image_url")},
         ) if q.get("url")]
 
-    _stage(1, "The golfer, the ball, the impact frame and the ascent",
-           "FOUR THINGS, IN ORDER, AND NOTHING ELSE. A clip the rig "
+    _stage(1, "The golfer, the ball and the impact frame",
+           "THREE THINGS, IN ORDER, AND NOTHING ELSE. A clip the rig "
            "heard is not a clip that has to be searched from scratch: "
            "the strike was confirmed, so the only questions left are "
            "who hit, what they hit, when, and where it went. "
@@ -25285,18 +25244,15 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
            "pixels rather than read by a model, and the frame it "
            "leaves is the first with nothing at that spot and nothing "
            "at it after. "
-           "The ascent is the SAME search the sweep below runs -- same "
-           "gates, same skyline cutoff, which is why it never looks "
-           "at the golfer -- narrowed to the column the ball actually "
-           "crosses. "
+           "The ascent is NOT searched here. It is the whole-band "
+           "sweep's, in stage 2 below -- one search, one chain, one "
+           "picture -- and the measured ball's job is to say which of "
+           "the sweep's chains belongs to this swing. "
            "golfer: "
            + str((rep["ai_launch"] or {}).get("rect_from") or "not placed")
            + " | ball and impact: "
            + str((rep["ai_launch"] or {}).get("measured_why")
                  or "not measured")
-           + " | ascent: "
-           + str((rep.get("ascent_column") or {}).get("reason")
-                 or "not run")
            # ── WHERE THE TIME WENT, AND WHAT WAS NOT PAID FOR ───────
            #
            # One number for the stage cannot say whether the cost was
@@ -25319,8 +25275,8 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
               " | nothing reused — this clip has no stored verify "
               "analysis, so the golfer and the ball were found again "
               "from the clip"),
-           len((rep.get("ascent_column") or {}).get("points") or []),
-           "ascent point(s)",
+           1 if (rep.get("ai_launch") or {}).get("measured_ball") else 0,
+           "ball(s) measured at rest",
            time.perf_counter() - _t)
 
     # ── 2. every ball leaving ─────────────────────────────────────────
@@ -25336,97 +25292,50 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # clip", so an audio-windowed sweep of two seconds announced
     # itself as a sweep of ninety -- and the only way to tell whether
     # the windowing had taken effect at all was to read the log.
-    # WHETHER THERE IS ANYTHING LEFT TO SWEEP FOR, decided before the
-    # toast rather than after it: working out where to look and then
-    # announcing it is wasted on a clip stage 1 has already answered,
-    # and the operator reading the toasts should not be told a sweep
-    # is being planned that will not run.
-    _ac = rep.get("ascent_column") or {}
-    _col_entry = _ac.get("entry") if _ac.get("ok") else None
-    # ── A WEAK ANSWER DOES NOT GET TO SILENCE THE SWEEP ─────────────
-    #
-    # Stage 1 suppressing the whole-band sweep is right when stage 1
-    # has the better answer and a disaster when it does not. It
-    # happened: a column cut too narrow found a 5-point chain, that
-    # counted as "answered", the sweep never ran -- and the sweep is
-    # what had been finding this flight as a 26-point chain the week
-    # before. A cheaper first look is not an override.
-    #
-    # So the suppression needs the answer to be at least as good as
-    # the thing it is replacing. Twice the minimum chain length is
-    # the bar: a chain at the floor is one bad link away from not
-    # existing, and it is exactly the kind of answer that should
-    # invite a second opinion rather than forbid one.
-    _COL_TRUSTED_POINTS = 2 * int(_d3.ASCENT_MIN_POINTS)
-    _col_weak = bool(_col_entry) and (
-        len(_col_entry.get("points") or []) < _COL_TRUSTED_POINTS)
-    if _col_weak:
-        _ac["weak"] = (
-            "%d point(s) is under the %d this needs to stand in for "
-            "the whole-band sweep, so the sweep runs too and the "
-            "longer chain wins"
-            % (len(_col_entry.get("points") or []), _COL_TRUSTED_POINTS))
-        _col_entry = None
-    _win = []
-    _sec_win = 0.0
-    if not _col_entry:
-        if progress:
-            progress("Working out where to look for a ball leaving the "
+    # THE SWEEP ALWAYS RUNS, AND IT IS THE ONLY ASCENT SEARCH. There
+    # used to be a decision here: stage 1 ran a narrowed search of its
+    # own in the ball's column, and when that answered, this sweep was
+    # suppressed to save the most expensive step in the run. It cost
+    # more than it saved. The narrowed search was wrong in five
+    # different ways over five rounds -- the last of them back-running
+    # a chain LINEARLY to the impact frame and overshooting the
+    # measured ball by 1361px, on a clip where this sweep found the
+    # flight in 44 points -- and every one of those rounds showed up as
+    # "the produce report and the Find ascents dialog disagree". One
+    # search, one chain, one picture; the measured ball from stage 1
+    # now does the one job it is reliably good at, which is saying
+    # WHICH of this sweep's chains belongs to this swing.
+    if progress:
+        progress("Working out where to look for a ball leaving the "
+                 "tee", 0, 0)
+    _t_sub = time.perf_counter()
+    _win = _ascent_windows(db, row, src_path, fps, rep)
+    _sec_win = time.perf_counter() - _t_sub
+    if progress:
+        if _win:
+            _secs = sum(max(0, b - a) for a, b in _win) / max(fps, 1.0)
+            progress("Searching %.1fs of the clip — %s"
+                     % (_secs, rep.get("window_detail") or "windowed"),
+                     0, 0)
+        else:
+            progress("Sweeping the whole clip for balls leaving the "
                      "tee", 0, 0)
-        _t_sub = time.perf_counter()
-        _win = _ascent_windows(db, row, src_path, fps, rep)
-        _sec_win = time.perf_counter() - _t_sub
-        if progress:
-            if _win:
-                _secs = sum(max(0, b - a) for a, b in _win) / max(fps, 1.0)
-                progress("Searching %.1fs of the clip — %s"
-                         % (_secs, rep.get("window_detail") or "windowed"),
-                         0, 0)
-            else:
-                progress("Sweeping the whole clip for balls leaving the "
-                         "tee", 0, 0)
-    # ── AND THE SWEEP IS THE FALLBACK NOW, NOT THE FIRST LOOK ──
+    # ── THE ONE ASCENT SEARCH THERE IS ─────────────────────────────
     #
-    # Stage 1 asked the same question -- same detector, same gates,
-    # same skyline cutoff -- over the column the ball actually
-    # crossed, from a ball measured to the pixel and an impact frame
-    # measured off the pixels. The sweep asks it over the whole band
-    # from neither, and then has to run the chain back along its own
-    # heading to guess where it started and fit a deceleration to
-    # guess when. Where stage 1 answered, there is nothing left for
-    # the sweep to add and it is the most expensive step in the run,
-    # so it does not run at all.
-    #
-    # It still runs, unchanged, for every clip stage 1 declines: a
-    # long upload nobody heard a strike on, a hole with no trigger
-    # zones, a tee the detector found nobody on, a ball that could
-    # not be measured at rest. That is the "estimate it the way we
-    # always did" path and it is the reason the sweep is still here.
-    if _col_entry:
-        sweep = {
-            "ascents": [_col_entry], "considered": [], "n_dets": 0,
-            "ok": True, "seconds": 0.0, "timing": {},
-            "band": _ac.get("band"),
-            "skipped_for_column": {
-                "points": len(_col_entry.get("points") or []),
-                "why": ("stage 1 found the ascent in the ball's own "
-                        "column, from a measured ball at (%d, %d) and a "
-                        "measured impact at f%d, so the whole-band "
-                        "sweep was not run"
-                        % (_ac["from_ball"][0], _ac["from_ball"][1],
-                           _ac["impact_frame"])),
-            },
-            "reason": ("not run -- stage 1 measured the ascent in the "
-                       "ball's own column"),
-        }
-        _sec_sweep = 0.0
-    else:
-        _t_sub = time.perf_counter()
-        sweep = _d3.sweep_ascents(src_path, fps, roi=_roi.get("roi"),
-                                  windows=_win,
-                                  gates=_gt,
-                                  **_search_area_for(db, row)) or {}
-        _sec_sweep = time.perf_counter() - _t_sub
+    # It always runs. Stage 1 used to run a second search of its own
+    # over a column round the measured ball and suppress this one
+    # when it "answered"; five rounds of making the two agree ended
+    # with the column search looking at 1029 detections, building 66
+    # tracks and taking none, while this found the flight as a
+    # 44-point chain rising 430px. There is one search now, and the
+    # measured ball's job is to say which of its chains is this
+    # swing.
+    _t_sub = time.perf_counter()
+    sweep = _d3.sweep_ascents(src_path, fps, roi=_roi.get("roi"),
+                              windows=_win,
+                              gates=_gt,
+                              **_search_area_for(db, row)) or {}
+    _sec_sweep = time.perf_counter() - _t_sub
     _t_sub = time.perf_counter()
     _ball_scan_sweep_image(row, src_path, sweep)
     _ball_scan_considered_image(row, src_path, sweep)
@@ -25514,39 +25423,52 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
             "nobody is measuring yet.", None, None, _sw_unattr))
     rep["scan_stages"] = [x for x in _scan_stages if x["seconds"] > 0.004]
     _asc = list(sweep.get("ascents") or [])
-    # AND IF THE COLUMN HAD A WEAK ANSWER, IT IS STILL AN ANSWER.
-    # Kept when the sweep came back with nothing at all: five points
-    # measured from a known ball beats no points, and the whole
-    # reason the sweep ran as well is that neither was trusted to
-    # speak alone.
-    if _col_weak and not _asc and (_ac.get("entry")):
-        _asc = [_ac["entry"]]
-        sweep["fell_back_to_column"] = _ac.get("weak")
+    # ── THE MEASURED BALL PICKS AMONG THEM ─────────────────────────
+    #
+    # This is what the measurement is FOR, now that it is not running
+    # a search of its own. The sweep can return several chains on a
+    # busy tee; the one that traces back nearest the ball we watched
+    # being struck is this swing's, and that is a far better question
+    # for a measured pixel to answer than "find the flight yourself".
+    _mb = (rep.get("ai_launch") or {}).get("measured_ball")
+    if _mb and len(_asc) > 1:
+        def _near_ball(a):
+            try:
+                return ((float(a.get("from_x", 1e9)) - float(_mb[0])) ** 2
+                        + (float(a.get("from_y", 1e9)) - float(_mb[1])) ** 2)
+            except (TypeError, ValueError):
+                return 1e18
+        _asc = sorted(_asc, key=_near_ball)
+        sweep["ordered_by_measured_ball"] = {
+            "ball": [int(_mb[0]), int(_mb[1])],
+            "why": ("%d chain(s) ordered by how near their own traced-back "
+                    "tee spot is to the ball that was measured being "
+                    "struck; the nearest is %dpx away"
+                    % (len(_asc), int(_near_ball(_asc[0]) ** 0.5))),
+        }
     rep["ascents"] = _asc
-    _stage(2,
-           ("Balls leaving the tee — not needed" if _col_entry
-            else "Balls leaving the tee"),
-           (("THE FALLBACK, AND IT DID NOT HAVE TO RUN. Stage 1 "
-             "measured the ball at rest and the frame it left, and "
-             "found the ascent in the ball's own column with the same "
-             "detector, the same gates and the same skyline cutoff "
-             "this sweep uses. There is nothing a whole-band sweep "
-             "adds to that, and it is the most expensive step in the "
-             "run, so it was skipped. It runs unchanged on any clip "
-             "stage 1 declines. "
-             + str((sweep.get("skipped_for_column") or {}).get("why")
-                   or ""))
-            if _col_entry else
-            ("One frame-difference pass over the band above the "
-             "golfers, every frame, at scan level "
-             + str(sweep.get("sens") or "?")
-             + " of 3 -- the same depth the map's Scan harder button "
-             "reaches, run first rather than second. A chain counts as "
-             "a ball if it rises far enough, fast enough and straight "
-             "enough -- straightness alone is not sufficient, because "
-             "the worst false positive measured was a dead-straight "
-             "25-point chain that was not a ball. "
-             + str(sweep.get("reason") or ""))),
+    _stage(2, "The ascent — balls leaving the tee",
+           ("THE ONE AND ONLY ASCENT SEARCH. One frame-difference "
+            "pass over the band above the golfers, every frame, at "
+            "scan level "
+            + str(sweep.get("sens") or "?")
+            + " of 3 -- the same depth the map's Scan harder button "
+            "reaches, run first rather than second. A chain counts as "
+            "a ball if it rises far enough, fast enough and straight "
+            "enough -- straightness alone is not sufficient, because "
+            "the worst false positive measured was a dead-straight "
+            "25-point chain that was not a ball. "
+            "There is no second search beside it any more: a narrowed "
+            "column search ran here for five rounds and was wrong in "
+            "five different ways, the last of which was back-running "
+            "a chain LINEARLY to the impact frame and overshooting the "
+            "ball by 1361px. The measured ball from stage 1 now does "
+            "the one job it is good at -- saying which of these chains "
+            "is this swing's. "
+            + str(sweep.get("reason") or "")
+            + (" | " + str((sweep.get("ordered_by_measured_ball") or {})
+                           .get("why") or "")
+               if sweep.get("ordered_by_measured_ball") else "")),
            len(_asc), "seen leaving", time.perf_counter() - _t)
     if not _asc:
         rep["reason"] = "no ball was seen leaving the tee in this clip"
@@ -25621,11 +25543,16 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # report and still rendered -- this is what the dialog LEADS
     # with, not a replacement for the detail.
     _al4 = rep.get("ai_launch") or {}
-    _ac4 = rep.get("ascent_column") or {}
     _dbacks = {int(d.get("swing") or 0): d
                for d in (_desc.get("descents_back") or [])}
     rep["swing_steps"] = []
     for _i, _c4 in enumerate(rep.get("clips") or []):
+        # THE SWEEP'S ENTRY FOR THIS SAME SWING. rep["clips"] is built
+        # by enumerating _asc in order, so the indices line up -- and
+        # this is the whole point of removing the column search: step
+        # 2 now shows the sweep's picture, so a chain the report calls
+        # good and a chain the step shows cannot disagree.
+        _asc4 = (_asc[_i] if _i < len(_asc) else {}) or {}
         _steps = [
             {"name": "rest",
              "title": "1 · The ball at rest, and the frame it left",
@@ -25640,15 +25567,22 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
              "url": _al4.get("frames_image_url")},
             {"name": "ascent",
              "title": "2 · The ascent",
-             "why": ("The same search the whole-band sweep runs -- same "
-                     "detector, same gates, same skyline cutoff, which "
-                     "is why it never looks at the golfer -- narrowed "
-                     "to the column the ball actually crosses, from the "
-                     "measured ball and the measured impact frame. "
-                     "Green is the chain taken, grey every chain "
-                     "considered with the gate it died on. "
-                     + str(_ac4.get("reason") or "")),
-             "url": _ac4.get("image_url")},
+             "why": ("THE SWEEP'S OWN CHAIN -- the exact search, the "
+                     "exact picture the report's stage 2 shows, not a "
+                     "second search run beside it. One frame-difference "
+                     "pass over the band above the golfers, every "
+                     "frame; the band stops at the skyline, which is "
+                     "why the golfer is never in it. Green is this "
+                     "swing's chain, and where more than one chain was "
+                     "found it is the one whose traced-back tee spot "
+                     "lands nearest the ball stage 1 measured. "
+                     + str((_asc4.get("why") or _asc4.get("summary")
+                            or ""))
+                     + ((" | " + str(
+                         (sweep.get("ordered_by_measured_ball") or {})
+                         .get("why") or ""))
+                        if sweep.get("ordered_by_measured_ball") else "")),
+             "url": _asc4.get("image_url")},
             {"name": "green-before",
              "title": "3a · The green before the shot",
              "why": ("Cropped to the outline and otherwise untouched. "
@@ -25687,7 +25621,17 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                      "window. The cross is the pitch mark: the FIRST "
                      "frame it stopped falling, which is not the last, "
                      "because the difference is a whole bounce. "
-                     + str((_dbacks.get(_i + 1) or {}).get("why") or "")),
+                     "The detector is BRIGHTNESS -- a white top-hat, "
+                     "each pixel against the median of its own "
+                     "neighbourhood -- not MOG2, not a background "
+                     "subtractor and not a model; every window is "
+                     "scaled up before it runs, and it runs on every "
+                     "frame, not every few. "
+                     + str((_dbacks.get(_i + 1) or {}).get("why") or "")
+                     + ((" | " + str((_dbacks.get(_i + 1) or {})
+                                     .get("work") or ""))
+                        if (_dbacks.get(_i + 1) or {}).get("work")
+                        else "")),
              "url": (_dbacks.get(_i + 1) or {}).get("image_url")},
         ]
         # ── AN EMPTY BOX HAS TO SAY WHY IT IS EMPTY ─────────────────
@@ -25719,9 +25663,10 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                                     or _al4.get("reason")
                                     or "stage 1 did not run on this clip")
             elif _st["name"] == "ascent":
-                _st["reason"] = str(_ac4.get("reason")
-                                    or _ac4.get("fallback")
-                                    or "the column search did not run")
+                _st["reason"] = str(_asc4.get("why")
+                                    or sweep.get("reason")
+                                    or "the sweep drew no picture for "
+                                       "this chain")
         rep["swing_steps"].append({
             "swing": _i + 1,
             # EVERY STEP, INCLUDING THE ONES WITH NO PICTURE. An
@@ -26272,6 +26217,19 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                 "moved_at_frame": _walk.get("moved_at_frame"),
                 "started_at_frame": _rf,
                 "why": _walk.get("why"),
+                # ── WHAT IT ACTUALLY DID, CARRIED OUT WHOLE ───────
+                #
+                # ASKED DIRECTLY: is it zooming, is it every frame or
+                # every few, and is the detector MOG, a model or
+                # brightness. None of those were answerable from this
+                # report, which is the report's fault. They are
+                # constants and a per-frame log, so they cost a
+                # dictionary and they end the guessing.
+                "detector": _walk.get("detector"),
+                "work": _walk.get("work"),
+                "counts": _walk.get("counts"),
+                "log": _walk.get("log"),
+                "log_every": _walk.get("log_every"),
                 "image_url": _clip_url_for(Path(_walk["image"]).name)
                 if _walk.get("image") else None,
                 "windows": [
@@ -27216,92 +27174,6 @@ def _ascent_swing_heat(row, src_path, fps, rig, people=None,
              "ball box=%s (%s)", row.id, _chk.get("verdict"),
              _chk.get("golfer"), _chk.get("ball_box"), _chk.get("reason"))
     return out
-
-
-def _ascent_column_image(row, src_path, impact_frame, asc, spot) -> None:
-    """The narrowed search and what rose out of it.
-
-    SAME SEARCH, SMALLER PICTURE. This is find_ascents -- the gates
-    that every verdict so far was measured against -- run again over
-    a column round the ball instead of the full width of the frame.
-    So the picture has to show two things a sentence cannot: where
-    the column was, and which chains were inside it. Green is the one
-    taken, grey is every chain considered with the reason it lost,
-    and the ring is the measured ball every rejection is distance
-    from.
-    """
-    try:
-        import cv2  # type: ignore
-
-        if not asc:
-            return
-        cap = cv2.VideoCapture(str(src_path))
-        if not cap.isOpened():
-            return
-        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(impact_frame)))
-        ok, im = cap.read()
-        cap.release()
-        if not ok or im is None:
-            return
-        im = (im.astype("float32") * 0.72).astype("uint8")
-        _band = asc.get("band")
-        if _band:
-            cv2.rectangle(im, (int(_band[0]), int(_band[1])),
-                          (int(_band[0] + _band[2]),
-                           int(_band[1] + _band[3])),
-                          (200, 90, 220), 2)
-        for c in (asc.get("considered") or []):
-            _acc = c.get("why") == "accepted"
-            _col = (90, 230, 120) if _acc else (150, 150, 150)
-            _p = c.get("points") or []
-            for a_, b_ in zip(_p, _p[1:]):
-                cv2.line(im, (a_["x"], a_["y"]), (b_["x"], b_["y"]),
-                         _col, 2 if _acc else 1, cv2.LINE_AA)
-            if _p and not _acc:
-                cv2.putText(im, str(c.get("why") or ""),
-                            (_p[-1]["x"] + 8, _p[-1]["y"]),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, _col, 1,
-                            cv2.LINE_AA)
-        for q in (asc.get("points") or []):
-            cv2.circle(im, (int(q["x"]), int(q["y"])), 4,
-                       (90, 230, 120), 2, cv2.LINE_AA)
-        if spot:
-            cv2.circle(im, (int(spot[0]), int(spot[1])), 12,
-                       (60, 200, 255), 2, cv2.LINE_AA)
-        # ── THE SAME FUNNEL THE SWEEP'S PICTURE PRINTS ──────────────
-        #
-        # The sweep's map says "303 detections -> 18 chains -> 3
-        # weighed | keep 40/frame | 2-frame diff | band x641-1900
-        # y0-497". This said "0 chain(s) considered, 0 point(s)
-        # taken" and stopped -- which cannot distinguish a band with
-        # no ball in it from a detector that emitted nothing, and
-        # those have opposite fixes. Where the two pictures disagree
-        # about the same ball, the only way to see WHY is to be able
-        # to read the same numbers off both.
-        _l1 = ("the ball's own column at the measured impact f%d: "
-               "%d chain(s) considered, %d point(s) taken - %s"
-               % (int(impact_frame), len(asc.get("considered") or []),
-                  len(asc.get("points") or []),
-                  str(asc.get("reason") or "")))
-        _l2 = ("%s detections -> %s tracks | keep %s/frame | %s diff | "
-               "band %s"
-               % (asc.get("n_dets", "?"), asc.get("n_tracks", "?"),
-                  asc.get("per_frame_cap", "?"),
-                  "3-frame" if asc.get("three_frame") else "2-frame",
-                  ",".join(str(v) for v in (asc.get("band") or []))
-                  or "?"))
-        for _i, _ln in enumerate((_l1, _l2)):
-            cv2.rectangle(im, (0, 10 + _i * 22), (im.shape[1], 32 + _i * 22),
-                          (20, 20, 20), -1)
-            cv2.putText(im, _ln, (12, 26 + _i * 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.46, (255, 255, 255), 1,
-                        cv2.LINE_AA)
-        _nm = f"ascentcol-{row.id}-{secrets.token_hex(3)}.jpg"
-        cv2.imwrite(str(CLIPS_DIR / _nm), im,
-                    [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        asc["image_url"] = _clip_url_for(_nm)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("ascent column image failed: %s", exc)
 
 
 class _AlreadyPlaced(Exception):

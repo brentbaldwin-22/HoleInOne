@@ -150,12 +150,20 @@ check("steps that took no time are left out",
 # ── 3. stage 4 does the same ─────────────────────────────────────────
 print("stage 4 reports the green pass's steps under it:")
 _s3 = _block("def _ascent_descents(", "\ndef _ascent_window_views(")
+# RENUMBERED WHEN THE GREEN PASS MOVED UP. The ball-on-the-green
+# search and the reverse descent walk used to sit below the descent
+# MATCHING, behind an `if not _events: return out` -- which, once the
+# old whole-frame descent search was scrapped, was every run, so they
+# never executed at all (see green_reached_test). They now run
+# immediately after the clocks, which is also the order they depend
+# on each other in: find the ball, then walk back from it.
 for _n, _what in (("4a", "opening the green and reading the clocks"),
-                  ("4b", "placing the flight windows"),
-                  ("4c", "the descent search"),
-                  ("4d", "matching swings to landings"),
-                  ("4e", "drawing the window views"),
-                  ("4f", "the resting-ball plates")):
+                  ("4b", "finding where it came to rest"),
+                  ("4c", "walking the descent back from the ball"),
+                  ("4d", "placing the flight windows"),
+                  ("4f", "matching swings to landings"),
+                  ("4g", "the old descent search, off by default"),
+                  ("4h", "drawing the window views")):
     check("%s is %s" % (_n, _what), '"%s"' % _n in _s3, True)
 # A RUN THAT GIVES UP STILL SAYS WHAT IT DID. Three of this function's
 # exits are early ones -- no green file, no impact frame, nothing found
@@ -164,7 +172,7 @@ check("the laps are recorded as they finish, not at the end",
       _s3.count("_lap()") >= 6, True)
 check("the no-window exit reports what it reached",
       bool(re.search(r'out\["reason"\] = "no swing had an impact frame',
-                     _s3)) and _s3.count('_sub("4e"') >= 2, True)
+                     _s3)) and _s3.count('_sub("4h"') >= 2, True)
 check("every early exit's rows survive on the report",
       '"stages": []' in _s3, True)
 check("the expensive step says it scales with the window, not the clip",
