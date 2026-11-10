@@ -161,6 +161,27 @@ MAX_WINDOW_TILES = 8
 # size is fixed by ZOOM_TARGET_PX.
 MAX_TILES_HELD = 96
 
+# ...OF WHICH THIS MANY AT THE END ARE NEVER THINNED AWAY.
+#
+# The walk runs backwards, so the END of every list it builds is the
+# earliest footage -- the frames right before it gave up. That is the
+# only part of a 316-frame walk anybody has ever asked to see, and
+# `del seq[1::2]` on an even-length list drops exactly that last
+# entry. Protected outright rather than hoped for.
+PROTECT_TAIL = 48
+
+# HOW MANY WINDOWS ARE DRAWN AT THE PLACE IT GAVE UP, as their own
+# gallery beside the spread.
+#
+# EIGHT TILES SPREAD OVER 316 FRAMES ARE EIGHT PICTURES OF A BALL
+# SITTING STILL. The spread is right for "did it follow the ball" and
+# useless for "where did it lose it" -- on the walk that prompted
+# this, the twenty frames it died on were at one end and the sampling
+# stride was forty-two, so not one of them was drawn. These are taken
+# from the loss itself: the last frame the ball was actually seen,
+# and the misses that followed.
+LOST_WINDOW_TILES = 6
+
 # AND HOW MANY PER-FRAME LOG ROWS SURVIVE INTO THE REPORT. The log is
 # the answer to "what did it actually look at" and it is per frame,
 # so it is thinned the same way. The counts beside it are NOT
@@ -229,7 +250,7 @@ def _chunk(cap, f0, n, total):
     return out
 
 
-def _thin(seq, keep_every, cap):
+def _thin(seq, keep_every, cap, protect=PROTECT_TAIL):
     """Append-side thinning: halve the list, double the stride.
 
     HOLDING EVERYTHING AND CHOOSING AT THE END ONLY WORKS IF
@@ -238,10 +259,18 @@ def _thin(seq, keep_every, cap):
     descent, which is the part being looked for; dropping every second
     keeps the whole span at half the density, and halving again keeps
     it at a quarter. Returns the new stride.
+
+    THE LAST `protect` ENTRIES ARE NEVER THINNED. The walk moves
+    backwards, so the end of these lists is the EARLIEST footage --
+    the frames just before it gave up, which is the only part anybody
+    asks about. `del seq[1::2]` on an even-length list drops the last
+    element, so the single most interesting frame was the one most
+    likely to be discarded. The protected tail is bounded, so this
+    still cannot grow without limit.
     """
     if len(seq) < cap:
         return keep_every
-    del seq[1::2]
+    del seq[1:-int(protect):2]
     return keep_every * 2
 
 
@@ -321,6 +350,19 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                  # wrong, and the one thing none of the five previous
                  # rounds could see.
                  "log": [], "log_every": 1,
+                 # ── AND WHERE IT GAVE UP ──────────────────────────
+                 #
+                 # THE ONE QUESTION A 316-POINT WALK ACTUALLY RAISES.
+                 # "316 point(s), falling 7px over 315 frame(s)" is a
+                 # walk that followed a ball ROLLING and then stopped;
+                 # the descent is on the other side of wherever it
+                 # stopped, and nothing in the report said where that
+                 # was or what the window held at the time. The chain
+                 # picture marked the resting place and the pitch
+                 # mark -- both at the near end -- and left the far
+                 # end, which is the end in question, unlabelled.
+                 "lost_at": None,
+                 "lost_windows": [],
                  "counts": {}}
     cap = None
     try:
@@ -367,6 +409,11 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
         _tile_every = 1
         _log: list = []
         _log_every = 1
+        # THE LAST WINDOW IT BUILT, so the loss can report how wide
+        # the search had grown by the time it gave up. A window that
+        # reached its 420px cap and still found nothing is a different
+        # story from one that gave up at 96px.
+        _last_half = WINDOW_BASE_PX
         # ── THE TOTALS, WHICH ARE NEVER THINNED ────────────────────
         #
         # "did it ever see the ball" and "was the ball in the window
@@ -408,6 +455,7 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                                + WINDOW_PER_MISS_PX * misses
                                + (WINDOW_STILL_GROWTH_PX * min(20, len(chain))
                                   if _still else 0)))
+                _last_half = half
                 dets, sub, scale, box = _detect_in_window(gray, qx, qy, half)
                 best, bd = None, None
                 _lim = MATCH_FRAC * half
@@ -569,6 +617,45 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
         # is no branch left for it to fall off.
         out["log"] = _log
         out["log_every"] = _log_every
+        # ── WHERE IT GAVE UP, AS A RECORD OF ITS OWN ───────────────
+        #
+        # Built unconditionally, for every way the walk can end, and
+        # before the one-point early return below -- because the walk
+        # that ends with one point is the walk this is most needed
+        # for. `seen_f` is the last frame the ball was ACTUALLY seen,
+        # which is the far end of the chain once the trailing misses
+        # are trimmed; everything after it is the search failing.
+        _speed = (vx * vx + vy * vy) ** 0.5
+        out["lost_at"] = {
+            "frame": int(seen_f),
+            "xy": [int(round(seen_x)), int(round(seen_y))],
+            "stop": _stop or "ran out of frames to walk back through",
+            "misses_at_the_end": int(misses),
+            # HOW FAST IT WAS GOING WHEN IT LOST THE THREAD. This is
+            # the number the whole thing turns on: a walk that loses
+            # the ball at 1px/frame lost a ball that was ROLLING, so
+            # the descent is still ahead of it and the search never
+            # reached the part it exists to find.
+            "speed_px_per_frame": round(_speed, 2),
+            "vx": round(vx, 2), "vy": round(vy, 2),
+            "window_px": int(_last_half) * 2,
+            "window_was_capped": int(_last_half) >= WINDOW_MAX_PX,
+            "ever_moved": bool(_moved),
+            "moved_at_frame": out.get("moved_at_frame"),
+            # AND THE FRAMES EITHER SIDE, NEVER THINNED. See
+            # PROTECT_TAIL: these are the rows the thinning is
+            # forbidden to touch, so this is complete however long
+            # the walk was.
+            "log": [q for q in _log if q["frame"] <= int(seen_f)][-24:],
+        }
+        out["lost_at"]["why"] = (
+            "last actually seen on f%d at %d,%d, moving %.1fpx/frame; "
+            "the window had grown to %dpx%s and the next %d frame(s) "
+            "found nothing it would accept. %s"
+            % (seen_f, round(seen_x), round(seen_y), _speed,
+               int(_last_half) * 2,
+               " (its cap)" if int(_last_half) >= WINDOW_MAX_PX else "",
+               misses, out["lost_at"]["stop"]))
         _ct["log_every"] = _log_every
         _ct["frames_per_second_looked_at"] = round(float(fps), 1)
         _ct["stopped_because"] = _stop
@@ -601,6 +688,8 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
                 # question here is "what was in the window", and
                 # these are the only pictures that answer it.
                 out["windows"] = _window_tiles(tiles, Path(out_dir), stem)
+                out["lost_windows"] = _lost_tiles(
+                    tiles, seen_f, Path(out_dir), stem)
             return out
         out["first_frame"] = int(chain[0]["frame"])
         out["fall_px"] = int(round(chain[-1]["y"] - chain[0]["y"]))
@@ -644,6 +733,12 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
 
         if out_dir is not None:
             out["windows"] = _window_tiles(tiles, Path(out_dir), stem)
+            # AND THE ONES AT THE FAR END, WHERE IT STOPPED. A separate
+            # gallery rather than a share of the same eight slots: the
+            # two answer different questions and they were competing
+            # for space, which the spread won every time.
+            out["lost_windows"] = _lost_tiles(tiles, seen_f,
+                                              Path(out_dir), stem)
             out["image"] = _chain_image(green_path, chain, out,
                                         Path(out_dir), stem)
     except Exception as exc:  # noqa: BLE001
@@ -655,7 +750,29 @@ def track_descent_back(green_path, rest_xy, rest_frame: int, *,
     return out
 
 
-def _window_tiles(tiles, out_dir, stem):
+def _lost_tiles(tiles, seen_f, out_dir, stem):
+    """The windows at the place the walk gave up.
+
+    THE SPREAD CANNOT SHOW THIS AND NEVER COULD. `_window_tiles`
+    samples the whole chain at a fixed stride, which over a 316-frame
+    walk is one tile every forty-two frames -- so the twenty frames it
+    actually died on were not drawn, and the eight pictures that were
+    drawn all showed a ball sitting still. The question "where do we
+    lose the descent" had no picture in it at all.
+
+    These are the last frame the ball was really seen and the misses
+    that followed it, in the order the walk met them. They are the
+    pictures that say whether the ball was in the window and refused,
+    or simply somewhere else entirely.
+    """
+    _want = [t for t in tiles if int(t[0]) <= int(seen_f)]
+    # tiles run newest-first, so the ones at or before the last
+    # sighting are the loss; take them in walk order and stop.
+    return _window_tiles(_want[:LOST_WINDOW_TILES], out_dir, stem,
+                         spread=False, tag="lost")
+
+
+def _window_tiles(tiles, out_dir, stem, spread=True, tag="win"):
     """A handful of the search windows, at the zoom they were searched.
 
     THE PICTURE THE DETECTOR ACTUALLY SAW. A ball four pixels across
@@ -668,8 +785,11 @@ def _window_tiles(tiles, out_dir, stem):
     try:
         if not tiles:
             return rows
-        step = max(1, len(tiles) // MAX_WINDOW_TILES)
-        picked = tiles[::step][:MAX_WINDOW_TILES]
+        if spread:
+            step = max(1, len(tiles) // MAX_WINDOW_TILES)
+            picked = tiles[::step][:MAX_WINDOW_TILES]
+        else:
+            picked = list(tiles)
         for fi, sub, scale, box, best, found in picked:
             img = cv2.cvtColor(sub, cv2.COLOR_GRAY2BGR)
             u = max(1, int(round(max(img.shape[:2]) / 400.0)))
@@ -682,7 +802,7 @@ def _window_tiles(tiles, out_dir, stem):
                         (6 * u, 18 * u), cv2.FONT_HERSHEY_SIMPLEX,
                         0.45 * u, (235, 235, 235) if found else (90, 170, 255),
                         u, cv2.LINE_AA)
-            _p = out_dir / f"{stem}-win-f{fi}.jpg"
+            _p = out_dir / f"{stem}-{tag}-f{fi}.jpg"
             if cv2.imwrite(str(_p), img,
                            [int(cv2.IMWRITE_JPEG_QUALITY), 88]):
                 rows.append({"frame": int(fi), "found": bool(found),
@@ -729,6 +849,38 @@ def _chain_image(green_path, chain, info, out_dir, stem):
                     (int(chain[-1]["x"]) + 16 * u, int(chain[-1]["y"])),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5 * u, (70, 170, 255), u,
                     cv2.LINE_AA)
+        # ── AND THE FAR END: WHERE IT LOST IT ───────────────────────
+        #
+        # THE PICTURE MARKED BOTH ENDS OF THE WRONG INTERVAL. "at
+        # rest" and "pitch mark" are both at the near end -- the part
+        # that worked -- and the earliest point, which is where the
+        # walk stopped and therefore the only place the descent could
+        # still be, had no label at all. So a walk that followed a
+        # ball rolling seven pixels and then gave up rendered as a
+        # picture of a green with a ring on it, and the question "where
+        # do we lose the descent" could not be answered from the one
+        # image the dialog showed.
+        #
+        # The search box is drawn at the size it had grown to. That is
+        # the whole argument in one rectangle: either the ball is
+        # inside it and the gates refused it, or the box is nowhere
+        # near where a falling ball would have been, and the problem
+        # is the prediction rather than the detector.
+        _lost = info.get("lost_at") or {}
+        if _lost.get("xy"):
+            _lx, _ly = int(_lost["xy"][0]), int(_lost["xy"][1])
+            _hw = int(_lost.get("window_px") or 96) // 2
+            cv2.rectangle(im, (_lx - _hw, _ly - _hw), (_lx + _hw, _ly + _hw),
+                          (90, 170, 255), u + 1, cv2.LINE_AA)
+            cv2.drawMarker(im, (_lx, _ly), (90, 170, 255),
+                           cv2.MARKER_CROSS, 22 * u, u + 2)
+            cv2.putText(im, "LOST IT HERE  f%d, %.1fpx/frame, box %dpx"
+                        % (_lost.get("frame", 0),
+                           _lost.get("speed_px_per_frame", 0.0),
+                           _lost.get("window_px", 0)),
+                        (max(4 * u, _lx - _hw), max(16 * u, _ly - _hw - 8 * u)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5 * u, (90, 170, 255),
+                        u, cv2.LINE_AA)
         cv2.putText(im, str(info.get("why") or ""), (10 * u,
                     im.shape[0] - 10 * u), cv2.FONT_HERSHEY_SIMPLEX,
                     0.45 * u, (255, 255, 255), u, cv2.LINE_AA)

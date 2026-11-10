@@ -825,6 +825,8 @@ function DescentWalk({ walk }) {
   const det = walk.detector || {};
   const ct = walk.counts || {};
   const log = walk.log || [];
+  const lost = walk.lost_at || null;
+  const lostWins = walk.lost_windows || [];
   return (
     <div style={{ margin: "8px 0", paddingLeft: 10,
                   borderLeft: `2px solid ${walk.ok ? "#2f6feb" : "#b4690e"}` }}>
@@ -862,6 +864,72 @@ function DescentWalk({ walk }) {
           ? ` · ${walk.n_missed} frame(s) extrapolated across`
           : " · nothing extrapolated"}
       </div>
+      {/* ── WHERE IT LOST IT ─────────────────────────────────────
+          THE ONE QUESTION A 316-POINT WALK RAISES, and the report
+          used to answer every question but this one. "316 point(s)
+          walked back from the ball at rest, falling 7px over 315
+          frame(s)" is a walk that followed a ball ROLLING for five
+          seconds and stopped; the descent is on the far side of
+          wherever it stopped. The chain picture labelled the resting
+          place and the pitch mark -- both at the near end, both the
+          part that worked -- and left the far end bare.
+
+          FIRST IN THE BOX, above the detector and the totals,
+          because it is the thing being looked for. */}
+      {lost && (
+        <div style={{ marginTop: 6, padding: "6px 8px", borderRadius: 4,
+                      background: "var(--panel2, #1b1b1b)",
+                      borderLeft: "3px solid #5aa9ff" }}>
+          <div className="small"><b>Where it lost it</b></div>
+          <div className="tiny" style={{ marginTop: 2 }}>
+            Last actually seen on <b>f{lost.frame}</b> at {lost.xy[0]},{" "}
+            {lost.xy[1]}, moving{" "}
+            <b>{lost.speed_px_per_frame}px/frame</b>; the search box had
+            grown to <b>{lost.window_px}px</b>
+            {lost.window_was_capped ? " (its cap)" : ""} and the next{" "}
+            {lost.misses_at_the_end} frame(s) found nothing it would
+            accept.
+          </div>
+          {/* THE READING, NOT JUST THE NUMBERS. A ball lost at
+              1px/frame was lost while ROLLING, so the search never
+              reached the flight at all and no detector change can
+              help. A ball lost at 30px/frame was lost in the air,
+              which is a completely different fix. Spelling it out
+              because the distinction is the whole diagnosis and it
+              is not obvious from a decimal. */}
+          <div className="tiny muted" style={{ marginTop: 3 }}>
+            {lost.speed_px_per_frame < 4
+              ? "That is ROLLING speed. The walk never reached the"
+                + " flight — everything it tracked was the ball on the"
+                + " green, which is why the chain falls a handful of"
+                + " pixels over hundreds of frames. The descent is"
+                + " earlier than this frame and was never searched."
+              : "That is flight speed, so the walk was in the air when"
+                + " it lost the thread. Check the windows below: if the"
+                + " ball is inside the box, the shape gates refused it"
+                + " (a falling ball is a streak, not a circle); if it is"
+                + " not, the prediction was pointing at the wrong place."}
+          </div>
+          {lostWins.length > 0 && (
+            <div style={{ display: "grid", gap: 6, marginTop: 6,
+                          gridTemplateColumns:
+                            "repeat(auto-fit, minmax(140px, 1fr))" }}>
+              {lostWins.map((w) => (
+                <figure key={w.frame} style={{ margin: 0 }}>
+                  <a href={w.url} target="_blank" rel="noreferrer">
+                    <img src={w.url} alt={`window at f${w.frame}`}
+                         style={{ width: "100%", borderRadius: 3,
+                                  border: "1px solid var(--border, #333)" }} />
+                  </a>
+                  <figcaption className="tiny muted">
+                    f{w.frame} · {w.zoom}×{w.found ? "" : " · NOTHING"}
+                  </figcaption>
+                </figure>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {/* ── WHAT IT IS DOING, SAID OUT LOUD ──────────────────────
           THREE QUESTIONS, ASKED DIRECTLY, AFTER FIVE ROUNDS OF THIS
           BOX NOT ANSWERING THEM: is it zooming in, is it looking at

@@ -26227,6 +26227,17 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
                 # dictionary and they end the guessing.
                 "detector": _walk.get("detector"),
                 "work": _walk.get("work"),
+                # ── AND WHERE IT GAVE UP ──────────────────────────
+                #
+                # "316 point(s), falling 7px over 315 frame(s)" is a
+                # walk that followed a ball ROLLING and then stopped.
+                # The descent is on the far side of wherever it
+                # stopped, and until now nothing said where that was.
+                "lost_at": _walk.get("lost_at"),
+                "lost_windows": [
+                    dict(w, url=_clip_url_for(Path(w["path"]).name))
+                    for w in (_walk.get("lost_windows") or [])
+                    if w.get("path")],
                 "counts": _walk.get("counts"),
                 "log": _walk.get("log"),
                 "log_every": _walk.get("log_every"),

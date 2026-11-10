@@ -285,6 +285,65 @@ def main():
         ok("  and still draws its windows",
            1 <= len(_long["windows"]) <= 8, True)
 
+        # ── WHERE IT LOST IT, AS ITS OWN ANSWER ─────────────────────
+        #
+        # THE QUESTION A 316-POINT WALK ACTUALLY RAISES. On a real
+        # clip the walk reported "316 point(s) walked back from the
+        # ball at rest, falling 7px over 315 frame(s)" and stopped --
+        # a walk that followed a ball ROLLING for five seconds and
+        # never reached the flight. Nothing in the report said where
+        # it stopped, how fast the ball was going when it lost the
+        # thread, or how wide the window had grown; the chain picture
+        # labelled the resting place and the pitch mark, both at the
+        # near end, and left the far end bare.
+        for _lbl, _r in (("on a walk that worked", r),
+                         ("on a walk that found nothing", r3),
+                         ("on a long walk", _long)):
+            _l = _r.get("lost_at") or {}
+            ok("the walk says where it gave up %s" % _lbl, bool(_l), True)
+            ok("  on a named frame", isinstance(_l.get("frame"), int), True)
+            ok("  at a named pixel",
+               bool(_l.get("xy")) and len(_l["xy"]) == 2, True)
+            # THE NUMBER THE WHOLE THING TURNS ON. Losing a ball at
+            # 1px/frame is losing a ball that was ROLLING, so the
+            # descent is still ahead of the search and it never
+            # reached the part it exists to find. Losing one at
+            # 40px/frame is losing it in the air, which is a
+            # completely different fix.
+            ok("  with the speed it was going when it lost it",
+               _l.get("speed_px_per_frame") is not None, True)
+            ok("  and how wide the box had grown",
+               (_l.get("window_px") or 0) > 0, True)
+            ok("  and whether that box was at its cap",
+               "window_was_capped" in _l, True)
+            ok("  and the frames either side, unthinned",
+               len(_l.get("log") or []) > 0, True)
+            ok("  said in a sentence", "last actually seen" in
+               (_l.get("why") or ""), True)
+
+        # ── AND IT DRAWS THE PLACE IT GAVE UP ───────────────────────
+        #
+        # Eight tiles spread over 316 frames are eight pictures of a
+        # ball sitting still: the stride was forty-two and the twenty
+        # frames it died on were at one end, so not one of them was
+        # drawn. Its own gallery, not a share of the same eight slots
+        # -- they answer different questions and the spread won every
+        # time.
+        ok("the windows at the loss are their own gallery",
+           1 <= len(r.get("lost_windows") or []) <= 6, True)
+        ok("  and they are the frames at or before the last sighting",
+           all(w["frame"] <= r["lost_at"]["frame"]
+               for w in r["lost_windows"]), True)
+        ok("  on a long walk too",
+           1 <= len(_long.get("lost_windows") or []) <= 6, True)
+        # THE TAIL IS NEVER THINNED AWAY. `del seq[1::2]` on an
+        # even-length list drops the LAST entry -- which, on a walk
+        # that runs backwards, is the earliest frame and the only one
+        # anybody asks about.
+        ok("  and the thinning cannot drop the frames at the loss",
+           _long["lost_windows"][0]["frame"]
+           <= _long["lost_at"]["frame"], True)
+
     print()
     if _fails:
         print("%d FAILED: %s" % (len(_fails), ", ".join(_fails)))
