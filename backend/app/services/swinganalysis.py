@@ -57,6 +57,30 @@ BELOW_FEET_FRAC = 0.08
 ABOVE_HEAD_FRAC = 0.10
 
 
+# THE SMALLEST CROP WORTH JUDGING, in pixels. Below this there is
+# nothing for a model to look at and nothing for a detector to find,
+# and at zero `cv2.imwrite` raises rather than returning False.
+MIN_CROP_PX = 8
+
+
+def _write(path, img) -> bool:
+    """Write a picture, or say it could not be written. Never raises.
+
+    `cv2.imwrite` RETURNS False for an unwritable path and RAISES for
+    an empty image, which is the worst of both and the reason a single
+    bad crop could take down a whole verdict. One guard, used for
+    every picture in this file.
+    """
+    try:
+        if img is None or getattr(img, "size", 0) == 0:
+            return False
+        return bool(cv2.imwrite(str(path), img,
+                                [int(cv2.IMWRITE_JPEG_QUALITY), 80]))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("swinganalysis: could not write %s: %s", path, exc)
+        return False
+
+
 def _crop_rect(golfer, floor_y, heads, bounds):
     """(x0, y0, x1, y1) for the heat and for the frames, in crop px."""
     W, H = bounds
@@ -75,7 +99,50 @@ def _crop_rect(golfer, floor_y, heads, bounds):
     # The heat runs to the top of the picture, because a club at the
     # top of a backswing and a ball leaving both go up out of any box
     # drawn round a stance. The frames stop just above the heads.
-    return (x0, 0, x1, bottom), (x0, top, x1, bottom)
+    return (_usable(x0, 0, x1, bottom, W, H),
+            _usable(x0, top, x1, bottom, W, H))
+
+
+def _usable(x0, y0, x1, y1, W, H):
+    """A rect that can actually be cropped with, or the whole picture.
+
+    THE GOLFER'S BOX IS IN CROP PIXELS AND NEED NOT BE INSIDE THE
+    CROP. People are detected in the whole frame and their boxes are
+    shifted by the crop's offset, so a person standing outside the
+    crop comes through here with coordinates off either end. Then
+    `x0 = max(0, x - pad)` lands at or past W while `x1 = min(W, ...)`
+    is W -- or `bottom` lands at or below zero -- and the rect is
+    empty.
+    
+    An empty rect makes an empty crop, and an empty crop reaches
+    `cv2.imwrite`, which does not return False for it. It raises:
+
+        (-215:Assertion failed) !_img.empty() in function 'imwrite'
+
+    That lands in analyse()'s outer catch and the whole strike comes
+    back "could not tell — analysis failed", with an OpenCV assertion
+    where the reason should be. Reported from the field on #1467, four
+    audio triggers, every one of them lost.
+
+    A sliver would be worse than useless, so a rect that does not
+    overlap the picture falls back to the whole picture: the crop
+    exists to put the golfer in the middle, and failing that, judging
+    the whole frame is what the no-golfer branch already does.
+    """
+    # THE INTERSECTION WITH THE PICTURE IS THE WHOLE TEST, and it is
+    # the clamp as well. Judging the rect on its own size instead let
+    # a ten-pixel box sitting entirely off the corner survive, because
+    # ten is bigger than the minimum -- it then clamped to an
+    # eight-pixel sliver of the corner, which crops without raising
+    # and shows nobody anything. What matters is how much of the rect
+    # is actually ON the picture.
+    ix0 = max(0, int(x0))
+    iy0 = max(0, int(y0))
+    ix1 = min(int(W), int(x1))
+    iy1 = min(int(H), int(y1))
+    if ix1 - ix0 < MIN_CROP_PX or iy1 - iy0 < MIN_CROP_PX:
+        return (0, 0, int(W), int(H))
+    return (ix0, iy0, ix1, iy1)
 
 
 def analyse(frames, heat, geo, *, crop, zones, offsets=None,
@@ -173,6 +240,13 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
             hrect = frect = (0, 0, W, H)
         hx0, hy0, hx1, hy1 = hrect
         judged = heat[hy0:hy1, hx0:hx1].copy()
+        # BELT AND BRACES. `_usable` clamps the rect to the heat's own
+        # dimensions, so this should not be reachable -- but an empty
+        # `judged` is what reaches cv2.imwrite and RAISES, taking the
+        # whole verdict with it, and the cost of being sure is one
+        # comparison.
+        if judged.size == 0:
+            judged = heat.copy()
         if max(judged.shape[:2]) < 512 and min(judged.shape[:2]) > 0:
             sc = 512.0 / max(judged.shape[:2])
             judged = cv2.resize(judged,
@@ -215,16 +289,28 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
                                "not looked for")
 
         # ---- write the pictures --------------------------------
+        #
+        # ONE UNWRITABLE PICTURE MUST NOT COST THE VERDICT. `imwrite`
+        # does not return False on an empty image, it RAISES -- and
+        # every one of these calls sat inside the function's outer
+        # catch, so an empty crop came back as "could not tell —
+        # analysis failed: OpenCV(5.0.0) ... (-215:Assertion failed)
+        # !_img.empty() in function 'imwrite'". That is an assertion
+        # where the reason should be, on a strike nobody can now
+        # judge. Seen in the field on #1467: four audio triggers, all
+        # four lost to it.
         if out_dir:
             d = Path(out_dir)
             hn, fn = f"{prefix}-heat.jpg", f"{prefix}-frames.jpg"
-            cv2.imwrite(str(d / hn), judged,
-                        [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-            out["image"] = hn
+            if _write(d / hn, judged):
+                out["image"] = hn
+            else:
+                out["picture_why"] = (
+                    "the heat crop came out empty, so there is no picture "
+                    "for the judges to look at")
             if tiles:
-                cv2.imwrite(str(d / fn), grid_of_tiles(tiles),
-                            [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                out["frames_image"] = fn
+                if _write(d / fn, grid_of_tiles(tiles)):
+                    out["frames_image"] = fn
             # THE OPERATOR'S COPIES, with the zones, the measured feet
             # and the ball drawn on. Never what the judges see.
             _ball = ({"spot": [out["ball_spot"][0] - ox,
@@ -240,9 +326,7 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
                             ball=None if not _ball else
                             {"spot": [_ball["spot"][0] + ox,
                                       _ball["spot"][1] + oy]})
-            if hz is not None:
-                cv2.imwrite(str(d / f"{prefix}-heat-zones.jpg"), hz,
-                            [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            if hz is not None and _write(d / f"{prefix}-heat-zones.jpg", hz):
                 out["image_zones"] = f"{prefix}-heat-zones.jpg"
             if tiles:
                 zt = []
@@ -253,12 +337,20 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
                                    ball=None if not out["ball_spot"] else
                                    {"spot": out["ball_spot"]})
                     zt.append(a if a is not None else t)
-                cv2.imwrite(str(d / f"{prefix}-frames-zones.jpg"),
-                            grid_of_tiles(zt),
-                            [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                out["frames_image_zones"] = f"{prefix}-frames-zones.jpg"
+                if _write(d / f"{prefix}-frames-zones.jpg",
+                          grid_of_tiles(zt)):
+                    out["frames_image_zones"] = f"{prefix}-frames-zones.jpg"
 
         # ---- and the verdict -----------------------------------
+        #
+        # NO PICTURE, NO VERDICT -- BUT SAY WHICH. This used to fall
+        # straight through with `reason` still None, so an unwritable
+        # crop and a model that genuinely could not decide produced
+        # the same "could not tell" with nothing to tell them apart.
+        if judge and out_dir and not out["image"]:
+            out["reason"] = (out.get("picture_why")
+                             or "no picture could be written for the "
+                                "judges to look at")
         if judge and out_dir and out["image"]:
             from .ai_tracer import (
                 judge_swing_audio2, judge_swing_heat_image,
