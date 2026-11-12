@@ -1949,6 +1949,9 @@ def make_clip_vertical(
                         opening_x=(
                             _tsx.get("x") if _tsx else None
                         ),
+                        opening_t=(
+                            _tsx.get("t") if _tsx else None
+                        ),
                     )
                     _made = make_vertical_pan(
                         render_src, out_path, _ppath, cut_sec=_cut,
@@ -2028,7 +2031,8 @@ def make_clip_vertical(
                     render_src, out_path,
                     _vertical_pan_path(
                         [], None, _rf, _rw, _c2, green_x=_p2,
-                        opening_x=_tsx["x"], total_dur=_rd,
+                        opening_x=_tsx["x"], opening_t=_tsx.get("t"),
+                        total_dur=_rd,
                         ball_green_x=_gbx,
                     ),
                     cut_sec=_c2,
@@ -5256,6 +5260,9 @@ def _process_long_upload_segments(
                             opening_x=(
                                 _tsx.get("x") if _tsx else None
                             ),
+                            opening_t=(
+                                _tsx.get("t") if _tsx else None
+                            ),
                         )
                         _made = make_vertical_pan(
                             _vert_src, _vert_path, _ppath, cut_sec=_cut,
@@ -6711,7 +6718,7 @@ def _green_ball_x(swing, frame_w):
 def _vertical_pan_path(
     track, rest_xy, fps, frame_w, cut_dur=None, golfer_x=None,
     impact_t=None, green_x=None, ball_green_x=None, total_dur=None,
-    opening_x=None,
+    opening_x=None, opening_t=None,
 ):
     """Waypoints (time_sec, x_fraction) for the vertical follow-pan:
     hold on the golfer through address/swing, glide along the tracked
@@ -6730,8 +6737,23 @@ def _vertical_pan_path(
     # (waggle/club detections) — they were dragging the pan off the
     # golfer during the backswing. Drop them, and the hold below
     # extends to the impact moment.
-    if impact_t is not None:
-        pts = [(t, x) for t, x in pts if t >= float(impact_t) - 0.05]
+    #
+    # THE TRACER CLOSES THE GATE, NOT IMPACT. `opening_x` is read off
+    # the burned-in tracer and outranks every other anchor (see below),
+    # but the gate used to reopen at `impact_t` — so the first tracked
+    # point, which is the ball detector's guess at the same instant,
+    # took the camera straight back off the tracer. On clip 1430 that
+    # was 0.601 -> 0.550 in one frame at contact, read as "it opens in
+    # the middle and then pans to the tracer". When the tracer's own
+    # moment is known the gate holds until THAT, so the flight starts
+    # where the tracer starts and the opening framing survives impact.
+    _gate = None if impact_t is None else float(impact_t)
+    if opening_x is not None and opening_t is not None:
+        _gate = float(opening_t) if _gate is None else max(
+            _gate, float(opening_t),
+        )
+    if _gate is not None:
+        pts = [(t, x) for t, x in pts if t >= _gate - 0.05]
     # OPENING FRAME = THE GOLFER. Rest-ball x is the best anchor (the
     # golfer stands at the ball); fall back to the median of the first
     # few track points — the launch happens at the golfer too, and the
@@ -6775,8 +6797,8 @@ def _vertical_pan_path(
         # targets keeps the tip centered while the ball is in the air;
         # after the last point the tip's END position stays centered.
         _hold_until = pts[0][0] - 0.05
-        if impact_t is not None:
-            _hold_until = max(_hold_until, float(impact_t) - 0.05)
+        if _gate is not None:
+            _hold_until = max(_hold_until, _gate - 0.05)
         path.append((max(0.0, _hold_until), x0))
         path.extend(pts)
         t_last, x_last = pts[-1]
