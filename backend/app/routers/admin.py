@@ -6307,6 +6307,44 @@ _GREEN_PIN_PAN_SEC = 2.0
 _GREEN_END_HOLD_SEC = 0.2
 
 
+# HOW LONG AFTER THE STROKE APPEARS TO KEEP LOOKING. The tail recedes
+# over seconds, so a frame a long way after the first sighting is
+# showing a lifted-off arc rather than a launch. Measured from the
+# FIRST sighting rather than from the clip start, because impact lands
+# anywhere from ~1s to ~5s in depending on how long the player waggles,
+# and a fixed window would miss a slow pre-shot routine entirely.
+_TRACER_WINDOW_SEC = 0.8
+
+
+def _pick_tracer_foot(cands):
+    """Which sampled frame holds the stroke's LAUNCH point.
+
+    `cands` are (x_fraction, seconds, foot_y_fraction), one per sampled
+    frame that showed a stroke. Returns the chosen tuple, or None.
+
+    THE LOWEST FOOT WINS, NOT THE MEDIAN X. This used to take the
+    median x across every frame sampled in eight seconds, on the
+    reasoning that "the stroke's foot stays at the ball while the line
+    grows upward". It does not. The stroke's TAIL RECEDES: by ~5s on
+    clip 1430 the arc has lifted off the ground completely and ends in
+    a rounded tip in mid-air, and the bottom of that tip is still below
+    the 0.45 foot gate, so it is collected like any other candidate.
+    Late frames then outvote early ones and the median lands on the
+    descending tail -- 0.601, where no ball was ever struck, while the
+    player stood at ~0.73.
+
+    What we are looking for is the blue line LEAVING THE GROUND, and
+    the ball is the lowest that line is ever seen: a receding tail only
+    ever moves up. So the launch frame is the one whose foot sits
+    lowest in the picture, and ties go to the earliest of them.
+    """
+    if not cands:
+        return None
+    # Greatest foot y = lowest on screen. -t so an equally low foot
+    # seen earlier wins, which is the one nearer impact.
+    return max(cands, key=lambda c: (c[2], -c[1]))
+
+
 def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0):
     """Where the TRACER STARTS, read off the picture itself.
 
@@ -6527,20 +6565,30 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0):
                              min(1.0, max(0.0, fy))),
                         )
                 idx += 1
-                # DON'T TRUST ONE FRAME. The stroke's foot stays at the
-                # ball while the line grows upward, so several frames
-                # should agree — and the median of them survives a
-                # single bad read, which deciding on the first frame
-                # that passed never could.
+                # SAMPLE SEVERAL, THEN PICK. The foot does NOT stay at
+                # the ball -- the tail recedes and the stroke lifts off
+                # the ground -- so these frames do not agree and must
+                # not be averaged. `_pick_tracer_foot` takes the lowest
+                # foot of them, which is the launch. Collecting a few
+                # still beats deciding on the first frame that passed,
+                # because the first is the shortest and the least
+                # certain.
                 if len(cands) >= 5:
                     break
-            if cands:
+                # PAST THE WINDOW, STOP. Without this the scan runs the
+                # full eight seconds and collects the arc on its way
+                # down, which is what put 0.601 on clip 1430. Finding
+                # nothing at all is the better failure: `x` comes back
+                # None, the pan falls through to the ball track, and on
+                # that clip the track was the right anchor anyway.
+                if cands and (idx / fps) - cands[0][1] > _TRACER_WINDOW_SEC:
+                    break
+            _hit = _pick_tracer_foot(cands)
+            if _hit is not None:
                 _xs = sorted(c[0] for c in cands)
-                _med = _xs[len(_xs) // 2]
-                _fys = sorted(c[2] for c in cands)
                 return {
-                    "x": _med, "y": _fys[len(_fys) // 2],
-                    "t": cands[0][1], "why": "ok",
+                    "x": _hit[0], "y": _hit[2], "t": _hit[1],
+                    "why": "ok",
                     "best": best, "n": len(cands),
                     "spread": round(_xs[-1] - _xs[0], 3),
                 }
