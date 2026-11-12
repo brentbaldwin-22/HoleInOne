@@ -1835,6 +1835,21 @@ def make_clip_vertical(
                     tracer_best=(_tsx or {}).get("best"),
                     tracer_n=(_tsx or {}).get("n"),
                     tracer_spread=(_tsx or {}).get("spread"),
+                    # HOW HIGH THE STROKE'S FOOT SAT. What we are
+                    # looking for is the blue line LEAVING THE GROUND,
+                    # so the foot belongs down at the player's feet --
+                    # around 0.65-0.75 of frame height on a tee view.
+                    # A foot reported high in the frame never touched
+                    # the ground, which means the component measured
+                    # was not a stroke rising from a ball, and its `x`
+                    # is not a launch point however steady it looks.
+                    # `_tracer_start_x` has always returned this (the
+                    # Player ID tiles crop around it); it simply was
+                    # never written down here.
+                    tracer_y=(
+                        round(_tsx["y"], 3)
+                        if _tsx and _tsx.get("y") is not None else None
+                    ),
                 )
                 _diag.update(
                     track_points=len(_trk),
@@ -2133,6 +2148,22 @@ def make_clip_vertical(
             "mode": "pan" if _made else "static",
             "tracer": _diag.get("tracer_x"),
             "tracer_why": _diag.get("tracer_why"),
+            # WHETHER TO BELIEVE THE TRACER, NOT JUST WHAT IT SAID.
+            # `tracer` alone cannot be judged: 0.601 looks like a
+            # reading until you know the golfer was at 0.73. These
+            # four were computed all along and kept only in the HTTP
+            # response, so they vanished on reload -- the same fault
+            # the comment above describes, fixed for four anchors and
+            # not for these. `spread` separates a steady read of the
+            # WRONG object (~0) from a foot that moved (large); `n` is
+            # how many frames agreed; `launch` and `golfer` are the
+            # rival anchors the tracer outranks, and a tracer that
+            # disagrees with both is the one to distrust.
+            "tracer_spread": _diag.get("tracer_spread"),
+            "tracer_n": _diag.get("tracer_n"),
+            "tracer_y": _diag.get("tracer_y"),
+            "launch": _diag.get("launch_x"),
+            "golfer": _diag.get("golfer_x"),
             "cut": _diag.get("cut"),
             "cut_src": _diag.get("cut_src"),
             "gball": _diag.get("green_ball_x"),

@@ -295,6 +295,21 @@ export default function AdminProducedClips() {
                 const mode = pick(live && live.mode, d && d.mode);
                 const tracer = pick(live && live.tracer_x, d && d.tracer);
                 const tracerWhy = pick(live && live.tracer_why, d && d.tracer_why);
+                // The tracer's own confidence, and the two anchors it
+                // outranks. A tracer that reads steadily (spread ~0,
+                // n 5) but sits far from BOTH launch and golfer is a
+                // confident read of the wrong object, which is not
+                // visible from the number alone.
+                const spread = pick(live && live.tracer_spread, d && d.tracer_spread);
+                const tn = pick(live && live.tracer_n, d && d.tracer_n);
+                // How high the stroke's foot sat. We are looking for
+                // the blue line leaving the GROUND, so on a tee view
+                // this belongs around 0.65-0.75. Reported high, the
+                // thing measured never touched the ground and its x is
+                // not a launch point however steady it reads.
+                const footY = pick(live && live.tracer_y, d && d.tracer_y);
+                const launch = pick(live && live.launch_x, d && d.launch);
+                const golfer = pick(live && live.golfer_x, d && d.golfer);
                 const cut = pick(live && live.cut, d && d.cut);
                 const cutSrc = pick(live && live.cut_src, d && d.cut_src);
                 const gball = pick(live && live.green_ball_x, d && d.gball);
@@ -330,7 +345,7 @@ export default function AdminProducedClips() {
                 return (
                   <div
                     style={diagStyle}
-                    title="What the 9:16 render read off this clip's own frames. tracer = where the stroke starts (fraction of frame width). cut = the tee->green scene change. gball = where the ball finished, read from the green camera's tracer. pin = the flagstick. Any of them reading 'none' means that anchor was not found, and the pan falls back."
+                    title="What the 9:16 render read off this clip's own frames. tracer = where the stroke starts (fraction of frame width); (n5 ±0.004) is how many frames agreed and how far apart they were, so a small spread means a steady read — of the right object or the wrong one. foot y = how high up the frame the stroke's foot sat: we are looking for the line LEAVING THE GROUND, so on a tee view this should be about 0.65-0.75, and a high value means the thing measured never touched the ground. launch = the same point from the ball track, golfer = from pose; the tracer outranks both, so a tracer far from BOTH is the one to distrust. cut = the tee->green scene change. gball = where the ball finished, read from the green camera's tracer. pin = the flagstick. Any of them reading 'none' means that anchor was not found, and the pan falls back."
                   >
                     {`9:16 ${mode || "—"}`}
                     {srcKind === "stamped"
@@ -342,6 +357,14 @@ export default function AdminProducedClips() {
                           : ""}
                     {swing ? ` · swing ${swing}` : ""}
                     {` · tracer ${num(tracer, tracerWhy)}`}
+                    {tracer != null && (spread != null || tn != null)
+                      ? `(${tn != null ? `n${tn}` : ""}${
+                          tn != null && spread != null ? " " : ""
+                        }${spread != null ? `\u00b1${spread}` : ""})`
+                      : ""}
+                    {footY != null ? ` · foot y ${footY}` : ""}
+                    {launch != null ? ` · launch ${launch}` : ""}
+                    {golfer != null ? ` · golfer ${golfer}` : ""}
                     {` · cut ${cutStr}`}
                     {` · gball ${num(gball, gballWhy)}`}
                     {` · pin ${num(pin)}${pin != null && pinSrc ? `(${pinSrc})` : ""}`}
