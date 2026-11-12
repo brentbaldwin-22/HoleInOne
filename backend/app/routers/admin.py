@@ -1820,7 +1820,19 @@ def make_clip_vertical(
                 # every metadata anchor above, because it is the only
                 # one that cannot be absent from the frames we are
                 # about to crop.
-                _tsx = _tracer_start_x(render_src)
+                # IMPACT FIRST, because it is what windows the scan.
+                # `_sw`/`_fps`/`_off` have been in hand since the top
+                # of this loop; the later copy of this inside the
+                # `len(_trk) >= 3` block reads the same fields and is
+                # left alone so the pan keeps its own value.
+                _scan_imp = None
+                try:
+                    _sif0 = _sw.get("impact_frame")
+                    if _sif0 is not None:
+                        _scan_imp = max(0.0, (float(_sif0) - _off) / _fps)
+                except (TypeError, ValueError):
+                    _scan_imp = None
+                _tsx = _tracer_start_x(render_src, impact_t=_scan_imp)
                 if _tsx and _tsx.get("x") is not None:
                     # NOT into _lx: that is the TRACKED launch, and
                     # the readout prints it. Overwriting it made the
@@ -5255,7 +5267,16 @@ def _process_long_upload_segments(
                     # SAME FIRST STEP AS THE ON-DEMAND RENDER. Without
                     # this, Re-Produce and the ⟳ button framed the same
                     # clip differently, which is its own bug.
-                    _tsx = _tracer_start_x(_vert_src)
+                    # IMPACT FIRST: it windows the scan. `tracer_info`
+                    # and `_seg_fps` are both long since bound here.
+                    _scan_imp = None
+                    try:
+                        _if0 = (tracer_info or {}).get("impact_frame")
+                        if _if0 is not None and _seg_fps:
+                            _scan_imp = float(_if0) / float(_seg_fps)
+                    except (TypeError, ValueError):
+                        _scan_imp = None
+                    _tsx = _tracer_start_x(_vert_src, impact_t=_scan_imp)
                     if len(_trk) >= 3 and _sw > 0 and _seg_fps:
                         _cut = None
                         if composite_url:
@@ -6313,39 +6334,54 @@ _GREEN_PIN_PAN_SEC = 2.0
 _GREEN_END_HOLD_SEC = 0.2
 
 
-# WHERE TO LOOK FOR THE STROKE, IN SECONDS FROM THE SCAN'S START.
-# The whole window is searched and the LOWEST foot in it wins (see
-# `_pick_tracer_foot`); nothing past the end is looked at.
+# WHERE TO LOOK FOR THE STROKE. The whole window is searched and the
+# LOWEST foot in it wins (see `_pick_tracer_foot`); nothing outside it
+# is looked at, so the lifted-off arc that put 0.601 on clip 1430 is
+# never sampled.
 #
-# 1.0 skips the address, where a blue shirt that moved since the
-# baseline is the only new blue there is. 3.0 is the point of this
-# window: by ~5s the stroke on clip 1430 has lifted off the ground and
-# ends in a tip in mid-air at 0.606, which the old eight-second scan
-# collected and averaged into the answer. The ball was struck at ~2s.
+# ANCHORED ON IMPACT, NOT ON THE CLIP'S START. A fixed 1s-3s window
+# was tried first and broke every clip from the normal pipeline:
+# ai_tracer cuts at `before_impact_sec = 4.5`, so the swing lands
+# around 4.5s in and 1s-3s is the ADDRESS -- the player still standing
+# over the ball, no stroke to find. Clip 1430 is a d3prod clip whose
+# swing is at ~2s, which is the only reason that window looked right.
+# It is also what the Player ID scan's comment was recording: "a
+# tracer that starts at three or four seconds, which is most of them".
 #
-# THE RISK, WRITTEN DOWN. The comment on the Player ID scan records
-# the opposite observation -- "a tracer that starts at three or four
-# seconds, which is most of them". If that holds, a 3.0 ceiling finds
-# nothing on those clips and the pan falls back to the ball track.
-# That is a safe failure, not a wrong answer, and these two numbers
-# are the whole fix if it turns out to bite.
+# Impact +/- 1s reproduces exactly 1s-3s on clip 1430 and follows the
+# swing everywhere else.
+_TRACER_WIN_HALF_SEC = 1.0
+# WHEN IMPACT IS UNKNOWN. `impact_frame` is absent on some clips, so
+# this has to cover both populations: the d3prod swing at ~2s and the
+# pipeline's at ~4.5s. Wider is safe now in a way it was not before --
+# the lowest-foot rule rejects the lifted-off arc on its own, so this
+# window is a guard rather than the mechanism.
 _TRACER_WIN_START_SEC = 1.0
-_TRACER_WIN_END_SEC = 3.0
+_TRACER_WIN_END_SEC = 6.0
 
 
 def _tracer_scan_bounds(fps, idx0, win_start_sec, win_end_sec,
-                        max_scan_sec):
+                        max_scan_sec, impact_t=None,
+                        half_sec=_TRACER_WIN_HALF_SEC):
     """First and last frame index to sample, as (lo, limit) exclusive.
 
     `idx0` is where the scan starts (0 for the tee, the cut for the
-    green), and the window is measured FROM there. `max_scan_sec` is a
-    caller's cap that the window can only tighten, never widen -- the
-    Player ID scan passes the cut through it so the green half's tracer
-    can never be read as the one that came off the club.
+    green) and the window is measured FROM there. With `impact_t` the
+    window is that moment +/- `half_sec`; without it the fixed
+    win_start/win_end pair is used instead.
+
+    `max_scan_sec` is a caller's cap that the window can only tighten,
+    never widen -- the Player ID scan passes the cut through it so the
+    green half's tracer can never be read as the one off the club.
     """
-    lo = idx0 + int(float(win_start_sec) * fps)
+    if impact_t is not None:
+        lo_sec = max(0.0, float(impact_t) - float(half_sec))
+        hi_sec = float(impact_t) + float(half_sec)
+    else:
+        lo_sec, hi_sec = float(win_start_sec), float(win_end_sec)
+    lo = idx0 + int(lo_sec * fps)
     limit = idx0 + int(
-        min(float(win_end_sec), max(1.0, float(max_scan_sec))) * fps
+        min(hi_sec, max(1.0, float(max_scan_sec))) * fps
     )
     return lo, max(lo, limit)
 
@@ -6381,7 +6417,7 @@ def _pick_tracer_foot(cands):
 
 def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
                     win_start_sec=_TRACER_WIN_START_SEC,
-                    win_end_sec=_TRACER_WIN_END_SEC):
+                    win_end_sec=_TRACER_WIN_END_SEC, impact_t=None):
     """Where the TRACER STARTS, read off the picture itself.
 
     STEP 1 OF FRAMING THE 9:16. Every other anchor is metadata that can
@@ -6500,6 +6536,7 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
             # the frames before it cost almost nothing.
             _win_lo, limit = _tracer_scan_bounds(
                 fps, idx0, win_start_sec, win_end_sec, max_scan_sec,
+                impact_t=impact_t,
             )
             while idx < _win_lo:
                 if not cap.grab():

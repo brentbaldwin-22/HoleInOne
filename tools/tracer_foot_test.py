@@ -11,9 +11,10 @@ frames outvote the early ones. 0.601 is the descending tail.
 The stroke's tail recedes, so its foot climbs over the clip. The ball
 is the LOWEST that line is ever seen.
 
-Both halves of the fix are covered: the 1s-3s search window, so the 5s
-frame is never sampled, and the lowest-foot rule for choosing among the
-frames that are. They are pure, so they are read off the shipping
+Both halves of the fix are covered: the search window -- anchored on
+impact, because ai_tracer cuts 4.5s before it and a FIXED 1s-3s window
+searched the address on every clip from the normal pipeline -- and the
+lowest-foot rule for choosing among the frames inside it. They are pure, so they are read off the shipping
 source and exec'd alone -- admin.py cannot be imported (no fastapi, and
 py3.9 chokes on deps.py).
 
@@ -26,14 +27,20 @@ _SRC = (pathlib.Path(__file__).resolve().parents[1]
         / "backend/app/routers/admin.py").read_text()
 _ns: dict = {}
 exec(
-    _SRC[_SRC.index("_TRACER_WIN_START_SEC = "):
+    _SRC[_SRC.index("_TRACER_WIN_HALF_SEC = "):
          _SRC.index("def _tracer_start_x(")],
     _ns,
 )
 _pick_tracer_foot = _ns["_pick_tracer_foot"]
 _tracer_scan_bounds = _ns["_tracer_scan_bounds"]
+HALF = _ns["_TRACER_WIN_HALF_SEC"]
 WIN_LO = _ns["_TRACER_WIN_START_SEC"]
 WIN_HI = _ns["_TRACER_WIN_END_SEC"]
+
+# ai_tracer cuts every clip at `before_impact_sec`, so this is where
+# the swing lands on anything from the normal pipeline.
+PIPELINE_IMPACT = 4.5
+D3PROD_IMPACT = 2.0
 
 # (x, seconds, foot_y). Clip 1430 as the screenshots show it: the
 # stroke leaves the ground at ~0.765/0.68 just after impact, then the
@@ -86,25 +93,42 @@ def main() -> int:
     assert _pick_tracer_foot(flat)[0] == 0.70, "steady stroke disturbed"
     print("steady stroke: unchanged")
 
-    # ---- the search window ------------------------------------
-    # Only 1s-3s is looked at, so the 5s tip is never a candidate at
-    # all; the rule above is the second line of defence, not the only
-    # one.
-    assert (WIN_LO, WIN_HI) == (1.0, 3.0), (WIN_LO, WIN_HI)
-    lo, limit = _tracer_scan_bounds(30.0, 0, WIN_LO, WIN_HI, 8.0)
-    print(f"tee window: frames {lo}-{limit} "
-          f"({lo / 30:.1f}s-{limit / 30:.1f}s)")
-    assert (lo, limit) == (30, 90), (lo, limit)
-    assert limit / 30.0 <= 3.0, "looks past 3s"
-    # The 5s arc tip that produced 0.601 falls outside it.
-    assert 5.07 * 30 > limit, "the 5s frame is still inside the window"
+    # ---- the search window, anchored on impact -----------------
+    def win(impact=None, cap=8.0, fps=30.0, idx0=0):
+        lo, hi = _tracer_scan_bounds(fps, idx0, WIN_LO, WIN_HI, cap,
+                                     impact_t=impact)
+        return round(lo / fps, 2), round(hi / fps, 2)
+
+    # Clip 1430: a d3prod swing at ~2s. Anchoring must reproduce
+    # EXACTLY the 1s-3s window that was asked for after watching it.
+    assert win(D3PROD_IMPACT) == (1.0, 3.0), win(D3PROD_IMPACT)
+    print(f"d3prod  impact {D3PROD_IMPACT}s -> {win(D3PROD_IMPACT)}")
+
+    # The normal pipeline cuts 4.5s before impact, so a FIXED 1-3s
+    # window would have searched the address and found no stroke at
+    # all. This is the regression that broke the next clip produced.
+    assert win(PIPELINE_IMPACT) == (3.5, 5.5), win(PIPELINE_IMPACT)
+    assert win(PIPELINE_IMPACT)[0] > 3.0, (
+        "the pipeline's swing is still outside a 1-3s window")
+    print(f"pipeline impact {PIPELINE_IMPACT}s -> {win(PIPELINE_IMPACT)}")
+
+    # The 5s tip that produced 0.601 is outside the d3prod window, so
+    # the lowest-foot rule stays the second line of defence.
+    assert 5.07 > win(D3PROD_IMPACT)[1], "the 5s frame is still in range"
+
+    # Impact unknown: one window has to cover both populations.
+    assert win() == (WIN_LO, WIN_HI) == (1.0, 6.0), win()
+    assert win()[0] <= D3PROD_IMPACT <= win()[1], "d3prod swing not covered"
+    assert win()[0] <= PIPELINE_IMPACT <= win()[1], "pipeline swing not covered"
+    print(f"impact unknown -> {win()} (covers both)")
+
+    # Never negative, however early impact lands.
+    assert win(0.2)[0] == 0.0, win(0.2)
 
     # A caller's cap can tighten the window but never widen it: the
     # Player ID scan passes the cut so the green tracer is unreachable.
-    _, cut_limit = _tracer_scan_bounds(30.0, 0, WIN_LO, WIN_HI, 2.0)
-    assert cut_limit == 60, cut_limit
-    _, wide = _tracer_scan_bounds(30.0, 0, WIN_LO, WIN_HI, 99.0)
-    assert wide == 90, f"max_scan_sec widened the window to {wide}"
+    assert win(PIPELINE_IMPACT, cap=4.0)[1] == 4.0, win(PIPELINE_IMPACT, cap=4.0)
+    assert win(cap=99.0)[1] == WIN_HI, "max_scan_sec widened the window"
 
     # The green scan measures its window from the cut, not from zero.
     g_lo, g_limit = _tracer_scan_bounds(30.0, 200, 0.0, 8.0, 8.0)
