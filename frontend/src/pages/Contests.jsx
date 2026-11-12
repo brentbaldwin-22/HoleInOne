@@ -25,48 +25,7 @@ function Countdown({ endsAt }) {
 
 const CADENCES = [
   { key: "daily",   label: "Daily contests", blurb: "Reset at midnight UTC. Small but constant — show up daily." },
-  { key: "monthly", label: "Monthly draw",   blurb: "Every round you play this month is one entry. Drawn on the 1st." },
 ];
-
-/**
- * The draw has no standings — every entry is equal, so a table would be
- * a list of names in no meaningful order. The number of entries is the
- * only true thing to show, and it doubles as the reason to play again:
- * a visible count is a visible chance.
- */
-function DrawCounter({ contest }) {
-  return (
-    <div className="card" style={{ textAlign: "center" }}>
-      <h3 style={{ marginBottom: 4 }}>{contest.title}</h3>
-      <div
-        style={{
-          fontSize: "clamp(2.6rem, 8vw, 4rem)",
-          fontWeight: 700,
-          lineHeight: 1.05,
-          color: "var(--emerald-700)",
-          margin: "10px 0 2px",
-        }}
-      >
-        {contest.count}
-      </div>
-      <p className="small muted" style={{ marginBottom: 0 }}>
-        {contest.count_label}
-      </p>
-      <div
-        className="small center"
-        style={{
-          marginTop: 14,
-          paddingTop: 12,
-          borderTop: "1px solid var(--border)",
-          color: "var(--ink-soft)",
-        }}
-      >
-        <span className="tiny upper muted" style={{ marginRight: 6 }}>Prize</span>
-        <b style={{ color: "var(--emerald-700)" }}>{contest.prize}</b>
-      </div>
-    </div>
-  );
-}
 
 /**
  * Shot of the Week. Five clips we picked, one vote each.
@@ -231,8 +190,8 @@ export default function Contests() {
           Play a round. Win a prize.
         </h1>
         <p>
-          Every registered round counts. Closest to the pin, shot of the week,
-          and the monthly draw. The $10,000 hole-in-one contest runs alongside.
+          Every registered round counts. Closest to the pin and shot of the
+          week. The $10,000 hole-in-one contest runs alongside.
         </p>
         <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
           <Link to="/courses" className="btn small" style={{ width: "auto" }}>Pick a course — $20</Link>
@@ -259,9 +218,6 @@ export default function Contests() {
               </div>
               <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
                 {section.contests.map((c) => (
-                  c.kind === "counter" ? (
-                    <DrawCounter key={c.id} contest={c} />
-                  ) : (
                   <LeaderboardCard
                     key={c.id}
                     title={c.title}
@@ -283,7 +239,6 @@ export default function Contests() {
                       </div>
                     }
                   />
-                  )
                 ))}
               </div>
             </section>
@@ -297,9 +252,10 @@ export default function Contests() {
         <h3 style={{ color: "var(--emerald-800)" }}>About the prizes</h3>
         <p className="small" style={{ color: "var(--emerald-800)" }}>
           Closest to the pin is measured from real clips. Shot of the week is
-          shortlisted by us and decided by your votes. The monthly draw is one
-          entry per round, drawn at random. Winners are locked when the timer
-          hits zero, and we email you if it is you.
+          shortlisted by us and decided by your votes. Every prize here is
+          won by the shot you hit or the votes you earn — never by a draw.
+          Winners are locked when the timer hits zero, and we email you if
+          it is you.
         </p>
       </div>
     </div>

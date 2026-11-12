@@ -4,10 +4,14 @@ import { Brand, Icon } from "../components/Brand.jsx";
 import { api } from "../api.js";
 import useAuth from "../hooks/useAuth.js";
 
-// The four prize games, in the order they matter to a player standing on
+// The three prize games, in the order they matter to a player standing on
 // the tee: the one you could win today, the one you could win with one
-// swing, the weekly, then the monthly. Cadence and prize are deliberately
-// on the card -- "what could I win and how often" is the whole question.
+// swing, then the weekly. Cadence and prize are deliberately on the card
+// -- "what could I win and how often" is the whole question.
+//
+// The Monthly Draw was removed on 2026-11-10. It was drawn at random
+// among rounds purchased, and its own card said "play more, more
+// chances" -- a chance promotion sold for money, not a contest of skill.
 //
 // Design and rules live in docs/contests.md. Prize copy is hard-coded for
 // launch; when the amounts move with volume it should come from the API.
@@ -41,16 +45,6 @@ const GAMES = [
       "The best shot of the week, picked by us. Winner gets posted on our socials.",
     prize: "Free round + featured",
     to: "/contests#sotw",
-  },
-  {
-    key: "draw",
-    title: "Monthly Draw",
-    cadence: "Monthly · all courses",
-    icon: "users",
-    blurb:
-      "Every round you play is one entry. Play more, more chances. Drawn on the 1st.",
-    prize: "$100",
-    to: "/contests#draw",
   },
 ];
 
@@ -200,10 +194,11 @@ export default function Home() {
         <div className="home-wrap home-section-in">
           <div className="home-rule" />
           <div className="home-sec-head">
-            <h2>Four ways to win</h2>
+            <h2>Three ways to win</h2>
             <p>
-              Every round you play enters you automatically. No extra
-              sign-up, no separate entry fee.
+              Every registered round makes you eligible for all three. No
+              extra sign-up, no separate entry fee — each one is won by the
+              shot you hit or the votes you earn.
             </p>
           </div>
           <div className="game-grid">

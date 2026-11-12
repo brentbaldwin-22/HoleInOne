@@ -18,7 +18,6 @@ be built.
 | Hole-in-One | anytime | per course + network | cash (insured) | nothing new |
 | Closest to the Pin | daily | **per course** | free round | green-camera calibration |
 | Shot of the Week | weekly | network-wide | cash | nothing new |
-| Monthly Draw | monthly | network-wide | cash | round-counting per player |
 
 Two of the four can be built today. The other two are gated on one piece
 of work each.
@@ -297,54 +296,49 @@ table keyed by clip and voter, plus a results view.
 
 ---
 
-## 4. Monthly Draw
+## 4. Monthly Draw — REMOVED 2026-11-10
 
-### Why a draw rather than "most rounds wins"
+**Do not rebuild this.** The draw was removed from the product on
+2026-11-10. What follows is why, so the same design is not arrived at
+again from the same first principles.
 
-The first instinct is to reward the player with the most sign-ups in a
-month. That is the wrong shape, for three reasons:
+The draw awarded a cash prize by random selection among rounds
+purchased. That is prize + chance + consideration: the three elements of
+a lottery. Private lotteries are prohibited in essentially every state,
+and the incentive the design was built around — "more rounds, more
+entries" — is the part that makes it one. The home page card said so out
+loud: *"Play more, more chances."*
 
-1. **It is a spending contest.** At $20 a round, "most sign-ups" means
-   "whoever paid the most wins money back". That reads badly and makes
-   the prize feel like a rebate.
-2. **Only one person can win, and it is the same person every month.** By
-   month two everyone else has done the arithmetic and disengaged. A
-   prize nobody believes they can win generates no behaviour.
-3. **It rewards the player who least needs the nudge.** The heavy user is
-   already coming back. The budget does more work aimed at the player
-   who has been twice and might come a third time.
+Two mitigations were specified in this document and neither was built:
 
-A draw keeps the identical frequency incentive — more rounds, more
-entries — while leaving a real chance for the casual player, so they stay
-engaged instead of tuning out.
+1. **The free alternate method of entry.** The section below used to say
+   it "is what keeps a paid draw on the right side of the line." No such
+   page was ever shipped, so the draw ran with paid entry only.
+2. **The legal review.** This document asked for "twenty minutes with
+   someone local before it goes live." It went live without it.
 
-### How entry works
+It also ran with **no published Official Rules at all**, while the rules
+that *were* published — for the hole-in-one contest — stated that the $20
+"is not an entry fee… and paying more does not improve your chances,
+because there are no chances to improve." The draw made that false.
 
-**Automatic. One entry per round played.** No opt-in, no form, no box to
-tick. Friction is what kills these; every extra step loses people who
-would otherwise have been entered.
+In Florida the draw was worse than unrules'd. Fla. Stat. § 849.094 sits
+in Chapter 849, the criminal gambling code, and is the safe harbour for
+*no-purchase-necessary* promotions. A chance drawing funded by mandatory
+paid entry does not qualify for it, so registering the promotion would
+not have cured it.
 
-The rule, in one line for the site:
+### What replaced it
 
-> **Every round you play in a calendar month = one entry into that
-> month's draw.**
+Nothing. The three remaining games — closest to the pin, hole-in-one,
+shot of the week — are decided by the shot you hit or the votes you earn.
+The frequency incentive the draw existed to create is left to CTP, which
+resets daily and rewards coming back without turning the prize on
+chance.
 
-- Entries **reset monthly** — no carry-over. The point is a fresh reason
-  to come back on the 1st.
-- Drawn on the 1st, winner announced by email and on the leaderboard.
-
-### The free entry route
-
-A paid draw needs a **free alternate method of entry** — a page where
-someone submits name and email once per month for a single entry, no
-payment. Very few people use it; it costs almost nothing; it is what
-keeps a paid draw on the right side of the line. Link it in the footer
-and reference it in the rules.
-
-**This is not legal advice.** The three skill games (closest to the pin,
-hole-in-one, shot of the week) are on much firmer ground than a random
-draw tied to a paid entry, and Texas has specific rules. Worth twenty
-minutes with someone local before it goes live.
+If a monthly prize is wanted later, it has to be decided by something
+other than a draw: best CTP of the month, longest drive, most improved.
+Any of those keeps it a contest of skill.
 
 ### Identity — the dependency everything else rests on
 
@@ -397,7 +391,6 @@ out, per course:
 |---|---|
 | Closest to the pin | **30** |
 | Shot of the week | 4 |
-| Monthly draw | 1 |
 | Hole-in-one | rare |
 
 A $25 daily closest-to-the-pin prize is **$750/month** — the entire
@@ -418,11 +411,15 @@ course may co-fund it since it is spend in their shop.
 
 ### Numbers at 15% of revenue, one course, $20 a round
 
-| Rounds/day | Monthly revenue | Prize budget | CTP daily | Shot of week | Monthly draw |
-|---|---|---|---|---|---|
-| 5 | $3,000 | ~$450 | free round | $25 ×4 | $250 |
-| 15 | $9,000 | ~$1,350 | free round | $50 ×4 | $750 |
-| 40 | $24,000 | ~$3,600 | free round + $25 | $100 ×4 | $1,500 |
+| Rounds/day | Monthly revenue | Prize budget | CTP daily | Shot of week |
+|---|---|---|---|---|
+| 5 | $3,000 | ~$450 | free round | $25 ×4 |
+| 15 | $9,000 | ~$1,350 | free round | $50 ×4 |
+| 40 | $24,000 | ~$3,600 | free round + $25 | $100 ×4 |
+
+The column that used to sit on the right of this table was the
+monthly draw's budget. Removing the draw frees it: at 15 rounds/day
+that is ~$750/month available to the skill games instead.
 
 At current volumes — a handful of players, $60 lifetime gross — **start at
 or below the first row.**
@@ -459,9 +456,7 @@ Roughly cheapest-and-most-valuable first:
 
 1. **Ace wall.** Nearly free — `ball_in_cup` and the notification flow
    already exist. Best marketing asset per hour of work.
-2. **Monthly draw.** Needs identity normalisation and a round count; the
-   free-entry form is a static page plus a table. The entry-count line in
-   the existing emails is where most of the value is.
+2. ~~**Monthly draw.**~~ Removed 2026-11-10 — see section 4. Do not build.
 3. **Shot of the Week.** Needs a votes table and a results view. The
    channel and highlight tagging already exist.
 4. **Closest to the Pin.** Blocked on the green-camera calibration

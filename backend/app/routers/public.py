@@ -201,20 +201,17 @@ def contests(db: Session = Depends(get_db)):
     over a whole month or year, which meant a page that mostly showed a
     near-empty table and a prize nobody could see themselves winning.
 
-    The draw has no standings by design: every round is one entry and no
-    entry is ahead of another, so the honest thing to show is how many
-    are in. Time windows are UTC midnight boundaries.
+    The Monthly Draw was removed on 2026-11-10: it awarded a prize by
+    random selection among rounds purchased, which made it a chance
+    promotion funded by consideration rather than a contest of skill.
+    Every contest that remains is decided by the shot or by a vote.
+    Time windows are UTC midnight boundaries.
     """
     from datetime import datetime, timedelta
 
     now = datetime.utcnow()
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = day_start + timedelta(days=1)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    if month_start.month == 12:
-        month_end = month_start.replace(year=month_start.year + 1, month=1)
-    else:
-        month_end = month_start.replace(month=month_start.month + 1)
 
     assigned = ClipProcessingStatus.assigned.value
 
@@ -244,33 +241,10 @@ def contests(db: Session = Depends(get_db)):
             ],
         })
 
-    # Monthly — the draw. One entry per round registered this month.
-    entries = (
-        db.query(func.count(Participant.id))
-        .filter(Participant.created_at >= month_start)
-        .filter(Participant.created_at < month_end)
-        .scalar()
-    ) or 0
-
-    monthly_draw = {
-        "id": "monthly_draw",
-        "title": "Monthly Draw",
-        "icon": "users",
-        "prize": settings.monthly_draw_prize_label or "a prize",
-        "kind": "counter",
-        "count": int(entries),
-        "count_label": "rounds entered this month",
-        "rows": [],
-    }
-
     return {
         "daily": {
             "ends_at": day_end.isoformat() + "Z",
             "contests": daily_contests,
-        },
-        "monthly": {
-            "ends_at": month_end.isoformat() + "Z",
-            "contests": [monthly_draw],
         },
     }
 

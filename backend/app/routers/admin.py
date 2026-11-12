@@ -1016,7 +1016,7 @@ def remove_sotw_nominee(nominee_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-CONTEST_KINDS = ("ctp", "shot_of_week", "monthly_draw")
+CONTEST_KINDS = ("ctp", "shot_of_week")
 
 
 @router.post("/contest-wins")
@@ -1026,9 +1026,14 @@ def declare_contest_win(payload: dict, db: Session = Depends(get_db)):
     Body: {participant_id, kind, prize_label?, period_label?,
            hole_number?, distance_feet?, note?}
 
-    The three non-ace contests are decided by a person, so this endpoint
+    The two non-ace contests are decided by a person, so this endpoint
     IS the decision -- it writes the win, which is what later opens the
     claim page for a golfer who never hit an ace.
+
+    `monthly_draw` is deliberately absent from CONTEST_KINDS: a prize
+    drawn at random among purchased rounds is a chance promotion, not a
+    contest of skill. Historical rows keep their labels so an already
+    notified winner's claim page still renders.
     """
     from ..models import ContestWin
 
@@ -1070,13 +1075,9 @@ def declare_contest_win(payload: dict, db: Session = Depends(get_db)):
             course_name=course, hole_number=win.hole_number,
             distance_feet=win.distance_feet, **common,
         )
-    elif kind == "shot_of_week":
+    else:
         notifications.notify_shot_of_week(
             course_name=course, period_label=win.period_label, **common,
-        )
-    else:
-        notifications.notify_monthly_draw(
-            period_label=win.period_label, **common,
         )
 
     win.notified_at = datetime.utcnow()
@@ -34765,9 +34766,6 @@ def email_send_templates(
     _try("shot_of_week", lambda: N.notify_shot_of_week(
         "Ben", None, to, gallery, course_name="Baldwin Links",
         period_label="week of 10 August",
-        claim_url=N.claim_url_for("sample-token")))
-    _try("monthly_draw", lambda: N.notify_monthly_draw(
-        "Ben", None, to, gallery, period_label="August",
         claim_url=N.claim_url_for("sample-token")))
     _try("thanks", lambda: N.notify_thanks_for_playing(
         "Ben", None, to, gallery,

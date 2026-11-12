@@ -894,14 +894,14 @@ class PrizeClaim(Base):
 class ContestWin(Base):
     """A declared winner of one of the non-ace contests.
 
-    Closest to the Pin, Shot of the Week and the Monthly Draw are all
-    decided by a person, not by the matcher -- so a win exists because an
-    operator said so, and this row is that statement. It is what the
+    Closest to the Pin and Shot of the Week are both decided by a
+    person, not by the matcher -- so a win exists because an operator
+    said so, and this row is that statement. It is what the
     congratulations email is sent from and what opens the claim page for
     a golfer who has not hit an ace.
 
     `period_label` is free text ("Week of 12 Aug", "August 2026") because
-    the three contests do not share a cadence and the email only ever
+    the two contests do not share a cadence and the email only ever
     reads it back.
     """
 
@@ -911,7 +911,9 @@ class ContestWin(Base):
     participant_id: Mapped[int] = mapped_column(
         ForeignKey("participants.id"), index=True
     )
-    # ctp | shot_of_week | monthly_draw
+    # ctp | shot_of_week. "monthly_draw" also appears on rows written
+    # before 2026-11-10; it is no longer accepted by the API but the
+    # claim page still renders those rows.
     kind: Mapped[str] = mapped_column(String(30), index=True)
     prize_label: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     period_label: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)

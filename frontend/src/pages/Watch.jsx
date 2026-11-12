@@ -273,55 +273,15 @@ function ClipOverlay({ item }) {
 }
 
 function Slate({ contests, courseId }) {
-  // Lift a few rows to show during dead time. Cycle through them based on
-  // current second so consecutive slates show different content.
+  // Lift a few rows to show during dead time.
   if (!contests) {
     return <div className="watch-loading">…</div>;
   }
-  const slateIndex = Math.floor(Date.now() / 8000) % 3;
-  if (slateIndex === 0) return <SlateMonthly contests={contests} />;
-  if (slateIndex === 1) return <SlateYearly contests={contests} />;
+  // Monthly and yearly both resolved to SlateFallback: /contests only
+  // ever returned a `daily` section after the Monthly Draw was removed
+  // on 2026-11-10, and `yearly` was dropped before that. Rotating
+  // through them showed the fallback two slates in three.
   return <SlateDaily contests={contests} courseId={courseId} />;
-}
-
-function SlateMonthly({ contests }) {
-  const m = contests?.monthly?.contests?.[0];
-  if (!m) return <SlateFallback />;
-  return (
-    <div className="watch-slate">
-      <div className="tiny upper muted-on-dark">This month</div>
-      <h1 className="watch-slate-title">{m.title}</h1>
-      <ol className="watch-slate-list">
-        {(m.entries || []).slice(0, 5).map((e, i) => (
-          <li key={i}>
-            <span className="rank">#{i + 1}</span>
-            <span className="who">{e.name}</span>
-            <span className="metric">{e.value}</span>
-          </li>
-        ))}
-      </ol>
-    </div>
-  );
-}
-
-function SlateYearly({ contests }) {
-  const y = contests?.yearly?.contests?.[0];
-  if (!y) return <SlateFallback />;
-  return (
-    <div className="watch-slate">
-      <div className="tiny upper muted-on-dark">This year · $10,000 still up for grabs</div>
-      <h1 className="watch-slate-title">{y.title}</h1>
-      <ol className="watch-slate-list">
-        {(y.entries || []).slice(0, 5).map((e, i) => (
-          <li key={i}>
-            <span className="rank">#{i + 1}</span>
-            <span className="who">{e.name}</span>
-            <span className="metric">{e.value}</span>
-          </li>
-        ))}
-      </ol>
-    </div>
-  );
 }
 
 function SlateDaily({ contests, courseId }) {
