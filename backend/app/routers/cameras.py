@@ -1561,6 +1561,20 @@ def _keep_swing_analysis(db, session_id, cam_id, reusable, verdict) -> None:
         }
         db.add(ev)
         db.commit()
+        # ── SAY SO WHEN IT WORKS, NOT ONLY WHEN IT DOES NOT ─────────
+        #
+        # Every other branch here logs and the success path was
+        # silent, which makes the one question anybody actually has
+        # unanswerable: did the rig send a session_id, and did the
+        # analysis land? Until a produce runs minutes later and says
+        # "REUSED from", there was nothing to look at -- and a rig on
+        # old code, which simply omits the field, looks exactly like a
+        # rig on new code whose event lookup missed.
+        log.info("verify-swing: kept the analysis for session %s "
+                 "(camera %s, swing=%s, golfer=%s, ball=%s)",
+                 _sid[:16], cam_id, verdict.get("is_swing"),
+                 (reusable or {}).get("golfer_box") is not None,
+                 (reusable or {}).get("ball_spot") is not None)
     except Exception as exc:  # noqa: BLE001
         log.warning("verify-swing: could not keep the analysis for %s: %s",
                     _sid[:16], exc)
