@@ -1939,7 +1939,10 @@ def make_clip_vertical(
                     # an overflow rather than a position. The picture
                     # does not care which branch we are in.
                     _gb = (
-                        _tracer_start_x(render_src, from_sec=_cut + 0.3)
+                        _tracer_start_x(
+                            render_src, from_sec=_cut + 0.3,
+                            win_start_sec=0.0, win_end_sec=8.0,
+                        )
                         if _cut is not None else None
                     )
                     if _gb and _gb.get("x") is not None:
@@ -2030,7 +2033,10 @@ def make_clip_vertical(
             # the player on the tee side, pointed after the cut. This
             # is what "ball 1" was failing to be.
             _gb = (
-                _tracer_start_x(render_src, from_sec=_c2 + 0.3)
+                _tracer_start_x(
+                    render_src, from_sec=_c2 + 0.3,
+                    win_start_sec=0.0, win_end_sec=8.0,
+                )
                 if _c2 is not None else None
             )
             _gbx = _gb.get("x") if _gb else None
@@ -6307,13 +6313,41 @@ _GREEN_PIN_PAN_SEC = 2.0
 _GREEN_END_HOLD_SEC = 0.2
 
 
-# HOW LONG AFTER THE STROKE APPEARS TO KEEP LOOKING. The tail recedes
-# over seconds, so a frame a long way after the first sighting is
-# showing a lifted-off arc rather than a launch. Measured from the
-# FIRST sighting rather than from the clip start, because impact lands
-# anywhere from ~1s to ~5s in depending on how long the player waggles,
-# and a fixed window would miss a slow pre-shot routine entirely.
-_TRACER_WINDOW_SEC = 0.8
+# WHERE TO LOOK FOR THE STROKE, IN SECONDS FROM THE SCAN'S START.
+# The whole window is searched and the LOWEST foot in it wins (see
+# `_pick_tracer_foot`); nothing past the end is looked at.
+#
+# 1.0 skips the address, where a blue shirt that moved since the
+# baseline is the only new blue there is. 3.0 is the point of this
+# window: by ~5s the stroke on clip 1430 has lifted off the ground and
+# ends in a tip in mid-air at 0.606, which the old eight-second scan
+# collected and averaged into the answer. The ball was struck at ~2s.
+#
+# THE RISK, WRITTEN DOWN. The comment on the Player ID scan records
+# the opposite observation -- "a tracer that starts at three or four
+# seconds, which is most of them". If that holds, a 3.0 ceiling finds
+# nothing on those clips and the pan falls back to the ball track.
+# That is a safe failure, not a wrong answer, and these two numbers
+# are the whole fix if it turns out to bite.
+_TRACER_WIN_START_SEC = 1.0
+_TRACER_WIN_END_SEC = 3.0
+
+
+def _tracer_scan_bounds(fps, idx0, win_start_sec, win_end_sec,
+                        max_scan_sec):
+    """First and last frame index to sample, as (lo, limit) exclusive.
+
+    `idx0` is where the scan starts (0 for the tee, the cut for the
+    green), and the window is measured FROM there. `max_scan_sec` is a
+    caller's cap that the window can only tighten, never widen -- the
+    Player ID scan passes the cut through it so the green half's tracer
+    can never be read as the one that came off the club.
+    """
+    lo = idx0 + int(float(win_start_sec) * fps)
+    limit = idx0 + int(
+        min(float(win_end_sec), max(1.0, float(max_scan_sec))) * fps
+    )
+    return lo, max(lo, limit)
 
 
 def _pick_tracer_foot(cands):
@@ -6345,7 +6379,9 @@ def _pick_tracer_foot(cands):
     return max(cands, key=lambda c: (c[2], -c[1]))
 
 
-def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0):
+def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
+                    win_start_sec=_TRACER_WIN_START_SEC,
+                    win_end_sec=_TRACER_WIN_END_SEC):
     """Where the TRACER STARTS, read off the picture itself.
 
     STEP 1 OF FRAMING THE 9:16. Every other anchor is metadata that can
@@ -6460,7 +6496,15 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0):
             best = 0
             cands: list = []
             idx = idx0 + 5
-            limit = idx0 + int(max(1.0, float(max_scan_sec)) * fps)
+            # SKIP TO THE WINDOW. grab() demuxes without decoding, so
+            # the frames before it cost almost nothing.
+            _win_lo, limit = _tracer_scan_bounds(
+                fps, idx0, win_start_sec, win_end_sec, max_scan_sec,
+            )
+            while idx < _win_lo:
+                if not cap.grab():
+                    break
+                idx += 1
             stride = max(1, int(step))
             while idx < limit:
                 if idx % stride:
@@ -6565,24 +6609,12 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0):
                              min(1.0, max(0.0, fy))),
                         )
                 idx += 1
-                # SAMPLE SEVERAL, THEN PICK. The foot does NOT stay at
-                # the ball -- the tail recedes and the stroke lifts off
-                # the ground -- so these frames do not agree and must
-                # not be averaged. `_pick_tracer_foot` takes the lowest
-                # foot of them, which is the launch. Collecting a few
-                # still beats deciding on the first frame that passed,
-                # because the first is the shortest and the least
-                # certain.
-                if len(cands) >= 5:
-                    break
-                # PAST THE WINDOW, STOP. Without this the scan runs the
-                # full eight seconds and collects the arc on its way
-                # down, which is what put 0.601 on clip 1430. Finding
-                # nothing at all is the better failure: `x` comes back
-                # None, the pan falls through to the ball track, and on
-                # that clip the track was the right anchor anyway.
-                if cands and (idx / fps) - cands[0][1] > _TRACER_WINDOW_SEC:
-                    break
+                # NO EARLY EXIT. The whole window is sampled and
+                # `_pick_tracer_foot` takes the lowest foot across all
+                # of it, so stopping at the first few candidates would
+                # decide before the lowest one had been seen. The
+                # window is short enough that this is ~30 decoded
+                # frames at 960px.
             _hit = _pick_tracer_foot(cands)
             if _hit is not None:
                 _xs = sorted(c[0] for c in cands)
