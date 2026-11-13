@@ -48,21 +48,41 @@ from .tracer import (
 
 log = logging.getLogger(__name__)
 
-# The pads that shape the crop round one golfer. Named here rather
-# than buried: a bit over two thirds of a body width either side, a
-# twelfth of a body height below the feet, a tenth above the head.
-# See tracer.swing_heat_check, which these were measured for.
-SIDE_PAD_FRAC = 0.69
-BELOW_FEET_FRAC = 0.08
-ABOVE_HEAD_FRAC = 0.10
+# THE CROP RULE LIVES IN ONE PLACE, and this is not it: see
+# services/swingcrop. `tracer.swing_heat_check` computes the same crop
+# for the Test cut page, and while there were two copies a fix to
+# either one left the other wrong -- which is how the same bug came to
+# be reported twice, once against the rig path and once against the
+# page used to check the rig path.
+#
+# Re-exported under the old private names so the rest of this file and
+# its tests read as they did.
+from .swingcrop import (                                # noqa: E402
+    SIDE_PAD_FRAC, BELOW_FEET_FRAC, ABOVE_HEAD_FRAC, MIN_CROP_PX,
+    ZONE_PAD_FRAC,
+    usable as _usable,
+    crop_rect as _crop_rect,
+    zone_rect as _zone_rect_pair,
+    zoned_person as _zoned_person,
+)
 
 
-# THE SMALLEST CROP WORTH JUDGING, in pixels. Below this there is
-# nothing for a model to look at and nothing for a detector to find,
-# and at zero `cv2.imwrite` raises rather than returning False.
-MIN_CROP_PX = 8
-# How much of the zones' own width to add either side of a zone crop.
-ZONE_PAD_FRAC = 0.25
+def _zone_rect(zones, ox, oy, W, H, heads=None):
+    """The zone crop's HEAT rect. See swingcrop.zone_rect."""
+    return _zone_rect_pair(zones, ox, oy, W, H, heads=heads)[0]
+
+
+def _head_boxes(people, ox, oy):
+    """Everybody detected, as head dicts in CROP pixels.
+
+    EVERYBODY, not a pre-filtered few: `swingcrop.head_line` decides
+    who is in the crop, and it has to see them all to do it. This used
+    to filter here with a flat 40 px, which is one thing on a golfer
+    90 px tall and another on one 400 px tall.
+    """
+    return [{"x": p["box"][0] - ox, "y": p["box"][1] - oy,
+             "w": p["box"][2]}
+            for p in (people or []) if p and p.get("box")]
 # SMALLEST A FRAME TILE MAY BE SHOWN AT, on its long side. The tiles
 # used only ever to be shrunk -- `FRAME_TILE_PX` is a ceiling -- which
 # was fine while a crop meant a golfer who filled it. A fallback crop
@@ -91,153 +111,6 @@ def _write(path, img) -> bool:
     except Exception as exc:  # noqa: BLE001
         log.warning("swinganalysis: could not write %s: %s", path, exc)
         return False
-
-
-def _zone_rect(zones, ox, oy, W, H):
-    """A rect around the trigger zones, in crop px, or None.
-
-    THE LAST RUNG BEFORE THE WHOLE FRAME. A zone is where somebody has
-    to be standing for this camera to fire at all, so even with
-    nobody detected it is a far better guess at where the swing is
-    than the whole picture.
-
-    NOT a synthetic golfer handed to `_crop_rect`. That function
-    measures a crop against the box it is given -- head room above,
-    a little ground below -- and a zone is drawn around a patch of
-    TURF, a few tens of pixels tall. Treating it as a person crops
-    the golfer off at the knees. The honest answer is that a zone
-    says where the feet are and nothing about how tall anybody is, so
-    this takes the zone's WIDTH and runs from the top of the picture
-    down to just under it: the club and the ball leave upward, and
-    the width is where almost all of the waste is on a wide course
-    frame anyway.
-    """
-    if not zones:
-        return None
-    try:
-        x0 = min(float(z[0]) for z in zones) - ox
-        x1 = max(float(z[0]) + float(z[2]) for z in zones) - ox
-        y1 = max(float(z[1]) + float(z[3]) for z in zones) - oy
-    except (TypeError, ValueError, IndexError):
-        return None
-    pad = max(24.0, (x1 - x0) * ZONE_PAD_FRAC)
-    return _usable(x0 - pad, 0, x1 + pad, y1 + pad, W, H)
-
-
-def _zoned_person(considered):
-    """A person the picker saw IN a zone but did not pick, or None.
-
-    NEVER SOMEBODY OUTSIDE THE ZONES. The first version of this took
-    the person NEAREST a zone, and "nearest" with no limit means
-    anyone anywhere: on a clip where the tee was empty it zoomed hard
-    onto a man walking past a golf cart on the far side of the hole
-    and handed the judge a crisp picture of somebody not swinging.
-    That is worse than the whole frame, not better -- the frame at
-    least looks like a frame, while this looks like an answer. With
-    `verify_drops` on the rig it deletes the clip.
-
-    THE PICKER HAS ALREADY ANSWERED THIS, in `considered`: every
-    person it looked at, with `zone` saying whether their feet were
-    in one. Asking it rather than re-deriving containment is the
-    whole point -- two notions of "in a zone" that disagree is a
-    camera that crops somewhere its own rule says nobody is standing.
-
-    So this only ever returns somebody the picker itself placed in a
-    zone and then declined to pick, which is really one case: two
-    golfers too level to call. Lowest feet first, the same ordering
-    the picker uses, and it carries the zone floor the picker
-    measured so the crop stops on the ground rather than at a waist.
-    """
-    best = None
-    for c in considered or []:
-        if not isinstance(c, dict) or not c.get("zone"):
-            continue
-        if not c.get("box") or not c.get("feet"):
-            continue
-        if best is None or c["feet"][1] > best["feet"][1]:
-            best = c
-    return best
-
-
-def _crop_rect(golfer, floor_y, heads, bounds):
-    """(x0, y0, x1, y1) for the heat and for the frames, in crop px.
-
-    EITHER MAY BE None, when the golfer's box does not land on the
-    picture -- see `_usable`. The caller must not judge a picture it
-    could not crop.
-    """
-    W, H = bounds
-    pad = max(12, int(golfer["w"] * SIDE_PAD_FRAC))
-    x0 = max(0, golfer["x"] - pad)
-    x1 = min(W, golfer["x"] + golfer["w"] + pad)
-    ground = golfer["y"] + golfer["h"]
-    if floor_y is not None:
-        ground = max(ground, int(floor_y))
-    bottom = min(H, ground + max(6, int(golfer["h"] * BELOW_FEET_FRAC)))
-    # ABOVE EVERY HEAD IN THE CROP, not just the picked golfer's: the
-    # blob is motion and the moving part can be the arms while the
-    # torsos stand still. See tracer.swing_heat_check.
-    top = min([p["y"] for p in heads] or [golfer["y"]])
-    top = max(0, top - max(8, int(golfer["h"] * ABOVE_HEAD_FRAC)))
-    # The heat runs to the top of the picture, because a club at the
-    # top of a backswing and a ball leaving both go up out of any box
-    # drawn round a stance. The frames stop just above the heads.
-    return (_usable(x0, 0, x1, bottom, W, H),
-            _usable(x0, top, x1, bottom, W, H))
-
-
-def _usable(x0, y0, x1, y1, W, H):
-    """A rect that can actually be cropped with, or the whole picture.
-
-    THE GOLFER'S BOX IS IN CROP PIXELS AND NEED NOT BE INSIDE THE
-    CROP. People are detected in the whole frame and their boxes are
-    shifted by the crop's offset, so a person standing outside the
-    crop comes through here with coordinates off either end. Then
-    `x0 = max(0, x - pad)` lands at or past W while `x1 = min(W, ...)`
-    is W -- or `bottom` lands at or below zero -- and the rect is
-    empty.
-    
-    An empty rect makes an empty crop, and an empty crop reaches
-    `cv2.imwrite`, which does not return False for it. It raises:
-
-        (-215:Assertion failed) !_img.empty() in function 'imwrite'
-
-    That lands in analyse()'s outer catch and the whole strike comes
-    back "could not tell — analysis failed", with an OpenCV assertion
-    where the reason should be. Reported from the field on #1467, four
-    audio triggers, every one of them lost.
-
-    RETURNS None RATHER THAN THE WHOLE PICTURE, and the difference
-    cost a day of audio triggers. Falling back to the frame stopped
-    the crash and quietly changed the ANSWER: the judge was handed a
-    whole 640x480 frame while `golfer_crop` still said True, rated it
-    not-a-swing -- correctly, there is no swing to see at that scale --
-    and `verify_drops` on the rig deleted the clip. Before the crash
-    was fixed the same input returned "could not tell" and the clip
-    went up unjudged, which is the right outcome and the one to keep.
-
-    A golfer whose box does not land on the picture being analysed
-    means the person detector and the crop disagree about where the
-    frame is. That is a broken analysis, not a weak one, and the
-    caller turns it into "could not tell". The no-golfer branch is
-    different and unchanged: nobody was detected, the whole frame is
-    genuinely all there is to judge, and its verdicts have always
-    counted.
-    """
-    # THE INTERSECTION WITH THE PICTURE IS THE WHOLE TEST, and it is
-    # the clamp as well. Judging the rect on its own size instead let
-    # a ten-pixel box sitting entirely off the corner survive, because
-    # ten is bigger than the minimum -- it then clamped to an
-    # eight-pixel sliver of the corner, which crops without raising
-    # and shows nobody anything. What matters is how much of the rect
-    # is actually ON the picture.
-    ix0 = max(0, int(x0))
-    iy0 = max(0, int(y0))
-    ix1 = min(int(W), int(x1))
-    iy1 = min(int(H), int(y1))
-    if ix1 - ix0 < MIN_CROP_PX or iy1 - iy0 < MIN_CROP_PX:
-        return None
-    return (ix0, iy0, ix1, iy1)
 
 
 def analyse(frames, heat, geo, *, crop, zones, offsets=None,
@@ -328,9 +201,7 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
         if front is not None:
             g = {"x": front["box"][0] - ox, "y": front["box"][1] - oy,
                  "w": front["box"][2], "h": front["box"][3]}
-            heads = [{"y": p["box"][1] - oy} for p in people
-                     if g["x"] - 40 <= p["box"][0] - ox
-                     <= g["x"] + g["w"] + 40] or [g]
+            heads = _head_boxes(people, ox, oy) or [g]
             hrect, frect = _crop_rect(
                 g, None if floor_y is None else floor_y - oy, heads, (W, H))
             # COULD NOT CROP TO THE GOLFER WE PICKED, so we cannot
@@ -373,9 +244,7 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
             if _alt is not None:
                 _g = {"x": _alt["box"][0] - ox, "y": _alt["box"][1] - oy,
                       "w": _alt["box"][2], "h": _alt["box"][3]}
-                _heads = [{"y": q["box"][1] - oy} for q in people
-                          if _g["x"] - 40 <= q["box"][0] - ox
-                          <= _g["x"] + _g["w"] + 40] or [_g]
+                _heads = _head_boxes(people, ox, oy) or [_g]
                 _fl = _alt.get("floor")
                 hrect, frect = _crop_rect(
                     _g, None if _fl is None else float(_fl) - oy,
@@ -383,7 +252,8 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
                 _from = ("a person standing in a zone that the picker "
                          "would not call — not confirmed as the golfer")
             else:
-                hrect = frect = _zone_rect(zones, ox, oy, W, H)
+                hrect, frect = _zone_rect_pair(
+                    zones, ox, oy, W, H, heads=_head_boxes(people, ox, oy))
                 # TWO DIFFERENT THINGS, AND THE OPERATOR READS THIS
                 # LINE. "Nobody was detected" and "the people detected
                 # were not on the tee" send them to look in different

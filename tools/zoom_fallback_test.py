@@ -135,7 +135,7 @@ def main():
     src = (ROOT / "backend/app/services/swinganalysis.py").read_text()
     _else = src.find("# ── NOBODY WAS PICKED. ZOOM ANYWAY.")
     _alt = src.find("_alt = _zoned_person(", _else)
-    _zone = src.find("_zone_rect(zones, ox, oy, W, H)", _else)
+    _zone = src.find("_zone_rect_pair(", _else)
     _frame = src.find("hrect = frect = (0, 0, W, H)", _else)
     ok("the in-zone person is tried before the zones",
        0 < _alt < _zone, True)

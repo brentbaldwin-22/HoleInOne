@@ -3871,6 +3871,12 @@ def swing_heat_check(
                 # gate cannot disagree about the same blob.
                 try:
                     from . import swingjudge as _sj
+                    # ONE CROP RULE, shared with
+                    # swinganalysis.analyse. Imported here
+                    # rather than at module scope because
+                    # swinganalysis imports THIS file, and
+                    # swingcrop deliberately imports neither.
+                    from . import swingcrop as _sc
                     _hmj = hm_n
                     _ox = _oy = 0
                     if out.get("crop"):
@@ -4019,6 +4025,12 @@ def swing_heat_check(
                         out["picked_front"] = "%s — %s" % (
                             _pf.get("from") or "?", _why)
                         out["front_candidates"] = _pf.get("considered")
+                    # THE GOLFER RECTS, BEFORE THE BRANCH THAT USES
+                    # THEM. Worked out up here because failing to crop
+                    # to the picked golfer has to fall through to the
+                    # ZONE rect below, and a branch cannot hand over
+                    # to its own `elif` once it has been entered.
+                    _g_hr = _g_fr = None
                     if _front is not None:
                         # BACK INTO CROP PIXELS. The heat blobs were
                         # measured on the crop; a detector box is in
@@ -4034,63 +4046,44 @@ def swing_heat_check(
                                 int(_front["x"] + _front["w"] / 2 + _ox),
                                 int(_front["y"] + _front["h"] + _oy)]
                             out["front_h"] = int(_front["h"])
-                        # ONE GOLFER IS THE CROP. Pads named here
-                        # rather than buried: a third of a body width
-                        # either side is "a little outside the body",
-                        # and a twelfth of a body height below the
-                        # feet is "just below".
-                        # 20% WIDER ON EACH SIDE, 8 Nov. The pad was
-                        # 0.35 of a body width, making the crop 1.70
-                        # bodies across; widening each edge by 20% of
-                        # THAT adds 0.34 more per side, so the pad is
-                        # 0.69 and the crop is 2.38 bodies -- 40%
-                        # wider overall. One number to turn if it
-                        # wants turning again.
-                        _fw2 = max(12, int(_front["w"] * 0.69))
-                        # THE FEET ARE THE ZONE'S BOTTOM EDGE, NOT THE
-                        # BLOB'S. The blob is MOTION: on a golfer
-                        # whose legs barely move it stops around the
-                        # waist, and the first version of this cropped
-                        # exactly there -- cutting the player off at
-                        # the belt in both pictures. The zone is drawn
-                        # round feet. Still max()'d with the blob, so
-                        # a follow-through that reaches below the zone
-                        # is not clipped.
-                        _fground = _front["y"] + _front["h"]
-                        if _front_floor is not None:
-                            _fground = max(_fground,
-                                           int(_front_floor) - _oy)
-                        _fb = _fground + max(6, int(_front["h"] * 0.08))
-                        _zone = (_front["x"] - _fw2,
-                                 _front["x"] + _front["w"] + _fw2,
-                                 _fb)
-                        # The frames stop just above the head instead
-                        # of at the top of the picture.
-                        #
-                        # ABOVE EVERY HEAD IN THE CROP, not just the
-                        # top of the picked blob. The blob is motion,
-                        # and on a swing the moving part can be the
-                        # arms, the club and the legs with the torsos
-                        # standing still -- so the picked blob's top
-                        # is sometimes mid-thigh, and taking it cut
-                        # the golfers' heads off. Any person-shaped
-                        # blob whose centre falls inside the crop is
-                        # somebody who is IN the picture and whose
-                        # head has to be in it too.
+                        # ONE GOLFER IS THE CROP, and the rule for
+                        # how is in services/swingcrop -- the same
+                        # call `swinganalysis.analyse` makes for
+                        # /verify-swing. It used to be written out
+                        # again here, with the same pads as bare
+                        # literals and a DIFFERENT head line, so a
+                        # fix to either copy left the other wrong:
+                        # the rig path improved while the Test cut
+                        # page used to check it did not.
                         _heads = ([dict(p, x=p["box"][0] - _ox,
                                         y=p["box"][1] - _oy,
                                         w=p["box"][2], h=p["box"][3])
                                    for p in people] if people
                                   else _cands_all)
-                        _fh2 = [p for p in _heads
-                                if _zone[0] <= p["x"] + p["w"] / 2.0
-                                <= _zone[1]] or [_front]
-                        _ftop = min(p["y"] for p in _fh2)
-                        _fp = max(8, int(_front["h"] * 0.10))
+                        _g_hr, _g_fr = _sc.crop_rect(
+                            _front,
+                            None if _front_floor is None
+                            else int(_front_floor) - _oy,
+                            _heads or [_front],
+                            (judged.shape[1], judged.shape[0]))
+                        if _g_hr is None or _g_fr is None:
+                            # COULD NOT CROP TO THE GOLFER WE PICKED --
+                            # their box does not land on the picture
+                            # being analysed, so the detector and the
+                            # crop disagree about where the frame is.
+                            # Do not present a crop nobody chose as if
+                            # it were one; drop to the zone rect.
+                            _front = None
+                            out["golfer_crop"] = False
+
+                    if _front is not None:
+                        # `_zone` is this file's shape for the heat
+                        # rect: (x0, x1, bottom), the top always 0.
+                        # See where it is consumed below.
+                        _zone = (_g_hr[0], _g_hr[2], _g_hr[3])
                         out["frames_rect"] = [
-                            int(_zone[0] + _ox),
-                            int(max(0, _ftop - _fp) + _oy),
-                            int(_zone[1] + _ox), int(_fb + _oy)]
+                            int(_g_fr[0] + _ox), int(_g_fr[1] + _oy),
+                            int(_g_fr[2] + _ox), int(_g_fr[3] + _oy)]
                         _cands = _cands[:1]
                     elif _zone is not None:
                         # AND THE SAME RECTANGLE FOR THE FOUR FRAMES,
@@ -4113,11 +4106,10 @@ def swing_heat_check(
                         # so the rect errs upward, which is the right
                         # way to err in a picture whose job is showing
                         # the club move.
-                        _fh = [p for p in _cands_all
-                               if _zone[0] <= p["x"] + p["w"] / 2.0
-                               <= _zone[1]] or _cands_all
-                        _ft = min(p["y"] for p in _fh)
-                        _fp = max(8, int((_zone[2] - _ft) * 0.08))
+                        _ft = _sc.head_line(_cands_all, _zone[0], _zone[1],
+                                            min((p["y"] for p in _cands_all),
+                                                default=0))
+                        _fp = max(8, int((_zone[2] - _ft) * _sc.BELOW_FEET_FRAC))
                         out["frames_rect"] = [
                             int(_zone[0] + _ox), int(max(0, _ft - _fp) + _oy),
                             int(_zone[1] + _ox), int(_zone[2] + _oy)]
