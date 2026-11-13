@@ -635,6 +635,166 @@ FRONT_GOLFER_MARGIN_FRAC = 0.25
 FRONT_GOLFER_MARGIN_DETECTED = 0.15
 
 
+# WHAT COUNTS AS MOTION AT ALL, on the 0-255 log-scaled heat map.
+# The club is the COOL part -- blue and cyan in TURBO -- so it lives
+# well below HOT_LEVEL and a hot-only threshold cannot see it. 1 is
+# deliberate: this measurement exists to be GENEROUS about what counts
+# as a plume, because what is done with it is to refuse a swing.
+PLUME_FLOOR = 1
+
+# HOW FAR ABOVE THE HEAD COUNTS AS "CLEARLY HIGHER", as a fraction of
+# the golfer's own height. A tenth is about a head.
+#
+# A STARTING NUMBER, not a fitted one. It is reported beside every
+# verdict so it can be tuned against real clips rather than argued
+# about -- see `plume_above_head`'s `rise_frac`.
+PLUME_MIN_RISE_FRAC = 0.10
+
+
+def plume_above_head(heat8, golfer, *, floor=PLUME_FLOOR,
+                     side_frac=0.6) -> dict:
+    """How far motion rises above this golfer's head. Never raises.
+
+    THE PROMPT ALREADY SAYS THIS AND THE MODEL DOES NOT ALWAYS DO IT.
+    "THE CLUB HAS TO SHOW ABOVE THE HEAD... Answer false when nothing
+    rises above the head" has been in the heat prompt for weeks, and
+    composites with no plume at all still come back as swings. This
+    measures the thing the sentence asks for, so it can be CHECKED
+    rather than trusted -- the same move as every other gate here.
+
+    CONNECTED TO THE GOLFER, which is the whole difficulty. A hole in
+    wind dusts the sky with isolated hot pixels and the top of a frame
+    is usually trees; a rule that just asked "is there anything above
+    the head" would answer yes on every clip shot outdoors. So this
+    takes the connected components of the motion mask, keeps only the
+    ones that touch the golfer, and measures the highest of those. The
+    speckle in the sky is a different component and does not count.
+
+    NO OPENING FIRST, unlike `measure_heat`. A 3x3 open removes
+    anything thinner than three pixels, and the prompt's own
+    description of the club is "may be only a few pixels wide" -- so
+    the cleanup that makes a body blob tidy would erase the very thing
+    being looked for. Isolated speckle is handled by connectivity
+    instead, which is what it is for.
+
+    `golfer` is {x, y, w, h} in the same pixels as `heat8`.
+
+    Returns {"ok", "head_y", "top_y", "rise_px", "rise_frac", "px",
+    "why"}. `ok` False means it could not be measured, which is NOT
+    "no plume": the caller must not turn it into a verdict.
+    """
+    out = {"ok": False, "head_y": None, "top_y": None, "rise_px": 0,
+           "rise_frac": 0.0, "px": 0, "why": "not measured"}
+    try:
+        import cv2
+        import numpy as np
+
+        if heat8 is None or golfer is None:
+            out["why"] = "no heat map or no golfer"
+            return out
+        h, w = heat8.shape[:2]
+        gx, gy = float(golfer["x"]), float(golfer["y"])
+        gw, gh = float(golfer["w"]), float(golfer["h"])
+        if gw <= 0 or gh <= 0:
+            out["why"] = "the golfer has no size"
+            return out
+        head_y = int(round(gy))
+        out["head_y"] = head_y
+        if head_y <= 0:
+            # Their head is already at the top of the picture, so
+            # there is no "above" to look in. Not a verdict.
+            out["why"] = ("the golfer's head is at the top of the "
+                          "picture — nothing above it to measure")
+            return out
+        # THE BAND THEY COULD SWING IN. A club at the top of a
+        # backswing leans well off the body, so this is wider than the
+        # golfer; it is not the whole frame, because the next person
+        # along is not this golfer's club.
+        pad = max(8.0, gw * float(side_frac))
+        x0 = max(0, int(round(gx - pad)))
+        x1 = min(int(w), int(round(gx + gw + pad)))
+        if x1 - x0 < 2:
+            out["why"] = "the band around the golfer is empty"
+            return out
+        band = np.zeros((h, w), "uint8")
+        band[:, x0:x1] = 1
+        mask = ((np.asarray(heat8) >= int(floor)) & (band > 0)).astype("uint8")
+        if not mask.any():
+            out["ok"] = True
+            out["top_y"] = head_y
+            out["why"] = "no motion at all in the band around the golfer"
+            return out
+        n, labels = cv2.connectedComponents(mask, connectivity=8)
+        # WHICH COMPONENTS ARE THIS GOLFER. Seeded on their box rather
+        # than one point: the body is speckled and a single probe can
+        # land in a gap.
+        sy0, sy1 = head_y, min(int(h), int(round(gy + gh)))
+        seed = labels[sy0:max(sy0 + 1, sy1), x0:x1]
+        mine = set(int(v) for v in np.unique(seed) if v)
+        if not mine:
+            out["ok"] = True
+            out["top_y"] = head_y
+            out["why"] = "no motion on the golfer to follow upward"
+            return out
+        above = labels[:head_y, x0:x1]
+        hit = np.isin(above, list(mine))
+        out["px"] = int(hit.sum())
+        if not out["px"]:
+            out["ok"] = True
+            out["top_y"] = head_y
+            out["why"] = "nothing connected to the golfer rises above their head"
+            return out
+        rows = np.nonzero(hit.any(axis=1))[0]
+        top_y = int(rows[0])
+        out["ok"] = True
+        out["top_y"] = top_y
+        out["rise_px"] = int(head_y - top_y)
+        out["rise_frac"] = round(float(out["rise_px"]) / gh, 3)
+        out["why"] = ("motion connected to the golfer reaches %dpx above "
+                      "their head, %.0f%% of their height (%d px of it)"
+                      % (out["rise_px"], out["rise_frac"] * 100, out["px"]))
+        return out
+    except Exception as exc:  # noqa: BLE001
+        out["why"] = "could not measure the plume (%s)" % exc
+        return out
+
+
+def plume_veto(is_swing, plume, *, min_rise=PLUME_MIN_RISE_FRAC) -> dict:
+    """Refuse a swing verdict that has no club above the head.
+
+    {"is_swing", "vetoed", "why"}.
+
+    ONLY EVER TURNS TRUE INTO FALSE. A judge that said no is not
+    argued with, and a judge that could not tell is left as "could not
+    tell" -- `None` is not `False` anywhere in this system and must
+    not become it here.
+
+    AND ONLY ON A MEASUREMENT. `plume["ok"]` false means the question
+    could not be asked, which is not an answer to it: an unmeasurable
+    clip keeps whatever the judge said. That distinction is the one
+    this codebase keeps having to relearn -- a crop that could not be
+    cut came back as "not a swing" for a day and deleted the clips.
+    """
+    out = {"is_swing": is_swing, "vetoed": False, "why": None}
+    if is_swing is not True:
+        return out
+    if not isinstance(plume, dict) or not plume.get("ok"):
+        out["why"] = ("kept: the plume could not be measured (%s)"
+                      % ((plume or {}).get("why") or "no measurement"))
+        return out
+    if float(plume.get("rise_frac") or 0.0) >= float(min_rise):
+        out["why"] = "kept: " + str(plume.get("why"))
+        return out
+    out["is_swing"] = False
+    out["vetoed"] = True
+    out["why"] = (
+        "refused: the judge said swing, but %s. The club has to show "
+        "above the head — a body turning with nothing rising off it is "
+        "a waggle, a practice stroke or somebody turning round."
+        % (plume.get("why") or "nothing rises above the head"))
+    return out
+
+
 def break_tie_on_motion(people, blobs, offset=(0, 0), zoned=None) -> dict:
     """Of these golfers, which one MOVED? {"pick": person|None, "why"}.
 

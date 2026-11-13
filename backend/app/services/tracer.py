@@ -4066,6 +4066,14 @@ def swing_heat_check(
                             else int(_front_floor) - _oy,
                             _heads or [_front],
                             (judged.shape[1], judged.shape[0]))
+                        # AND WHETHER A CLUB SHOWS ABOVE THE HEAD.
+                        # Measured here because this is the only place
+                        # that has the raw heat map, the golfer and the
+                        # picture the judge is about to be shown, all
+                        # in the same pixels. Reported, not acted on:
+                        # what to do with it belongs to whoever forms
+                        # the verdict. See swingjudge.plume_above_head.
+                        out["plume"] = _sj.plume_above_head(_hmj, _front)
                         if _g_hr is None or _g_fr is None:
                             # COULD NOT CROP TO THE GOLFER WE PICKED --
                             # their box does not land on the picture

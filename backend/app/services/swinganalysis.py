@@ -72,7 +72,41 @@ def _zone_rect(zones, ox, oy, W, H, heads=None):
     return _zone_rect_pair(zones, ox, oy, W, H, heads=heads)[0]
 
 
-def _head_boxes(people, ox, oy):
+def _heat_map_from(geo, ox, oy, W, H):
+    """(zx, zy, sx, sy) for turning FRAME pixels into HEAT pixels.
+
+    THE TWO PICTURES ARE NOT THE SAME PICTURE, and this file assumed
+    they were for weeks. The rig crops the raw frames to the trigger
+    zone and crops the HEAT composite twice -- the zone, then a
+    tighter rect around the golfer -- and upscales the result when it
+    is small. So a person detected in the frames has coordinates that
+    mean nothing in the heat.
+
+    Event #1505: "the golfer picked at 1168x558 sits off the 881x998
+    picture being analysed". The golfer was found correctly, in the
+    frames, at a position the heat picture does not contain. The clip
+    went up unjudged, which is the safe answer and not a useful one.
+
+    `geo["zoom"]` is that second rect in frame pixels and
+    `geo["zoom_px"]` the size it ended up, both sent by the rig. With
+    them the map is exact. WITHOUT them -- an older rig -- this falls
+    back to the crop offset and no scaling, which is what it always
+    did, so nothing gets worse while the rigs catch up.
+    """
+    _z = (geo or {}).get("zoom")
+    _zp = (geo or {}).get("zoom_px")
+    try:
+        if (_z and len(_z) == 4 and float(_z[2]) > 0 and float(_z[3]) > 0):
+            _pw, _ph = ((float(_zp[0]), float(_zp[1]))
+                        if _zp and len(_zp) == 2 else (float(W), float(H)))
+            return (float(_z[0]), float(_z[1]),
+                    _pw / float(_z[2]), _ph / float(_z[3]))
+    except (TypeError, ValueError, IndexError):
+        pass
+    return (float(ox), float(oy), 1.0, 1.0)
+
+
+def _head_boxes(people, zx, zy, sx=1.0, sy=1.0):
     """Everybody detected, as head dicts in CROP pixels.
 
     EVERYBODY, not a pre-filtered few: `swingcrop.head_line` decides
@@ -80,8 +114,8 @@ def _head_boxes(people, ox, oy):
     to filter here with a flat 40 px, which is one thing on a golfer
     90 px tall and another on one 400 px tall.
     """
-    return [{"x": p["box"][0] - ox, "y": p["box"][1] - oy,
-             "w": p["box"][2]}
+    return [{"x": (p["box"][0] - zx) * sx, "y": (p["box"][1] - zy) * sy,
+             "w": p["box"][2] * sx}
             for p in (people or []) if p and p.get("box")]
 # SMALLEST A FRAME TILE MAY BE SHOWN AT, on its long side. The tiles
 # used only ever to be shrunk -- `FRAME_TILE_PX` is a ceiling -- which
@@ -133,6 +167,7 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
         "ball_left": None, "ball_why": None, "ball_spot": None,
         "picked_front": None, "front_candidates": None,
         "golfer_crop": False, "decided_by": None, "zoom_from": None,
+        "heat_map_from": None,
         "frames_used": None,
         "image": None, "frames_image": None,
         "image_zones": None, "frames_image_zones": None,
@@ -145,6 +180,13 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
         offs = list(offsets or AUDIO2_OFFSETS_SEC)[:len(frames)]
         ox, oy = int(crop[0]), int(crop[1])
         H, W = heat.shape[:2]
+        # FRAME PIXELS -> HEAT PIXELS. Not the identity, and assuming
+        # it was is what sent #1505 up unjudged. See _heat_map_from.
+        _zx, _zy, _sx, _sy = _heat_map_from(geo, ox, oy, W, H)
+        out["heat_map_from"] = (
+            "the crop offset (no zoom rect from the rig)"
+            if (_sx == 1.0 and _sy == 1.0 and _zx == ox and _zy == oy)
+            else "the rig's zoom rect at %.2fx%.2f" % (_sx, _sy))
 
         # ---- who is on the tee ---------------------------------
         order = sorted(zip(offs, frames), key=lambda t: (abs(t[0]), t[0]))
@@ -199,11 +241,14 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
 
         # ---- the two pictures ----------------------------------
         if front is not None:
-            g = {"x": front["box"][0] - ox, "y": front["box"][1] - oy,
-                 "w": front["box"][2], "h": front["box"][3]}
-            heads = _head_boxes(people, ox, oy) or [g]
+            g = {"x": (front["box"][0] - _zx) * _sx,
+                 "y": (front["box"][1] - _zy) * _sy,
+                 "w": front["box"][2] * _sx, "h": front["box"][3] * _sy}
+            heads = _head_boxes(people, _zx, _zy, _sx, _sy) or [g]
             hrect, frect = _crop_rect(
-                g, None if floor_y is None else floor_y - oy, heads, (W, H))
+                g,
+                None if floor_y is None else (floor_y - _zy) * _sy,
+                heads, (W, H))
             # COULD NOT CROP TO THE GOLFER WE PICKED, so we cannot
             # answer. Judging the whole frame instead would be a
             # confident verdict on a picture nobody chose: at frame
@@ -242,18 +287,21 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
             # picture than the whole course.
             _alt = _zoned_person(pf.get("considered"))
             if _alt is not None:
-                _g = {"x": _alt["box"][0] - ox, "y": _alt["box"][1] - oy,
-                      "w": _alt["box"][2], "h": _alt["box"][3]}
-                _heads = _head_boxes(people, ox, oy) or [_g]
+                _g = {"x": (_alt["box"][0] - _zx) * _sx,
+                      "y": (_alt["box"][1] - _zy) * _sy,
+                      "w": _alt["box"][2] * _sx, "h": _alt["box"][3] * _sy}
+                _heads = _head_boxes(people, _zx, _zy, _sx, _sy) or [_g]
                 _fl = _alt.get("floor")
                 hrect, frect = _crop_rect(
-                    _g, None if _fl is None else float(_fl) - oy,
+                    _g,
+                    None if _fl is None else (float(_fl) - _zy) * _sy,
                     _heads, (W, H))
                 _from = ("a person standing in a zone that the picker "
                          "would not call — not confirmed as the golfer")
             else:
                 hrect, frect = _zone_rect_pair(
-                    zones, ox, oy, W, H, heads=_head_boxes(people, ox, oy))
+                    zones, _zx, _zy, W, H,
+                    heads=_head_boxes(people, _zx, _zy, _sx, _sy))
                 # TWO DIFFERENT THINGS, AND THE OPERATOR READS THIS
                 # LINE. "Nobody was detected" and "the people detected
                 # were not on the tee" send them to look in different

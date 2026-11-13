@@ -15693,6 +15693,48 @@ def test_cut_long_upload(
                                 if _m.get("w") else None)
                             _saw = _jh.get("saw") or "heat only"
 
+                        # ── AND THE CLUB HAS TO SHOW ABOVE THE HEAD ──
+                        #
+                        # The heat prompt has said so for weeks --
+                        # "Answer false when nothing rises above the
+                        # head" -- and composites with no plume at all
+                        # still come back as swings. Reported from the
+                        # field: "it's required that there be a plume
+                        # from the club swing. i'm getting some
+                        # positive swings with no plume at all."
+                        #
+                        # So it is CHECKED rather than asked for. The
+                        # measurement is on the heat map the judge was
+                        # shown, for the golfer it was cropped to; see
+                        # swingjudge.plume_above_head.
+                        #
+                        # ONLY WHERE THE MEASUREMENT IS ABOUT THE SAME
+                        # GOLFER. The multi-candidate branch above asks
+                        # about each person in turn and keeps the first
+                        # yes, which may not be the one `plume` was
+                        # measured on, and vetoing a verdict with
+                        # somebody else's evidence is worse than not
+                        # vetoing at all.
+                        _plume = _chk.get("plume")
+                        cut_entry["plume"] = _plume
+                        if _plume and not cut_entry.get("candidates"):
+                            _pv = _sj.plume_veto(_heat.get("is_swing"),
+                                                 _plume)
+                            cut_entry["plume_why"] = _pv["why"]
+                            if _pv["vetoed"]:
+                                _heat = dict(_heat, is_swing=False,
+                                             confidence="high",
+                                             reason=_pv["why"])
+                                log.info(
+                                    "test-cut: heat said swing with no club "
+                                    "above the head — refused (%s)",
+                                    _plume.get("why"))
+                        elif _plume:
+                            cut_entry["plume_why"] = (
+                                "measured, but not applied: more than one "
+                                "golfer was asked about and this is the "
+                                "crop's own golfer — " + str(_plume.get("why")))
+
                         # FOUR REAL FRAMES TOO, on the golfer the heat
                         # just picked, unless the operator has asked
                         # for the old heat-only question. See

@@ -344,6 +344,22 @@ def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
                                 interpolation=cv2.INTER_CUBIC)
                         meta["zoom"] = [_zx0 + ox, _zy0 + oy,
                                         _zx1 - _zx0, _zy1 - _zy0]
+                        # AND INSIDE `geo`, WHICH IS WHAT TRAVELS.
+                        # `meta` stays on the rig; only meta["geo"] is
+                        # posted to /verify-swing. So the backend knew
+                        # the frames' crop and NOT the heat picture's
+                        # own rect, and assumed they were the same --
+                        # they are not. The heat is cropped a second
+                        # time here, to this rect, and then upscaled
+                        # if it is small, so a golfer's position in
+                        # the frames means nothing in the heat.
+                        #
+                        # Seen on event #1505: "the golfer picked at
+                        # 1168x558 sits off the 881x998 picture being
+                        # analysed", and the clip went up unjudged.
+                        _geo["zoom"] = list(meta["zoom"])
+                        _geo["zoom_px"] = [int(img.shape[1]),
+                                           int(img.shape[0])]
             except Exception as exc:  # noqa: BLE001
                 log.debug("swingheat: could not measure the heat (%s)", exc)
 
