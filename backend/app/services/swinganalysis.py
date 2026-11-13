@@ -82,7 +82,12 @@ def _write(path, img) -> bool:
 
 
 def _crop_rect(golfer, floor_y, heads, bounds):
-    """(x0, y0, x1, y1) for the heat and for the frames, in crop px."""
+    """(x0, y0, x1, y1) for the heat and for the frames, in crop px.
+
+    EITHER MAY BE None, when the golfer's box does not land on the
+    picture -- see `_usable`. The caller must not judge a picture it
+    could not crop.
+    """
     W, H = bounds
     pad = max(12, int(golfer["w"] * SIDE_PAD_FRAC))
     x0 = max(0, golfer["x"] - pad)
@@ -124,10 +129,22 @@ def _usable(x0, y0, x1, y1, W, H):
     where the reason should be. Reported from the field on #1467, four
     audio triggers, every one of them lost.
 
-    A sliver would be worse than useless, so a rect that does not
-    overlap the picture falls back to the whole picture: the crop
-    exists to put the golfer in the middle, and failing that, judging
-    the whole frame is what the no-golfer branch already does.
+    RETURNS None RATHER THAN THE WHOLE PICTURE, and the difference
+    cost a day of audio triggers. Falling back to the frame stopped
+    the crash and quietly changed the ANSWER: the judge was handed a
+    whole 640x480 frame while `golfer_crop` still said True, rated it
+    not-a-swing -- correctly, there is no swing to see at that scale --
+    and `verify_drops` on the rig deleted the clip. Before the crash
+    was fixed the same input returned "could not tell" and the clip
+    went up unjudged, which is the right outcome and the one to keep.
+
+    A golfer whose box does not land on the picture being analysed
+    means the person detector and the crop disagree about where the
+    frame is. That is a broken analysis, not a weak one, and the
+    caller turns it into "could not tell". The no-golfer branch is
+    different and unchanged: nobody was detected, the whole frame is
+    genuinely all there is to judge, and its verdicts have always
+    counted.
     """
     # THE INTERSECTION WITH THE PICTURE IS THE WHOLE TEST, and it is
     # the clamp as well. Judging the rect on its own size instead let
@@ -141,7 +158,7 @@ def _usable(x0, y0, x1, y1, W, H):
     ix1 = min(int(W), int(x1))
     iy1 = min(int(H), int(y1))
     if ix1 - ix0 < MIN_CROP_PX or iy1 - iy0 < MIN_CROP_PX:
-        return (0, 0, int(W), int(H))
+        return None
     return (ix0, iy0, ix1, iy1)
 
 
@@ -236,6 +253,26 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
                      <= g["x"] + g["w"] + 40] or [g]
             hrect, frect = _crop_rect(
                 g, None if floor_y is None else floor_y - oy, heads, (W, H))
+            # COULD NOT CROP TO THE GOLFER WE PICKED, so we cannot
+            # answer. Judging the whole frame instead would be a
+            # confident verdict on a picture nobody chose: at frame
+            # scale there is no swing to see, the judge says so, and
+            # with `verify_drops` on the rig that DELETES the strike.
+            # "Could not tell" uploads it unjudged, which is what this
+            # input did before `_usable` existed. See `_usable`.
+            if hrect is None or frect is None:
+                out["golfer_crop"] = False
+                out["reason"] = (
+                    "could not tell — the golfer picked at %dx%d sits off "
+                    "the %dx%d picture being analysed, so there was no crop "
+                    "to judge. The clip is kept and uploaded unjudged."
+                    % (g["x"], g["y"], W, H))
+                log.warning(
+                    "swinganalysis: golfer box (%d,%d %dx%d) does not land "
+                    "on the %dx%d analysed crop — returning 'could not "
+                    "tell' rather than judging the whole frame",
+                    g["x"], g["y"], g["w"], g["h"], W, H)
+                return out
         else:
             hrect = frect = (0, 0, W, H)
         hx0, hy0, hx1, hy1 = hrect

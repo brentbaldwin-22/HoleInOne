@@ -63,8 +63,11 @@ def main():
 
     # ── AND EVERY WAY A BOX CAN LEAVE THE PICTURE ───────────────────
     #
-    # These are the cases that raised. Each one must still produce a
-    # rect something can be cropped with.
+    # These are the cases that raised. THE CONTRACT IS NOW TWO-SIDED:
+    # a rect is either None, meaning "there was no crop to judge", or
+    # it crops to something non-empty. What must never happen again is
+    # the third thing -- a rect that slices to nothing and reaches
+    # cv2.imwrite.
     for _label, _g, _floor in (
             ("off the right edge", {"x": 700, "y": 150, "w": 90, "h": 220},
              370),
@@ -79,22 +82,48 @@ def main():
             ("far off in both", {"x": -900, "y": -900, "w": 10, "h": 10},
              None)):
         _hr, _fr = _crop_rect(_g, _floor, [{"y": _g["y"]}], (W, H))
-        ok("a golfer %s still gives a usable crop" % _label,
-           (_crops(_hr), _crops(_fr)), (True, True))
+        ok("a golfer %s is None or crops, never empty" % _label,
+           [(r is None or _crops(r)) for r in (_hr, _fr)], [True, True])
 
-    # ── THE FALLBACK IS THE WHOLE PICTURE, NOT A SLIVER ─────────────
+    # ── AND THE ONES THAT LEAVE IT ENTIRELY SAY SO ──────────────────
     #
-    # A two-pixel crop is worse than useless: there is nothing for a
-    # model to look at and nothing for a detector to find. The crop
-    # exists to put the golfer in the middle, and failing that,
-    # judging the whole frame is what the no-golfer branch already
-    # does.
-    ok("a rect with no overlap falls back to the whole picture",
-       _usable(900, 900, 910, 910, W, H), (0, 0, W, H))
-    ok("  as does an inverted one", _usable(400, 300, 100, 100, W, H),
-       (0, 0, W, H))
+    # THE REGRESSION THIS PINS. `_usable` first answered an
+    # off-picture rect with the WHOLE PICTURE. That stopped the crash
+    # and quietly changed the answer: the judge was handed a whole
+    # 640x480 frame while `golfer_crop` still said True, rated it
+    # not-a-swing -- right, at that scale there is no swing to see --
+    # and `verify_drops` on the rig DELETED the strike. A day of audio
+    # triggers went that way: cuts in the journal, no events on the
+    # page, and lowering the audio gate could not help because the
+    # ears were never the problem.
+    #
+    # Before the crash was fixed this same input returned "could not
+    # tell" and the clip went up unjudged. That is the right outcome,
+    # so None it is, and the caller turns None into exactly that.
+    ok("a rect with no overlap is unusable, not the whole picture",
+       _usable(900, 900, 910, 910, W, H), None)
+    ok("  as is an inverted one", _usable(400, 300, 100, 100, W, H), None)
+    ok("  and a sliver off the corner is too",
+       _usable(636, 476, 646, 486, W, H), None)
     ok("  and a sane one is left alone",
        _usable(10, 20, 300, 400, W, H), (10, 20, 300, 400))
+
+    # ── THE CALLER MUST CHECK BEFORE IT SLICES ──────────────────────
+    #
+    # `_usable` returning None is only safe if nothing unpacks it. The
+    # guard has to come BEFORE `hx0, hy0, hx1, hy1 = hrect`, or the
+    # fix trades a crash in imwrite for a TypeError two lines up.
+    _src = (ROOT / "backend/app/services/swinganalysis.py").read_text()
+    _guard = _src.find("if hrect is None or frect is None:")
+    _unpack = _src.find("hx0, hy0, hx1, hy1 = hrect")
+    ok("analyse guards against an unusable rect", _guard > 0, True)
+    ok("  and does so before it unpacks one",
+       _guard > 0 and _unpack > 0 and _guard < _unpack, True)
+    ok("  reporting it as 'could not tell', never a verdict",
+       "could not tell — the golfer picked at" in _src, True)
+    ok("  and marking the crop as not a golfer crop",
+       _src.find('out["golfer_crop"] = False', _guard) > 0
+       and _src.find('out["golfer_crop"] = False', _guard) < _unpack, True)
 
     # ── AND THE WRITER NEVER RAISES ─────────────────────────────────
     #
