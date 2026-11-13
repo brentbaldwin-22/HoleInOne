@@ -14,7 +14,10 @@ is the LOWEST that line is ever seen.
 Both halves of the fix are covered: the search window -- anchored on
 impact, because ai_tracer cuts 4.5s before it and a FIXED 1s-3s window
 searched the address on every clip from the normal pipeline -- and the
-lowest-foot rule for choosing among the frames inside it. They are pure, so they are read off the shipping
+lowest-foot rule for choosing among the frames inside it -- on the tee,
+where the stroke rises and the lowest foot is the earliest frame, and
+on the green, where the ball is coming down and the lowest foot is the
+latest. They are pure, so they are read off the shipping
 source and exec'd alone -- admin.py cannot be imported (no fastapi, and
 py3.9 chokes on deps.py).
 
@@ -134,6 +137,30 @@ def main() -> int:
     g_lo, g_limit = _tracer_scan_bounds(30.0, 200, 0.0, 8.0, 8.0)
     assert (g_lo, g_limit) == (200, 440), (g_lo, g_limit)
     print(f"green window: frames {g_lo}-{g_limit}, measured from the cut")
+
+    # ---- the green half -----------------------------------------
+    # Same rule, mirrored. On the tee the stroke RISES and its foot
+    # climbs as the tail recedes, so the lowest foot is the earliest.
+    # On the green the ball is coming DOWN, so the stroke's lowest
+    # point descends with it and the lowest foot is the LATEST -- the
+    # place it came down, which is where the green half should open
+    # before it walks to the pin.
+    GREEN = [
+        (0.51, 7.0, 0.22),   # just after the cut, high in the sky
+        (0.45, 7.5, 0.38),
+        (0.41, 8.0, 0.52),
+        (0.39, 8.4, 0.60),   # as low as it gets: the landing
+    ]
+    g = _pick_tracer_foot(GREEN)
+    print(f"green: picked x={g[0]:.3f} t={g[1]:.1f}s foot y={g[2]:.3f}")
+    assert g[0] == 0.39, f"took {g[0]}, not the descending tip at 0.39"
+    assert g[2] == max(c[2] for c in GREEN), "not the lowest foot"
+    assert g[1] == 8.4, "took an earlier frame, higher in the sky"
+
+    # The tee's tie-break must not drag the green back up: it only
+    # applies between EQUALLY low feet, never across different ones.
+    assert g[1] > GREEN[0][1], (
+        "the earliest-wins tie-break fired across unequal feet")
 
     # Never inverted, however absurd the inputs.
     bad_lo, bad_limit = _tracer_scan_bounds(30.0, 0, 9.0, 3.0, 8.0)

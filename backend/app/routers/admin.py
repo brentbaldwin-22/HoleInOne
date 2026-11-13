@@ -1954,6 +1954,7 @@ def make_clip_vertical(
                         _tracer_start_x(
                             render_src, from_sec=_cut + 0.3,
                             win_start_sec=0.0, win_end_sec=8.0,
+                            use_baseline=False,
                         )
                         if _cut is not None else None
                     )
@@ -2048,6 +2049,7 @@ def make_clip_vertical(
                 _tracer_start_x(
                     render_src, from_sec=_c2 + 0.3,
                     win_start_sec=0.0, win_end_sec=8.0,
+                    use_baseline=False,
                 )
                 if _c2 is not None else None
             )
@@ -5304,7 +5306,27 @@ def _process_long_upload_segments(
                             )
                             if _grx is None:
                                 _grx = _green_focus_x(_vert_src, _cut)
-                        _bgx = _green_ball_x(seg, _sw)
+                        # THE PICTURE FIRST, METADATA SECOND. The
+                        # on-demand render was moved off _green_ball_x
+                        # for a reason recorded there -- it is the
+                        # metadata that arrives as "ball 1", an
+                        # overflow rather than a position -- and this
+                        # path was left behind, so Produce and the
+                        # re-render framed the same green differently.
+                        # The lowest point the green tracer reaches is
+                        # where the ball came down, read off the frames
+                        # being cropped.
+                        _bgx = None
+                        if _cut is not None:
+                            _gb = _tracer_start_x(
+                                _vert_src, from_sec=float(_cut) + 0.3,
+                                win_start_sec=0.0, win_end_sec=8.0,
+                                use_baseline=False,
+                            )
+                            if _gb and _gb.get("x") is not None:
+                                _bgx = _gb["x"]
+                        if _bgx is None:
+                            _bgx = _green_ball_x(seg, _sw)
                         _tdur = None
                         try:
                             _td = _sinfo.get("duration")
@@ -6417,7 +6439,8 @@ def _pick_tracer_foot(cands):
 
 def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
                     win_start_sec=_TRACER_WIN_START_SEC,
-                    win_end_sec=_TRACER_WIN_END_SEC, impact_t=None):
+                    win_end_sec=_TRACER_WIN_END_SEC, impact_t=None,
+                    use_baseline=True):
     """Where the TRACER STARTS, read off the picture itself.
 
     STEP 1 OF FRAMING THE 9:16. Every other anchor is metadata that can
@@ -6516,22 +6539,40 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
                     interpolation=cv2.INTER_AREA,
                 )
 
+            # NO BASELINE ON THE GREEN. Subtracting "every blue thing
+            # standing there before the ball is struck" works on the
+            # tee, where the five baseline frames are the address and
+            # hold no stroke. After the cut there is no such moment:
+            # the ball is ALREADY in flight, so the green camera's
+            # tracer is drawn in the very first frames, goes into the
+            # baseline, is dilated 5x5 twice for good measure, and is
+            # then subtracted out of every frame that follows. The scan
+            # could never see it. That is "gball no shape", on every
+            # clip, for as long as this has existed.
+            #
+            # Without it the shape filters carry the whole load, which
+            # they can: the area cap rejects sky (one huge component),
+            # and the thickness test rejects a shirt or a sign (tens of
+            # pixels across, where a stroke is a few).
             base = None
-            for _ in range(5):
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    return {"x": None, "why": "too short", "best": 0}
-                m = _blue(_small(frame))
-                base = m if base is None else (base | m)
-            base = cv2.dilate(
-                base.astype(np.uint8),
-                np.ones((5, 5), np.uint8), iterations=2,
-            ).astype(bool)
+            if use_baseline:
+                for _ in range(5):
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        return {"x": None, "why": "too short", "best": 0}
+                    m = _blue(_small(frame))
+                    base = m if base is None else (base | m)
+                base = cv2.dilate(
+                    base.astype(np.uint8),
+                    np.ones((5, 5), np.uint8), iterations=2,
+                ).astype(bool)
 
-            area = base.size
+            # Measured off the sampled frame instead of the baseline,
+            # which may not exist.
+            area = 0
             best = 0
             cands: list = []
-            idx = idx0 + 5
+            idx = idx0 + (5 if use_baseline else 0)
             # SKIP TO THE WINDOW. grab() demuxes without decoding, so
             # the frames before it cost almost nothing.
             _win_lo, limit = _tracer_scan_bounds(
@@ -6554,7 +6595,10 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
                 if not ok or frame is None:
                     break
                 sm = _small(frame)
-                new = _blue(sm) & ~base
+                new = _blue(sm)
+                if base is not None:
+                    new = new & ~base
+                area = new.size
                 # THE BALL IS NEVER IN THE SKY AT IMPACT. The top of
                 # the frame holds the two things most likely to fool
                 # this: the logo in the right corner (blue, and it
