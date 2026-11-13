@@ -1952,9 +1952,10 @@ def make_clip_vertical(
                     # does not care which branch we are in.
                     _gb = (
                         _tracer_start_x(
-                            render_src, from_sec=_cut + 0.3,
+                            render_src,
+                            from_sec=_cut + _GREEN_SCAN_LEAD_SEC,
                             win_start_sec=0.0, win_end_sec=8.0,
-                            use_baseline=False,
+                            use_baseline=False, step=1,
                         )
                         if _cut is not None else None
                     )
@@ -2047,9 +2048,10 @@ def make_clip_vertical(
             # is what "ball 1" was failing to be.
             _gb = (
                 _tracer_start_x(
-                    render_src, from_sec=_c2 + 0.3,
+                    render_src,
+                    from_sec=_c2 + _GREEN_SCAN_LEAD_SEC,
                     win_start_sec=0.0, win_end_sec=8.0,
-                    use_baseline=False,
+                    use_baseline=False, step=1,
                 )
                 if _c2 is not None else None
             )
@@ -5319,9 +5321,12 @@ def _process_long_upload_segments(
                         _bgx = None
                         if _cut is not None:
                             _gb = _tracer_start_x(
-                                _vert_src, from_sec=float(_cut) + 0.3,
+                                _vert_src,
+                                from_sec=(
+                                    float(_cut) + _GREEN_SCAN_LEAD_SEC
+                                ),
                                 win_start_sec=0.0, win_end_sec=8.0,
-                                use_baseline=False,
+                                use_baseline=False, step=1,
                             )
                             if _gb and _gb.get("x") is not None:
                                 _bgx = _gb["x"]
@@ -6381,6 +6386,14 @@ _TRACER_WIN_HALF_SEC = 1.0
 _TRACER_WIN_START_SEC = 1.0
 _TRACER_WIN_END_SEC = 6.0
 
+# HOW FAR PAST THE CUT THE GREEN SCAN STARTS. Not zero: `_detect_cut_sec`
+# can be a frame out, and a tee frame read as green finds the TEE tracer
+# and reports it as the ball's landing -- which is how gball once came
+# back equal to tracer to three decimals. 0.15s is four or five frames,
+# enough to clear that jitter. It was 0.3s, which on a stroke that only
+# flickers for a moment was nine frames of the thing we are looking for.
+_GREEN_SCAN_LEAD_SEC = 0.15
+
 
 def _tracer_scan_bounds(fps, idx0, win_start_sec, win_end_sec,
                         max_scan_sec, impact_t=None,
@@ -6463,6 +6476,14 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
                        is in the opening frames and a tracer is not, so
                        everything blue BEFORE the swing is subtracted
                        as baseline and only new blue counts.
+
+    `step` is the sampling stride. The tee uses 2 -- the stroke is
+    drawn for seconds and every skipped frame is grab()'d rather than
+    decoded, which is where the speed comes from. The GREEN uses 1,
+    because that stroke does not stay: it can flicker for a handful of
+    frames and be gone, so looking at every other one is a coin flip on
+    seeing it at all. The green half is a few seconds, so decoding all
+    of it is affordable.
 
     Scans for the first frame carrying new blue: the tracer is
     shortest there and still at the ball, so its foot is the launch
