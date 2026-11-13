@@ -6597,6 +6597,10 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
             # the best candidate the scan ever saw, not the last one.
             _rej_a = 0
             _rej_s = None
+            # The most stroke-like rejection, kept separately: see the
+            # note where it is set.
+            _rej_r = 0.0
+            _rej_t = None
             cands: list = []
             idx = idx0 + (5 if use_baseline else 0)
             # SKIP TO THE WINDOW. grab() demuxes without decoding, so
@@ -6687,11 +6691,35 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
                     # So: short things are not strokes, fat things are
                     # not strokes, and a stroke is far longer than it
                     # is wide.
-                    _thin = min(_bw, _bh)
-                    _long = max(_bw, _bh)
+                    # THICKNESS THAT DOES NOT CARE WHICH WAY THE
+                    # STROKE LEANS. `min(_bw, _bh)` is the bounding
+                    # box's short side, which equals the stroke's
+                    # thickness only when the stroke is near vertical
+                    # or near horizontal. A 3px stroke running at 45
+                    # degrees across 200px has a 141x141 box, so it
+                    # read as 141 thick and was thrown out as "fat" --
+                    # and the GREEN tracer, descending at an angle, is
+                    # exactly that case. On clip 1444 the green came
+                    # back "fat 43>18".
+                    #
+                    # Area over length is the thickness whichever way
+                    # it leans, because a stroke of length L and
+                    # thickness T covers about L*T pixels:
+                    #
+                    #   vertical  3x360 box, a=1080 -> 1080/360 =  3
+                    #   diagonal  141x141 box, a=600 ->  600/200 =  3
+                    #   a blob    244x43 box, a=7141 -> 7141/248 = 29
+                    #
+                    # which is the test the fill ratio and the box
+                    # were both reaching for. Fill was wrong for a
+                    # vertical stroke (a 3x360 line fills its own
+                    # 3x360 box) and the box is wrong for a diagonal
+                    # one; this is wrong for neither.
+                    _long = (_bw * _bw + _bh * _bh) ** 0.5
+                    _thin = _a / max(1.0, _long)
                     _lim = max(5, int(_h_sm * 0.035))
                     _bot = int(_st[_ci, cv2.CC_STAT_TOP]) + _bh - 1
-                    _ratio = _long / float(max(1, _thin))
+                    _ratio = _long / max(0.5, _thin)
                     # SAY WHICH TEST KILLED IT. "no shape" means a blue
                     # object was found and thrown out, and nothing at
                     # all about why -- so every attempt to tune these
@@ -6704,17 +6732,29 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
                     # wrong shape.
                     _bad = None
                     if _long < 20:
-                        _bad = "short %d<20" % _long
+                        _bad = "short %.0f<20" % _long
                     elif _thin > _lim:
-                        _bad = "fat %d>%d" % (_thin, _lim)
+                        _bad = "fat %.1f>%d" % (_thin, _lim)
                     elif _ratio < 4.0:
                         _bad = "squat %.1f<4" % _ratio
                     elif _bot < _h_sm * 0.45:
                         _bad = "high %.2f<0.45" % (_bot / float(_h_sm))
                     if _bad is not None:
+                        # TWO REJECTIONS, NOT ONE. Recording only the
+                        # biggest reports the loudest distractor -- on
+                        # 1444 a 244x43 blob 68% full of blue -- while
+                        # the tracer, being thin, is never the biggest
+                        # thing in the frame and so never gets
+                        # mentioned. The most ELONGATED rejection is
+                        # the one most likely to have been the stroke.
                         if _a > _rej_a:
                             _rej_a = _a
                             _rej_s = "%s a%d %dx%d" % (_bad, _a, _bw, _bh)
+                        if _long >= 20 and _ratio > _rej_r:
+                            _rej_r = _ratio
+                            _rej_t = "%s r%.0f %dx%d" % (
+                                _bad, _ratio, _bw, _bh,
+                            )
                         continue
                     # TALLEST WINS. More than one thin thing can pass
                     # these tests -- a flagstick, a cart aerial -- and
@@ -6762,7 +6802,9 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
                 "x": None, "t": None, "best": best, "n": 0,
                 "why": ("too few" if best < 25
                         else "too many" if best > _cap
-                        else "no shape: %s" % _rej_s if _rej_s
+                        else "no shape: %s" % (
+                            _rej_t if _rej_t else _rej_s
+                        ) if (_rej_t or _rej_s)
                         else "no shape"),
             }
         finally:
