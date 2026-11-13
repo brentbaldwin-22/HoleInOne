@@ -63,7 +63,31 @@ class FakeDB:
         pass
 
 
-def drain(seen, want, timeout=5.0):
+# HOW LONG TO WAIT FOR A WORKER THREAD BEFORE CALLING IT STUCK.
+#
+# A SAFETY NET, NOT A DEADLINE. Both helpers below poll at 10 ms and
+# return the moment the condition holds, so a generous value costs
+# nothing on a passing run and is only reached when something is
+# genuinely wedged.
+#
+# It was 5 s. This file failed once, inside a full-suite run of 159
+# tests, and has not failed since: six isolated runs and two under
+# twelve spinning CPU hogs on a four-core box all pass, with the old
+# 5 s as well as with this.
+#
+# SO THE CAUSE IS NOT KNOWN, and raising this does not establish one.
+# It is hardening on the one thing in here that can report a false
+# "the queue never ran the job" -- a claim about the mechanism this
+# file exists to check -- and it is free: on a passing run the whole
+# file still takes 1.9 s either way, because these poll and return on
+# the condition rather than sleeping the interval out.
+#
+# If it fails again, the thing to find out is what ELSE the batch was
+# doing, not to raise this further.
+WAIT_SEC = 30.0
+
+
+def drain(seen, want, timeout=WAIT_SEC):
     """Wait until `want` jobs have run, or give up."""
     end = time.monotonic() + timeout
     while time.monotonic() < end and len(seen) < want:
@@ -71,7 +95,7 @@ def drain(seen, want, timeout=5.0):
     return list(seen)
 
 
-def held(want, timeout=5.0):
+def held(want, timeout=WAIT_SEC):
     """Wait for the hold to reach `want`.
 
     The worker does the deferring, not the enqueue, so "held" is true a
