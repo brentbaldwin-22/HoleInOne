@@ -1515,6 +1515,31 @@ def _analyse_posted_frames(shots, heat_path, crop, zones, geo, offsets,
         "picked_front": r.get("picked_front"),
         "crop": list(_c),
         "offsets": _o,
+        # ── WHAT THE RIG'S JUDGE ACTUALLY SAW ───────────────────────
+        #
+        # The pictures are written to disk here, with a name nothing
+        # recorded, so they existed and could not be found. The event
+        # card then showed a verdict with no evidence behind it, and
+        # the only way to ask "how did the rig call this a swing" was
+        # to press Test cut -- which rebuilds its OWN pictures from
+        # the uploaded clip, with its own crop and its own golfer, and
+        # answers a different question. Reported as "how did the rig
+        # trigger this as a swing? test cut didn't identify anything."
+        #
+        # The two disagreeing is not news: the judge samples, and the
+        # pictures differ. What was missing is the ability to SEE the
+        # pair and know which it is.
+        "image": r.get("image_zones") or r.get("image"),
+        "frames_image": (r.get("frames_image_zones")
+                         or r.get("frames_image")),
+        "heat_is_swing": r.get("heat_is_swing"),
+        "heat_reason": r.get("heat_reason"),
+        "frames_is_swing": r.get("frames_is_swing"),
+        "frames_reason": r.get("frames_reason"),
+        "reason": r.get("reason"),
+        "zoom_from": r.get("zoom_from"),
+        "heat_map_from": r.get("heat_map_from"),
+        "frames_used": r.get("frames_used"),
     }
     return out
 
