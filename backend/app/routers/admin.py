@@ -6592,6 +6592,11 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
             # which may not exist.
             area = 0
             best = 0
+            # Largest component the shape tests threw out, and which
+            # test did it. Survives across frames so the report is of
+            # the best candidate the scan ever saw, not the last one.
+            _rej_a = 0
+            _rej_s = None
             cands: list = []
             idx = idx0 + (5 if use_baseline else 0)
             # SKIP TO THE WINDOW. grab() demuxes without decoding, so
@@ -6656,6 +6661,12 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
                     # Enough to be a stroke, little enough not to be
                     # sky the camera drifted into.
                     if not (25 <= _a <= _cap):
+                        if _a > _rej_a:
+                            _rej_a = _a
+                            _rej_s = (
+                                "small %d<25" % _a if _a < 25
+                                else "huge %d>%d" % (_a, _cap)
+                            )
                         continue
                     _bw = int(_st[_ci, cv2.CC_STAT_WIDTH])
                     _bh = int(_st[_ci, cv2.CC_STAT_HEIGHT])
@@ -6678,16 +6689,32 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
                     # is wide.
                     _thin = min(_bw, _bh)
                     _long = max(_bw, _bh)
-                    if _long < 20:
-                        continue
-                    if _thin > max(5, int(_h_sm * 0.035)):
-                        continue
-                    if _long / float(max(1, _thin)) < 4.0:
-                        continue
-                    # Its foot must be in the lower half: a stroke
-                    # rises FROM the ground.
+                    _lim = max(5, int(_h_sm * 0.035))
                     _bot = int(_st[_ci, cv2.CC_STAT_TOP]) + _bh - 1
-                    if _bot < _h_sm * 0.45:
+                    _ratio = _long / float(max(1, _thin))
+                    # SAY WHICH TEST KILLED IT. "no shape" means a blue
+                    # object was found and thrown out, and nothing at
+                    # all about why -- so every attempt to tune these
+                    # numbers has been a guess followed by a deploy.
+                    # The largest rejected component and the test that
+                    # rejected it are recorded instead, so the card can
+                    # say "fat 41>18" and the next change can be aimed.
+                    # The foot test is last because a stroke that fails
+                    # it is a different problem from one that is the
+                    # wrong shape.
+                    _bad = None
+                    if _long < 20:
+                        _bad = "short %d<20" % _long
+                    elif _thin > _lim:
+                        _bad = "fat %d>%d" % (_thin, _lim)
+                    elif _ratio < 4.0:
+                        _bad = "squat %.1f<4" % _ratio
+                    elif _bot < _h_sm * 0.45:
+                        _bad = "high %.2f<0.45" % (_bot / float(_h_sm))
+                    if _bad is not None:
+                        if _a > _rej_a:
+                            _rej_a = _a
+                            _rej_s = "%s a%d %dx%d" % (_bad, _a, _bw, _bh)
                         continue
                     # TALLEST WINS. More than one thin thing can pass
                     # these tests -- a flagstick, a cart aerial -- and
@@ -6734,7 +6761,9 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
             return {
                 "x": None, "t": None, "best": best, "n": 0,
                 "why": ("too few" if best < 25
-                        else "too many" if best > _cap else "no shape"),
+                        else "too many" if best > _cap
+                        else "no shape: %s" % _rej_s if _rej_s
+                        else "no shape"),
             }
         finally:
             cap.release()
