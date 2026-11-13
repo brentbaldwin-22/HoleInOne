@@ -266,8 +266,37 @@ check("...and zooms on the box it gives back",
       '_rect = tuple(int(v) for v in _heat["ball_box"])' in _al, True)
 check("...kept inside the hole's tee box when there is one",
       "_rect_overlap_px(" in _al, True)
-check("the tee box is the fallback, not the first choice",
-      _al.index("_heat.get(\"ball_box\")") < _al.index("elif _box:"), True)
+# THE WHOLE LADDER, IN ORDER, not one comparison out of it.
+#
+# This used to pin `elif _box:`, which the chain outgrew: the tee box
+# stopped being an alternative SOURCE and became a clip applied to
+# the measured box, with a last-resort branch of its own further
+# down. The literal vanished, .index() raised ValueError, and the
+# check had not run since -- taking the rest of this file with it,
+# because the raise is at module level.
+#
+# What it was protecting is unchanged and worth more said in full:
+# every rectangle measured TODAY is tried before the one drawn last
+# month. The markers move every morning.
+_LADDER = [
+    ("the golfer crop Test Cut searched", '_heat.get("frames_rect")'),
+    ("the heat's own ball box", '_heat.get("ball_box")'),
+    ("the golfer the rig already picked", '_kept.get("golfer_box")'),
+    ("the person detector", "find_people_over_time"),
+    ("and only then the hole's tee box", "if _rect is None and _box:"),
+]
+# SCOPED TO THE LADDER, which starts where the rect does. `_kept`
+# and the person detector are both named earlier, in the section that
+# decides what can be REUSED from the rig's verify call -- so a bare
+# .index() over the whole function finds those and reports the ladder
+# out of order.
+_lad = _al[_al.index("_rect = None"):]
+_at = []
+for _name, _needle in _LADDER:
+    check("  tries %s" % _name, _needle in _lad, True)
+    _at.append((_lad.index(_needle) if _needle in _lad else -1, _name))
+check("the tee box is the LAST choice, not the first",
+      [n for _, n in _at] == [n for _, n in sorted(_at)], True)
 check("a clip with neither says so rather than guessing",
       "nowhere to zoom in on" in _al, True)
 check("the modal shows the heat the box came from",
@@ -343,10 +372,17 @@ _run = _src[_src.index("def _ascent_run(row, src_path, db,"):]
 _run = _run[:_run.index("\ndef ", 10)]
 print()
 print("it runs before the sweep, as stage 1:")
-check("stage 1 is the swing check and the launch plot",
-      '_stage(1, "Swing check and AI launch plot"' in _run, True)
-check("the sweep is stage 2 now",
-      '_stage(2, "Balls leaving the tee"' in _run, True)
+# THE NUMBERS AND THE ORDER, NOT THE TITLES. These pinned
+# '_stage(1, "Swing check and AI launch plot"' and
+# '_stage(2, "Balls leaving the tee"', and 57a92db renamed both when
+# it folded the golfer, the ball and the impact frame into one stage.
+# The titles are what an operator reads on a card; they will be
+# rewritten again, and they are not what this section is about. What
+# must hold is that the plot is stage 1 and the sweep is stage 2.
+check("the plot's stage is numbered 1", "_stage(1, " in _run, True)
+check("the sweep's stage is numbered 2", "_stage(2, " in _run, True)
+check("...in that order", _run.index("_stage(1, ") < _run.index("_stage(2, "),
+      True)
 check("...and the plot is called before it",
       _run.index("_ascent_ai_launch(") < _run.index("_d3.sweep_ascents("),
       True)

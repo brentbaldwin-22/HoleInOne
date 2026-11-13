@@ -42,6 +42,41 @@ from app.services import greenrest as G  # noqa: E402
 FAIL: list[str] = []
 
 
+
+# WHICH STAGE THE SEARCH FELL AT, from the notes it wrote.
+#
+# These assertions used to pin one sentence, "Nothing new is on the
+# green". 189ee32 (8 Nov) split it into four, deliberately: a
+# threshold nothing crossed is an exposure problem, a candidate that
+# was ball-shaped and failed persistence is a gate set too tight, and
+# only "nothing found at any stage" is actually "the shot missed".
+# They need opposite fixes, so one sentence for all four was the bug.
+#
+# The guarantee is that the search SAYS WHERE IT FELL. Checking for
+# the stage is both what the test meant and stronger than what it
+# asked, so it goes here rather than being loosened to "some note".
+# SHORT ENOUGH NOT TO WRAP. These are matched against the runtime
+# note AND against the source, and a source literal is broken across
+# lines wherever it is long -- "none of them were ball-shaped" reads
+# fine in the note and does not exist in the file. That is the same
+# way ascent_window_test spent weeks raising ValueError instead of
+# running.
+_STAGES = {
+    "nothing was bright enough": "grey levels brighter",
+    "nothing was ball-shaped": "were ball-shaped",
+    "nothing persisted": "failed the persistence check",
+    "nothing at any stage": "Nothing new is on the green",
+}
+
+
+def _fell_at(notes):
+    """The stage named in these notes, or None."""
+    for _name, _needle in _STAGES.items():
+        if any(_needle in n for n in notes or []):
+            return _name
+    return None
+
+
 def check(name, got, want):
     ok = got == want
     print(f"{'ok  ' if ok else 'FAIL'}  {name}: got {got!r}, want {want!r}")
@@ -428,9 +463,8 @@ def test_the_plates_can_be_placed_by_time():
                                  before_sec=2.0, after_sec=9.5)
     check("the default plate misses a ball already picked up",
           late["best"], None)
-    check("  and says so rather than failing quietly",
-          any("Nothing new is on the green" in n for n in late["notes"]),
-          True)
+    check("  and says WHICH STAGE it fell at, not just that it fell",
+          _fell_at(late["notes"]), "nothing was bright enough")
     # Asked at the right moment, the same clip answers.
     check("placed by time, the ball is found",
           near(early["best"], (300, 300)), True)
@@ -650,8 +684,16 @@ def test_an_empty_green_says_so():
         vw.release()
         out = G.find_rest_spot(p, polygon=GREEN_POLY, drawn_at=[W, H])
     check("nothing is found on an empty green", out["best"], None)
-    check("  and it is said out loud",
-          any("Nothing new is on the green" in n for n in out["notes"]), True)
+    check("  and it is said out loud, by stage",
+          _fell_at(out["notes"]), "nothing was bright enough")
+    # ALL FOUR SENTENCES STILL EXIST. The split is the point; losing
+    # three of them back into one would pass the checks above while
+    # undoing 189ee32.
+    _gr = (Path(__file__).resolve().parents[1]
+           / "backend/app/services/greenrest.py").read_text()
+    for _name, _needle in _STAGES.items():
+        check("    '%s' is still a thing it can say" % _name,
+              _needle in _gr, True)
 
 
 for fn in (test_it_finds_a_ball_at_rest,
