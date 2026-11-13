@@ -1074,6 +1074,34 @@ class CopyEngine:
         was not. An exact tie on both keeps the FIRST, because a
         golfer lowering his follow-through paints the same
         figure-and-plume and arrives AFTER the strike.
+
+        TWO MOMENTS, NOT TWO CLOCKS. Both are Unix timestamps off
+        the same `time.time()`; what differs is the event each one
+        marks -- when the ball was STRUCK, and when the cut came off
+        the queue. They are the same number on an idle rig and minutes
+        apart on a busy one, which is why using the wrong one cost a
+        round of swings and looked like nothing at all in testing.
+
+        WHICH CANDIDATES CONTEST is a question about the GOLFER, so it
+        is asked in IMPACT time: a waggle, a practice swing and the
+        strike are seconds apart at the tee, and that is true however
+        long the cut queue took to get to them. It used to be asked in
+        WALL time -- `time.time() + hold_sec` at the moment the cut was
+        processed -- and a queue running behind flushes a backlog far
+        faster than real time. Nine cuts came off the queue in eight
+        seconds carrying impacts that spanned two minutes of golf;
+        every one of them landed in one 12s window, four were allowed
+        in, and the rest were parked as rehearsals for a swing they had
+        nothing to do with. Five separate swings, one event.
+
+        WHEN TO SHIP stays in WALL time, because shipping is a thing
+        that happens in the world and the deadline is really "nothing
+        else has turned up". It needs no backlog arithmetic: a cut
+        whose impact falls outside the held window ends that window on
+        the spot -- impacts arrive from the queue in order, so a later
+        one proves no earlier one is still coming -- and the held swing
+        ships then and there. The wall deadline is only what closes a
+        window that never got a successor at all.
         """
         cand = {
             "session_id": session_id, "clip_path": clip_path,
@@ -1084,7 +1112,12 @@ class CopyEngine:
             # THE DEADLINE BELONGS TO THE WINDOW, not to its current
             # leader: a late challenger must not be able to extend it
             # indefinitely and sit on a swing that should have shipped.
+            # Both deadlines are inherited by the winner below, for the
+            # same reason.
             "until": time.time() + float(hold_sec),
+            # THE LAST IMPACT THAT STILL BELONGS TO THIS SWING. See the
+            # docstring: this is the one the contest is decided on.
+            "until_impact": float(impact_ts) + float(hold_sec),
             "entrants": 1,
         }
         # DECIDED UNDER THE LOCK, ACTED ON OUTSIDE IT. Parking moves a
@@ -1103,31 +1136,52 @@ class CopyEngine:
                          session_id, conf or "no confidence", hold_sec)
                 return None
 
-            cand["until"] = held["until"]
-            cand["entrants"] = held["entrants"] + 1
-            # WHY IT WON OR LOST, in the numbers that decided it. "beats
-            # held" said nothing about whether the judge or the microphone
-            # separated them, and the whole point of the tiebreak is that
-            # those are different events.
-            _how = "%s x%.1f vs %s x%.1f" % (
-                conf or "no confidence", cand["rank"][1],
-                held["conf"] or "no confidence", held["rank"][1])
-            if cand["entrants"] > _PICK_BEST_MAX_ENTRANTS:
-                # Enough. Ship the leader now and let the refractory it
-                # starts quieten whatever else is making this noise.
-                log.info("copy: %d candidates in one window — shipping %s "
-                         "and closing it",
-                         cand["entrants"], held["session_id"])
-                _park_me, _ship, self._held = cand, held, None
-            elif cand["rank"] > held["rank"]:
-                log.info("copy: %s beats held %s (%s) — the earlier one was "
-                         "the rehearsal", session_id, held["session_id"], _how)
-                _park_me, self._held = held, cand
+            # A DIFFERENT SWING, NOT A CHALLENGER. Its impact is past
+            # everything this window can still account for, so the
+            # contest is over and the held swing has won it. Ship that
+            # one and hold this one, each with its own window: nothing
+            # is parked, because neither was a rehearsal for the other.
+            if float(impact_ts) > held["until_impact"]:
+                # SHIPPED BY THE TAIL, NOT HERE. `_ship_one` uploads,
+                # and the lock this is holding is the one the cut
+                # queue's next job wants -- which is the whole reason
+                # the two slow verbs are handed out rather than done.
+                log.info(
+                    "copy: %s is a separate swing — its impact is %.1fs "
+                    "past the window held by %s, so that one ships now "
+                    "(best of %d) and this one starts a fresh window",
+                    session_id, float(impact_ts) - held["until_impact"],
+                    held["session_id"], held["entrants"])
+                _ship, self._held = held, cand
             else:
-                log.info("copy: %s does not beat held %s (%s) — parked",
-                         session_id, held["session_id"], _how)
-                _park_me = cand
-                self._held["entrants"] = cand["entrants"]
+                cand["until"] = held["until"]
+                cand["until_impact"] = held["until_impact"]
+                cand["entrants"] = held["entrants"] + 1
+                # WHY IT WON OR LOST, in the numbers that decided it.
+                # "beats held" said nothing about whether the judge or
+                # the microphone separated them, and the whole point of
+                # the tiebreak is that those are different events.
+                _how = "%s x%.1f vs %s x%.1f" % (
+                    conf or "no confidence", cand["rank"][1],
+                    held["conf"] or "no confidence", held["rank"][1])
+                if cand["entrants"] > _PICK_BEST_MAX_ENTRANTS:
+                    # Enough. Ship the leader now and let the refractory
+                    # it starts quieten whatever else is making this
+                    # noise.
+                    log.info("copy: %d candidates in one window — "
+                             "shipping %s and closing it",
+                             cand["entrants"], held["session_id"])
+                    _park_me, _ship, self._held = cand, held, None
+                elif cand["rank"] > held["rank"]:
+                    log.info("copy: %s beats held %s (%s) — the earlier "
+                             "one was the rehearsal", session_id,
+                             held["session_id"], _how)
+                    _park_me, self._held = held, cand
+                else:
+                    log.info("copy: %s does not beat held %s (%s) — "
+                             "parked", session_id, held["session_id"], _how)
+                    _park_me = cand
+                    self._held["entrants"] = cand["entrants"]
         if _park_me is not None:
             self._park(_park_me)
         if _ship is not None:
