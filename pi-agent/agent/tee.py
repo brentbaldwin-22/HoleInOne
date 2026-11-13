@@ -1146,6 +1146,41 @@ class TeeAgent:
                      "STANDS DOWN for the audio trigger" if stands_down
                      else "fires")
         t = self._audio_trigger
+        # WHICH TEES THE EARS ARE ALLOWED TO CONFIRM, said plainly.
+        #
+        # `confirm_zones` is a list of INDICES and the screen counts
+        # from one, so an operator reading "Zone 3" on the editor and
+        # a config saying [0, 1] has no way to see that Zone 3 is
+        # barred. Every strike from that tee is heard, refused, and
+        # logged as "nobody in zone(s) [0, 1] within 6s" -- which
+        # names the zones that WERE allowed and not the one the golfer
+        # was standing in.
+        #
+        # The dwell still fires there, so nothing is lost outright and
+        # the warning below stays quiet. That is exactly what makes it
+        # hard to find: the tee records, it just never audio-triggers,
+        # and the rig looks healthy. Reported as "a couple of clear
+        # swings from the back tees with high audio" and one trigger
+        # received.
+        if t is not None:
+            _all = list(range(len(tee_roi.boxes(self.roi))))
+            _cz = t.confirm_zones
+            if _cz is None:
+                log.info("audio trigger: may confirm a swing on ANY zone")
+            else:
+                _barred = [i for i in _all if i not in _cz]
+                log.info(
+                    "audio trigger: may confirm on zone(s) %s (\"%s\" on "
+                    "screen)%s",
+                    sorted(_cz),
+                    "\", \"".join("Zone %d" % (i + 1) for i in sorted(_cz)),
+                    "" if not _barred else
+                    "; BARRED from zone(s) %s (\"%s\" on screen) — a swing "
+                    "there is heard and refused, and only the dwell will "
+                    "record it" % (
+                        _barred,
+                        "\", \"".join("Zone %d" % (i + 1)
+                                      for i in _barred)))
         if t is None or self._dwell_yields is None:
             return
         cz = t.confirm_zones
