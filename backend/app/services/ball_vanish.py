@@ -743,16 +743,56 @@ def _on_the_ground(y, anchor) -> bool:
 PERSON_PAD_W = 0.04
 PERSON_PAD_H = 0.06
 
+# HOW FAR INSIDE THE BOX A SHOE HAS TO BE, down at ground level, as a
+# fraction of the box width taken off each side.
+#
+# AT ADDRESS THE BALL SITS AT THE EDGE OF THE STANCE -- teed off the
+# lead heel -- and the box edge plus PERSON_PAD_W is exactly there, so
+# the rule that keeps a shoe out was keeping the ball out with it.
+# Reported from the field on a clip whose six tiles show the whole
+# swing: "the ball isn't really close at all to the shoes."
+#
+# THE SHOES ARE IN THE MIDDLE, WHICH IS THE WAY OUT. On the 8 Nov
+# crop -- box [80, 26, 94, 208], centre x=127 -- the two shoes the
+# detector actually picked sat at x=120 and x=127, within 7 px of
+# that centre line, while the real ball sat at x=201, well outside
+# the box. Nothing real was ever seen out at the edge; the edge was
+# guarded on principle, and the principle cost more than it saved.
+#
+# SO AT GROUND LEVEL THE SIDES COME IN INSTEAD OF GOING OUT. A speck
+# has to be properly within the stance to be called a shoe, rather
+# than merely level with its outside edge. Vertically nothing
+# changes: the shoe that started all this poked out of the BOTTOM of
+# the box, and PERSON_PAD_H still catches it.
+#
+# AND THE REAL BACKSTOP IS TIME, not geometry. Anything this now lets
+# through still has to be in the same few pixels before the strike
+# and GONE from every frame after it. A shoe does not go anywhere.
+SHOE_INSET_FRAC = 0.08
 
-def _on_a_person(x, y, people) -> bool:
-    """Is this point inside somebody's detection box, or just off it?"""
+
+def _on_a_person(x, y, people, at_ground: bool = False) -> bool:
+    """Is this point inside somebody's detection box, or just off it?
+
+    `at_ground` says this point is already known to be at the picked
+    golfer's foot line -- see `_on_the_ground`, which is the only
+    thing that can know it. Down there the sideways test measures a
+    SHOE rather than a person: the box comes in by SHOE_INSET_FRAC a
+    side and the sideways padding does not apply, because a ball at
+    address sits exactly where that padding used to reach.
+    """
     for p in people or []:
         b = p.get("box") if isinstance(p, dict) else p
         if not b:
             continue
-        px, py = PERSON_PAD_W * b[2], PERSON_PAD_H * b[3]
-        if (b[0] - px <= x <= b[0] + b[2] + px
-                and b[1] - py <= y <= b[1] + b[3] + py):
+        if at_ground:
+            inset = SHOE_INSET_FRAC * b[2]
+            x_lo, x_hi = b[0] + inset, b[0] + b[2] - inset
+        else:
+            px = PERSON_PAD_W * b[2]
+            x_lo, x_hi = b[0] - px, b[0] + b[2] + px
+        py = PERSON_PAD_H * b[3]
+        if x_lo <= x <= x_hi and b[1] - py <= y <= b[1] + b[3] + py:
             return True
     return False
 
@@ -936,10 +976,13 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                     _tally["too big"] += 1
                 elif d[3] < float(min_contrast):
                     _tally["too faint"] += 1
-                elif _on_a_person(d[0], d[1], people):
-                    _tally["on the golfer"] += 1
                 elif not _on_the_ground(d[1], anchor):
+                    # ASKED BEFORE the on-a-person test now, because
+                    # that test needs the answer: at the foot line it
+                    # is looking for a shoe, not a person.
                     _tally["off the ground"] += 1
+                elif _on_a_person(d[0], d[1], people, at_ground=True):
+                    _tally["on the golfer"] += 1
                 else:
                     _tally["kept"] += 1
                     dets.append(d)
@@ -1125,10 +1168,14 @@ def ball_departure(video_path, at_sec: float, *, rect=None, people=None,
             if not ok or fr is None:
                 return None
             gray = cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY)
+            # SAME ORDER AS ball_in_frames, and for the same reason:
+            # `_on_a_person` judges a shoe rather than a person once
+            # the point is known to be at the foot line.
             return [d for d in _detections(gray, boxes, rel=0.0)
                     if d[2] <= cap_area and d[3] >= ADDRESS_MIN_CONTRAST
-                    and not _on_a_person(d[0], d[1], people)
-                    and _on_the_ground(d[1], anchor)]
+                    and _on_the_ground(d[1], anchor)
+                    and not _on_a_person(d[0], d[1], people,
+                                         at_ground=True)]
 
         # WHERE IT SAT, if nobody has already said. Taken from the
         # frames BEFORE the peak, where a ball that is about to be

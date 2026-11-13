@@ -39,30 +39,59 @@ def main() -> int:
     # The glove, at his hip. Inside the box, so out.
     check("a glove on the golfer is not a ball",
           _on_a_person(141, 119, GOLFER), True)
-    # His shoe, at the bottom of the same box.
-    check("  nor is a shoe", _on_a_person(120, 228, GOLFER), True)
     # His cap.
     check("  nor is a white cap", _on_a_person(125, 30, GOLFER), True)
-    # The actual ball, on the turf beside him and outside the box.
-    check("a ball on the turf is not on a person",
-          _on_a_person(201, 204, GOLFER), False)
+
+    # ---- and DOWN AT THE FOOT LINE it looks for a shoe ------------
+    #
+    # `at_ground` is passed by both callers once `_on_the_ground` has
+    # said the point is at the picked golfer's feet, and it is the
+    # only state in which a bright speck could be a ball at all. The
+    # tests below MUST pass it, or they check a path the real rule no
+    # longer takes -- which is how a model in a test comes to agree
+    # with itself.
+    #
+    # THE SHOES ARE IN THE MIDDLE. Both of the ones the detector
+    # actually picked on 8 Nov sat within 7 px of the box's centre
+    # line at x=127.
+    check("a shoe is on a person", _on_a_person(120, 228, GOLFER, True),
+          True)
+    check("  and so is the other one",
+          _on_a_person(127, 228, GOLFER, True), True)
     # A SHOE POKES OUT OF THE BOTTOM OF THE BOX. On 8 Nov one was
     # reported as a ball that "was NOT hit" -- right size, right
     # brightness, perfectly still, a few pixels below the box edge.
-    # The box is padded for this test only.
+    # PERSON_PAD_H still catches it: vertically nothing was loosened.
     check("  a shoe just below the box is still on a person",
-          _on_a_person(127, 240, GOLFER), True)
-    check("  and one a pixel off the side is too",
-          _on_a_person(176, 230, GOLFER), True)
-    # SIDEWAYS IS DELIBERATELY NARROW. The shoe that started this
-    # poked out of the BOTTOM of the box; padding the sides as
-    # generously would swallow a ball teed a club-head's width from
-    # the stance, which is exactly where a ball at address sits --
-    # and on 8 Nov a ball right beside a golfer went unfound.
-    check("  but a ball a club-head's width out is NOT on him",
-          _on_a_person(184, 230, GOLFER), False)
+          _on_a_person(127, 240, GOLFER, True), True)
+    # The actual ball, on the turf beside him and outside the box.
+    check("a ball on the turf is not on a person",
+          _on_a_person(201, 204, GOLFER, True), False)
+    check("  nor is one a club-head's width out",
+          _on_a_person(184, 230, GOLFER, True), False)
     check("  nor one a body-width away",
-          _on_a_person(260, 230, GOLFER), False)
+          _on_a_person(260, 230, GOLFER, True), False)
+    # ── LOOSENED, DELIBERATELY ──────────────────────────────────────
+    #
+    # At address the ball is teed off the LEAD HEEL -- level with the
+    # outside edge of the stance, which is exactly where the box edge
+    # plus PERSON_PAD_W used to reach. So the rule that keeps a shoe
+    # out was keeping the ball out with it, and a clip whose six tiles
+    # show the whole swing found no ball at all. Reported as "the ball
+    # isn't really close at all to the shoes".
+    #
+    # At ground level the sides now come IN by SHOE_INSET_FRAC instead
+    # of going out by PERSON_PAD_W: a speck has to be properly within
+    # the stance to be a shoe, not merely level with its edge. On this
+    # box that moves each side 11.3 px, and nothing the detector has
+    # ever actually picked as a shoe moves with it.
+    check("a ball level with the stance edge is NO LONGER on him",
+          _on_a_person(176, 230, GOLFER, True), False)
+    check("  though above the foot line that edge is still him",
+          _on_a_person(176, 230, GOLFER), True)
+    # The backstop for everything this now admits is TIME, not
+    # geometry: it still has to sit in the same few pixels before the
+    # strike and be gone from every frame after. See classify_balls.
     # NOBODY DETECTED is not a reason to refuse everything.
     check("with nobody detected nothing is on a person",
           _on_a_person(201, 204, []), False)

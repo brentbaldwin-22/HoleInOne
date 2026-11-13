@@ -18,11 +18,16 @@ On a clip where the golfer, the turf and the swing are all plainly
 visible, that sentence leaves nothing to do but guess at a constant.
 
 AND THE GUESS WOULD HAVE BEEN WRONG ANYWAY, which is the point. The
-two ground tests overlap almost exactly: `_on_the_ground` REQUIRES the
-ball to be at foot level, and `_on_a_person` REJECTS everything within
-the stance at that height. Measured below -- a ball anywhere across
-the golfer's own stance cannot be found at all, and for an iron that
-is exactly where it sits.
+two ground tests overlapped almost exactly: `_on_the_ground` REQUIRES
+the ball to be at foot level, and `_on_a_person` REJECTED everything
+within the stance PLUS its padding at that height -- which is where a
+ball teed off the lead heel sits.
+
+`SHOE_INSET_FRAC` is the answer to that, and the rest of this file
+measures it: at ground level the sides come IN rather than going out,
+so a speck has to be properly within the stance to be a shoe. The
+middle of the stance, where every shoe the detector has actually
+picked sat, is refused exactly as before.
 
     python3 tools/ball_filters_test.py
 """
@@ -48,7 +53,7 @@ def main():
     import cv2
     from app.services.ball_vanish import (
         ball_in_frames, _on_a_person, _on_the_ground,
-        PERSON_PAD_W, PERSON_PAD_H,
+        PERSON_PAD_W, PERSON_PAD_H, SHOE_INSET_FRAC,
         BALL_BAND_ABOVE_FEET, BALL_BAND_BELOW_FEET)
 
     # ── THE OVERLAP, MEASURED ───────────────────────────────────────
@@ -60,20 +65,44 @@ def main():
     person = [{"box": [bx, 0, bw, bh]}]
     anchor = (feet_y, bh)
 
+    # AS THE REAL RULE ASKS IT. Both callers test the ground first and
+    # then pass `at_ground`, so a check written without it measures a
+    # path the rule no longer takes.
     def _kept(x, y):
-        return _on_the_ground(y, anchor) and not _on_a_person(x, y, person)
+        return (_on_the_ground(y, anchor)
+                and not _on_a_person(x, y, person, at_ground=True))
 
-    ok("a ball on the turf mid-stance is refused", _kept(200, feet_y), False)
-    ok("  and so is one at either heel",
-       (_kept(bx + 4, feet_y), _kept(bx + bw - 4, feet_y)), (False, False))
+    ok("a ball on the turf mid-stance is still refused",
+       _kept(200, feet_y), False)
     ok("  while one clear of the stance is kept",
        (_kept(bx - 20, feet_y), _kept(bx + bw + 20, feet_y)), (True, True))
+
+    # ── THE LOOSENING, MEASURED ─────────────────────────────────────
+    #
+    # At address the ball is teed off the LEAD HEEL, level with the
+    # outside edge of the stance. That is where the box edge plus
+    # PERSON_PAD_W used to reach, so the shoe rule was taking the ball
+    # with it. At ground level the sides now come IN by
+    # SHOE_INSET_FRAC instead of going out.
     _dead = [x for x in range(0, 500)
-             if _on_a_person(x, feet_y, person)]
-    print("     refused across x %d..%d — the stance plus %.0fpx padding"
-          % (min(_dead), max(_dead), PERSON_PAD_W * bw))
-    ok("  the refused band really is the whole stance",
-       (min(_dead) <= bx and max(_dead) >= bx + bw), True)
+             if _on_a_person(x, feet_y, person, at_ground=True)]
+    _was = [x for x in range(0, 500)
+            if _on_a_person(x, feet_y, person)]
+    print("     refused across x %d..%d (was %d..%d) — %d px narrower"
+          % (min(_dead), max(_dead), min(_was), max(_was),
+             len(_was) - len(_dead)))
+    ok("the refused band is narrower than the box",
+       (min(_dead) > bx and max(_dead) < bx + bw), True)
+    import math
+    _step = math.ceil(SHOE_INSET_FRAC * bw)
+    ok("  by SHOE_INSET_FRAC of its width each side",
+       (min(_dead) - bx, (bx + bw) - max(_dead)), (_step, _step))
+    ok("  and a ball at the lead heel now survives",
+       _kept(bx + bw - 2, feet_y), True)
+    ok("  while the middle of the stance, where shoes are, does not",
+       _kept(bx + bw // 2, feet_y), False)
+    ok("  with nothing changed above the foot line",
+       _on_a_person(bx + bw + 2, 100, person), True)
 
     # The vertical band the ball must be in, for the record.
     print("     ground band is y %.0f..%.0f, on-a-person pads %.0fpx below"
