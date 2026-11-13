@@ -291,7 +291,8 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
                                    people=people)
         front, floor_y, why = pf.get("pick"), pf.get("floor"), pf["why"]
         if front is None and pf.get("close") and people:
-            mt = _sj.break_tie_on_motion(people, blobs, offset=(ox, oy))
+            mt = _sj.break_tie_on_motion(people, blobs, offset=(ox, oy),
+                                         zoned=pf.get("considered"))
             if mt.get("pick"):
                 front = mt["pick"]
                 why = "%s; %s" % (pf["why"], mt["why"])

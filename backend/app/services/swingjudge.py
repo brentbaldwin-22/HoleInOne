@@ -635,8 +635,26 @@ FRONT_GOLFER_MARGIN_FRAC = 0.25
 FRONT_GOLFER_MARGIN_DETECTED = 0.15
 
 
-def break_tie_on_motion(people, blobs, offset=(0, 0)) -> dict:
+def break_tie_on_motion(people, blobs, offset=(0, 0), zoned=None) -> dict:
     """Of these golfers, which one MOVED? {"pick": person|None, "why"}.
+
+    "OF THESE GOLFERS" WAS AN ASSUMPTION, AND BOTH CALLERS BROKE IT.
+    They passed every person the detector found, and this scored them
+    all -- so on a tee where the feet were level it handed the crop to
+    a man WALKING past the golf carts on the far side of the hole.
+    Walking is motion; a golfer at address is not. He won easily, and
+    because the tie-break sets `front` directly he arrived downstream
+    as a confirmed golfer, skipping every zone test in the system.
+    Reported twice: "we should never zoom in on someone not in the
+    zone", then "still grabbing this guy clearly not in the zone".
+
+    `zoned` closes it, and closes it HERE rather than at the two call
+    sites, because there are two and they have to agree. Pass the
+    `considered` list this module already builds -- every person
+    looked at, each with `zone` saying whether their feet were in one
+    -- and nobody outside a zone can be picked whatever they are
+    doing. Left None the old behaviour stands, for a caller that has
+    already filtered.
 
     THE OPERATOR'S SUGGESTION, 8 Nov, for the case the feet cannot
     settle: "maybe if the feet are close, we do the heat test with
@@ -664,11 +682,29 @@ def break_tie_on_motion(people, blobs, offset=(0, 0)) -> dict:
     out = {"pick": None, "why": "no motion to separate them"}
     try:
         ox, oy = float(offset[0]), float(offset[1])
+        # WHOSE FEET THE PICKER PUT IN A ZONE. Matched on the foot
+        # point, which is what `considered` records them by and what
+        # it derived from `people` in the first place.
+        _ok = None
+        if zoned is not None:
+            _ok = set()
+            for c in zoned or []:
+                if isinstance(c, dict) and c.get("zone") and c.get("feet"):
+                    _ok.add((int(c["feet"][0]), int(c["feet"][1])))
+            if not _ok:
+                out["why"] = ("nobody the detector found was standing in "
+                              "a zone, so the heat has nobody to choose "
+                              "between")
+                return out
         best, best_a = None, 0.0
         for p in people or []:
             b = p.get("box") if isinstance(p, dict) else p
             if not b:
                 continue
+            if _ok is not None:
+                _ft = p.get("feet") if isinstance(p, dict) else None
+                if not _ft or (int(_ft[0]), int(_ft[1])) not in _ok:
+                    continue
             bx0, by0, bx1, by1 = b[0], b[1], b[0] + b[2], b[1] + b[3]
             tot = 0.0
             for g in blobs or []:

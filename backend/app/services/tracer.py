@@ -3985,8 +3985,12 @@ def swing_heat_check(
                         # to the motion. See
                         # swingjudge.break_tie_on_motion.
                         if _front is None and _pf.get("close") and people:
+                            # ZONED, so the heat cannot hand the crop
+                            # to somebody who was never on the tee.
+                            # See swingjudge.break_tie_on_motion.
                             _mt = _sj.break_tie_on_motion(
-                                people, _cands_all, offset=(_ox, _oy))
+                                people, _cands_all, offset=(_ox, _oy),
+                                zoned=_pf.get("considered"))
                             if _mt.get("pick"):
                                 _front = _mt["pick"]
                                 _why = "%s; %s" % (_pf["why"], _mt["why"])
