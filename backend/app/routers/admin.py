@@ -1984,6 +1984,7 @@ def make_clip_vertical(
                         opening_t=(
                             _tsx.get("t") if _tsx else None
                         ),
+                        green_track=(_gb or {}).get("track"),
                     )
                     # WHAT THE PATH ACTUALLY SAYS AT THE CUT. gball
                     # has been found, reported and not framed, and
@@ -5347,6 +5348,12 @@ def _process_long_upload_segments(
                         # The lowest point the green tracer reaches is
                         # where the ball came down, read off the frames
                         # being cropped.
+                        # Bound BEFORE the branch that fills it: the
+                        # pan reads `_gb` for the green track, and on a
+                        # clip with no detected cut this was never
+                        # assigned -- a NameError on exactly the clips
+                        # that already have the least to work with.
+                        _gb = None
                         _bgx = None
                         if _cut is not None:
                             _gb = _tracer_start_x(
@@ -5398,6 +5405,7 @@ def _process_long_upload_segments(
                             opening_t=(
                                 _tsx.get("t") if _tsx else None
                             ),
+                            green_track=(_gb or {}).get("track"),
                         )
                         _made = make_vertical_pan(
                             _vert_src, _vert_path, _ppath, cut_sec=_cut,
@@ -6842,6 +6850,17 @@ def _tracer_start_x(video_path, max_scan_sec=8.0, step=2, from_sec=0.0,
                     "why": "ok",
                     "best": best, "n": len(cands),
                     "spread": round(_xs[-1] - _xs[0], 3),
+                    # EVERY FRAME'S READING, NOT JUST THE CHOSEN ONE.
+                    # On the green the ball is still coming down when
+                    # the picture cuts, so the single lowest point is
+                    # where it ENDS, not where it is -- and a crop put
+                    # there leaves the stroke off to one side for the
+                    # whole descent. The pan follows this instead.
+                    # Time-ordered, and already one entry per frame
+                    # because the green scans run at step=1.
+                    "track": [
+                        (c[1], c[0]) for c in sorted(cands, key=lambda c: c[1])
+                    ],
                 }
             # SAY WHICH WAY IT FAILED. "none" has meant five different
             # things in this file already; too-few wants a looser
@@ -7052,7 +7071,7 @@ def _green_ball_x(swing, frame_w):
 def _vertical_pan_path(
     track, rest_xy, fps, frame_w, cut_dur=None, golfer_x=None,
     impact_t=None, green_x=None, ball_green_x=None, total_dur=None,
-    opening_x=None, opening_t=None,
+    opening_x=None, opening_t=None, green_track=None,
 ):
     """Waypoints (time_sec, x_fraction) for the vertical follow-pan:
     hold on the golfer through address/swing, glide along the tracked
@@ -7088,6 +7107,17 @@ def _vertical_pan_path(
         )
     if _gate is not None:
         pts = [(t, x) for t, x in pts if t >= _gate - 0.05]
+    # THE TRACK BELONGS TO THE TEE CAMERA. Its points are positions in
+    # the tee picture, so the moment the composite cuts they describe a
+    # frame that is no longer on screen. They were kept anyway, and two
+    # things followed: the crop chased a tee coordinate across the
+    # green, and `cut_dur > t_last` below went false whenever the drawn
+    # tracer ran past the cut -- which skipped the ENTIRE green block,
+    # ball, hold and pin alike, leaving the crop holding the tee's last
+    # position for the whole green half. The tracer is drawn along the
+    # aimed continuation toward the landing, so that is not rare.
+    if cut_dur is not None:
+        pts = [(t, x) for t, x in pts if t < float(cut_dur)]
     # OPENING FRAME = THE GOLFER. Rest-ball x is the best anchor (the
     # golfer stands at the ball); fall back to the median of the first
     # few track points — the launch happens at the golfer too, and the
@@ -7136,11 +7166,16 @@ def _vertical_pan_path(
         path.append((max(0.0, _hold_until), x0))
         path.extend(pts)
         t_last, x_last = pts[-1]
-    if cut_dur is not None and cut_dur > t_last:
+    if cut_dur is not None:
         # HOLD on the flight's end (the tracer lives there) until
         # the tee->green scene cut, then snap to center for the
         # landing view. Drifting home early dragged the tracer out
         # of frame while it was still on screen.
+        #
+        # No longer conditional on `cut_dur > t_last`: with the
+        # post-cut track points dropped above, t_last is always before
+        # the cut, and a clip whose track ran long must still get its
+        # green half.
         path.append((max(t_last + 0.01, cut_dur - 0.01), x_last))
         # WHERE THE GREEN IS, NOT THE MIDDLE OF THE PICTURE.
         # This used to pan to 0.5 at the cut -- the geometric centre
@@ -7176,11 +7211,33 @@ def _vertical_pan_path(
                 float(cut_dur) + _GREEN_BALL_HOLD_SEC
                 + _GREEN_PIN_PAN_SEC,
             )
-            path.append((float(cut_dur), _ball_x))
+            # FOLLOW THE STROKE, DO NOT JUMP TO WHERE IT ENDS.
+            # `_ball_x` is the tracer's LOWEST point, which is where
+            # the ball comes down -- but the ball is still descending
+            # when the picture cuts, so the stroke is somewhere else
+            # entirely at that moment and framing its landing leaves it
+            # off to one side for the whole descent. `green_track` is
+            # where the stroke actually was, frame by frame, so the
+            # crop rides it down and the tracer stays centred. The
+            # landing is simply its last point, which is where the hold
+            # and the walk to the pin then begin.
+            _gt = [
+                (float(t), min(1.0, max(0.0, float(x))))
+                for t, x in (green_track or [])
+                if float(cut_dur) <= float(t) < _pan_end
+            ]
+            if _gt:
+                path.append((float(cut_dur), _gt[0][1]))
+                path.extend(_gt)
+                _land_t, _land_x = _gt[-1]
+            else:
+                path.append((float(cut_dur), _ball_x))
+                _land_t, _land_x = float(cut_dur), _ball_x
             path.append(
-                (float(cut_dur) + _GREEN_BALL_HOLD_SEC, _ball_x),
+                (_land_t + _GREEN_BALL_HOLD_SEC, _land_x),
             )
-            path.append((_pan_end, _pin_x))
+            path.append((max(_pan_end, _land_t + _GREEN_BALL_HOLD_SEC
+                             + 0.01), _pin_x))
         else:
             # Not enough green half to move in, or one end unknown:
             # the old single framing, flag first, ball if that is

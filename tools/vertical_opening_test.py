@@ -136,13 +136,15 @@ def main() -> int:
         "a 2s green half should still go straight to the pin")
     print("short green half (2.0s): still straight to the pin, as designed")
 
-    # THE OTHER WAY THE GREEN HALF DISAPPEARS. The green block sits
-    # behind `cut_dur > t_last`, where t_last is the last DRAWN tracer
-    # waypoint. The tracer keeps being drawn along the aimed
-    # continuation toward the landing, so on a clip where that runs
-    # past the cut the whole block -- ball, hold and pin -- is skipped
-    # and the crop simply holds the tee's last position across the
-    # scene change. gball is found, reported, and never framed.
+    # A TRACK RUNNING PAST THE CUT USED TO KILL THE GREEN HALF. The
+    # block sat behind `cut_dur > t_last`, t_last being the last DRAWN
+    # tracer waypoint, and the tracer keeps being drawn along the aimed
+    # continuation toward the landing -- so whenever that ran past the
+    # cut the whole block was skipped and the crop held the tee's last
+    # position across the scene change. gball was found, reported and
+    # never framed. The tee track's post-cut points are dropped now,
+    # because they are positions in a picture that is no longer on
+    # screen, so t_last is always before the cut.
     late = [{"frame": int(t * FPS), "x": x * FW} for t, x in
             [(2.05, 0.55), (4.0, 0.62), (7.5, 0.70)]]
     p_late = _vertical_pan_path(
@@ -150,14 +152,17 @@ def main() -> int:
         green_x=0.67, ball_green_x=0.381, total_dur=12.2,
         opening_x=TRACER_X, opening_t=TRACER_T,
     )
-    tail_late = [x for t, x in p_late if t >= 7.03]
+    opens = next(x for t, x in sorted(p_late) if t >= 7.03)
     print(f"\ntrack running to 7.5s (past the 7.03s cut): "
-          f"{len(tail_late)} green waypoint(s)")
-    assert not any(abs(x - 0.381) < 1e-9 for x in tail_late), (
-        "the ball got framed; this gate no longer drops the green half")
+          f"green half opens at {opens:.3f}")
+    assert abs(opens - 0.381) < 1e-9, (
+        f"opens at {opens:.3f}: the green half is still being dropped")
+    # And no tee coordinate leaked across the cut.
+    assert all(t < 7.03 or x <= 0.68 for t, x in p_late), (
+        "a tee position survived into the green half")
 
-    # And the same clip with the track ending before the cut, which is
-    # the case that works -- so the gate is what separates them.
+    # The same clip with the track ending early behaves identically --
+    # the two cases are no longer distinguishable, which is the point.
     early = [{"frame": int(t * FPS), "x": x * FW} for t, x in
              [(2.05, 0.55), (4.0, 0.62), (6.0, 0.70)]]
     p_early = _vertical_pan_path(
@@ -165,8 +170,74 @@ def main() -> int:
         green_x=0.67, ball_green_x=0.381, total_dur=12.2,
         opening_x=TRACER_X, opening_t=TRACER_T,
     )
-    assert abs(next(x for t, x in p_early if t >= 7.03) - 0.381) < 1e-9
-    print("track ending at 6.0s (before the cut): opens on the ball")
+    assert abs(next(x for t, x in sorted(p_early) if t >= 7.03)
+               - 0.381) < 1e-9
+    print("track ending at 6.0s: same, opens on the ball")
+
+    # ---- the green half follows the stroke ---------------------
+    # The ball is still coming DOWN when the picture cuts, so the
+    # stroke is in a different place at the cut than where it lands.
+    # Framing the landing leaves it off to one side for the whole
+    # descent, which is what was on screen.
+    GTRACK = [(7.05, 0.55), (7.40, 0.49), (7.80, 0.43), (8.20, 0.381)]
+    p_follow = _vertical_pan_path(
+        TRACK, None, FPS, FW, 7.03, golfer_x=None, impact_t=IMPACT,
+        green_x=0.67, ball_green_x=0.381, total_dur=12.2,
+        opening_x=TRACER_X, opening_t=TRACER_T, green_track=GTRACK,
+    )
+
+    def at(path, t):
+        """Where the crop is told to be at time t."""
+        pts = sorted(path)
+        for i in range(len(pts) - 1):
+            (t0, x0), (t1, x1) = pts[i], pts[i + 1]
+            if t0 <= t <= t1:
+                if t1 == t0:
+                    return x1
+                return x0 + (x1 - x0) * (t - t0) / (t1 - t0)
+        return pts[-1][1]
+
+    print("\ngreen half following the stroke:")
+    for t in (7.05, 7.40, 7.80, 8.20):
+        want = dict(GTRACK)[t]
+        got = at(p_follow, t)
+        print(f"    t={t:.2f}  stroke at {want:.3f}  crop at {got:.3f}")
+        assert abs(got - want) < 1e-6, (t, got, want)
+
+    # The old behaviour: one jump to the landing, so at the cut the
+    # stroke sits 0.17 of a frame off centre -- more than half the
+    # 9:16 crop's half-width, i.e. visibly off to the side.
+    p_jump = _vertical_pan_path(
+        TRACK, None, FPS, FW, 7.03, golfer_x=None, impact_t=IMPACT,
+        green_x=0.67, ball_green_x=0.381, total_dur=12.2,
+        opening_x=TRACER_X, opening_t=TRACER_T, green_track=None,
+    )
+    off = abs(at(p_jump, 7.05) - 0.55)
+    print(f"    without the track, at t=7.05 the stroke is "
+          f"{off:.3f} off centre")
+    assert off > 0.15, (
+        "MUTATION DID NOT BITE: jumping to the landing centred it anyway")
+
+    # ---- a track running past the cut must not kill the green ----
+    # Previously `cut_dur > t_last` went false and the WHOLE green
+    # block was skipped. The tee track's post-cut points are dropped
+    # now, so the green half survives.
+    late = [{"frame": int(t * FPS), "x": x * FW} for t, x in
+            [(2.05, 0.55), (4.0, 0.62), (7.5, 0.70)]]
+    p_late = _vertical_pan_path(
+        late, None, FPS, FW, 7.03, golfer_x=None, impact_t=IMPACT,
+        green_x=0.67, ball_green_x=0.381, total_dur=12.2,
+        opening_x=TRACER_X, opening_t=TRACER_T, green_track=GTRACK,
+    )
+    assert abs(at(p_late, 7.05) - 0.55) < 1e-6, (
+        "a track running past the cut still loses the green half")
+    assert all(t < 7.03 or x <= 0.68 for t, x in p_late), (
+        "a tee coordinate survived into the green half")
+    print("    track running to 7.5s: green half survives, opens at 0.550")
+
+    # ...and it still reaches the pin.
+    assert abs(at(p_follow, 12.0) - 0.67) < 1e-6, "never reaches the pin"
+    print("    still walks to the pin by the end")
 
     print("\nOK")
     return 0
