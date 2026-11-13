@@ -101,6 +101,41 @@ def main() -> int:
     assert got == want, f"regression with no tracer: {got} != {want}"
     print(f"    no tracer: unchanged {got[0]} -> {got[2]}")
 
+    # ---- the green half lands on the ball ----------------------
+    # Clip 1444: cut 7.03s, composite 12.2s, gball 0.381, pin 0.67.
+    # The green half must OPEN on the ball before it walks to the pin.
+    def green_at_cut(total_dur):
+        p = _vertical_pan_path(
+            TRACK, None, FPS, FW, 7.03, golfer_x=None, impact_t=IMPACT,
+            green_x=0.67, ball_green_x=0.381, total_dur=total_dur,
+            opening_x=TRACER_X, opening_t=TRACER_T,
+        )
+        # The first waypoint at or after the cut is what the render
+        # teleports to when the picture changes.
+        return next(x for t, x in p if t >= 7.03)
+
+    at_cut = green_at_cut(12.2)
+    print(f"\ngreen half, composite 12.2s: opens at {at_cut:.3f}")
+    assert abs(at_cut - 0.381) < 1e-9, (
+        f"opens at {at_cut:.3f}, not the ball at 0.381")
+
+    # THE BUG, NAMED. Produce probed seg_path -- the TEE segment -- so
+    # total_dur came back as the tee's ~7s for a 12.2s clip. The green
+    # half then measured as roughly zero, "not enough room to move in"
+    # fired, and it snapped to the pin at the cut. gball was found and
+    # never framed.
+    tee_only = green_at_cut(7.03)
+    print(f"green half, tee duration 7.03s: opens at {tee_only:.3f} "
+          f"(the pin) -- the bug")
+    assert abs(tee_only - 0.67) < 1e-9, (
+        "MUTATION DID NOT BITE: the wrong duration framed the ball anyway")
+
+    # The short-green fallback is deliberate and must survive: with
+    # genuinely no room, the pin alone beats a move that never lands.
+    assert abs(green_at_cut(9.0) - 0.67) < 1e-9, (
+        "a 2s green half should still go straight to the pin")
+    print("short green half (2.0s): still straight to the pin, as designed")
+
     print("\nOK")
     return 0
 

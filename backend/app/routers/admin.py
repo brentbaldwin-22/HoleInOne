@@ -5332,9 +5332,30 @@ def _process_long_upload_segments(
                                 _bgx = _gb["x"]
                         if _bgx is None:
                             _bgx = _green_ball_x(seg, _sw)
+                        # THE DURATION OF THE FILE BEING CROPPED.
+                        # `_sinfo` is a probe of seg_path, the TEE
+                        # segment, while the pan renders `_vert_src`,
+                        # the composite -- so this reported the tee's
+                        # ~7s for a 12.2s clip. `_vertical_pan_path`
+                        # reads it as `total_dur` and works out the
+                        # green half as total_dur - cut, which came out
+                        # at roughly ZERO: "not enough green half to
+                        # move in", so it skipped landing on the ball
+                        # and snapped straight to the pin at the cut.
+                        # That is why gball 0.381 was found and never
+                        # framed. The on-demand render probes the file
+                        # it renders and always has; this one did not.
+                        #
+                        # `_sw` stays off seg_path on purpose: it
+                        # normalises the ball TRACK, whose coordinates
+                        # are in the tee segment's own space.
                         _tdur = None
                         try:
-                            _td = _sinfo.get("duration")
+                            _vinfo = (
+                                _sinfo if _vert_src == seg_path
+                                else (probe_video_info(_vert_src) or {})
+                            )
+                            _td = _vinfo.get("duration")
                             _tdur = float(_td) if _td else None
                         except (TypeError, ValueError):
                             _tdur = None
