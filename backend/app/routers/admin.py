@@ -25585,7 +25585,15 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
              "heard, so the band is swept for a few seconds around it "
              "rather than for the whole clip. "
              + str(rep.get("window_detail") or "the whole clip"),
-             (len(_win) or None), "window(s)", _sec_win),
+             # None IS A VALUE HERE, not a missing one: `_ascent_windows`
+             # returns it to mean "nothing was heard, scan the whole
+             # clip", which is the normal answer on a clip the audio
+             # detector found no swings in. `len(None)` raised, and the
+             # whole of Find ascents died on the step-timing line --
+             # reported from the field on upload #1487 as "object of
+             # type 'NoneType' has no len()". The sibling two lines up
+             # already guards with `if _win:`; this one did not.
+             (len(_win) if _win else None), "window(s)", _sec_win),
         _sub("2b", "Detecting",
              "One frame-difference pass over the band above the "
              "golfers, every frame. This is decoding: it scales with "

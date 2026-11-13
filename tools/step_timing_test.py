@@ -203,6 +203,30 @@ check("a sub-step's own one-line explanation is shown",
 check("sub-steps too small to matter are dropped",
       "(x.seconds || 0) > 0.05" in _card, True)
 
+# ── 5. and a step that reports nothing must not kill the run ─────────
+#
+# `_ascent_windows` returns None to MEAN something -- "nothing was
+# heard, scan the whole clip" -- and that is the normal answer on a
+# clip the audio detector found no swings in. The step-timing line
+# counted the windows with a bare `len(_win)` and the whole of Find
+# ascents died on it: "object of type 'NoneType' has no len()",
+# reported from the field on upload #1487. The sibling two lines above
+# it already guarded with `if _win:`.
+#
+# A count is the least important thing on the line. It must never be
+# the thing that takes the run down.
+print("a stage line cannot kill the run it is describing:")
+check("the window count handles 'nothing heard'",
+      "len(_win) if _win else None" in _src, True)
+check("  and the bare len is gone, not merely shadowed",
+      "(len(_win) or None)" in _src, False)
+# The same rule for every count that comes off a `.get()`, which can
+# be absent for the same ordinary reasons.
+for _c in ("sweep.get(\"n_dets\")", "sweep.get(\"n_chains\")"):
+    if _c in _src:
+        check("  %s is passed through, not measured" % _c,
+              "len(%s)" % _c in _src, False)
+
 print()
 if FAIL:
     print("FAILED: %s" % ", ".join(FAIL))
