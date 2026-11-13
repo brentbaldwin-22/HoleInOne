@@ -109,19 +109,41 @@ check("the refusal reports the span it searched",
 # itself as a ninety-second one.
 check("the window is chosen before the progress line is written",
       _adm.index("_win = _ascent_windows(db, row, src_path, fps, rep)")
-      < _adm.index('"Sweeping the whole clip for balls leaving the tee"'),
+      # A FRAGMENT THAT CANNOT WRAP. The full sentence is split
+      # across two source lines, so pinning it whole never matched and
+      # this check has been raising ValueError instead of running --
+      # on the one function it is about.
+      < _adm.index('"Sweeping the whole clip'),
       True)
 
 print()
 print("and the gates it searches with are permissive on purpose:")
 from backend.app.config import settings  # noqa: E402
-# A MISSED IMPACT ONLY WIDENS THE SEARCH; an extra one costs a couple
-# of seconds of scanning. So this gate sits BELOW the rig's, which is
-# where strictness belongs.
+# AN EXTRA IMPACT COSTS A COUPLE OF SECONDS OF SCANNING, so this gate
+# sits BELOW the rig's: strictness belongs at the trigger, where a
+# wrong answer costs a swing.
+#
+# "A missed impact only widens the search back to the whole clip" used
+# to be written here too, and it is only true when NOTHING is heard.
+# Miss the swing and hear a cart door and the search does not widen --
+# it narrows onto the wrong two seconds and reports a clip with no
+# ball in it. That is why a dwell clip no longer takes this pass at
+# all; see tools/ascent_path_test.py. These gates now govern manual
+# uploads, where there is no rig impact to fall back on.
 check("the ratio is at or under the rig's floor",
       settings.ascent_audio_min_ratio <= 4.0, True)
 check("the attack is at or over the rig's",
       settings.ascent_audio_max_attack_ms >= 18.0, True)
+
+# SCOPED TO THE FUNCTION. `detect_swings_from_audio` is also imported
+# at the top of admin.py, 25000 lines above this, so a bare .index()
+# compares the gate against that import and always loses.
+_wfn = _adm[_adm.index("def _ascent_windows("):]
+_wfn = _wfn[:_wfn.index("\ndef ", 10)]
+check("a dwell clip does not take the audio pass at all",
+      '_kind = _trigger_kind(db, row)' in _wfn
+      and _wfn.index('if _kind == "dwell"')
+      < _wfn.index("detect_swings_from_audio"), True)
 
 print()
 print("the window note cannot take down the run it is describing:")

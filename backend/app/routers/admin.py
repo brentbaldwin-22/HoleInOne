@@ -25217,19 +25217,25 @@ ASCENT_WIN_POST_SEC = 4.0
 def _ascent_windows(db, row, src_path, fps, rep=None):
     """Frames worth searching for a ball leaving, or None for all of them.
 
-    TWO WAYS TO KNOW, and the clip's own audio is the one that works
-    for a dwell clip. A dwell recording is ninety seconds of a golfer
-    arriving, swinging and walking off: the ascent lives in about two
-    of those seconds, and the other eighty-eight are where the birds,
-    the carts and the branches are. Scanning them costs the time AND
-    supplies the false chains -- "7 chain(s) rose out of the band
-    above the golfers, none of them a ball leaving the tee" is that
-    sentence written from the other side.
+    TWO WAYS TO KNOW, AND THEY BELONG TO DIFFERENT CLIPS. An
+    audio-triggered clip was cut around an impact the rig heard and
+    the judge confirmed, so it knows the second already. A dwell
+    recording is ninety seconds of a golfer arriving, swinging and
+    walking off, and it knows nothing -- so it sweeps all ninety.
+
+    That costs time and supplies false chains, which is what 4269bce
+    added the audio pass to avoid. It is still true, and it is not the
+    worst thing that can happen: narrowing onto the wrong two seconds
+    is, because that returns a clip with no ball in it and reads
+    exactly like one.
 
     1. The rig's own impact, when the clip was cut around one. Exact,
-       free, and already confirmed by the swing judge.
+       free, and already confirmed by the swing judge. This is what an
+       AUDIO-triggered clip has, and it is the whole of its path.
     2. Otherwise the clip's audio, read here with the same detector
-       the rig runs.
+       the rig runs -- for a manual upload only. A DWELL clip does not
+       take this pass; see the note on it below for why the saving is
+       not worth what it risks.
 
     None whenever neither answers, and the caller then scans the whole
     clip exactly as before. This narrows a search; it must never be
@@ -25275,6 +25281,42 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
         log.warning("ascent window: could not read the rig's impact (%s)", exc)
 
     # 2. The clip's own audio, same detector the rig runs.
+    #
+    # NOT ON A DWELL CLIP. 4269bce added this pass for dwell clips
+    # specifically, on the argument that eighty-eight of a dwell's
+    # ninety seconds are birds, carts and branches, and that "a missed
+    # impact only widens the search back to the whole clip".
+    #
+    # THAT LAST PART IS ONLY TRUE WHEN NOTHING IS HEARD AT ALL. When
+    # the swing is missed and something ELSE is heard -- a cart door,
+    # a voice, a bag dropped -- the search does not widen. It narrows
+    # onto the wrong two seconds, finds no ball there, and reports a
+    # clip with no ball in it. Silently, and in the direction that
+    # costs a swing.
+    #
+    # And quiet swings ARE missed: these gates are deliberately looser
+    # than the rig's (ratio 4, attack 25ms) and a real strike can still
+    # come in under them -- upload #1487 had nothing at all over x4.
+    # So on a dwell clip the pass is a coin toss between saving eighty
+    # seconds of scanning and losing the swing outright, and the
+    # operator's call is that the scanning is the cheaper half.
+    #
+    # A DWELL CLIP SWEEPS, AN AUDIO CLIP USES ITS IMPACT. Two paths,
+    # and nothing in between. Path 1 above is untouched: that is the
+    # rig's own confirmed impact, not a search of the clip, and when
+    # it is there it is exact and free.
+    #
+    # A MANUAL UPLOAD IS NEITHER and keeps this pass. It has no rig
+    # impact to fall back on, so the audio is the only narrowing
+    # available -- and an uploaded clip is somebody deliberately
+    # testing one swing, not ninety seconds of a hole.
+    _kind = _trigger_kind(db, row)
+    if _kind == "dwell":
+        _note("a dwell clip — sweeping the whole clip rather than "
+              "narrowing on its audio, which can only narrow onto the "
+              "wrong seconds when the swing is the quiet thing in them")
+        return None
+
     try:
         from ..services.ai_tracer import detect_swings_from_audio
 
