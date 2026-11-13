@@ -125,6 +125,47 @@ def which(point, value):
     return None
 
 
+def lowest_at(point, value):
+    """The LOWEST zone holding this point, or None.
+
+    WHICH TEE, as opposed to whether any. `which` returns the FIRST
+    box in the list that holds the point, which is the right answer
+    for `contains` -- any match means somebody is on a tee -- and an
+    arbitrary one here, because the list is in the order an operator
+    happened to draw the boxes and tells you nothing about where they
+    are.
+
+    THE BOXES OVERLAP IN PRACTICE. A tee deck is drawn as a few
+    strips across the same patch of turf and their edges meet or
+    cross, so a golfer standing near a boundary is genuinely inside
+    two of them. Something has to choose, and drawing order is not a
+    reason.
+
+    LOWEST ON SCREEN, which on this camera means NEAREST. It stands
+    behind the hitting area looking down the hole, so the back tee is
+    the closest thing to it and sits lowest in the frame, while the
+    forward tees recede up the picture. A golfer low in the frame is
+    big, close and unambiguous; movement high in it is a long way
+    away and much more likely to be somebody else on their way past.
+
+    Measured by the box's BOTTOM edge rather than its top, so a tall
+    strip that starts high but reaches furthest down still wins -- it
+    is the one whose turf is nearest. An exact tie keeps the first,
+    which is the only case where drawing order should decide
+    anything.
+    """
+    px, py = point
+    best_i, best_bottom = None, None
+    for i, b in enumerate(boxes(value)):
+        if not (b["x"] <= px <= b["x"] + b["w"]
+                and b["y"] <= py <= b["y"] + b["h"]):
+            continue
+        bottom = b["y"] + b["h"]
+        if best_bottom is None or bottom > best_bottom:
+            best_i, best_bottom = i, bottom
+    return best_i
+
+
 def contains(point, value) -> bool:
     """Is this point inside ANY zone? False when none are set — an
     unconfigured camera should not trigger on everything that walks

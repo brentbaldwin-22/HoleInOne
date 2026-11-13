@@ -480,7 +480,15 @@ def _roi_zone(pt, roi):
     trigger fall back to "any zone".
     """
     try:
-        return tee_roi.which(pt, roi)
+        # THE LOWEST ZONE HOLDING THE POINT, not the first one drawn.
+        # Tee strips overlap, and a golfer near a boundary is really
+        # in two of them; `which` would answer with whichever the
+        # operator happened to draw first. Lowest on screen is nearest
+        # the camera, which stands behind the hitting area -- so it is
+        # the back tee, and the player is the one standing on turf
+        # rather than the figure receding up the picture. See
+        # tee_roi.lowest_at.
+        return tee_roi.lowest_at(pt, roi)
     except Exception:  # noqa: BLE001
         return None
 
