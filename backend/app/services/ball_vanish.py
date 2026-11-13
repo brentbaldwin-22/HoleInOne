@@ -884,7 +884,7 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
     import cv2
 
     out = {"left": None, "spot": None, "seen_before": 0, "seen_after": 0,
-           "balls": 0, "why": "not checked"}
+           "balls": 0, "why": "not checked", "counts": None, "limits": None}
     try:
         _live = [f for f in (shots or []) if f is not None]
         if len(_live) < 4:
@@ -907,6 +907,18 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             _d = BALL_MAX_DIAM_OVER_GOLFER * (sum(_hs) / float(len(_hs)))
             cap_area = max(4, int(_d * _d))
 
+        # WHICH FILTER KILLED IT. Four tests stand between a bright
+        # speck and a ball, and when none survives the answer used to
+        # be "no ball clearly in the same spot", which names none of
+        # them. On a clip where the golfer, the turf and the swing are
+        # all plainly visible that sentence leaves nothing to do but
+        # guess at a constant. Counting is cheap; guessing is not.
+        #
+        # First reason only, in the order the tests ran, so the counts
+        # add up to the number of specks rather than double-counting
+        # one that failed two tests.
+        _tally = {"seen": 0, "too big": 0, "too faint": 0,
+                  "on the golfer": 0, "off the ground": 0, "kept": 0}
         per_frame = []
         for fr in shots:
             if fr is None:
@@ -917,11 +929,38 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             # white shirt standing over the ball otherwise sets a bar
             # the ball cannot clear. The ADDRESS_MIN_CONTRAST filter
             # below is the real bar here.
-            dets = [d for d in _detections(gray, boxes, rel=0.0)
-                    if d[2] <= int(cap_area) and d[3] >= float(min_contrast)
-                    and not _on_a_person(d[0], d[1], people)
-                    and _on_the_ground(d[1], anchor)]
+            dets = []
+            for d in _detections(gray, boxes, rel=0.0):
+                _tally["seen"] += 1
+                if d[2] > int(cap_area):
+                    _tally["too big"] += 1
+                elif d[3] < float(min_contrast):
+                    _tally["too faint"] += 1
+                elif _on_a_person(d[0], d[1], people):
+                    _tally["on the golfer"] += 1
+                elif not _on_the_ground(d[1], anchor):
+                    _tally["off the ground"] += 1
+                else:
+                    _tally["kept"] += 1
+                    dets.append(d)
             per_frame.append(dets)
+        out["counts"] = dict(_tally)
+        # THE BARS THEMSELVES, beside the counts. "9 too faint" is only
+        # actionable next to the number they had to clear.
+        _band = None
+        if anchor:
+            try:
+                _f, _h = float(anchor[0]), float(anchor[1])
+                if _h > 0:
+                    _band = [int(round(_f - BALL_BAND_ABOVE_FEET * _h)),
+                             int(round(_f + BALL_BAND_BELOW_FEET * _h))]
+            except Exception:  # noqa: BLE001
+                _band = None
+        out["limits"] = {
+            "max area": int(cap_area),
+            "min contrast": round(float(min_contrast), 1),
+            "ground band y": _band,
+        }
 
         head = per_frame[:int(before)]
         tail = per_frame[int(before):]
@@ -949,9 +988,25 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                     hit["frames"] += 1
         good = [c for c in clusters if c["frames"] >= 2]
         if not good:
-            out["why"] = ("no ball clearly in the same spot in 2 of the "
-                          "first %d frames — no judgement from the ball"
-                          % len(head))
+            # THE COUNTS BELONG IN THE SENTENCE, not only in the dict:
+            # this is the branch an operator actually reads, and the
+            # whole question it raises is "why not".
+            _rej = ", ".join(
+                "%d %s" % (_tally[k], k) for k in
+                ("too big", "too faint", "on the golfer", "off the ground")
+                if _tally[k])
+            out["why"] = (
+                "no ball clearly in the same spot in 2 of the first %d "
+                "frames — no judgement from the ball. Looked at %d bright "
+                "spot(s) across the six: %s%s. Bars: area ≤%d, contrast "
+                "≥%.0f%s."
+                % (len(head), _tally["seen"],
+                   _rej or "none rejected",
+                   ("; %d survived but never twice in the same place"
+                    % _tally["kept"]) if _tally["kept"] else "",
+                   int(cap_area), float(min_contrast),
+                   "" if _band is None
+                   else ", ball must sit y %d..%d" % (_band[0], _band[1])))
             return out
         # EVERY BALL, NOT THE BEST ONE: the one that matters is
         # whichever LEFT. See classify_balls.
