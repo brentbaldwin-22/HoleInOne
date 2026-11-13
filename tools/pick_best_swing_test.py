@@ -56,7 +56,22 @@ class FakeClient:
         self.registered.append((sid, kw.get("impact_at")))
         return {}
 
-    def verify_swing(self, image_path, timeout=25.0, frames_path=None):
+    def verify_swing(self, image_path, timeout=25.0, **kw):
+        # **kw ON PURPOSE. This fake pinned the exact signature of
+        # `common.Client.verify_swing`, and when the real one grew
+        # `shots`, `crop`, `zones`, `geo`, `offsets`, `ratio`,
+        # `attack_ms` and `session_id` this started raising
+        # TypeError. The engine catches that and treats it as "could
+        # not tell" -- which uploads -- so every assertion about
+        # HOLDING a confirmed swing was being made against a run where
+        # nothing was ever confirmed and nothing was ever held. The
+        # test did not fail loudly; it stopped testing its subject and
+        # reported the symptom three steps downstream.
+        #
+        # The signature is not what this file is about, so it takes
+        # whatever it is given and the drift cannot silently disarm it
+        # again. tools/verify_shape_test.py is where the two ends are
+        # held to the same keywords.
         v, c = self.script.pop(0)
         return {"is_swing": v, "confidence": c, "reason": "because"}
 

@@ -57,7 +57,15 @@ class FakeClient:
         self.order.append("register")
         return {}
 
-    def verify_swing(self, image_path, timeout=25.0, frames_path=None):
+    def verify_swing(self, image_path, timeout=25.0, **kw):
+        # **kw, NOT A PINNED SIGNATURE. This named the real client's
+        # keywords exactly; when it grew `shots` and the rest, every
+        # call started raising TypeError, the engine caught it as
+        # "could not tell" and uploaded -- so the assertions about a
+        # flat NO refusing an upload were being made against a run
+        # where the judge was never reached. See
+        # tools/verify_shape_test.py, which now fails if any fake
+        # pins a signature it does not own.
         self.asked += 1
         self.order.append("ask")
         if self.raises:
