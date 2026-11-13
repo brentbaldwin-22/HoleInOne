@@ -5857,6 +5857,85 @@ AUDIO_ENVELOPE_WINDOW_MS = 10
 # alone silently rejected quiet strikes.
 AUDIO_ATTACK_NOISE_MULT = 2.0
 
+
+def _attack_at(envelope, i, v, median, attack_lookback):
+    """How long this peak took to rise, in seconds.
+
+    ONE COPY, because it is measured in two places now: for the peaks
+    that cleared the gate, and for the loudest ones that did not when
+    the readout has to explain an empty result. Two copies of a filter
+    that already fooled everybody once is not worth the lines saved.
+
+    Returns `(attack_lookback + 1) / rate` when it cannot be measured
+    at all -- see the sentinel note at the call site. The caller tells
+    the two apart by comparing against that same value, which is why
+    this never returns None.
+    """
+    attack_ref = max(0.10 * v, AUDIO_ATTACK_NOISE_MULT * median)
+    # TOO CLOSE TO THE FLOOR TO MEAN ANYTHING. When the reference
+    # reaches half the peak there is no rise left to time, so the
+    # answer would be noise either way. Say so rather than guess.
+    # Below the gate this is the NORMAL case rather than a rare one:
+    # it binds whenever v < 4 * median, and a peak under the gate is
+    # quiet by definition. So a below-gate peak usually reports "could
+    # not measure", which is the honest answer and the reason those
+    # peaks are shown for their RATIO rather than their rise.
+    if attack_ref >= 0.5 * v:
+        return float(attack_lookback + 1) / float(AUDIO_SAMPLE_RATE)
+    start_look = max(0, i - attack_lookback)
+    # np.argwhere is slow per-peak, but the lookback window is small
+    # (a few hundred samples). Walk back to the most recent
+    # sub-reference crossing.
+    attack_samples = None
+    for k in range(i - 1, start_look - 1, -1):
+        if float(envelope[k]) < attack_ref:
+            attack_samples = i - k
+            break
+    if attack_samples is None:
+        attack_samples = attack_lookback + 1  # never fell below — fail.
+    return attack_samples / float(AUDIO_SAMPLE_RATE)
+
+
+def _loudest_maxima(envelope, k=8, min_gap=1):
+    """The k loudest local maxima, ignoring any threshold.
+
+    FOR THE READOUT WHEN NOTHING CLEARED THE GATE. `raw_peaks` only
+    ever looks where `above` is true, so a clip that fails the gate
+    outright produces no peaks at all and the page could say only
+    that the gate was not met -- never how CLOSE anything came, which
+    is the one number that says whether to lower it or to go and look
+    at the microphone.
+
+    Vectorised on purpose. The gated sweep walks a handful of indices;
+    this one has to consider every sample, and at 22050 Hz a 40 s clip
+    is 880k of them.
+
+    Same shape test as the gated sweep -- at least as large as its
+    neighbours 1, 3 and 5 samples out -- then greedy pick by loudness
+    with `min_gap` samples between, so eight entries describe eight
+    moments rather than one transient eight times.
+    """
+    e = np.asarray(envelope, dtype=float)
+    n = e.size
+    if n < 11:
+        return []
+    c = e[5:n - 5]
+    m = ((c >= e[4:n - 6]) & (c >= e[6:n - 4])
+         & (c >= e[2:n - 8]) & (c >= e[8:n - 2])
+         & (c >= e[0:n - 10]) & (c >= e[10:n]))
+    idx = np.nonzero(m)[0] + 5
+    if idx.size == 0:
+        return []
+    order = idx[np.argsort(-e[idx])]
+    out = []
+    for i in order:
+        if len(out) >= int(k):
+            break
+        if any(abs(int(i) - j) < int(min_gap) for j in out):
+            continue
+        out.append(int(i))
+    return sorted(out)
+
 # Minimum peak-to-median ratio for us to trust the audio peak as a
 # real impact. Below this we treat the audio as too noisy to
 # identify a clear "thwack" and fall back to the AI vision path.
@@ -12041,29 +12120,7 @@ def detect_swings_from_audio(
             and v >= envelope[i - 5] and v >= envelope[i + 5]
         ):
             continue
-        attack_ref = max(0.10 * v, AUDIO_ATTACK_NOISE_MULT * median)
-        # TOO CLOSE TO THE FLOOR TO MEAN ANYTHING. When the reference
-        # reaches half the peak there is no rise left to time, so the
-        # answer would be noise either way. Say so rather than guess.
-        # This only ever binds below ratio ~4 (2 * median < 0.5 * v
-        # requires v > 4 * median), which the threshold gate rejects
-        # anyway at any sane min_peak_ratio.
-        if attack_ref >= 0.5 * v:
-            raw_peaks.append((i, v, float(attack_lookback + 1)
-                              / float(AUDIO_SAMPLE_RATE), False))
-            continue
-        start_look = max(0, i - attack_lookback)
-        # np.argwhere is slow per-peak, but the lookback window is small
-        # (a few hundred samples). Walk back to the most recent
-        # sub-reference crossing.
-        attack_samples: int | None = None
-        for k in range(i - 1, start_look - 1, -1):
-            if float(envelope[k]) < attack_ref:
-                attack_samples = i - k
-                break
-        if attack_samples is None:
-            attack_samples = attack_lookback + 1  # never fell below — fail.
-        attack_sec = attack_samples / float(AUDIO_SAMPLE_RATE)
+        attack_sec = _attack_at(envelope, i, v, median, attack_lookback)
         passes_attack = attack_sec <= max_attack_sec
         raw_peaks.append((i, v, attack_sec, passes_attack))
 
@@ -12079,11 +12136,46 @@ def detect_swings_from_audio(
             n_raw, int(max_attack_sec * 1000), median, threshold,
         )
         if debug is not None:
+            # NOTHING CLEARED THE GATE AT ALL -> SAY HOW CLOSE IT CAME.
+            # The gated sweep looks only where `above` is true, so this
+            # case produced no peaks and the readout could say only
+            # that the bar was not met. "The loudest thing in this clip
+            # was x2.9" and "the loudest was x3.9" call for completely
+            # different actions -- one is a gate to lower, the other is
+            # a microphone to go and look at -- and the old line could
+            # not tell them apart. Asked for from the field: "can we
+            # show where the peak was and the xaudio at the peak? even
+            # if it doesn't meet the threshold."
+            _loudest = None
+            if not n_raw and median > 0:
+                _bg = []
+                for _i in _loudest_maxima(
+                        envelope, k=8,
+                        min_gap=max(1, int(0.25 * AUDIO_SAMPLE_RATE))):
+                    _v = float(envelope[_i])
+                    _a = _attack_at(envelope, _i, _v, median,
+                                    attack_lookback)
+                    _bg.append({
+                        "peak_sec": round(_i / float(AUDIO_SAMPLE_RATE), 2),
+                        "ratio": round(_v / median, 2),
+                        "attack_ms": round(_a * 1000, 1),
+                        "attack_measured": _a < attack_sentinel_sec - 1e-9,
+                    })
+                debug["below_gate_peaks"] = _bg
+                if _bg:
+                    _loudest = max(_bg, key=lambda q: q["ratio"])
+                    debug["loudest_ratio"] = _loudest["ratio"]
+                    debug["loudest_sec"] = _loudest["peak_sec"]
             debug["reason"] = (
                 f"{n_raw} raw peak(s) but none had attack <= {int(max_attack_sec*1000)}ms"
                 if n_raw else
-                f"no local maxima above threshold (median={median:.4f}, "
-                f"threshold={threshold:.4f}, min_peak_ratio={min_peak_ratio})"
+                (f"nothing reached the ×{min_peak_ratio} gate — the loudest "
+                 f"was ×{_loudest['ratio']} at {_loudest['peak_sec']}s, so a "
+                 f"gate under ×{_loudest['ratio']} would have caught it "
+                 f"(noise floor={median:.4f}, gate={threshold:.4f})"
+                 if _loudest else
+                 f"no local maxima above threshold (median={median:.4f}, "
+                 f"threshold={threshold:.4f}, min_peak_ratio={min_peak_ratio})")
             )
             debug["n_after_nms"] = 0
             # Surface raw peaks anyway so the operator can see why they

@@ -1391,6 +1391,44 @@ export default function AdminLongUpload() {
                                   ))}
                                 </>
                               )}
+                              {/* NOTHING CLEARED THE GATE. Shown on its
+                                  own line rather than mixed into the
+                                  peaks above, because these failed a
+                                  different test and the ✗attack / ✗sep
+                                  marks up there would be a lie about
+                                  them — they never got that far. */}
+                              {Array.isArray(testCutResults[u.id].debug.below_gate_peaks) &&
+                                testCutResults[u.id].debug.below_gate_peaks.length > 0 && (
+                                <>
+                                  <br />
+                                  <span className="warn-text">
+                                    nothing reached the gate.
+                                  </span>{" "}
+                                  loudest peaks anyway (sec, ×ratio over the
+                                  {" "}noise floor):
+                                  {testCutResults[u.id].debug.loudest_ratio != null && (
+                                    <>
+                                      {" "}a gate under{" "}
+                                      ×{testCutResults[u.id].debug.loudest_ratio}
+                                      {" "}would have caught the loudest.
+                                    </>
+                                  )}
+                                  <br />
+                                  {testCutResults[u.id].debug.below_gate_peaks.map((p, i) => (
+                                    <span key={i} style={{ marginRight: 10 }}>
+                                      {p.peak_sec}s ×{p.ratio}
+                                      {/* Below the gate the rise usually
+                                          cannot be measured at all — the
+                                          reference sits above half the
+                                          peak — so "≥" is the norm here,
+                                          not the exception. */}
+                                      {p.attack_ms != null && p.attack_measured !== false && (
+                                        <> {p.attack_ms}ms</>
+                                      )}
+                                    </span>
+                                  ))}
+                                </>
+                              )}
                             </>
                           ) : (
                             <>
