@@ -61,6 +61,18 @@ ABOVE_HEAD_FRAC = 0.10
 # nothing for a model to look at and nothing for a detector to find,
 # and at zero `cv2.imwrite` raises rather than returning False.
 MIN_CROP_PX = 8
+# How much of the zones' own width to add either side of a zone crop.
+ZONE_PAD_FRAC = 0.25
+# SMALLEST A FRAME TILE MAY BE SHOWN AT, on its long side. The tiles
+# used only ever to be shrunk -- `FRAME_TILE_PX` is a ceiling -- which
+# was fine while a crop meant a golfer who filled it. A fallback crop
+# around a distant figure can be 120px across, and handing a judge a
+# 120px picture with a 20px caption burned into the corner wastes the
+# zoom that produced it. Upscaling adds no detail; it stops the detail
+# already there from being thrown away by whatever resamples next, and
+# it gives the caption somewhere to sit. The heat picture beside it has
+# had the same floor, at 512, all along.
+FRAME_TILE_MIN_PX = 384
 
 
 def _write(path, img) -> bool:
@@ -79,6 +91,78 @@ def _write(path, img) -> bool:
     except Exception as exc:  # noqa: BLE001
         log.warning("swinganalysis: could not write %s: %s", path, exc)
         return False
+
+
+def _zone_rect(zones, ox, oy, W, H):
+    """A rect around the trigger zones, in crop px, or None.
+
+    THE LAST RUNG BEFORE THE WHOLE FRAME. A zone is where somebody has
+    to be standing for this camera to fire at all, so even with
+    nobody detected it is a far better guess at where the swing is
+    than the whole picture.
+
+    NOT a synthetic golfer handed to `_crop_rect`. That function
+    measures a crop against the box it is given -- head room above,
+    a little ground below -- and a zone is drawn around a patch of
+    TURF, a few tens of pixels tall. Treating it as a person crops
+    the golfer off at the knees. The honest answer is that a zone
+    says where the feet are and nothing about how tall anybody is, so
+    this takes the zone's WIDTH and runs from the top of the picture
+    down to just under it: the club and the ball leave upward, and
+    the width is where almost all of the waste is on a wide course
+    frame anyway.
+    """
+    if not zones:
+        return None
+    try:
+        x0 = min(float(z[0]) for z in zones) - ox
+        x1 = max(float(z[0]) + float(z[2]) for z in zones) - ox
+        y1 = max(float(z[1]) + float(z[3]) for z in zones) - oy
+    except (TypeError, ValueError, IndexError):
+        return None
+    pad = max(24.0, (x1 - x0) * ZONE_PAD_FRAC)
+    return _usable(x0 - pad, 0, x1 + pad, y1 + pad, W, H)
+
+
+def _nearest_person(people, zones):
+    """The detected person most likely to be the golfer, or None.
+
+    WHEN NOBODY'S FEET LANDED IN A ZONE and there is still somebody in
+    the picture. `pick_front_golfer` refuses here on purpose -- it is
+    deciding WHO IS HITTING, and a person on the cart path is not a
+    candidate for that however alone they are in the frame.
+
+    Cropping is a different question with a different cost. The judge
+    looking at a 36x96 person who turns out to be a spectator says
+    "not a swing", which is what the whole frame said anyway; the
+    judge looking at a whole golf course says "not a swing" to a real
+    swing too, and with `verify_drops` on the rig that DELETES it. A
+    wrong crop costs an upload. No crop costs the swing.
+
+    Nearest to a zone, because that is the only ordering available
+    that means anything: the zones are where golf happens.
+    """
+    if not people:
+        return None
+
+    def _gap(p):
+        fx, fy = float(p["feet"][0]), float(p["feet"][1])
+        best = None
+        for z in zones or []:
+            try:
+                zx, zy, zw, zh = (float(z[0]), float(z[1]),
+                                  float(z[2]), float(z[3]))
+            except (TypeError, ValueError, IndexError):
+                continue
+            dx = max(zx - fx, 0.0, fx - (zx + zw))
+            dy = max(zy - fy, 0.0, fy - (zy + zh))
+            d = (dx * dx + dy * dy) ** 0.5
+            best = d if best is None else min(best, d)
+        # No zones to measure against: the lowest feet in the picture
+        # are the nearest thing to a tee there is.
+        return (0.0, -fy) if best is None else (best, -fy)
+
+    return sorted(people, key=_gap)[0]
 
 
 def _crop_rect(golfer, floor_y, heads, bounds):
@@ -181,7 +265,7 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
         "heat_is_swing": None, "frames_is_swing": None,
         "ball_left": None, "ball_why": None, "ball_spot": None,
         "picked_front": None, "front_candidates": None,
-        "golfer_crop": False, "decided_by": None,
+        "golfer_crop": False, "decided_by": None, "zoom_from": None,
         "image": None, "frames_image": None,
         "image_zones": None, "frames_image_zones": None,
     }
@@ -274,7 +358,51 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
                     g["x"], g["y"], g["w"], g["h"], W, H)
                 return out
         else:
-            hrect = frect = (0, 0, W, H)
+            # ── NOBODY WAS PICKED. ZOOM ANYWAY. ─────────────────────
+            #
+            # This used to hand the judge the whole frame, and on a
+            # wide course picture that is a golfer thirty pixels tall
+            # somewhere in a panorama. The judge says "not a swing",
+            # correctly -- there is no swing visible at that scale --
+            # and with `verify_drops` on the rig the clip is deleted.
+            # Reported from the field as "I thought we were zooming in
+            # on the golfer": we were, but only down the branch where
+            # somebody's feet landed in a zone.
+            #
+            # So the crop falls back a rung at a time instead of all
+            # the way to the frame. Each rung is a worse guess at
+            # WHERE the swing is and every one of them is a better
+            # picture than the whole course.
+            _alt = _nearest_person(people, zones)
+            if _alt is not None:
+                _g = {"x": _alt["box"][0] - ox, "y": _alt["box"][1] - oy,
+                      "w": _alt["box"][2], "h": _alt["box"][3]}
+                _heads = [{"y": q["box"][1] - oy} for q in people
+                          if _g["x"] - 40 <= q["box"][0] - ox
+                          <= _g["x"] + _g["w"] + 40] or [_g]
+                hrect, frect = _crop_rect(_g, None, _heads, (W, H))
+                _from = ("the nearest person to a zone, since nobody's "
+                         "feet were in one — not confirmed as the golfer")
+            else:
+                hrect = frect = _zone_rect(zones, ox, oy, W, H)
+                _from = ("the trigger zones, since nobody was detected "
+                         "at all")
+            # A RUNG THAT DID NOT WORK IS NOT A VERDICT. Unlike the
+            # picked-golfer branch above, there is nothing to be wrong
+            # about here: no golfer was identified, so judging the
+            # whole frame is the behaviour this case has always had
+            # and its verdicts have always counted. Fall through to it
+            # rather than refuse to answer.
+            if hrect is None or frect is None:
+                hrect = frect = (0, 0, W, H)
+            else:
+                out["zoom_from"] = _from
+                out["picked_front"] = "%s · zoomed to %s" % (
+                    out["picked_front"], _from)
+                log.info(
+                    "swinganalysis: no golfer picked — zoomed to %s "
+                    "(%dx%d of %dx%d) rather than judging the whole frame",
+                    _from, frect[2] - frect[0], frect[3] - frect[1], W, H)
         hx0, hy0, hx1, hy1 = hrect
         judged = heat[hy0:hy1, hx0:hx1].copy()
         # BELT AND BRACES. `_usable` clamps the rect to the heat's own
@@ -302,6 +430,11 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
             if max(th, tw) > FRAME_TILE_PX:
                 sc = FRAME_TILE_PX / float(max(th, tw))
                 t = cv2.resize(t, (max(1, int(tw * sc)), max(1, int(th * sc))))
+            elif 0 < max(th, tw) < FRAME_TILE_MIN_PX:
+                # A small crop is a CLOSE one -- see FRAME_TILE_MIN_PX.
+                sc = FRAME_TILE_MIN_PX / float(max(th, tw))
+                t = cv2.resize(t, (max(1, int(tw * sc)), max(1, int(th * sc))),
+                               interpolation=cv2.INTER_CUBIC)
             lbl = "%+.2fs" % off
             for col, wid in (((0, 0, 0), 3), ((255, 255, 255), 1)):
                 cv2.putText(t, lbl, (6, 22), cv2.FONT_HERSHEY_SIMPLEX,
@@ -321,6 +454,16 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
             out["ball_why"] = bl["why"]
             out["ball_spot"] = (None if not bl["spot"] else
                                 [bl["spot"][0] + ox, bl["spot"][1] + oy])
+        elif out.get("zoom_from"):
+            # THERE IS A CROP NOW, which there did not use to be, so
+            # the old line ("no zoom crop on this one") is no longer
+            # true. What is missing is not the picture but the ANCHOR:
+            # `ball_in_frames` measures a departure against a confirmed
+            # golfer's feet and height, and a figure that was never
+            # confirmed as the golfer gives it a ruler it cannot trust.
+            out["ball_why"] = ("zoomed to %s, but the ball was not looked "
+                               "for — that needs a confirmed golfer to "
+                               "measure against" % out["zoom_from"])
         else:
             out["ball_why"] = ("no zoom crop on this one, so the ball was "
                                "not looked for")
