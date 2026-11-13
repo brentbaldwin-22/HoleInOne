@@ -25536,13 +25536,27 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
         from ..services.ai_tracer import detect_swings_from_audio
 
         dbg: dict = {}
+        # THE HOLE'S GATES, FOR THE TEE THIS CLIP CAME FROM. The
+        # audio gates were global settings; they are per-hole now and
+        # take a zone override, because loudness is a property of
+        # distance and the tees are at different ones. A dwell clip
+        # names its tee on `trigger_detail.zone`; an upload names
+        # none, and then the hole's own setting stands.
+        from ..services import debug3 as _d3
+        _ag, _, _ = _gate_tuning_for(db, row)
+        _az = _trigger_zone(db, row)
+        _ag = _d3.resolve_gates(_ag, zone=_az)
         hits = detect_swings_from_audio(
             src_path, fps=fps,
-            min_peak_ratio=float(settings.ascent_audio_min_ratio),
-            min_separation_sec=float(settings.ascent_audio_min_separation_sec),
-            max_attack_sec=float(settings.ascent_audio_max_attack_ms) / 1000.0,
+            min_peak_ratio=float(_ag["audio_min_ratio"]),
+            min_separation_sec=float(_ag["audio_min_separation_sec"]),
+            max_attack_sec=float(_ag["audio_max_attack_ms"]) / 1000.0,
             debug=dbg,
         ) or []
+        dbg["gates_from"] = (
+            "the hole's audio gates" if _az is None else
+            "the hole's audio gates for zone %d (\"Zone %d\" on screen)"
+            % (_az, _az + 1))
         times = [float(h["peak_time_sec"]) for h in hits
                  if h.get("peak_time_sec") is not None]
         if times:
@@ -26497,6 +26511,28 @@ def _trigger_kind(db, row) -> Optional[str]:
         return None
     _k = _d.get("kind")
     return str(_k).strip().lower() if _k else None
+
+
+def _trigger_zone(db, row):
+    """Which trigger zone this clip's dwell fired on, or None.
+
+    `_dwell_detail` records it on every dwell, manual and capture
+    trigger, as the LOWEST zone holding the golfer's stance -- see
+    tee_roi.lowest_at. None for an audio trigger, a manual upload, or
+    a rig too old to say, and None means "the hole's own setting",
+    which is what every hole had before zones could differ.
+    """
+    _eid = getattr(row, "camera_event_id", None)
+    if not _eid:
+        return None
+    try:
+        ev = db.get(CameraEvent, _eid)
+        _d = getattr(ev, "trigger_detail", None) if ev is not None else None
+        if isinstance(_d, dict) and _d.get("zone") is not None:
+            return int(_d["zone"])
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def _ascent_descents(row, db, rep, fps, progress=None) -> dict:

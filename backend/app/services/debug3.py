@@ -8177,6 +8177,27 @@ __all__ = [
 # linking tolerances are not -- they are internal, they interact, and a
 # per-hole copy of them would be a per-hole fork of the detector.
 GATE_SPEC = {
+    # ── THE AUDIO GATES ─────────────────────────────────────────────
+    #
+    # Global `settings` until now, which is the wrong scope twice
+    # over. A gate measured on one hole generalises badly to the next
+    # -- that is why every gate below is keyed per camera pair and
+    # hole -- and the audio ones generalise worse than most, because
+    # loudness is a property of DISTANCE and the tees are at different
+    # ones. This camera stands behind the hitting area, so the back
+    # tee is a few yards from the microphone and a forward tee is a
+    # hundred: one ratio set for the back deafens the front, and set
+    # for the front it fires on everything near the camera.
+    #
+    # So they join the per-hole gates, and take zone overrides on top
+    # -- "audio_min_ratio@2" for the zone an operator sees as Zone 3.
+    # See resolve_gates.
+    #
+    # The defaults are app.config's, unchanged, so a hole that tunes
+    # nothing behaves exactly as it does today.
+    "audio_min_ratio": (4.0, 1.5, 60.0, False),
+    "audio_min_separation_sec": (2.0, 0.2, 30.0, False),
+    "audio_max_attack_ms": (25.0, 2.0, 200.0, False),
     # key                        default                  lo     hi   int
     # NOT A FILTER ON CHAINS, unlike everything else here: this one is
     # the DETECTOR's per-frame keep. Every other gate can only refuse a
@@ -8358,8 +8379,12 @@ GATE_VERDICT = {
 GATE_DEFAULTS = {k: v[0] for k, v in GATE_SPEC.items()}
 
 
-def resolve_gates(overrides=None) -> dict:
+def resolve_gates(overrides=None, zone=None) -> dict:
     """Every gate value for one run: the defaults, with overrides applied.
+
+    `zone` is the trigger zone this run is about -- a dwell clip
+    carries one on `trigger_detail.zone` -- and selects the "gate@N"
+    overrides for it. None means the hole's own settings only.
 
     NEVER RAISES AND NEVER RETURNS A PARTIAL. A tuning row is operator
     input that has been sitting in a JSON column since whenever, and the
@@ -8375,7 +8400,37 @@ def resolve_gates(overrides=None) -> dict:
     out = dict(GATE_DEFAULTS)
     if not isinstance(overrides, dict):
         return out
+    # ZONE OVERRIDES RIDE ON THE SAME FLAT DICT, as "gate@N".
+    #
+    # A tee deck's zones are not interchangeable and the loudest of
+    # them is the nearest: this camera stands BEHIND the hitting area,
+    # so the back tee is a few yards from the microphone and a forward
+    # tee is a hundred. One audio gate cannot serve both -- set for the
+    # back it deafens the front, set for the front it fires on
+    # everything near the camera. Asked for from the field: "the sound
+    # threshold in the back zone(s) should be a lot higher than the
+    # front zones."
+    #
+    # A SUFFIX RATHER THAN A NESTED DICT, so `course.gate_tuning` keeps
+    # the shape it has had since it was written and every hole stored
+    # under it keeps working untouched. The spec stays one entry per
+    # gate, the editor stays a list of numbers, and a gate with no
+    # zone override behaves exactly as before.
+    #
+    # Applied AFTER the plain value, so "gate" is the hole's setting
+    # and "gate@2" is zone 2 differing from it.
+    _plain, _zoned = {}, {}
     for k, v in overrides.items():
+        if "@" in str(k):
+            _n, _, _z = str(k).partition("@")
+            try:
+                if int(_z) == int(zone) if zone is not None else False:
+                    _zoned[_n] = v
+            except (TypeError, ValueError):
+                pass
+            continue
+        _plain[k] = v
+    for k, v in list(_plain.items()) + list(_zoned.items()):
         spec = GATE_SPEC.get(k)
         if spec is None:
             continue
@@ -8402,4 +8457,24 @@ def gates_diff(overrides=None) -> dict:
     today's defaults against any later change to them.
     """
     got = resolve_gates(overrides)
-    return {k: v for k, v in got.items() if v != GATE_DEFAULTS[k]}
+    out = {k: v for k, v in got.items() if v != GATE_DEFAULTS[k]}
+    # AND THE ZONE OVERRIDES, which are not in `got` -- that resolves
+    # ONE zone and this describes the whole hole. Validated the same
+    # way, against their own gate's spec, so a zone key cannot store
+    # what a plain key could not.
+    if isinstance(overrides, dict):
+        for k, v in overrides.items():
+            _n, _, _z = str(k).partition("@")
+            if not _z or _n not in GATE_SPEC:
+                continue
+            try:
+                _zi = int(_z)
+            except (TypeError, ValueError):
+                continue
+            _r = resolve_gates({_n: v})
+            if _r[_n] != resolve_gates({})[_n] or True:
+                # Kept even when it equals the default: "this zone is
+                # deliberately the default while the hole is not" is a
+                # real setting and the only way to say it.
+                out["%s@%d" % (_n, _zi)] = _r[_n]
+    return out
