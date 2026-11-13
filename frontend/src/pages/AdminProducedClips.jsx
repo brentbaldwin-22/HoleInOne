@@ -314,6 +314,13 @@ export default function AdminProducedClips() {
                 const cutSrc = pick(live && live.cut_src, d && d.cut_src);
                 const gball = pick(live && live.green_ball_x, d && d.gball);
                 const gballWhy = pick(live && live.green_ball_why, d && d.gball_why);
+                // Where the crop is TOLD to be at the cut, as opposed
+                // to where gball was found. The two differing is the
+                // whole question when a ball is identified and never
+                // framed; pts 0 means the green half got no waypoints
+                // at all and the crop simply held the tee.
+                const gOpen = pick(live && live.green_open, d && d.green_open);
+                const gPts = pick(live && live.green_pts, d && d.green_pts);
                 const pin = pick(live && live.pin_x, d && d.pin);
                 const pinSrc = pick(live && live.pin_src, d && d.pin_src);
                 const swing = pick(live && live.swing_match, d && d.swing_match);
@@ -345,7 +352,7 @@ export default function AdminProducedClips() {
                 return (
                   <div
                     style={diagStyle}
-                    title="What the 9:16 render read off this clip's own frames. tracer = where the stroke starts (fraction of frame width); (n5 ±0.004) is how many frames agreed and how far apart they were, so a small spread means a steady read — of the right object or the wrong one. foot y = how high up the frame the stroke's foot sat: we are looking for the line LEAVING THE GROUND, so on a tee view this should be about 0.65-0.75, and a high value means the thing measured never touched the ground. launch = the same point from the ball track, golfer = from pose; the tracer outranks both, so a tracer far from BOTH is the one to distrust. cut = the tee->green scene change. gball = where the ball finished, read from the green camera's tracer. pin = the flagstick. Any of them reading 'none' means that anchor was not found, and the pan falls back."
+                    title="What the 9:16 render read off this clip's own frames. tracer = where the stroke starts (fraction of frame width); (n5 ±0.004) is how many frames agreed and how far apart they were, so a small spread means a steady read — of the right object or the wrong one. foot y = how high up the frame the stroke's foot sat: we are looking for the line LEAVING THE GROUND, so on a tee view this should be about 0.65-0.75, and a high value means the thing measured never touched the ground. launch = the same point from the ball track, golfer = from pose; the tracer outranks both, so a tracer far from BOTH is the one to distrust. cut = the tee->green scene change. gball = where the ball finished, read from the green camera's tracer. pin = the flagstick. open@cut is where the crop is actually told to sit at the cut and how many waypoints the green half got: if that differs from gball, the ball was found and something downstream dropped it, and 0pt means the green half was skipped whole. Any of them reading 'none' means that anchor was not found, and the pan falls back."
                   >
                     {`9:16 ${mode || "—"}`}
                     {srcKind === "stamped"
@@ -367,6 +374,9 @@ export default function AdminProducedClips() {
                     {golfer != null ? ` · golfer ${golfer}` : ""}
                     {` · cut ${cutStr}`}
                     {` · gball ${num(gball, gballWhy)}`}
+                    {gPts != null
+                      ? ` · open@cut ${gOpen == null ? "none" : gOpen}(${gPts}pt)`
+                      : ""}
                     {` · pin ${num(pin)}${pin != null && pinSrc ? `(${pinSrc})` : ""}`}
                     {dist ? ` · dist ${dist}` : ""}
                     {durStr ? ` · dur ${durStr}` : ""}

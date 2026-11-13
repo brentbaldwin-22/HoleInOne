@@ -136,6 +136,38 @@ def main() -> int:
         "a 2s green half should still go straight to the pin")
     print("short green half (2.0s): still straight to the pin, as designed")
 
+    # THE OTHER WAY THE GREEN HALF DISAPPEARS. The green block sits
+    # behind `cut_dur > t_last`, where t_last is the last DRAWN tracer
+    # waypoint. The tracer keeps being drawn along the aimed
+    # continuation toward the landing, so on a clip where that runs
+    # past the cut the whole block -- ball, hold and pin -- is skipped
+    # and the crop simply holds the tee's last position across the
+    # scene change. gball is found, reported, and never framed.
+    late = [{"frame": int(t * FPS), "x": x * FW} for t, x in
+            [(2.05, 0.55), (4.0, 0.62), (7.5, 0.70)]]
+    p_late = _vertical_pan_path(
+        late, None, FPS, FW, 7.03, golfer_x=None, impact_t=IMPACT,
+        green_x=0.67, ball_green_x=0.381, total_dur=12.2,
+        opening_x=TRACER_X, opening_t=TRACER_T,
+    )
+    tail_late = [x for t, x in p_late if t >= 7.03]
+    print(f"\ntrack running to 7.5s (past the 7.03s cut): "
+          f"{len(tail_late)} green waypoint(s)")
+    assert not any(abs(x - 0.381) < 1e-9 for x in tail_late), (
+        "the ball got framed; this gate no longer drops the green half")
+
+    # And the same clip with the track ending before the cut, which is
+    # the case that works -- so the gate is what separates them.
+    early = [{"frame": int(t * FPS), "x": x * FW} for t, x in
+             [(2.05, 0.55), (4.0, 0.62), (6.0, 0.70)]]
+    p_early = _vertical_pan_path(
+        early, None, FPS, FW, 7.03, golfer_x=None, impact_t=IMPACT,
+        green_x=0.67, ball_green_x=0.381, total_dur=12.2,
+        opening_x=TRACER_X, opening_t=TRACER_T,
+    )
+    assert abs(next(x for t, x in p_early if t >= 7.03) - 0.381) < 1e-9
+    print("track ending at 6.0s (before the cut): opens on the ball")
+
     print("\nOK")
     return 0
 

@@ -1985,6 +1985,30 @@ def make_clip_vertical(
                             _tsx.get("t") if _tsx else None
                         ),
                     )
+                    # WHAT THE PATH ACTUALLY SAYS AT THE CUT. gball
+                    # has been found, reported and not framed, and
+                    # reading the inputs cannot tell us why because
+                    # three separate things drop the green half: the
+                    # room gate (`total_dur - cut`), the `cut_dur >
+                    # t_last` gate above it -- which skips the ENTIRE
+                    # green block when the drawn tracer runs past the
+                    # cut -- and a pin or ball that came back None.
+                    # The path is the one place all three have already
+                    # been decided, so read the answer off it instead
+                    # of guessing at the inputs again.
+                    try:
+                        _tail = [
+                            (t, x) for t, x in _ppath
+                            if _cut is not None and t >= float(_cut) - 1e-9
+                        ]
+                        _diag.update(
+                            green_open=(
+                                round(_tail[0][1], 3) if _tail else None
+                            ),
+                            green_pts=len(_tail),
+                        )
+                    except (TypeError, ValueError):
+                        pass
                     _made = make_vertical_pan(
                         render_src, out_path, _ppath, cut_sec=_cut,
                     )
@@ -2190,6 +2214,11 @@ def make_clip_vertical(
             "cut_src": _diag.get("cut_src"),
             "gball": _diag.get("green_ball_x"),
             "gball_why": _diag.get("green_ball_why"),
+            # Where the crop is actually told to be at the cut, and
+            # how many waypoints the green half got. 0 means the green
+            # block was skipped whole.
+            "green_open": _diag.get("green_open"),
+            "green_pts": _diag.get("green_pts"),
             "pin": _diag.get("pin_x"),
             "pin_src": _diag.get("pin_src"),
             "dur": _diag.get("dur"),
