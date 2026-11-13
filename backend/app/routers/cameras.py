@@ -1489,7 +1489,7 @@ def _analyse_posted_frames(shots, heat_path, crop, zones, geo, offsets,
             "heat_confidence", "heat_reason", "frames_is_swing",
             "frames_confidence", "frames_reason", "ball_left",
             "ball_why", "picked_front", "golfer_crop", "decided_by",
-            "zoom_from")
+            "zoom_from", "frames_used")
     out = {k: r.get(k) for k in keep}
     out["saw"] = "analysed on the server: heat + %d frames" % len(
         [i for i in imgs if i is not None])

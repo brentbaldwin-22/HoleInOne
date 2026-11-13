@@ -124,45 +124,39 @@ def _zone_rect(zones, ox, oy, W, H):
     return _usable(x0 - pad, 0, x1 + pad, y1 + pad, W, H)
 
 
-def _nearest_person(people, zones):
-    """The detected person most likely to be the golfer, or None.
+def _zoned_person(considered):
+    """A person the picker saw IN a zone but did not pick, or None.
 
-    WHEN NOBODY'S FEET LANDED IN A ZONE and there is still somebody in
-    the picture. `pick_front_golfer` refuses here on purpose -- it is
-    deciding WHO IS HITTING, and a person on the cart path is not a
-    candidate for that however alone they are in the frame.
+    NEVER SOMEBODY OUTSIDE THE ZONES. The first version of this took
+    the person NEAREST a zone, and "nearest" with no limit means
+    anyone anywhere: on a clip where the tee was empty it zoomed hard
+    onto a man walking past a golf cart on the far side of the hole
+    and handed the judge a crisp picture of somebody not swinging.
+    That is worse than the whole frame, not better -- the frame at
+    least looks like a frame, while this looks like an answer. With
+    `verify_drops` on the rig it deletes the clip.
 
-    Cropping is a different question with a different cost. The judge
-    looking at a 36x96 person who turns out to be a spectator says
-    "not a swing", which is what the whole frame said anyway; the
-    judge looking at a whole golf course says "not a swing" to a real
-    swing too, and with `verify_drops` on the rig that DELETES it. A
-    wrong crop costs an upload. No crop costs the swing.
+    THE PICKER HAS ALREADY ANSWERED THIS, in `considered`: every
+    person it looked at, with `zone` saying whether their feet were
+    in one. Asking it rather than re-deriving containment is the
+    whole point -- two notions of "in a zone" that disagree is a
+    camera that crops somewhere its own rule says nobody is standing.
 
-    Nearest to a zone, because that is the only ordering available
-    that means anything: the zones are where golf happens.
+    So this only ever returns somebody the picker itself placed in a
+    zone and then declined to pick, which is really one case: two
+    golfers too level to call. Lowest feet first, the same ordering
+    the picker uses, and it carries the zone floor the picker
+    measured so the crop stops on the ground rather than at a waist.
     """
-    if not people:
-        return None
-
-    def _gap(p):
-        fx, fy = float(p["feet"][0]), float(p["feet"][1])
-        best = None
-        for z in zones or []:
-            try:
-                zx, zy, zw, zh = (float(z[0]), float(z[1]),
-                                  float(z[2]), float(z[3]))
-            except (TypeError, ValueError, IndexError):
-                continue
-            dx = max(zx - fx, 0.0, fx - (zx + zw))
-            dy = max(zy - fy, 0.0, fy - (zy + zh))
-            d = (dx * dx + dy * dy) ** 0.5
-            best = d if best is None else min(best, d)
-        # No zones to measure against: the lowest feet in the picture
-        # are the nearest thing to a tee there is.
-        return (0.0, -fy) if best is None else (best, -fy)
-
-    return sorted(people, key=_gap)[0]
+    best = None
+    for c in considered or []:
+        if not isinstance(c, dict) or not c.get("zone"):
+            continue
+        if not c.get("box") or not c.get("feet"):
+            continue
+        if best is None or c["feet"][1] > best["feet"][1]:
+            best = c
+    return best
 
 
 def _crop_rect(golfer, floor_y, heads, bounds):
@@ -266,6 +260,7 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
         "ball_left": None, "ball_why": None, "ball_spot": None,
         "picked_front": None, "front_candidates": None,
         "golfer_crop": False, "decided_by": None, "zoom_from": None,
+        "frames_used": None,
         "image": None, "frames_image": None,
         "image_zones": None, "frames_image_zones": None,
     }
@@ -373,20 +368,31 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
             # the way to the frame. Each rung is a worse guess at
             # WHERE the swing is and every one of them is a better
             # picture than the whole course.
-            _alt = _nearest_person(people, zones)
+            _alt = _zoned_person(pf.get("considered"))
             if _alt is not None:
                 _g = {"x": _alt["box"][0] - ox, "y": _alt["box"][1] - oy,
                       "w": _alt["box"][2], "h": _alt["box"][3]}
                 _heads = [{"y": q["box"][1] - oy} for q in people
                           if _g["x"] - 40 <= q["box"][0] - ox
                           <= _g["x"] + _g["w"] + 40] or [_g]
-                hrect, frect = _crop_rect(_g, None, _heads, (W, H))
-                _from = ("the nearest person to a zone, since nobody's "
-                         "feet were in one — not confirmed as the golfer")
+                _fl = _alt.get("floor")
+                hrect, frect = _crop_rect(
+                    _g, None if _fl is None else float(_fl) - oy,
+                    _heads, (W, H))
+                _from = ("a person standing in a zone that the picker "
+                         "would not call — not confirmed as the golfer")
             else:
                 hrect = frect = _zone_rect(zones, ox, oy, W, H)
+                # TWO DIFFERENT THINGS, AND THE OPERATOR READS THIS
+                # LINE. "Nobody was detected" and "the people detected
+                # were not on the tee" send them to look in different
+                # places -- at the detector, or at where the zones are
+                # drawn -- and only one of them is true at a time.
+                _n = len(pf.get("considered") or [])
                 _from = ("the trigger zones, since nobody was detected "
-                         "at all")
+                         "at all" if not _n else
+                         "the trigger zones — %d person(s) were found but "
+                         "none were standing in one" % _n)
             # A RUNG THAT DID NOT WORK IS NOT A VERDICT. Unlike the
             # picked-golfer branch above, there is nothing to be wrong
             # about here: no golfer was identified, so judging the
@@ -441,6 +447,13 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
                             0.6, col, wid, cv2.LINE_AA)
             tiles.append(t)
             used.append(off)
+        # WHICH MOMENTS THE JUDGE ACTUALLY SAW. The six offsets are
+        # what was ASKED for; a frame that could not be had, or a crop
+        # that sliced to nothing, drops out silently above. A verdict
+        # argued from four tiles and one argued from six are not the
+        # same verdict, and until now nothing downstream could tell
+        # them apart.
+        out["frames_used"] = [round(float(u), 2) for u in used]
 
         # ---- what the ball did ---------------------------------
         if front is not None:

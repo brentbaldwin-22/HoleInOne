@@ -19,7 +19,7 @@ crop at all costs the swing.
 
 THE LADDER, best guess first:
   1. the golfer standing in a zone      -- unchanged
-  2. the person nearest a zone          -- not confirmed, still a person
+  2. a person the picker put IN a zone  -- not confirmed, still in a zone
   3. the trigger zones themselves       -- nobody detected at all
   4. the whole frame                    -- nothing else left
 
@@ -52,7 +52,7 @@ def area(rect, W, H):
 
 def main():
     from app.services.swinganalysis import (
-        _zone_rect, _nearest_person, _crop_rect, _usable)
+        _zone_rect, _zoned_person, _crop_rect, _usable)
 
     # The frame from the report: a wide course picture, two tee zones
     # low and right of centre.
@@ -78,44 +78,67 @@ def main():
     ok("  and junk in the zones does not raise",
        _zone_rect([("x", None, 3, 4)], 0, 0, W, H), None)
 
-    # ── RUNG 2: THE NEAREST PERSON ──────────────────────────────────
+    # ── RUNG 2: A PERSON THE PICKER PUT IN A ZONE ───────────────────
     #
-    # The exact person from the report: feet (1067,716), 36x96, well
-    # right of both zones.
-    _p = {"box": [1049, 620, 36, 96], "feet": [1067, 716]}
-    ok("a lone person is picked however far from a zone",
-       _nearest_person([_p], ZONES), _p)
+    # THE RULE, from the field, after this rung zoomed hard onto a man
+    # walking past a golf cart on the far side of the hole: "we should
+    # never zoom in on someone not in the zone."
+    #
+    # The first version took the person NEAREST a zone, and "nearest"
+    # with no limit means anyone anywhere. A crisp picture of somebody
+    # not swinging is worse than the whole frame, not better -- the
+    # frame at least looks like a frame, while that looks like an
+    # answer, and with `verify_drops` it deletes the clip.
+    #
+    # `considered` is the picker's own record of every person it looked
+    # at and whether their feet were in a zone. Asking it rather than
+    # re-deriving containment is the point: two notions of "in a zone"
+    # that disagree is a camera cropping where its own rule says
+    # nobody is standing.
+    _cart = {"feet": [1067, 716], "box": [1049, 620, 36, 96],
+             "zone": False, "floor": None}
+    _teed = {"feet": [500, 710], "box": [480, 610, 40, 100],
+             "zone": True, "floor": 740}
+    _teed_far = {"feet": [505, 690], "box": [485, 590, 40, 100],
+                 "zone": True, "floor": 740}
 
-    _near = {"box": [480, 610, 40, 100], "feet": [500, 710]}
-    ok("  and the one nearest a zone wins",
-       _nearest_person([_p, _near], ZONES), _near)
+    ok("a man by the cart, outside every zone, is NEVER picked",
+       _zoned_person([_cart]), None)
+    ok("  not even when he is the only person in the frame",
+       _zoned_person([_cart]), None)
+    ok("  nor when he is nearer the camera than the golfer",
+       _zoned_person([_teed, _cart]), _teed)
+    ok("a person the picker placed in a zone is picked",
+       _zoned_person([_teed]), _teed)
+    ok("  and of two in zones, the one with the lowest feet",
+       _zoned_person([_teed_far, _teed]), _teed)
     ok("  whichever order they arrive in",
-       _nearest_person([_near, _p], ZONES), _near)
+       _zoned_person([_teed, _teed_far]), _teed)
+    ok("nobody considered means nobody picked", _zoned_person([]), None)
+    ok("  and junk in the list does not raise",
+       _zoned_person([None, {}, {"zone": True}]), None)
 
-    # With no zones to measure against, the lowest feet are the best
-    # guess at whoever is closest to the camera.
-    _high = {"box": [200, 300, 20, 50], "feet": [210, 350]}
-    ok("with no zones drawn the lowest feet win",
-       _nearest_person([_high, _p], []), _p)
-    ok("nobody detected means nobody picked",
-       _nearest_person([], ZONES), None)
+    # It carries the zone floor the picker measured, so the crop stops
+    # on the ground rather than at a waist.
+    ok("the zone floor comes along", _zoned_person([_teed])["floor"], 740)
 
     # And that person's crop is a real zoom.
-    _g = {"x": _p["box"][0], "y": _p["box"][1],
-          "w": _p["box"][2], "h": _p["box"][3]}
-    _h, _f = _crop_rect(_g, None, [{"y": _g["y"]}], (W, H))
+    _g = {"x": _teed["box"][0], "y": _teed["box"][1],
+          "w": _teed["box"][2], "h": _teed["box"][3]}
+    _h, _f = _crop_rect(_g, _teed["floor"], [{"y": _g["y"]}], (W, H))
     ok("the person crop is usable", (_h is not None and _f is not None),
        True)
-    ok("  and far tighter than the frame", area(_f, W, H) < 5.0, True)
+    ok("  and far tighter than the frame", area(_f, W, H) < 10.0, True)
     print("     person crop covers %.1f%% of the frame" % area(_f, W, H))
 
     # ── THE LADDER IS WIRED IN THAT ORDER ───────────────────────────
     src = (ROOT / "backend/app/services/swinganalysis.py").read_text()
     _else = src.find("# ── NOBODY WAS PICKED. ZOOM ANYWAY.")
-    _alt = src.find("_alt = _nearest_person(", _else)
+    _alt = src.find("_alt = _zoned_person(", _else)
     _zone = src.find("_zone_rect(zones, ox, oy, W, H)", _else)
     _frame = src.find("hrect = frect = (0, 0, W, H)", _else)
-    ok("the person is tried before the zones", 0 < _alt < _zone, True)
+    ok("the in-zone person is tried before the zones",
+       0 < _alt < _zone, True)
     ok("  and the zones before the whole frame", 0 < _zone < _frame, True)
     ok("  with the whole frame still there as the last rung",
        _frame > 0, True)
@@ -123,9 +146,13 @@ def main():
        'out["zoom_from"] = _from' in src, True)
     ok("  on the line the Test cut page already shows",
        'out["picked_front"] = "%s · zoomed to %s"' in src, True)
-    ok("  and carried to the rig",
-       '"zoom_from")' in
-       (ROOT / "backend/app/routers/cameras.py").read_text(), True)
+    # IN THE KEEP TUPLE, wherever in it. Pinning the exact text
+    # '"zoom_from")' meant adding the next field after it broke this
+    # check rather than the wiring it is about.
+    _cam = (ROOT / "backend/app/routers/cameras.py").read_text()
+    _keep = _cam[_cam.find("    keep = ("):]
+    _keep = _keep[:_keep.find(")")]
+    ok("  and carried to the rig", '"zoom_from"' in _keep, True)
 
     # ── A SMALL CROP IS SHOWN BIG ENOUGH TO READ ────────────────────
     #
@@ -180,6 +207,43 @@ def main():
                _ww < W, True)
             print("     heat picture is %dx%d, from a %dx%d frame"
                   % (_ww, _hh, W, H))
+
+    # ── THE REPORTED CASE, END TO END ───────────────────────────────
+    #
+    # Tee empty, one man walking past a golf cart on the far side of
+    # the hole. The crop must land on the ZONES and must not contain
+    # him. This is the case that shipped: the unit checks above all
+    # passed on the broken version too, because the bug was in which
+    # people were offered, not in what was done with them.
+    with tempfile.TemporaryDirectory() as _d:
+        CART = 1050
+
+        def _away(dx=0):
+            im = np.full((H, W, 3), 70, np.uint8)
+            im[:420] = (150, 130, 110)
+            cv2.rectangle(im, (CART + dx, 620), (CART + 36 + dx, 716),
+                          (40, 40, 45), -1)
+            return im
+
+        _h2 = np.zeros((H, W, 3), np.uint8)
+        cv2.rectangle(_h2, (CART, 615), (CART + 48, 716), (255, 120, 0), -1)
+        _r2 = analyse([_away(i * 3) for i in range(6)], _h2,
+                      {"main": {"x": CART, "y": 615, "w": 48, "h": 101,
+                                "area": 4848}, "others": []},
+                      crop=(0, 0, W, H), zones=ZONES,
+                      out_dir=Path(_d), prefix="u", judge=False)
+        ok("a man outside the zones does not get zoomed on",
+           "person standing in a zone" in (_r2.get("zoom_from") or ""),
+           False)
+        ok("  the crop falls to the zones instead",
+           "trigger zones" in (_r2.get("zoom_from") or ""), True)
+        ok("  and says people WERE found, just not on the tee",
+           "none were standing in one" in (_r2.get("zoom_from") or ""),
+           True)
+        _zr = _zone_rect(ZONES, 0, 0, W, H)
+        ok("  and he is outside the crop entirely",
+           _zr is not None and not (_zr[0] <= CART <= _zr[2]), True)
+        print("     crop x %d..%d, the man at x=%d" % (_zr[0], _zr[2], CART))
 
     # ── A PICKED GOLFER IS UNTOUCHED ────────────────────────────────
     #

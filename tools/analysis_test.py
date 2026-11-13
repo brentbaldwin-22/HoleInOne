@@ -95,7 +95,17 @@ def main() -> int:
           bool(r["image_zones"]) and bool(r["frames_image_zones"]), True)
     if r["frames_image"]:
         t = cv2.imread(str(Path(d) / r["frames_image"]))
-        check("  with six tiles in it", t.shape[1] > t.shape[0], True)
+        check("  that is a real picture", t is not None and t.size > 0, True)
+        # SIX TILES, COUNTED, not inferred from the shape. This used
+        # to assert the grid was wider than tall, which was true only
+        # while the crop was the whole (wide) frame. A golfer crop is
+        # TALL, so the moment the fallback learned to zoom, a correct
+        # picture started failing a test that never meant to measure
+        # aspect at all. `frames_used` says which moments the judge
+        # actually saw, which is what the check was reaching for.
+        check("  with six tiles in it", len(r.get("frames_used") or []), 6)
+        check("    at the six offsets it asked for",
+              tuple(r["frames_used"]), tuple(AUDIO2_OFFSETS_SEC))
 
     # EVERYTHING IT RETURNS IS IN ORIGINAL-FRAME PIXELS. The crop is
     # the shared space on the wire and the conversion happens once,
