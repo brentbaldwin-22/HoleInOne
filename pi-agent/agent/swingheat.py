@@ -273,6 +273,27 @@ def build(clip_path, at_sec: float, *, before_sec: float = 0.5,
                     _m["frame_y"] = _m["y"] + oy
                     _m["frame_base"] = (_m["base"][0] + ox,
                                         _m["base"][1] + oy)
+                    # ── DOES A CLUB SHOW ABOVE THE HEAD? ────────────
+                    #
+                    # Measured HERE because this is the only place
+                    # with the raw heat map. The backend receives the
+                    # colour composite -- 0.4 photo blended with 0.6
+                    # of a TURBO colormap -- and picking motion back
+                    # out of that is guesswork, so the answer travels
+                    # as a number instead of being re-derived from a
+                    # picture of itself.
+                    #
+                    # AGAINST THE HOT BLOB, which is the right
+                    # reference and not a compromise: hot is sustained
+                    # motion, so the hot blob IS the turning body, and
+                    # the club is the cooler thing that should rise
+                    # off the top of it. A person detector's head line
+                    # would answer a slightly different question.
+                    try:
+                        _geo["plume"] = swingjudge.plume_above_head(
+                            hm_n, _m)
+                    except Exception:  # noqa: BLE001
+                        pass
                 meta["geo"] = _geo
                 # AND ZOOM TO THE GOLFER, exactly as
                 # tracer.swing_heat_check does. The zone crop is only

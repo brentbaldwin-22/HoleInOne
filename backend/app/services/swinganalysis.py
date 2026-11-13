@@ -167,7 +167,7 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
         "ball_left": None, "ball_why": None, "ball_spot": None,
         "picked_front": None, "front_candidates": None,
         "golfer_crop": False, "decided_by": None, "zoom_from": None,
-        "heat_map_from": None,
+        "heat_map_from": None, "plume": None, "plume_why": None,
         "frames_used": None,
         "image": None, "frames_image": None,
         "image_zones": None, "frames_image_zones": None,
@@ -501,6 +501,38 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
             out["confidence"] = dv["confidence"]
             out["reason"] = dv["why"]
             out["decided_by"] = dv["how"]
+            # ── AND A SWING NEEDS A CLUB ABOVE THE HEAD ─────────────
+            #
+            # APPLIED TO THE VERDICT, NOT AS A FOURTH VOTE, and the
+            # difference is the point. The other three are opinions
+            # about what a picture looks like; this is a measurement
+            # of the picture. A majority that a club is there does not
+            # put one there, and letting it be outvoted is how a
+            # composite with no plume anywhere comes back as a swing
+            # at x11.2 -- reported twice from the field, the second
+            # time with the rig's own picture: a figure with warm
+            # motion down one side, nothing above the head, and a
+            # verdict of SWING.
+            #
+            # The rig measures it, because only the rig has the raw
+            # heat map; see swingheat and swingjudge.plume_above_head.
+            # An older rig sends nothing, `plume_veto` leaves the
+            # verdict alone, and the before is kept either way so the
+            # veto can be argued with.
+            _pl = (geo or {}).get("plume")
+            _pv = _sj.plume_veto(out["is_swing"], _pl)
+            out["plume"] = _pl
+            out["plume_why"] = _pv["why"]
+            if _pv["vetoed"]:
+                out["is_swing_before_plume"] = out["is_swing"]
+                out["is_swing"] = False
+                out["confidence"] = "high"
+                out["reason"] = _pv["why"]
+                out["decided_by"] = "the club above the head"
+                log.info(
+                    "swinganalysis: %s said swing, but nothing rises "
+                    "above the head — refused (%s)",
+                    dv["how"], (_pl or {}).get("why"))
         return out
     except Exception as exc:  # noqa: BLE001
         log.warning("swinganalysis: %s", exc)

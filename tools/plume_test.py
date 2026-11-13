@@ -108,6 +108,56 @@ def main():
                                                   "w": 60, "h": 240})
                   )["is_swing"], True)
 
+    # ── THE RIG'S PATH, WHICH IS THE ONE THAT WAS FIRING ───────────
+    #
+    # The veto first went into the Test cut only, and the complaint
+    # was about the RIG. The rig's picture came back: a figure with
+    # warm motion down one side, nothing above the head, verdict
+    # SWING at x11.2. "under no iteration should that be a swing."
+    #
+    # `analyse` only ever sees the COLOUR composite -- 0.4 photo
+    # blended with 0.6 of a TURBO colormap -- so it cannot measure
+    # this. The rig does, against its own hot blob, and sends the
+    # number in `geo`.
+    from app.services.swingjudge import measure_heat
+    H2, W2 = 1000, 880
+    m = np.zeros((H2, W2), np.uint8)
+    m[600:770, 430:450] = 210                   # body, head top y=600
+    m[610:700, 450:470] = 240                   # warm streak, one side
+    _r = np.random.default_rng(5)
+    for _ in range(900):
+        m[_r.integers(0, H2), _r.integers(0, W2)] = _r.integers(40, 110)
+    _blob = measure_heat(m).get("main")
+    ok("the hot blob is the body", _blob is not None, True)
+    _pl = plume_above_head(m, _blob)
+    ok("  and nothing rises off it", _pl["rise_px"], 0)
+    ok("  so a swing verdict is refused",
+       plume_veto(True, _pl)["is_swing"], False)
+    m2 = m.copy()
+    m2[480:605, 452:458] = 45                   # a club, cool, 6px wide
+    _pl2 = plume_above_head(m2, measure_heat(m2).get("main"))
+    ok("the same figure WITH a club is kept",
+       plume_veto(True, _pl2)["is_swing"], True)
+    print("     no club %dpx, with club %dpx"
+          % (_pl["rise_px"], _pl2["rise_px"]))
+
+    _sh = (ROOT / "pi-agent/agent/swingheat.py").read_text()
+    ok("the rig measures it against its own hot blob",
+       'plume_above_head(\n                            hm_n, _m)' in _sh
+       or "plume_above_head(" in _sh, True)
+    ok("  and sends it in geo, which travels",
+       '_geo["plume"]' in _sh, True)
+    _sa = (ROOT / "backend/app/services/swinganalysis.py").read_text()
+    ok("the verify path applies it to the VERDICT, not as a vote",
+       '_sj.plume_veto(out["is_swing"]' in _sa, True)
+    ok("  after the three tests have voted",
+       _sa.index("decide_verdict(") < _sa.index("_sj.plume_veto("), True)
+    ok("  keeping what it overruled",
+       'out["is_swing_before_plume"]' in _sa, True)
+    ok("  and telling the rig why",
+       '"plume_why")' in
+       (ROOT / "backend/app/routers/cameras.py").read_text(), True)
+
     # ── WIRED WHERE THE RAW HEAT MAP IS ─────────────────────────────
     _tr = (ROOT / "backend/app/services/tracer.py").read_text()
     ok("swing_heat_check measures it", 'out["plume"]' in _tr, True)

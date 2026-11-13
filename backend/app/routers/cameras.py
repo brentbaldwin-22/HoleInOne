@@ -1489,7 +1489,7 @@ def _analyse_posted_frames(shots, heat_path, crop, zones, geo, offsets,
             "heat_confidence", "heat_reason", "frames_is_swing",
             "frames_confidence", "frames_reason", "ball_left",
             "ball_why", "picked_front", "golfer_crop", "decided_by",
-            "zoom_from", "frames_used")
+            "zoom_from", "frames_used", "plume_why")
     out = {k: r.get(k) for k in keep}
     out["saw"] = "analysed on the server: heat + %d frames" % len(
         [i for i in imgs if i is not None])
@@ -1537,6 +1537,9 @@ def _analyse_posted_frames(shots, heat_path, crop, zones, geo, offsets,
         "frames_is_swing": r.get("frames_is_swing"),
         "frames_reason": r.get("frames_reason"),
         "reason": r.get("reason"),
+        "plume": r.get("plume"),
+        "plume_why": r.get("plume_why"),
+        "is_swing_before_plume": r.get("is_swing_before_plume"),
         "zoom_from": r.get("zoom_from"),
         "heat_map_from": r.get("heat_map_from"),
         "frames_used": r.get("frames_used"),
