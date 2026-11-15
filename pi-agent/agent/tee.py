@@ -387,6 +387,24 @@ class Dwell:
         self.first_seen: Optional[float] = None
         self.last_seen: float = 0.0
         self.restarts = 0
+        # RESTARTS SINCE THE LAST TRIGGER, which is the number that
+        # describes a trigger. `restarts` is a lifetime counter -- it is
+        # zeroed in __init__ and never again -- so shown beside "stood
+        # 2.2s" on an event it reads as "this trigger took 70 attempts"
+        # when it really means "70 people have crossed a zone since this
+        # agent booted". Two completely different stories: one is a
+        # detector dropping the golfer in front of it, the other is a
+        # normal day on a busy tee. The page had no way to tell them
+        # apart and neither did anybody reading it.
+        self.restarts_at_mark = 0
+
+    def mark(self) -> None:
+        """A trigger has fired: restart counting from here."""
+        self.restarts_at_mark = self.restarts
+
+    @property
+    def restarts_since_mark(self) -> int:
+        return max(0, self.restarts - self.restarts_at_mark)
 
     def reset(self) -> None:
         self.first_seen = None
@@ -1327,7 +1345,10 @@ class TeeAgent:
                 d["dwell_sec"] = round(float(dwell.dwell), 1)
                 if dwell.first_seen is not None:
                     d["stood_sec"] = round(float(now - dwell.first_seen), 1)
-                d["restarts"] = int(dwell.restarts)
+                # THIS TRIGGER'S, and the lifetime total beside it
+                # so a busy tee still reads as a busy tee.
+                d["restarts"] = int(dwell.restarts_since_mark)
+                d["restarts_total"] = int(dwell.restarts)
             t = self._audio_trigger
             if t is not None:
                 d["audio"] = {
@@ -1893,13 +1914,21 @@ class TeeAgent:
                     )
                     _ack = None
                     self._unregistered_session = None
+                    # THIS TRIGGER'S RESTART COUNT ENDS HERE. Captured
+                    # before the POST so the detail below reports the
+                    # run-up to THIS trigger, and marked after it so the
+                    # next trigger starts from zero whatever the backend
+                    # said -- a failed POST must not make the next one
+                    # inherit this one's restarts.
+                    _dwell_detail_blob = self._dwell_detail(
+                        now=now, stance=stance, roi=_roi_now,
+                        dwell=dwell, forced=forced,
+                        pending_secs=pending_secs)
+                    dwell.mark()
                     try:
                         _ack = self.client.event_trigger(
                             session_id,
-                            detail=self._dwell_detail(
-                                now=now, stance=stance, roi=_roi_now,
-                                dwell=dwell, forced=forced,
-                                pending_secs=pending_secs),
+                            detail=_dwell_detail_blob,
                         ) or {}
                     except BackendUnreachable as exc:
                         # SILENCE IS NOT A REFUSAL, and this used to be

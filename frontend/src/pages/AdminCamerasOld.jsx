@@ -1021,7 +1021,20 @@ function TriggerLine({ detail }) {
     // A RESTART IS A BLINK FORGIVEN, not a fault -- but a trigger that
     // needed several of them is one the detector nearly missed, which
     // is worth seeing next to a clip that starts late.
+    //
+    // THIS TRIGGER'S, NOT THE AGENT'S LIFETIME TOTAL. `restarts` used
+    // to be the latter -- zeroed when the agent booted and never
+    // again -- so an event reading "70 restart(s)" beside "stood 2.2s"
+    // said "the detector nearly missed this one 70 times" when it
+    // meant "70 people have crossed a zone since breakfast". The two
+    // want opposite responses, and the sentence above is the one a
+    // reader takes from it. The rig sends both now; the lifetime
+    // figure is still worth showing, just not as this one's.
     if (detail.restarts) bits.push(`${detail.restarts} restart(s)`);
+    if (detail.restarts_total != null
+        && detail.restarts_total !== detail.restarts) {
+      bits.push(`${detail.restarts_total} since the agent started`);
+    }
     if (at) bits.push(`at ${at}`);
   } else if (kind === "capture") {
     head = "Operator capture";
