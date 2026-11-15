@@ -106,6 +106,45 @@ def main():
     ok("the diff keeps the zone keys", "audio_min_ratio@2" in _d, True)
     ok("  with the resolved value", _d["audio_min_ratio@2"], 14.0)
 
+    # ── A ZONE KEY MUST BE SAVEABLE, NOT JUST READABLE ──────────────
+    #
+    # The editor, the diff that decides what is stored and the
+    # endpoint that decides what is accepted all have to agree about
+    # what a key is. A control the editor can show and the POST
+    # rejects is worse than no control, and a key the POST accepts
+    # and the resolver ignores is worse still.
+    from app.services.debug3 import split_gate_key
+    ok("a plain gate key parses", split_gate_key("audio_min_ratio"),
+       ("audio_min_ratio", None))
+    ok("  a zone key parses", split_gate_key("audio_min_ratio@2"),
+       ("audio_min_ratio", 2))
+    ok("  an unknown gate does not", split_gate_key("nosuch@2"),
+       (None, None))
+    ok("  nor an unknown gate plain", split_gate_key("nosuch"),
+       (None, None))
+    ok("  nor a non-numeric zone", split_gate_key("audio_min_ratio@back"),
+       (None, None))
+    _adm0 = (ROOT / "backend/app/routers/admin.py").read_text()
+    ok("the save endpoint accepts a gate key by that definition",
+       "_d3.split_gate_key(k)[0] is None" in _adm0, True)
+    ok("  not by membership of GATE_SPEC alone",
+       "k not in _d3.GATE_SPEC" in _adm0, False)
+
+    # ── AND THE EDITOR SHOWS THEM ───────────────────────────────────
+    #
+    # The groups are built by PREFIX, so a gate whose prefix matches
+    # none is served correctly and rendered by nobody. That is where
+    # the audio gates landed when they were added.
+    _jsx = (ROOT / "frontend/src/components/GateTuning.jsx").read_text()
+    ok("the editor groups the audio gates",
+       'k.startsWith("audio_")' in _jsx, True)
+    ok("  with a column per tee", "Zone {z.screen}" in _jsx, True)
+    ok("  writing gate@N", "`${k}@${zi}`" in _jsx, True)
+    ok("  and nothing can fall through every group",
+       "const other = rows.filter(" in _jsx, True)
+    ok("the zones come from the backend, not the editor's own idea",
+       '"zones": _gate_tuning_zones(db, row)' in _adm0, True)
+
     # ── THE CONSUMER ASKS FOR THE CLIP'S OWN TEE ────────────────────
     _adm = (ROOT / "backend/app/routers/admin.py").read_text()
     ok("the audio pass resolves per zone",

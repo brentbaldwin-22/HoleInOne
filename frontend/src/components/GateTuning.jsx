@@ -83,7 +83,16 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
   const rows = Object.keys(spec);
   const asc = rows.filter((k) => k.startsWith("ascent_"));
   const desc = rows.filter((k) => k.startsWith("descent_"));
-  const label = (k) => k.replace(/^(ascent|descent)_/, "").replace(/_/g, " ");
+  // THE PREFIXES ARE THE GROUPING, and a gate whose prefix matches no
+  // group is INVISIBLE here however correctly the backend serves it.
+  // The audio gates landed in exactly that hole: added to the spec,
+  // rendered by nothing, and reported as tunable when they were not.
+  const aud = rows.filter((k) => k.startsWith("audio_"));
+  const other = rows.filter((k) => !asc.includes(k) && !desc.includes(k)
+    && !aud.includes(k));
+  const label = (k) => k.replace(/^(ascent|descent|audio)_/, "")
+    .replace(/_/g, " ");
+  const zones = data.zones || [];
 
   const group = (title, keys) => (
     <div style={{ flex: 1, minWidth: 260 }}>
@@ -145,7 +154,94 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
                                     alignItems: "flex-start" }}>
         {group("Ascent — leaving the tee", asc)}
         {group("Descent — arriving on the green", desc)}
+        {/* ANY GATE WITH A PREFIX NOTHING GROUPS. Better an ugly
+            section than a silently missing one -- the audio gates
+            were added to the spec and shown by nobody, and nothing
+            said so. */}
+        {other.length > 0 && group("Other", other)}
       </div>
+      {aud.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div className="tiny upper muted" style={{ marginBottom: 4 }}>
+            Audio — hearing the strike
+          </div>
+          {/* PER TEE, BECAUSE LOUDNESS IS DISTANCE. The camera stands
+              behind the hitting area, so the back tee is a few yards
+              from its microphone and a forward tee is a hundred: one
+              ratio set for the back deafens the front, and set for
+              the front it fires on everything near the camera.
+              "gate@N" overrides "gate" for zone N -- see
+              debug3.resolve_gates. */}
+          <table className="tiny" style={{ width: "100%" }}>
+            <thead>
+              <tr>
+                <th />
+                <th className="muted" style={{ textAlign: "right",
+                                               paddingRight: 6 }}>
+                  default
+                </th>
+                <th className="muted" style={{ paddingRight: 6 }}>
+                  this hole
+                </th>
+                {zones.map((z) => (
+                  <th key={z.index} className="muted"
+                      style={{ paddingRight: 6, whiteSpace: "nowrap" }}
+                      title={"Overrides this hole's value for Zone "
+                        + z.screen + " only"}>
+                    Zone {z.screen}
+                    {z.label ? ` · ${z.label}` : ""}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {aud.map((k) => {
+                const isTuned = pending()[k] !== undefined;
+                return (
+                  <tr key={k}>
+                    <td style={{ paddingRight: 6, whiteSpace: "nowrap" }}>
+                      <span style={{ color: isTuned ? "#f59e0b" : undefined,
+                                     fontWeight: isTuned ? 700 : 400 }}>
+                        {label(k)}
+                      </span>
+                    </td>
+                    <td style={{ paddingRight: 6, textAlign: "right" }}
+                        className="muted">
+                      {defaults[k]}
+                    </td>
+                    {[null, ...zones.map((z) => z.index)].map((zi) => {
+                      const kk = zi === null ? k : `${k}@${zi}`;
+                      return (
+                        <td key={kk} style={{ paddingRight: 6 }}>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            style={{ width: 64 }}
+                            value={shown(kk)}
+                            placeholder={zi === null
+                              ? String(defaults[k])
+                              : (shown(k) || String(defaults[k]))}
+                            onChange={(e) => setDraft((d) => (
+                              { ...d,
+                                [kk]: e.target.value.replace(/[^\d.\-]/g, "") }
+                            ))}
+                          />
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {zones.length === 0 && (
+            <div className="tiny muted" style={{ marginTop: 4 }}>
+              No trigger zones on this upload&apos;s camera — the hole&apos;s
+              own values apply to every strike in it.
+            </div>
+          )}
+        </div>
+      )}
       <div className="row" style={{ gap: 8, marginTop: 8,
                                     alignItems: "center", flexWrap: "wrap" }}>
         <span className="tiny muted">

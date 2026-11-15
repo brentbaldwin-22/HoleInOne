@@ -13070,6 +13070,33 @@ def camera_calibration_source(camera_id: int, db: Session = Depends(get_db)):
     }
 
 
+def _gate_tuning_zones(db, row) -> list:
+    """This upload's camera's trigger zones, for the gate editor.
+
+    [{index, screen, label}], or [] when there is no camera behind
+    the upload to ask. Never raises: this decorates an editor and
+    must not be able to stop it loading.
+    """
+    out = []
+    try:
+        _eid = getattr(row, "camera_event_id", None)
+        if not _eid:
+            return out
+        ev = db.get(CameraEvent, _eid)
+        cam = (db.get(Camera, ev.tee_camera_id)
+               if ev is not None and ev.tee_camera_id else None)
+        if cam is None:
+            return out
+        from ..services import tee_roi as _tr
+        for i, b in enumerate(_tr.boxes(getattr(cam, "tee_box_roi", None))):
+            out.append({"index": i, "screen": i + 1,
+                        "label": b.get("label") or ""})
+    except Exception as exc:  # noqa: BLE001
+        log.debug("gate tuning: no zones for upload %s (%s)",
+                  getattr(row, "id", None), exc)
+    return out
+
+
 @router.get("/long-uploads/{upload_id}/gate-tuning")
 def get_gate_tuning(upload_id: int, db: Session = Depends(get_db)):
     """This hole's detector gates: the defaults, and what overrides them.
@@ -13097,6 +13124,21 @@ def get_gate_tuning(upload_id: int, db: Session = Depends(get_db)):
         "defaults": dict(_d3.GATE_DEFAULTS),
         "values": _d3.resolve_gates(over),
         "tuned": _d3.gates_diff(over),
+        # ── THE TEES, SO A GATE CAN DIFFER BETWEEN THEM ─────────────
+        #
+        # Served rather than assumed, for the same reason the spec is:
+        # the editor must not carry its own idea of how many zones a
+        # camera has or what they are called. Empty for a manual
+        # upload with no event behind it, and then the editor offers
+        # the hole's own settings and nothing else -- which is all
+        # there is to offer, since nothing names a tee.
+        #
+        # `index` is what "gate@N" means; `screen` is what the zone
+        # editor draws over the box, counting from one. Both, because
+        # an operator reading "Zone 3" has no way to know it is index
+        # 2 -- that mismatch is what barred the back tee from the
+        # audio trigger for a fortnight.
+        "zones": _gate_tuning_zones(db, row),
     }
 
 
@@ -13139,7 +13181,12 @@ def set_gate_tuning(
     _in = (payload or {}).get("gates")
     if not isinstance(_in, dict):
         raise HTTPException(400, "gates must be an object of {name: number}")
-    _unknown = [k for k in _in if k not in _d3.GATE_SPEC]
+    # A ZONE KEY IS A GATE KEY. "audio_min_ratio@2" names the same
+    # gate for one tee; see debug3.split_gate_key, which is the one
+    # definition of that and is what the resolver reads too. Rejecting
+    # it here while the detector honours it would make the editor able
+    # to show a control nothing could save.
+    _unknown = [k for k in _in if _d3.split_gate_key(k)[0] is None]
     if _unknown:
         raise HTTPException(400, f"unknown gate(s): {', '.join(sorted(_unknown))}")
     # A null clears that gate back to the default; everything else goes

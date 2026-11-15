@@ -8379,6 +8379,28 @@ GATE_VERDICT = {
 GATE_DEFAULTS = {k: v[0] for k, v in GATE_SPEC.items()}
 
 
+def split_gate_key(k):
+    """("gate", zone|None) for a tuning key, or (None, None) if invalid.
+
+    THE ONE DEFINITION OF WHAT A KEY IS. "audio_min_ratio" is the
+    hole's value and "audio_min_ratio@2" is zone 2 differing from it.
+    Parsed in one place because three callers need the same answer --
+    the resolver, the diff that decides what to store, and the
+    endpoint that decides what to accept -- and a key the editor can
+    save but the detector will not read is worse than one it refuses.
+    """
+    _k = str(k)
+    if "@" not in _k:
+        return (_k, None) if _k in GATE_SPEC else (None, None)
+    _n, _, _z = _k.partition("@")
+    if _n not in GATE_SPEC:
+        return (None, None)
+    try:
+        return (_n, int(_z))
+    except (TypeError, ValueError):
+        return (None, None)
+
+
 def resolve_gates(overrides=None, zone=None) -> dict:
     """Every gate value for one run: the defaults, with overrides applied.
 
@@ -8421,15 +8443,13 @@ def resolve_gates(overrides=None, zone=None) -> dict:
     # and "gate@2" is zone 2 differing from it.
     _plain, _zoned = {}, {}
     for k, v in overrides.items():
-        if "@" in str(k):
-            _n, _, _z = str(k).partition("@")
-            try:
-                if int(_z) == int(zone) if zone is not None else False:
-                    _zoned[_n] = v
-            except (TypeError, ValueError):
-                pass
+        _n, _z = split_gate_key(k)
+        if _n is None:
             continue
-        _plain[k] = v
+        if _z is None:
+            _plain[_n] = v
+        elif zone is not None and _z == int(zone):
+            _zoned[_n] = v
     for k, v in list(_plain.items()) + list(_zoned.items()):
         spec = GATE_SPEC.get(k)
         if spec is None:
@@ -8464,17 +8484,11 @@ def gates_diff(overrides=None) -> dict:
     # what a plain key could not.
     if isinstance(overrides, dict):
         for k, v in overrides.items():
-            _n, _, _z = str(k).partition("@")
-            if not _z or _n not in GATE_SPEC:
+            _n, _zi = split_gate_key(k)
+            if _n is None or _zi is None:
                 continue
-            try:
-                _zi = int(_z)
-            except (TypeError, ValueError):
-                continue
-            _r = resolve_gates({_n: v})
-            if _r[_n] != resolve_gates({})[_n] or True:
-                # Kept even when it equals the default: "this zone is
-                # deliberately the default while the hole is not" is a
-                # real setting and the only way to say it.
-                out["%s@%d" % (_n, _zi)] = _r[_n]
+            # Kept even when it equals the default: "this tee is
+            # deliberately the default while the hole is not" is a
+            # real setting and the only way to say it.
+            out["%s@%d" % (_n, _zi)] = resolve_gates({_n: v})[_n]
     return out
