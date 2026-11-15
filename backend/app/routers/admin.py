@@ -7490,7 +7490,13 @@ def quick_upload_videos(
     # No pre-screen here: produce's own pose pass IS the non-golf
     # screen (zero swings detected -> the job auto-deletes), so a
     # separate mediapipe scan would just duplicate the work.
-    enqueue_produce_job(upload_id=upload_row.id, hole_number=1)
+    # NO HOLE TO DECLARE, so none is declared. Passing a literal 1
+    # here did not mean "hole 1", it meant "stop asking" -- an
+    # explicit caller hole short-circuits the chain in
+    # `_d3_fast_produce` that would otherwise read the camera
+    # event, the import's own hole and the clips. None lets that
+    # chain run, and it still ends at 1 when nothing knows.
+    enqueue_produce_job(upload_id=upload_row.id, hole_number=None)
     message = (
         "Upload received — producing in the background. Clips appear on "
         "Production as each swing finishes."
@@ -7772,8 +7778,15 @@ def upload_long_video(
             except Exception as exc:  # noqa: BLE001
                 db.rollback()
                 log.warning("could not persist green delta: %s", exc)
+        # `starting_hole` when the operator set one, and otherwise
+        # nothing -- not 1. It was already written to edit_metrics as
+        # `source_hole_number` above, which is the second link in
+        # `_d3_fast_produce`'s chain, so an unset one should fall
+        # through to the camera event rather than be replaced by a
+        # guess.
         enqueue_produce_job(
-            upload_id=upload_id, hole_number=int(starting_hole or 1),
+            upload_id=upload_id,
+            hole_number=int(starting_hole) if starting_hole else None,
         )
 
     return {
@@ -32988,11 +33001,42 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
     try:
         _q = db.query(VideoClip).filter(VideoClip.long_upload_id == row.id)
         _all_old = _q.all()
+        # WHICH HOLE THIS IS, AND NEVER THE NUMBER 1 AS A GUESS.
+        #
         # The caller's hole wins (a camera covers one par-3 and knows
-        # which); otherwise inherit from the clips being replaced.
-        _hole = int(hole_number) if hole_number else next(
-            (int(c.hole_number) for c in _all_old if c.hole_number), 1,
-        )
+        # which). Failing that this inherited from the clips being
+        # replaced and then DEFAULTED TO 1 -- which is how a camera
+        # bolted to hole 8 produced a clip captioned "hole 1", with a
+        # distance plate reading 1337ft because hole 1's yardage was
+        # looked up instead of hole 8's, and a "hole 1 is not in this
+        # course's par-3 list" note nobody could act on.
+        #
+        # The hole was knowable the whole time: this upload has a
+        # camera event, the event carries the camera's assigned_hole,
+        # and `_hole_for_upload_ex` already reads exactly that chain --
+        # camera event, import, finalised, clips, and only then a
+        # default it NAMES as a default. `_view_map_for` has called it
+        # all along, which is why the green->tee calibration was found
+        # under the right hole while the caption was not: two answers
+        # to the same question, from two different chains.
+        #
+        # So ask the one chain, and say where the answer came from. A
+        # produce captioned from a guess should be readable as one.
+        _hole_src = "caller"
+        if hole_number:
+            _hole = int(hole_number)
+        else:
+            _hole, _hole_src = _hole_for_upload_ex(db, row)
+            if _hole_src == "default":
+                _hole = next(
+                    (int(c.hole_number) for c in _all_old if c.hole_number),
+                    1,
+                )
+                _hole_src = ("the clips being replaced"
+                             if _hole != 1 else "nothing — defaulted")
+        log.info("d3 produce: upload %s is hole %s (from %s)",
+                 row.id, _hole, _hole_src)
+        out["hole_source"] = _hole_src
         if replace:
             _old = _all_old
         else:
@@ -33024,7 +33068,17 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
         out["cleared_clips"] = len(_old)
     except Exception as exc:  # noqa: BLE001
         db.rollback()
-        _hole = int(hole_number) if hole_number else 1
+        # Same chain as the happy path -- the rollback above is about
+        # the clips that could not be removed, and says nothing about
+        # which hole this is.
+        _hole_src = "caller"
+        if hole_number:
+            _hole = int(hole_number)
+        else:
+            _hole, _hole_src = _hole_for_upload_ex(db, row)
+            if _hole_src == "default":
+                _hole, _hole_src = 1, "nothing — defaulted"
+        out["hole_source"] = _hole_src
         # LOUDLY. A failure here does not stop the render -- it goes on
         # to add its clips to the ones it could not remove, and the card
         # ends up with ten clips from a run that produced four. That
@@ -33711,6 +33765,18 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                 # `_timing` already carries this to the produce report.
                 # This puts it where somebody reading the log will see
                 # it, next to the swing it belongs to.
+                # READ ONCE, THROUGH `.get`, INTO A LOCAL. Floating
+                # the landing's second by subscript reads as safe when a
+                # guard sits beside it, and is how this path was broken
+                # before: the guard and the subscript drift apart under
+                # editing, and the line that breaks is the one printed
+                # only on the failure it explains -- so nothing catches
+                # it until that failure happens for real.
+                # `descent_first_frame_test` bans that spelling outright
+                # for the same reason, comments included, because a
+                # banned shape that survives in a comment is the next
+                # person's copy-paste source. A local cannot drift.
+                _l_sec = (landing or {}).get("sec")
                 log.info(
                     "d3 produce: swing %s has NO timing target — the "
                     "predictive arc will derive its own duration and "
@@ -33719,8 +33785,7 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     i,
                     "none" if _descent_first_sec is None
                     else "%.2fs" % float(_descent_first_sec),
-                    "none" if (landing or {}).get("sec") is None
-                    else "%.2fs" % float(landing["sec"]),
+                    "none" if _l_sec is None else "%.2fs" % float(_l_sec),
                     "none" if delta is None else "%.3fs" % float(delta),
                     delta_src,
                     _timing.get("why") or "no reason recorded",
@@ -34199,6 +34264,35 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                 row.id, i, t0, t1, tee_video_dur,
                 green_seg is not None,
                 f"{delta:.4f}s" if delta is not None else "n/a",
+            )
+            # WHERE IT AIMED AND WHAT DREW IT, ON ONE LINE.
+            #
+            # These are two different answers to "why does the tracer
+            # look wrong", they fail independently, and until now they
+            # were logged by two different loggers several seconds and
+            # several hundred lines apart -- the aim here, the model
+            # inside the renderer. Reading a report of a bad arc meant
+            # correlating them by hand, and the common mistake was to
+            # read "the arc was timed to f2151" as "the arc knew where
+            # it was going". It does not: the WHEN and the WHERE are
+            # separate, and an arc with a when and no where extrapolates
+            # its own direction from the measured points, which is how a
+            # ball drawn from a third of a second of track comes down on
+            # the wrong side of the green.
+            _tl = (_rv or {}).get("tail") or {}
+            log.info(
+                "d3 produce: swing %s aim=%s model=%s over %s frame(s) "
+                "— %s",
+                i,
+                ("(%.0f, %.0f) in the tee frame"
+                 % (_target_xy[0], _target_xy[1]))
+                if _target_xy is not None else
+                "NOTHING — no target in the tee frame, so the arc chose "
+                "its own direction",
+                _tl.get("kind") or "none",
+                _tl.get("frames") if _tl.get("frames") is not None else "?",
+                (_aim_why or _tl.get("why")
+                 or "no reason recorded"),
             )
         except Exception as exc:  # noqa: BLE001
             db.rollback()
