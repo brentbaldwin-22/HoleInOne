@@ -110,6 +110,54 @@ for name, bad in (("None", None), ("empty", []),
     print("  %-58s ok" % ("%s is returned untouched, no crash" % name))
 
 
+print("\n-- it says what it did, since nothing downstream can")
+# Everything after this measures the FINISHED tail, so the produce
+# report and its log line can only say how the crest came out, never
+# how bad it was before or whether anything was done. This is the only
+# place both numbers exist.
+import logging  # noqa: E402
+
+
+class _Catch(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.lines = []
+
+    def emit(self, rec):
+        try:
+            self.lines.append(rec.getMessage())
+        except Exception as exc:  # noqa: BLE001
+            self.lines.append("<handler broke: %s>" % exc)
+
+
+_h = _Catch()
+# THE MODULE'S OWN LOGGER BY NAME -- `T.__name__` is
+# "app.services.ai_tracer" while it logs to "golfreelz.ai_tracer", and
+# a handler on the wrong one collects nothing, which reads exactly like
+# "the code logged nothing".
+# AND THE LEVEL, not just the handler. `golfreelz.ai_tracer` sets no
+# level of its own, so it inherits root's WARNING and an INFO record is
+# dropped BEFORE any handler sees it -- which reads exactly like "the
+# code logged nothing". The first run of this check failed that way.
+_lvl = T.log.level
+T.log.setLevel(logging.INFO)
+T.log.addHandler(_h)
+try:
+    T.open_crest(SPIKE)
+    _n_spike = len(_h.lines)
+    T.open_crest(SMOOTH)
+    _n_after = len(_h.lines)
+finally:
+    T.log.removeHandler(_h)
+    T.log.setLevel(_lvl)
+check("opening a crest is logged", _n_spike, 1)
+check("  with both numbers in it",
+      "80" in _h.lines[0] and "30" in _h.lines[0], True)
+check("  and it says the ends did not move",
+      "did not move" in _h.lines[0], True)
+check("leaving a good arc alone says nothing", _n_after, _n_spike)
+
+
 print("\n-- the renderer actually applies it")
 src = (ROOT / "backend" / "app" / "services"
        / "ai_tracer.py").read_text(encoding="utf-8")

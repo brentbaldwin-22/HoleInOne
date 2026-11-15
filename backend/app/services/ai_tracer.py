@@ -3537,7 +3537,22 @@ def open_crest(tail, bow_px: float = CREST_BOW_PX):
         out[j] = (pts[j][0],
                   w0 * ax + w1 * vx + w2 * cx,
                   w0 * ay + w1 * vy + w2 * cy)
-    return [(f, int(round(x)), int(round(y))) for f, x, y in out]
+    out = [(f, int(round(x)), int(round(y))) for f, x, y in out]
+    # BOTH NUMBERS, WHERE THEY EXIST. Everything downstream measures
+    # the FINISHED tail, so the produce report and its log line can
+    # only ever say how the crest came out -- never whether anything
+    # was done to it, or how bad it was before. This is the one place
+    # that holds both.
+    _after = apex_sharpness(out)
+    log.info(
+        "tracer crest: opened a %.0f° vertex to %.0f° with a %.0fpx "
+        "fillet at f%d (%.0f,%.0f) — turn was concentrated %.2f, now "
+        "%.2f; the hand-off and the landing did not move",
+        _sharp["deg"], _after.get("deg") or -1.0, bow, pts[k][0],
+        vx, vy, _sharp.get("concentration") or -1.0,
+        _after.get("concentration") or -1.0,
+    )
+    return out
 
 
 # WHY THERE IS NO APEX REPAIR HERE, having tried two.
