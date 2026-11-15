@@ -33689,6 +33689,42 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     (int(_target_frame) - _last_asc_f) / float(fps or 30.0),
                     _t_src, float(_t_sec), float(delta or 0.0), delta_src,
                 )
+            else:
+                # AN ARC WITH NOTHING TO AIM AT SAYS SO, OUT LOUD.
+                #
+                # Every branch above that REACHES a target frame logs
+                # it. The branches that do not, mostly did not -- so
+                # the only trace of "this tracer was never timed" was
+                # the ABSENCE of a line, which is unreadable in a log
+                # full of heartbeats and indistinguishable from a
+                # produce that failed earlier.
+                #
+                # It matters because an untimed arc is not a neutral
+                # outcome. The tail then derives its own duration from
+                # the hand-off's horizontal speed and extrapolates a
+                # quadratic fitted to whatever was measured -- on a
+                # hand-plotted swing that can be eight points spanning
+                # a third of a second, and a parabola fitted to a third
+                # of a second and run for three is the sharp,
+                # two-straight-legs apex reported from the field.
+                #
+                # `_timing` already carries this to the produce report.
+                # This puts it where somebody reading the log will see
+                # it, next to the swing it belongs to.
+                log.info(
+                    "d3 produce: swing %s has NO timing target — the "
+                    "predictive arc will derive its own duration and "
+                    "extrapolate from the measured points alone. "
+                    "descent-first=%s landing=%s delta=%s (%s) — %s",
+                    i,
+                    "none" if _descent_first_sec is None
+                    else "%.2fs" % float(_descent_first_sec),
+                    "none" if (landing or {}).get("sec") is None
+                    else "%.2fs" % float(landing["sec"]),
+                    "none" if delta is None else "%.3fs" % float(delta),
+                    delta_src,
+                    _timing.get("why") or "no reason recorded",
+                )
 
             # THE ARC THE OPERATOR SHAPED, AND WHERE THEY AIMED IT.
             # Both are per-swing overrides from the tracer editor. The

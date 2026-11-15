@@ -99,6 +99,28 @@ def main():
     ok("  while the log names which one answered",
        '"plotted comet"' in src and '"landing"' in src, True)
 
+    # ── AND AN UNTIMED ARC SAYS SO ──────────────────────────────────
+    #
+    # The sharp apex reported on this same clip came with no log line
+    # at all: every branch that REACHES a timing target logs it, and
+    # the branches that do not, did not. "This tracer was never timed"
+    # was signalled only by the ABSENCE of a line -- unreadable in a
+    # log full of heartbeats, and indistinguishable from a produce
+    # that failed earlier.
+    #
+    # It is not a neutral outcome. Untimed, the tail derives its own
+    # duration and extrapolates a quadratic fitted to whatever was
+    # measured; on a hand-plotted swing that is eight points spanning
+    # a third of a second, run for three.
+    ok("an arc with no timing target is logged",
+       "has NO timing target" in src, True)
+    ok("  naming the three numbers it would have used",
+       ("descent-first=%s landing=%s delta=%s" in src), True)
+    ok("  and the reason already recorded for the report",
+       '_timing.get("why")' in src, True)
+    ok("the timed case still logs too",
+       "bridges the last ascent frame" in src, True)
+
     print()
     if _fails:
         print("%d FAILED: %s" % (len(_fails), ", ".join(_fails)))
