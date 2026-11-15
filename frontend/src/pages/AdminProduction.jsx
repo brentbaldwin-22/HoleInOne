@@ -3107,11 +3107,32 @@ function ClickToPlotModal({
       (c) => swing.clip_id != null && c.id === swing.clip_id,
     ) ?? (isNew || swingPos == null
       ? null : row.produced_clips?.[swingPos]);
-  const holeNumber = Number(
-    swing.finalized_hole_number
+  // THE UPLOAD'S OWN HOLE FIRST, AND NEVER A FABRICATED 1.
+  //
+  // This read the hole off the CLIP it is editing and then defaulted to
+  // 1 — and it SENDS the answer to produce as `hole_number`, which the
+  // renderer treats as the caller's instruction and prefers over
+  // everything it could work out for itself. So a clip that had once
+  // been stamped hole 1 taught the wizard to say "hole 1", with
+  // authority, on every later produce: the clip is stamped 1, the next
+  // open reads 1 off it, sends 1, and the new clip is stamped 1. The
+  // card header said hole 8 the whole time, from `row.source`, which is
+  // the camera event — the one thing here that actually knows.
+  //
+  // Same shape as the aim point: a value the system guessed, laundered
+  // back in as a human's instruction, and self-perpetuating once it is.
+  //
+  // Order matches `_hole_for_upload_ex` on the server so the two cannot
+  // disagree: camera event, the operator's finalised hole, the clip.
+  // Nothing knows -> null, NOT 1. Null lets the server's own chain run;
+  // a 1 stops it, which is the whole bug.
+  const holeKnown = (
+    row.source?.hole_number
+      ?? swing.finalized_hole_number
       ?? clipForSwing?.hole_number
-      ?? 1,
-  ) || 1;
+      ?? null
+  );
+  const holeNumber = Number(holeKnown) || null;
 
   function toggleDot(p, forceClear = false) {
     const f = p.frame;
@@ -3624,7 +3645,7 @@ function ClickToPlotModal({
             <span className="muted">
               {" "}· #{row.id} ·{" "}
               {isNew ? "new swing" : `swing ${(swing.idx ?? swingPos) + 1}`}
-              {" "}· hole {holeNumber}
+              {holeNumber != null ? ` · hole ${holeNumber}` : " · hole ?"}
               {cam === "tracer"
                 ? " · the tracer's line"
                   + (shape?.kind ? ` · ${shape.kind}` : "")

@@ -27,6 +27,7 @@ from running at all.
     python3 tools/produce_hole_test.py
 """
 import ast
+import re
 import sys
 from pathlib import Path
 
@@ -129,6 +130,36 @@ _seen = sum(
 check("control, the walk does find produce calls passing a hole",
       _seen >= 3, True)
 
+
+# ---------------------------------------------------------------- 4
+print("\n-- the wizard does not launder a stale clip hole back in")
+# THE OTHER HALF, AND THE ONE THAT ACTUALLY BIT. Fixing the server
+# changed nothing for the edit wizard, because the wizard SENDS a hole
+# and the server honours a caller's hole by design. It read that hole
+# off the CLIP it was editing and defaulted to 1 -- so a clip once
+# stamped 1 taught the wizard to say "hole 1" with authority forever:
+# stamp 1, reopen, read 1, send 1, stamp 1.
+JSX = (ROOT / "frontend" / "src" / "pages" / "AdminProduction.jsx")
+J = JSX.read_text(encoding="utf-8")
+check("the wizard asks the upload's camera event first",
+      bool(re.search(r"const holeKnown = \(\s*\n\s*row\.source\?\."
+                     r"hole_number", J)), True)
+check("  then the operator's finalised hole",
+      bool(re.search(r"row\.source\?\.hole_number\s*\n\s*\?\?\s*"
+                     r"swing\.finalized_hole_number", J)), True)
+check("  then the clip",
+      bool(re.search(r"swing\.finalized_hole_number\s*\n\s*\?\?\s*"
+                     r"clipForSwing\?\.hole_number", J)), True)
+check("  and nothing known sends null, not 1",
+      bool(re.search(r"clipForSwing\?\.hole_number\s*\n\s*\?\?\s*null",
+                     J)), True)
+# THE OLD SHAPE, GONE. `|| 1` is what made "no idea" indistinguishable
+# from hole 1 on the way OUT, where it carries caller authority.
+check("no `?? 1` fallback survives in the wizard's hole",
+      bool(re.search(r"clipForSwing\?\.hole_number\s*\n?\s*\?\?\s*1", J)),
+      False)
+check("the sent hole can be null",
+      "const holeNumber = Number(holeKnown) || null;" in J, True)
 
 print()
 if FAILED:
