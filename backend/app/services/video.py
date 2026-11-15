@@ -662,6 +662,22 @@ def concat_two_clips(
     return _attempt(with_audio=False)
 
 
+def _ff_err(exc) -> str:
+    """ffmpeg's own last words, trimmed to something loggable.
+
+    With `-loglevel error` the useful line is the last one, and it is
+    the difference between "a moov atom was not found" and "returned
+    non-zero exit status 1".
+    """
+    raw = getattr(exc, "stderr", None)
+    if not raw:
+        return "ffmpeg said nothing"
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    return (" / ".join(lines[-3:]))[:400] if lines else "ffmpeg said nothing"
+
+
 def splice_impact_clip(
     tee_long_path: Path,
     tee_video_dur_sec: float,
@@ -711,9 +727,41 @@ def splice_impact_clip(
     Returns True on success, False otherwise.  ``output_path`` is
     removed on failure.  Never raises.
     """
-    if not have_ffmpeg():
-        log.warning("ffmpeg missing; cannot splice impact clip")
+    # WHY, NOT JUST NO.
+    #
+    # This returns a bare False and the caller turns that into
+    # "composite splice failed" -- a sentence with no cause in it. Of
+    # the failure paths below, TWO used to log nothing whatsoever (the
+    # output missing or zero-length after ffmpeg reported success), and
+    # the one that did log ran ffmpeg without capturing stderr, so the
+    # message was "returned non-zero exit status 1" and ffmpeg's actual
+    # complaint went to the void. A produce that dies here is a clip the
+    # operator does not get, and there was nothing to act on.
+    #
+    # `_fail` is the one way out: it says what happened, with the inputs,
+    # removes the half-written output, and returns False.
+    def _fail(why: str, detail: str = "") -> bool:
+        log.warning(
+            "splice_impact_clip FAILED: %s%s — tee=%s (%.2fs of video), "
+            "green=%s (%.2fs of video), out=%s",
+            why, f" [{detail}]" if detail else "",
+            getattr(tee_long_path, "name", tee_long_path),
+            float(tee_video_dur_sec),
+            (getattr(green_seg_path, "name", green_seg_path)
+             if green_seg_path is not None else "none"),
+            float(green_video_dur_sec),
+            getattr(output_path, "name", output_path),
+        )
+        try:
+            Path(output_path).unlink(missing_ok=True)
+        except OSError:
+            pass
         return False
+
+    if not have_ffmpeg():
+        return _fail("ffmpeg is not installed on this machine")
+    if not Path(tee_long_path).exists():
+        return _fail("the tee source is not on disk")
 
     tee_v = max(0.1, float(tee_video_dur_sec))
     green_v = max(0.1, float(green_video_dur_sec))
@@ -745,14 +793,17 @@ def splice_impact_clip(
             str(output_path),
         ]
         try:
-            subprocess.run(cmd, check=True, timeout=600)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            log.warning("splice_impact_clip tee-only encode failed: %s", exc)
-            output_path.unlink(missing_ok=True)
-            return False
-        if not output_path.exists() or output_path.stat().st_size == 0:
-            output_path.unlink(missing_ok=True)
-            return False
+            subprocess.run(cmd, check=True, timeout=600,
+                           stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError as exc:
+            return _fail("ffmpeg refused the tee-only encode",
+                         _ff_err(exc))
+        except subprocess.TimeoutExpired:
+            return _fail("the tee-only encode did not finish in 600s")
+        if not output_path.exists():
+            return _fail("ffmpeg reported success but wrote no file")
+        if output_path.stat().st_size == 0:
+            return _fail("ffmpeg reported success but the file is empty")
         return True
 
     # Dual-camera composite.
@@ -790,14 +841,16 @@ def splice_impact_clip(
         str(output_path),
     ]
     try:
-        subprocess.run(cmd, check=True, timeout=600)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        log.warning("splice_impact_clip dual-cam encode failed: %s", exc)
-        output_path.unlink(missing_ok=True)
-        return False
-    if not output_path.exists() or output_path.stat().st_size == 0:
-        output_path.unlink(missing_ok=True)
-        return False
+        subprocess.run(cmd, check=True, timeout=600,
+                       stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as exc:
+        return _fail("ffmpeg refused the dual-cam splice", _ff_err(exc))
+    except subprocess.TimeoutExpired:
+        return _fail("the dual-cam splice did not finish in 600s")
+    if not output_path.exists():
+        return _fail("ffmpeg reported success but wrote no file")
+    if output_path.stat().st_size == 0:
+        return _fail("ffmpeg reported success but the file is empty")
     return True
 
 
