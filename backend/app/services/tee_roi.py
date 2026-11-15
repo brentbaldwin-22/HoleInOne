@@ -179,6 +179,49 @@ def contains(point, value) -> bool:
     return which(point, value) is not None
 
 
+def nearest_miss(point, value):
+    """For a point in NO zone: (zone index, dx, dy, px) of the closest.
+
+    HOW FAR OUT, AND WHICH WAY. "The golfer was not in a zone" has two
+    completely different causes -- the zone is in the wrong place, or
+    the detector never saw him -- and they need opposite fixes. The
+    first is only distinguishable if somebody writes down where the
+    person actually was, which nothing did: the capture loop records a
+    sighting when the feet are inside a zone and nothing at all when
+    they are not.
+
+    `dx`/`dy` are how far the point lies OUTSIDE the box on each axis,
+    signed the way the point lies: negative dx means left of the box,
+    positive means right, and zero means it is within the box's span on
+    that axis. So "dy=+40" reads as "forty pixels below the zone", which
+    is a resize an operator can make without guessing.
+
+    Returns None when there are no zones, or when the point is inside
+    one (in which case it is not a miss). Never raises.
+    """
+    try:
+        px, py = float(point[0]), float(point[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    bs = boxes(value)
+    if not bs:
+        return None
+    best = None
+    for i, b in enumerate(bs):
+        x0, y0 = b["x"], b["y"]
+        x1, y1 = x0 + b["w"], y0 + b["h"]
+        dx = 0.0 if x0 <= px <= x1 else (px - x0 if px < x0 else px - x1)
+        dy = 0.0 if y0 <= py <= y1 else (py - y0 if py < y0 else py - y1)
+        if dx == 0.0 and dy == 0.0:
+            return None          # inside a zone: not a miss at all
+        d = (dx * dx + dy * dy) ** 0.5
+        if best is None or d < best[3]:
+            best = (i, dx, dy, d)
+    if best is None:
+        return None
+    return (best[0], round(best[1], 1), round(best[2], 1), round(best[3], 1))
+
+
 def scaled(value, to_w: int, to_h: int, assume=(1920, 1080)) -> dict:
     """The same zones against a frame of a different size.
 

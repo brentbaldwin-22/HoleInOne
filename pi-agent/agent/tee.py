@@ -68,6 +68,14 @@ log = logging.getLogger("golfreelz_agent.tee")
 # which is a site visit every time you want to test an upload fix.
 FORCE_TRIGGER_PATH = Path("/tmp/golfreelz-trigger")
 
+# HOW OFTEN THE NEAR-MISS SUMMARY MAY SPEAK. Detection runs at 5Hz, so
+# a line per detection is 300 a minute onto a Pi's SD card for as long
+# as a group stands off the tee. One summary a minute is enough to
+# answer the only question it exists for -- whether the people being
+# missed are just outside a zone or not being seen at all -- and cheap
+# enough to leave on.
+_NEAR_MISS_EVERY = 60.0
+
 
 _last_trigger_mtime = 0.0
 
@@ -1257,6 +1265,55 @@ class TeeAgent:
         except Exception:  # noqa: BLE001
             return None
 
+    def _note_near_miss(self, now, stance, roi) -> None:
+        """Somebody was detected, in none of the zones. Say so, rarely.
+
+        AT MOST ONE LINE EVERY `_NEAR_MISS_EVERY` SECONDS, summarising
+        the window rather than printing a line per detection -- the
+        decode loop runs at 5Hz and a group standing off the tee would
+        otherwise write 300 lines a minute to a Pi's SD card.
+
+        The summary is the closest approach in the window, because that
+        is the number that decides what to do: a golfer 30px below the
+        box is a zone that needs moving, and no detections at all for a
+        whole group is a detector that needs looking at. Never raises --
+        this is an annotation, and an annotation must not cost a clip.
+        """
+        try:
+            st = self._near_miss
+            miss = tee_roi.nearest_miss(stance, roi)
+            if miss is None:
+                return
+            _, dx, dy, px = miss
+            st["n"] += 1
+            if st["best"] is None or px < st["best"][3]:
+                st["best"] = (int(stance[0]), int(stance[1]), miss[0], px,
+                              dx, dy)
+            if now - st["said"] < _NEAR_MISS_EVERY:
+                return
+            st["said"] = now
+            bx, by, zi, bpx, bdx, bdy = st["best"]
+            _where = []
+            if bdy:
+                _where.append("%dpx %s" % (abs(round(bdy)),
+                                           "below" if bdy > 0 else "above"))
+            if bdx:
+                _where.append("%dpx %s" % (abs(round(bdx)),
+                                           "right of" if bdx > 0 else
+                                           "left of"))
+            log.info(
+                "saw a person outside every zone %d time(s) in the last "
+                "%.0fs — closest was (%d, %d), %s zone %s (%.0fpx). If "
+                "that is a golfer on the tee, the zone wants moving that "
+                "far; if nobody was there, it is a false detection.",
+                st["n"], _NEAR_MISS_EVERY, bx, by,
+                " and ".join(_where) or "just outside",
+                self._zone_name(roi, zi) or zi, bpx,
+            )
+            st["n"], st["best"] = 0, None
+        except Exception as exc:  # noqa: BLE001
+            log.debug("near miss note failed: %s", exc)
+
     def _note_sighting(self, now, stance, roi) -> None:
         """Remember that somebody was standing on a tee just now.
 
@@ -1571,6 +1628,9 @@ class TeeAgent:
         # rate is a few thousand tuples and covers both with room to
         # spare.
         self._person_seen_at: deque = deque(maxlen=_SIGHTING_MAXLEN)
+        # The near-miss window: how many people were detected outside
+        # every zone since the last summary, and the closest of them.
+        self._near_miss = {"n": 0, "best": None, "said": 0.0}
         self.motion = None
         if _sw.get("enabled"):
             self.motion = MotionTracker(
@@ -1813,6 +1873,23 @@ class TeeAgent:
                 in_roi = stance is not None and _in_roi(stance, _roi_now)
                 if in_roi:
                     self._note_sighting(now, stance, _roi_now)
+                elif stance is not None:
+                    # A PERSON THE ZONES DID NOT CLAIM.
+                    #
+                    # Until now this branch did not exist: a sighting
+                    # inside a zone was recorded and a person standing
+                    # anywhere else left no trace at all -- no log, no
+                    # sighting, nothing on the event. So "the golfer was
+                    # not in a zone" and "the detector never saw him"
+                    # produced byte-identical evidence, and they need
+                    # opposite fixes: move the zone, or go and look at
+                    # why a person in plain view is not being detected.
+                    # Enlarging a zone to fix a detection problem makes
+                    # the trigger worse at the one job the zone has.
+                    #
+                    # `_note_near_miss` rate-limits and summarises, so
+                    # this costs one arithmetic call per detection.
+                    self._note_near_miss(now, stance, _roi_now)
                 # Manual trigger, for testing the record+upload path
                 # without anyone walking into frame:
                 #     touch /tmp/golfreelz-trigger
