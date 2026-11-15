@@ -33296,22 +33296,41 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     # grass, and starting later would cut across the
                     # descent the operator plotted.
                     _g_was = _g_start
-                    # THE LANDING WINS WHEN THERE IS ONE. It is where the
-                    # ball arrives; the comet's first frame is merely
-                    # where it became visible, which can be a second or
-                    # more earlier and costs the tee tracer its descent.
-                    # With no landing marked, the comet is the best
-                    # statement of when anything happens on this green.
-                    if _land_tee is None:
-                        _g_start = max(0.0, _c0 - D3_LANDING_LEAD_SEC)
+                    # THE EARLIER OF THE TWO WINS, which is a reversal.
+                    #
+                    # It used to be "the landing wins when there is one",
+                    # on the argument that the comet's first frame is
+                    # merely where the ball became VISIBLE and cutting
+                    # there costs the tee tracer its descent. True, and
+                    # it buys the wrong thing: the cut then lands at the
+                    # touchdown, the first second or more of the plotted
+                    # comet is never on screen, and the green half opens
+                    # with the ball already down.
+                    #
+                    # Reported from the field: "we stick with the tee
+                    # view way too long. we go to green view when the
+                    # ball hits the green. we should cut to it a little
+                    # before we pick up the descent chain/comet."
+                    #
+                    # So the green half opens a lead before whichever
+                    # comes FIRST. On a shot where the ball is seen well
+                    # before it lands that is the comet, and the viewer
+                    # watches it arrive instead of finding it arrived.
+                    # Where the comet starts late, or there is none, the
+                    # landing still answers and nothing changes.
+                    _cand = _c0 if _land_tee is None else min(
+                        _c0, float(_hold_sec))
+                    _g_start = max(0.0, _cand - D3_LANDING_LEAD_SEC)
                     if abs(_g_start - _g_was) > 0.05:
                         log.info(
                             "d3 produce: swing %s green half starts %.2fs "
                             "-> %.2fs (green clock), a %.1fs lead-in before "
-                            "the plotted comet at %.2fs — %.2fs of empty "
-                            "green %s",
-                            i, _g_was, _g_start, D3_LANDING_LEAD_SEC, _c0,
-                            abs(_g_start - _g_was),
+                            "the %s at %.2fs — %.2fs of green %s",
+                            i, _g_was, _g_start, D3_LANDING_LEAD_SEC,
+                            ("plotted comet"
+                             if _land_tee is None or _c0 <= float(_hold_sec)
+                             else "landing"),
+                            _cand, abs(_g_start - _g_was),
                             "trimmed" if _g_start > _g_was else "added",
                         )
 
