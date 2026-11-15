@@ -33483,6 +33483,12 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
             # Uncalibrated, this stays None and the tracer ends where it
             # always did. Aiming at a guess would be worse.
             _target_xy = None
+            # WHICH OF THE THREE SET THE AIM. The mapping, the
+            # operator's saved point, or nothing -- they land in
+            # the same variable and produce an identical arc, so
+            # the only way to tell a homography from a stale
+            # override was to not have one of them.
+            _aim_src = None
             # WHY THE TRACER STOPS WHERE IT DOES, in a sentence, kept
             # beside the answer rather than in a log line. Every step
             # from here to the drawn tail can decline -- no descent was
@@ -33508,6 +33514,7 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                 )
                 if _t_xy:
                     _target_xy = (float(_t_xy[0]), float(_t_xy[1]))
+                    _aim_src = "the green→tee mapping"
                     log.info(
                         "d3 produce: swing %s landing (%.0f, %.0f) green -> "
                         "(%.0f, %.0f) tee; tracer aimed there",
@@ -33841,6 +33848,9 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     _end = _em_s.get("tracer_end")
                     if _end:
                         _target_xy = (float(_end[0]), float(_end[1]))
+                        _aim_src = ("the saved aim point on this "
+                                    "swing (tracer_end), which "
+                                    "OVERRIDES the mapping")
                         log.info(
                             "d3 produce: swing %s aimed at the operator's "
                             "own end (%.0f, %.0f), lift %.0fpx",
@@ -34190,6 +34200,11 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     "target": ([round(_target_xy[0], 1),
                                 round(_target_xy[1], 1)]
                                if _target_xy is not None else None),
+                    # WHICH SOURCE WON. A saved aim point overrides the
+                    # green->tee mapping silently, and once both are
+                    # just a pair of numbers there is nothing on the
+                    # report that tells a calibration from an override.
+                    "source": _aim_src,
                     "why": (_aim_why
                             or ((_rv or {}).get("tail") or {}).get("why")),
                     # WHERE the tracer was aimed is half the question;
@@ -34249,6 +34264,11 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     "target": ([round(_target_xy[0], 1),
                                 round(_target_xy[1], 1)]
                                if _target_xy is not None else None),
+                    # WHICH SOURCE WON. A saved aim point overrides the
+                    # green->tee mapping silently, and once both are
+                    # just a pair of numbers there is nothing on the
+                    # report that tells a calibration from an override.
+                    "source": _aim_src,
                     "why": (_aim_why
                             or ((_rv or {}).get("tail") or {}).get("why")),
                     "kind": ((_rv or {}).get("tail") or {}).get("kind"),
@@ -34284,8 +34304,9 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                 "d3 produce: swing %s aim=%s model=%s over %s frame(s) "
                 "— %s",
                 i,
-                ("(%.0f, %.0f) in the tee frame"
-                 % (_target_xy[0], _target_xy[1]))
+                ("(%.0f, %.0f) in the tee frame, from %s"
+                 % (_target_xy[0], _target_xy[1],
+                    _aim_src or "an unrecorded source"))
                 if _target_xy is not None else
                 "NOTHING — no target in the tee frame, so the arc chose "
                 "its own direction",

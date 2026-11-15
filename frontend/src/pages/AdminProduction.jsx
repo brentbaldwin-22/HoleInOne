@@ -2375,6 +2375,11 @@ function ClickToPlotModal({
   // operator actually moves it, nothing has been decided, and Save must
   // not light up as though it had.
   const [endGuessed, setEndGuessed] = useState(false);
+  // AND A CLEARANCE IS A VALUE TOO -- see the save block below.
+  // Putting the aim back to "use the green->tee mapping" has to
+  // WRITE a null; leaving the key out lets the stored override
+  // survive, which is the whole failure this flag exists for.
+  const [endCleared, setEndCleared] = useState(false);
   // HOW LONG THE BALL IS IN THE AIR, which is what paces the drawn
   // continuation. Measured off the two cameras' clocks when the landing
   // was marked on the green; otherwise the hole's yardage through the
@@ -2387,7 +2392,8 @@ function ClickToPlotModal({
     () => (swing.tracer_flight_sec != null
       ? Number(swing.tracer_flight_sec) : null));
   const shapeChanged =
-    (!endGuessed
+    endCleared
+    || (!endGuessed
      && JSON.stringify(tracerEnd ? [tracerEnd.x, tracerEnd.y] : null)
        !== shapeBase)
     || flightSec !== flightBase;
@@ -3271,8 +3277,35 @@ function ClickToPlotModal({
               // from what was marked here.
               // Kept on the swing so a re-produce draws the same arc
               // rather than reverting to the model's.
-              ...(tracerEnd
-                ? { tracer_end: [tracerEnd.x, tracerEnd.y] } : {}),
+              // A GUESS IS NOT A DECISION, AND MUST NOT BE SAVED AS
+              // ONE.
+              //
+              // Opening this tab on a swing with no aim point fills one
+              // in from the model so there is an arc to look at and a
+              // handle to grab -- `endGuessed` marks it as exactly that.
+              // But the save wrote `tracer_end` whenever one existed,
+              // guessed or not, and produce prefers a saved aim point
+              // over the green->tee mapping ON PURPOSE, because a saved
+              // one is supposed to mean "the operator looked at the tee
+              // picture and said HERE".
+              //
+              // So a guess became a decision the first time the swing
+              // was saved for any other reason -- plotting an ascent or
+              // descent chain, say -- and from then on every produce
+              // aimed at it and ignored the calibration. A tracer that
+              // came down on the wrong side of the green stayed on the
+              // wrong side no matter how carefully the chains were
+              // re-plotted, because the chains were never what it was
+              // aiming at.
+              //
+              // Guessed: write nothing, and let produce read the
+              // mapping. Cleared: write an explicit null, for the
+              // reason the landing block below gives -- the merge keeps
+              // whatever it is not told about.
+              ...(endCleared
+                ? { tracer_end: null }
+                : (tracerEnd && !endGuessed
+                  ? { tracer_end: [tracerEnd.x, tracerEnd.y] } : {})),
               ...(flightSec != null
                 ? { tracer_flight_sec: flightSec } : {}),
               // CLEARING IS A VALUE, NOT AN ABSENCE.
@@ -3733,12 +3766,38 @@ function ClickToPlotModal({
                       ? { x: Math.round(e[0]), y: Math.round(e[1]) }
                       : null);
                     setEndGuessed(false);
+                    setEndCleared(false);
                     setFlightSec(flightBase);
                     if (!e) fetchShape();
                   }}
                   title="Put the arc back to the shape that was saved"
                 >
                   Reset arc
+                </button>
+                {/* RESET ARC IS NOT THIS. It restores the SAVED aim
+                    point, which is the right thing when the drag just
+                    made it worse -- and no help at all when the saved
+                    one is itself wrong. A saved aim point overrides the
+                    green->tee calibration on every produce, so until
+                    there was a way to take it away, a single bad drag
+                    (or, before the save was fixed, a guess that was
+                    never a drag) outranked the calibration permanently
+                    and no amount of re-plotting could reach it. */}
+                <button
+                  type="button"
+                  className="ghost small"
+                  style={{ width: "auto" }}
+                  disabled={!tracerEnd && endCleared}
+                  onClick={() => {
+                    setTracerEnd(null);
+                    setEndGuessed(false);
+                    setEndCleared(true);
+                  }}
+                  title={"Forget the aim point saved on this swing and "
+                    + "let the green\u2192tee calibration decide where "
+                    + "the ball lands. Save to apply."}
+                >
+                  Use mapped landing
                 </button>
               </>
             ) : cam === "green" ? (
@@ -3923,6 +3982,7 @@ function ClickToPlotModal({
                   if (id !== "end") return;
                   setTracerEnd(pt);
                   setEndGuessed(false);
+                  setEndCleared(false);
                 }}
                 onHandleDrop={() => fetchShape()}
                 note={shapeErr
@@ -10324,6 +10384,13 @@ function SwingCard({ n, ascent, view, clip, colors, findOnly }) {
                 ? ` — ${clip.tracer_aim.kind} arc, `
                   + `${clip.tracer_aim.frames} frames`
                 : ""}
+              {/* WHICH SOURCE AIMED IT. A saved aim point beats the
+                  green→tee calibration by design, so "the tracer lands
+                  in the wrong place" has two completely different
+                  fixes — recalibrate, or clear the override — and the
+                  coordinates alone never said which. */}
+              {clip.tracer_aim.source
+                ? ` · from ${clip.tracer_aim.source}` : ""}
             </span>
           ) : (
             <span style={{ color: "#f59e0b" }}>
