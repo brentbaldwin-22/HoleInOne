@@ -3375,7 +3375,15 @@ CREST_BOW_PX = 90.0
 
 # ...but never more than this share of the arc's own size, so a short
 # tail is not given a crest wider than its flight.
-_CREST_BOW_MAX_FRAC = 0.18   # ...of the SHORTER leg; see below
+_CREST_BOW_MAX_FRAC = 0.35   # ...of the SHORTER leg; see below
+#
+# 0.18 first, which on a real swing gave a 19px fillet: the predictive
+# tail there BEGINS near the apex -- the tracked ball was followed most
+# of the way up -- so the ascent side of the vertex is barely 100px of
+# tail and the cap bound hard. A Bezier through (A, vertex, C) cannot
+# overshoot the triangle those three make, so a larger share is still
+# bounded by the legs themselves; it rounds more of the corner, not
+# further from it.
 
 # PAST THIS TURN, the crest reads as a corner rather than a top, and
 # gets opened. Measured in degrees by `apex_sharpness`, which samples
@@ -3391,10 +3399,21 @@ _CREST_BOW_MAX_FRAC = 0.18   # ...of the SHORTER leg; see below
 _CREST_MAX_TURN_DEG = 30.0
 
 # ...AND the turn must be CONCENTRATED at one point rather than spread
-# along the arc. See `apex_sharpness`: a smooth parabola scores about
-# 0.33 on that ratio and a spike about 1.09, so this sits well clear of
-# both. Without it the angle alone condemns good steep flights.
-_CREST_CONCENTRATION = 0.65
+# along the arc. See `apex_sharpness`. Without this the angle alone
+# condemns good steep flights, which read ~40 degrees and are fine.
+#
+# SET FROM A REAL CLIP, NOT FROM THE TWO SYNTHETIC EXTREMES. A smooth
+# parabola scores 0.33 and a hand-built spike 1.09, so 0.65 looked
+# safely between them -- and the first real swing it met scored 0.64
+# and was declined by a hundredth, on a tail whose drawn ball reached
+# 0.00 px/frame. Field cases live in the middle, not at the ends.
+_CREST_CONCENTRATION = 0.50
+
+# A SECOND WAY IN, because concentration is a ratio and ratios are
+# knife-edges. A drawn ball that comes to a complete stop has a cusp in
+# space, full stop -- no real flight does that -- so a crest this slow
+# is opened whatever the ratio says.
+_CREST_DEAD_PX = 0.3
 
 
 def open_crest(tail, bow_px: float = CREST_BOW_PX):
@@ -3448,24 +3467,39 @@ def open_crest(tail, bow_px: float = CREST_BOW_PX):
     _sharp = apex_sharpness(pts)
     if (_sharp.get("deg") or 0.0) <= _CREST_MAX_TURN_DEG:
         return tail                     # gentle everywhere
-    if (_sharp.get("concentration") or 0.0) < _CREST_CONCENTRATION:
-        # Sharp, but the turn is SPREAD -- that is a steep flight, not
-        # a corner, and bowing it would damage a good arc. This is the
-        # check that matters: on angle alone a perfectly smooth steep
-        # parabola reads 40 degrees and would have been "repaired".
+    _conc = _sharp.get("concentration") or 0.0
+    _slow = _sharp.get("min_speed_px")
+    _dead = _slow is not None and _slow <= _CREST_DEAD_PX
+    if _conc < _CREST_CONCENTRATION and not _dead:
+        # Sharp, but the turn is SPREAD and the ball keeps moving --
+        # that is a steep flight, not a corner, and bowing it would
+        # damage a good arc. This is the check that matters: on angle
+        # alone a perfectly smooth steep parabola reads 40 degrees and
+        # would have been "repaired".
         return tail
 
-    # WHERE THE CORNER IS. The sharpest point by the distance-sampled
-    # measure, falling back to the slowest point -- on a true cusp the
-    # two coincide, and on a short descent leg the sampler can step
-    # clean over the crest and report a bend further down.
-    _w = 3
-    sp = []
-    for i in range(n):
-        a, b = pts[max(0, i - _w)], pts[min(n - 1, i + _w)]
-        sp.append(math.hypot(b[1] - a[1], b[2] - a[2])
-                  / max(1, b[0] - a[0]))
-    k = min(range(n), key=lambda i: sp[i])
+    # WHERE THE CORNER IS -- the sharpest point by the same measure
+    # that decided there was one.
+    #
+    # THIS USED THE SLOWEST POINT, AND THE TWO ARE NOT THE SAME. On a
+    # real swing's tail the slowest point sat at index 48 of 314, 96px
+    # of travel from the hand-off, while the vertex was two hundred
+    # points further on. The fillet would have been built in the wrong
+    # place and sized off the wrong leg: a 17px bow where 60 was
+    # wanted. The slowest point is the fallback, for a true cusp where
+    # the sampler steps clean over the vertex and finds nothing.
+    k = None
+    _f_at = _sharp.get("at_frame")
+    if _f_at is not None:
+        k = next((i for i, q in enumerate(pts) if q[0] == _f_at), None)
+    if k is None:
+        _w = 3
+        sp = []
+        for i in range(n):
+            a, b = pts[max(0, i - _w)], pts[min(n - 1, i + _w)]
+            sp.append(math.hypot(b[1] - a[1], b[2] - a[2])
+                      / max(1, b[0] - a[0]))
+        k = min(range(n), key=lambda i: sp[i])
     # A crest at the very start or end is not a crest; it is the arc
     # running out of frames, and bowing there would tilt a measurement.
     if k < 2 or k > n - 3:

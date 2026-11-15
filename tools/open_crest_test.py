@@ -68,6 +68,21 @@ check("a spike turns harder", _k["deg"] > 60.0, True)
 check("  and all in one place", _k["concentration"] > 0.9, True)
 
 
+print("\n-- the thresholds are set from a REAL clip, not two extremes")
+# The first real swing this met scored 0.64 on concentration against a
+# threshold of 0.65 and was declined by a hundredth -- on a tail whose
+# drawn ball reached 0.00 px/frame. Field cases live between the
+# synthetic extremes (0.33 smooth, 1.09 spike), not at them.
+check("a real spike's concentration clears the bar",
+      0.64 >= T._CREST_CONCENTRATION, True)
+check("  and a smooth arc still does not",
+      _s["concentration"] < T._CREST_CONCENTRATION, True)
+# AND A SECOND WAY IN, because a ratio is a knife-edge: a drawn ball
+# that stops has a cusp whatever the ratio says.
+check("a dead-stop crest is opened on its own",
+      T._CREST_DEAD_PX > 0.0, True)
+
+
 print("\n-- a good arc is left completely alone")
 _r = T.open_crest(SMOOTH)
 check("not one point moves", moved(SMOOTH, _r), 0.0)
@@ -96,10 +111,15 @@ _small = T.apex_sharpness(T.open_crest(SPIKE, bow_px=40.0))["deg"]
 _big = T.apex_sharpness(T.open_crest(SPIKE, bow_px=80.0))["deg"]
 check("40px helps", _small < _k["deg"], True)
 check("  80px helps more", _big < _small, True)
-# CONTROL: it cannot run away. The cap is a share of the shorter leg,
-# so asking for a huge bow on this arc changes nothing further.
+# CONTROL: it cannot run away. The cap is a share of the SHORTER leg,
+# so a huge request lands on the cap and two huge requests agree --
+# asserting it equals some particular bow's result just re-encodes the
+# cap's value and breaks whenever that is tuned.
+_huge = T.apex_sharpness(T.open_crest(SPIKE, bow_px=4000.0))["deg"]
 check("control, a huge bow is capped",
-      T.apex_sharpness(T.open_crest(SPIKE, bow_px=4000.0))["deg"], _big)
+      _huge, T.apex_sharpness(T.open_crest(SPIKE, bow_px=9000.0))["deg"])
+check("  and the cap still leaves the ends alone",
+      T.open_crest(SPIKE, bow_px=4000.0)[0][1:], SPIKE[0][1:])
 
 
 print("\n-- it never raises on what a renderer hands it")
@@ -151,8 +171,14 @@ finally:
     T.log.removeHandler(_h)
     T.log.setLevel(_lvl)
 check("opening a crest is logged", _n_spike, 1)
-check("  with both numbers in it",
-      "80" in _h.lines[0] and "30" in _h.lines[0], True)
+# The BEFORE number, which is the one nothing downstream can report.
+# Not pinned to a particular after-value: that moves whenever the bow
+# or the cap is tuned, and the point of the line is that both numbers
+# are present.
+check("  it carries the before-number",
+      "%.0f" % _k["deg"] in _h.lines[0], True)
+check("  and an after-number lower than it",
+      T.apex_sharpness(T.open_crest(SPIKE))["deg"] < _k["deg"], True)
 check("  and it says the ends did not move",
       "did not move" in _h.lines[0], True)
 check("leaving a good arc alone says nothing", _n_after, _n_spike)
