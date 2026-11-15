@@ -87,7 +87,15 @@ print("\n-- a right angle measures a right angle")
 corner = ([(i, 100.0 + 5 * i, 400.0) for i in range(30)]
           + [(30 + i, 245.0, 400.0 + 5 * i) for i in range(30)])
 _d = T.apex_sharpness(corner)["deg"]
-check("a 90-degree corner reads ~90", 89.0 <= _d <= 91.0, True)
+# NOT EXACTLY 90, AND THAT IS RIGHT. Sampling by distance means the
+# vertex can fall between two samples and the turn is shared across
+# them. The trade is deliberate: reading every N frames gives an exact
+# angle on a fixture and pure rounding noise on a real crest, where the
+# ball moves a fraction of a pixel a frame.
+check("a right angle reads as a hard corner", 70.0 <= _d <= 90.0, True)
+check("  and a straight line still reads 0",
+      T.apex_sharpness([(i, 100.0 + 5 * i, 400.0)
+                        for i in range(60)])["deg"], 0.0)
 check("  and it says WHERE", T.apex_sharpness(corner)["xy"] is not None,
       True)
 
@@ -102,12 +110,18 @@ for dv, kind, deg in series:
     print("     dv=%-4d %-10s %s deg" % (dv, kind, deg))
 check("every one of them draws",
       all(d is not None for _, _, d in series), True)
-check("a landing on the launch ray corners hard", series[0][2] >= 70.0,
-      True)
-check("  150px across is gentle", series[-1][2] < 25.0, True)
-check("  and it falls away monotonically",
-      [d for _, _, d in series] == sorted((d for _, _, d in series),
-                                          reverse=True), True)
+# NOT AN ANGLE THRESHOLD ANY MORE. The first version of this file
+# asserted 90 degrees at dv=3 and got it -- from integer rounding, not
+# from shape. At the crest the drawn ball moves a fraction of a pixel a
+# frame, so a six-frame sample is one pixel and two such steps read as
+# a right angle. The metric samples by DISTANCE now, and the honest
+# signature of the spike is the SPEED: the ball stops.
+_, _t3 = drawn(3)
+_, _t150 = drawn(150)
+check("the tight case all but stops the ball",
+      T.apex_sharpness(_t3)["min_speed_px"] <= 0.5, True)
+check("  while a landing well across the ray keeps it moving",
+      T.apex_sharpness(_t150)["min_speed_px"] >= 0.9, True)
 # THE CLOSED FORM, checked rather than asserted: R = dv^2/(2 v S).
 _R = lambda dv: dv * dv / (2 * 9.0 * 150)      # noqa: E731
 check("the apex radius at dv=3 is sub-pixel", _R(3) < 1.0, True)
@@ -119,8 +133,8 @@ check("the hard-cornered tail is the one that got drawn", _t is not None,
       True)
 check("  it is not rejected as a loop", T._turns_back_on_itself(_t), False)
 check("  nor refused for its apex", T._tail_refused(_t, W, H, _kind), False)
-check("  yet it corners past 70 degrees",
-      T.apex_sharpness(_t)["deg"] >= 70.0, True)
+check("  yet the drawn ball stops at its crest",
+      T.apex_sharpness(_t)["min_speed_px"] <= 0.5, True)
 
 print("\n-- the curvature-matched model is no escape at small dv")
 # `_curved_tail` was added to cure the ballistic hairpin, and at a
@@ -132,8 +146,9 @@ x_a, y_a = pts[-1][1], pts[-1][2]
 _c = T._curved_tail(pts, (x_a + UX * 300.0 + NX * 3,
                           y_a + UY * 300.0 + NY * 3),
                     FPS, W, H, land_frame=pts[-1][0] + 90)
-check("curved at dv=3 is not gentler",
-      _c is not None and T.apex_sharpness(_c)["deg"] > 70.0, True)
+check("curved at dv=3 stops the ball too",
+      _c is not None
+      and T.apex_sharpness(_c)["min_speed_px"] <= 0.5, True)
 
 print("\n-- it never raises on what a renderer really hands it")
 for name, bad in (("None", None), ("empty", []),
@@ -150,6 +165,7 @@ check("both tail records carry it",
 adm = (ROOT / "backend" / "app" / "routers"
        / "admin.py").read_text(encoding="utf-8")
 check("produce logs it", "tracer turns %.0f\u00b0 at its" in adm, True)
+check("  and the crest speed with it", "min_speed_px" in adm, True)
 check("  and puts it on the report",
       '"sharpness": ((_rv or {}).get("tail")' in adm, True)
 

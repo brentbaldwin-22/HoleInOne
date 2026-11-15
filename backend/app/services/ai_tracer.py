@@ -3364,6 +3364,34 @@ def _drop_stalled_tail(pts: list) -> list:
     return out[:len(out) - n] if n else out
 
 
+# WHY THERE IS NO APEX REPAIR HERE, having tried two.
+#
+# The crest is sharp because the drawn ball STOPS there. Measured on a
+# ballistic tail: 0.17px a frame at the top against 9px a frame at the
+# hand-off, and 0.00 on the tighter cases. A path whose speed reaches
+# zero has a cusp in SPACE even while the curve is perfectly smooth in
+# its parameter, which is why both repairs failed and failed
+# differently:
+#
+#   - Solving in screen x and y instead of along/across (so y may turn
+#     over while x carries the ball through the top) declines in
+#     exactly the cases that are sharp and matches the old model
+#     everywhere else. No curve can hit both measured ends AND open the
+#     crest: the horizontal spread that would round it is not in the
+#     data.
+#
+#   - Smoothing the polyline near the crest moves it by a pixel or
+#     three and sometimes makes the measurement worse. 3-point
+#     averaging edits the PARAMETRISATION, and the parametrisation was
+#     never the problem -- these tails are polynomials, already smooth
+#     in their parameter.
+#
+# Opening the crest means bowing the descent leg away from the ascent
+# leg: drawing a path the ball did not take, deliberately and within a
+# stated bound. That is a product decision about what a tracer is for,
+# not a modelling detail, so it is not made quietly here.
+
+
 def _ballistic_tail(pts, target_xy, fps, width, height, max_sec=12.0,
                     land_frame=None):
     """Extend the tracked flight's own parabola to the landing.
@@ -3986,50 +4014,71 @@ def _arc_tail(pts, target_xy, fps, width, height, land_frame=None):
     return out
 
 
-def apex_sharpness(tail, win: int = 6) -> dict:
+def apex_sharpness(tail, step_px: float = 24.0) -> dict:
     """How hard the drawn arc turns at its sharpest, and where.
 
-    A GOLF TRACER THAT CORNERS IS THE COMPLAINT, and nothing measured
-    it. `_turns_back_on_itself` catches a tail that loops (>200 degrees
-    of TOTAL turn) and `_tail_refused` catches an apex off the top of
-    the picture; a clean 90-degree corner at the top of the arc passes
-    both, and is exactly the thing a shot tracer must never do.
+    SAMPLED BY DISTANCE ALONG THE LINE, NOT BY FRAME. The first version
+    of this read the line every six frames and was measuring integer
+    rounding, not shape: at the crest of a ballistic tail the ball
+    crawls -- 0.17px a frame on a measured case -- so six frames is one
+    pixel, consecutive samples step (1,0) then (0,-1), and that reads as
+    a 90-degree corner between two one-pixel steps. Every sharp number
+    it reported in the regime it was built for was noise.
 
-    The cause is in `_ballistic_tail`'s own algebra. It defines the
-    across-axis to start at zero speed -- "across is defined by where
-    the ball was going" -- so every bit of sideways motion has to come
-    from the curvature that reaches the landing, `qv = dv/S^2`. At the
-    along-apex the along-speed is zero by construction, so the whole
-    screen speed there is |dv|/S and the radius of curvature collapses
-    to
+    Walking a fixed distance fixes that: `step_px` apart along the
+    polyline, so each sampled segment is long enough that a half-pixel
+    of rounding cannot swing its direction. It is also what the eye
+    does -- a crest looks sharp because the line turns a lot over a
+    short DISTANCE, whatever the ball's clock was doing.
 
-        R = dv^2 / (2*v*S)
+    A tracer corners when the landing sits near the launch ray. See
+    `_ballistic_tail`: its across-axis starts at zero speed, so at the
+    along-apex the whole screen speed is |dv|/S and the radius of
+    curvature is R = dv^2/(2*v*S), which on a camera looking down the
+    hole falls to nothing. See the note above `_ballistic_tail`
+    for why there is no repair here yet.
 
-    where `dv` is how far the landing sits ACROSS the launch ray. On a
-    camera looking down the line that offset is small, R falls to a
-    fraction of a pixel, and the model draws an arc that is smooth in
-    the mathematics and a spike on the screen. Measured on this code:
-    dv=5px gives a 90 degree corner, dv=150px gives 25.
-
-    Reported in DEGREES OVER `win` FRAMES, the scale an eye reads --
-    per-frame, integer rounding dominates and every tail looks jagged.
-    Never raises.
+    Returns {deg, at_frame, xy, step_px, min_speed_px}. `min_speed_px`
+    is the slowest the drawn ball ever moves, per frame -- the crawl is
+    half of what reads as a spike and no angle can show it. Never
+    raises.
     """
-    out = {"deg": None, "at_frame": None, "xy": None, "win": int(win)}
+    out = {"deg": None, "at_frame": None, "xy": None,
+           "step_px": float(step_px), "min_speed_px": None}
     try:
         pts = [(int(p[0]), float(p[1]), float(p[2])) for p in (tail or [])]
     except (TypeError, ValueError, IndexError):
         return out
-    step = max(1, int(win))
-    P = pts[::step]
+    if len(pts) < 3:
+        return out
+
+    # The slowest the ball moves, which no turn angle can report.
+    _sp = [math.hypot(b[1] - a[1], b[2] - a[2]) / max(1, b[0] - a[0])
+           for a, b in zip(pts, pts[1:])]
+    if _sp:
+        out["min_speed_px"] = round(min(_sp), 3)
+
+    # Resample at roughly `step_px` of travel.
+    P = [pts[0]]
+    acc = 0.0
+    for a, b in zip(pts, pts[1:]):
+        acc += math.hypot(b[1] - a[1], b[2] - a[2])
+        if acc >= float(step_px):
+            P.append(b)
+            acc = 0.0
+    if P[-1] is not pts[-1]:
+        P.append(pts[-1])
     if len(P) < 3:
         return out
+
     worst = -1.0
     for i in range(1, len(P) - 1):
         ax, ay = P[i][1] - P[i - 1][1], P[i][2] - P[i - 1][2]
         bx, by = P[i + 1][1] - P[i][1], P[i + 1][2] - P[i][2]
         la, lb = math.hypot(ax, ay), math.hypot(bx, by)
-        if la < 1e-9 or lb < 1e-9:
+        # A segment shorter than half a step is the leftover at the end
+        # of the walk; its direction is not trustworthy.
+        if la < 0.5 * step_px or lb < 0.5 * step_px:
             continue
         c = max(-1.0, min(1.0, (ax * bx + ay * by) / (la * lb)))
         d = math.degrees(math.acos(c))

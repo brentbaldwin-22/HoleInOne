@@ -34309,16 +34309,25 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
             # and an argument. See ai_tracer.apex_sharpness: a real
             # flight turns gradually, and anything past about 40
             # degrees in a sixth of a second reads as a corner.
-            _sh = (_tl.get("sharpness") or {}).get("deg")
+            _shz = _tl.get("sharpness") or {}
+            _sh = _shz.get("deg")
             if _sh is not None:
+                # BOTH HALVES OF WHAT READS AS A SPIKE. The turn is the
+                # obvious one; the slowest speed is the one that
+                # explains it. A drawn ball that reaches 0px a frame
+                # has stopped, and a path whose speed reaches zero has
+                # a cusp in space however smooth its equation is.
                 log.info(
                     "d3 produce: swing %s tracer turns %.0f° at its "
-                    "sharpest%s — a flight turns gradually, so past "
-                    "~40° this is the hard apex",
+                    "sharpest%s, and at its slowest the drawn ball "
+                    "moves %s px/frame — a flight turns gradually, so "
+                    "past ~40° (or a speed near 0 at the crest) this is "
+                    "the hard apex",
                     i, float(_sh),
-                    (" (around %s)" % ((_tl.get("sharpness") or {})
-                                       .get("xy"),))
-                    if (_tl.get("sharpness") or {}).get("xy") else "",
+                    (" (around %s)" % (_shz.get("xy"),))
+                    if _shz.get("xy") else "",
+                    ("%.2f" % float(_shz["min_speed_px"]))
+                    if _shz.get("min_speed_px") is not None else "?",
                 )
             log.info(
                 "d3 produce: swing %s aim=%s model=%s over %s frame(s) "
