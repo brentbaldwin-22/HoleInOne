@@ -184,11 +184,45 @@ check("  and it says the ends did not move",
 check("leaving a good arc alone says nothing", _n_after, _n_spike)
 
 
+print("\n-- it reports its decision to the caller, not just to a log")
+# The log line lives on a different logger with a different prefix.
+# That is a fine answer for somebody who knows the code and no answer
+# for anybody else, so the verdict travels to the produce line the
+# operator already reads.
+_d = {}
+T.open_crest(SPIKE, out=_d)
+check("a rounded crest says so", _d.get("opened"), True)
+check("  with the before angle", _d.get("before_deg"), _k["deg"])
+check("  an after angle below it", _d["after_deg"] < _d["before_deg"], True)
+check("  the fillet size", _d.get("fillet_px") is not None, True)
+check("  and where", isinstance(_d.get("at"), list), True)
+# THE SHADOW THAT HID ALL OF THIS: the working list inside the fillet
+# was called `out`, the same as the caller's record, so every
+# SUCCESSFUL fillet reported nothing while the decline paths worked --
+# which reads exactly like "it never fires".
+_e = {}
+T.open_crest(SMOOTH, out=_e)
+check("a decline says why", _e.get("opened"), False)
+check("  in words", bool(_e.get("why")), True)
+_f = {}
+T.open_crest([(1, 2.0, 3.0)] * 5, out=_f)
+check("so does a tail too short to work with", bool(_f.get("why")), True)
+# CONTROL: the verdict never changes the geometry.
+check("control, passing a record does not alter the line",
+      T.open_crest(SPIKE, out={}), T.open_crest(SPIKE))
+
+
 print("\n-- the renderer actually applies it")
 src = (ROOT / "backend" / "app" / "services"
        / "ai_tracer.py").read_text(encoding="utf-8")
 check("it runs on the drawn tail",
-      "open_crest(_shape_tail(tail, apex_lift, apex_at))" in src, True)
+      "open_crest(_shape_tail(tail, apex_lift, apex_at)," in src, True)
+check("  and the verdict reaches the tail record",
+      '"crest": dict(_crest) if _crest else None' in src, True)
+adm = (ROOT / "backend" / "app" / "routers"
+       / "admin.py").read_text(encoding="utf-8")
+check("  and produce logs it where the operator reads",
+      "crest ROUNDED" in adm and "crest left alone" in adm, True)
 
 print()
 if FAILED:

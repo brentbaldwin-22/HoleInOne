@@ -34329,6 +34329,26 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     ("%.2f" % float(_shz["min_speed_px"]))
                     if _shz.get("min_speed_px") is not None else "?",
                 )
+            # AND WHETHER THE CREST WAS ROUNDED, on the same line the
+            # operator is already reading. This used to be said only by
+            # the renderer's own logger under a different prefix, which
+            # is a fine answer for somebody who knows the code and no
+            # answer at all for anybody else.
+            _cr = _tl.get("crest") or {}
+            if _cr.get("opened"):
+                log.info(
+                    "d3 produce: swing %s crest ROUNDED — a %.0f° vertex "
+                    "at %s opened to %.0f° with a %.0fpx fillet; the "
+                    "hand-off and the landing did not move",
+                    i, float(_cr.get("before_deg") or 0.0),
+                    _cr.get("at"), float(_cr.get("after_deg") or 0.0),
+                    float(_cr.get("fillet_px") or 0.0),
+                )
+            elif _cr.get("why"):
+                log.info(
+                    "d3 produce: swing %s crest left alone — %s",
+                    i, _cr["why"],
+                )
             log.info(
                 "d3 produce: swing %s aim=%s model=%s over %s frame(s) "
                 "— %s",

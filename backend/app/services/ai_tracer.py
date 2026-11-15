@@ -3416,7 +3416,14 @@ _CREST_CONCENTRATION = 0.50
 _CREST_DEAD_PX = 0.3
 
 
-def open_crest(tail, bow_px: float = CREST_BOW_PX):
+def _no(out, why, tail):
+    """Decline, and say why where the caller will read it."""
+    if isinstance(out, dict):
+        out.update({"opened": False, "why": why})
+    return tail
+
+
+def open_crest(tail, bow_px: float = CREST_BOW_PX, out=None):
     """Hold the two legs apart where the drawn ball would otherwise stop.
 
     THE CUSP IS IN THE SPEED, NOT THE CURVE. `_ballistic_tail` solves
@@ -3457,16 +3464,17 @@ def open_crest(tail, bow_px: float = CREST_BOW_PX):
     try:
         pts = [(int(p[0]), float(p[1]), float(p[2])) for p in (tail or [])]
     except (TypeError, ValueError, IndexError):
-        return tail
+        return _no(out, "the tail could not be read as points", tail)
     n = len(pts)
     if n < 9 or bow_px <= 0:
-        return tail
+        return _no(out, "too few points to fillet (%d)" % n, tail)
 
     # IS THERE A CORNER AT ALL? Measured the same way it is reported,
     # so the trigger and the number on the clip cannot disagree.
     _sharp = apex_sharpness(pts)
     if (_sharp.get("deg") or 0.0) <= _CREST_MAX_TURN_DEG:
-        return tail                     # gentle everywhere
+        return _no(out, 'the arc already turns gently (%.0f\u00b0)'
+                   % (_sharp.get('deg') or 0.0), tail)
     _conc = _sharp.get("concentration") or 0.0
     _slow = _sharp.get("min_speed_px")
     _dead = _slow is not None and _slow <= _CREST_DEAD_PX
@@ -3476,7 +3484,9 @@ def open_crest(tail, bow_px: float = CREST_BOW_PX):
         # damage a good arc. This is the check that matters: on angle
         # alone a perfectly smooth steep parabola reads 40 degrees and
         # would have been "repaired".
-        return tail
+        return _no(out, 'the %.0f\u00b0 turn is spread along the arc, '
+                   'not a corner (concentration %.2f)'
+                   % (_sharp.get('deg') or 0.0, _conc), tail)
 
     # WHERE THE CORNER IS -- the sharpest point by the same measure
     # that decided there was one.
@@ -3503,7 +3513,9 @@ def open_crest(tail, bow_px: float = CREST_BOW_PX):
     # A crest at the very start or end is not a crest; it is the arc
     # running out of frames, and bowing there would tilt a measurement.
     if k < 2 or k > n - 3:
-        return tail
+        return _no(out, "the sharpest point is at the very end of the "
+                        "arc, which is the tail running out rather than "
+                        "a crest", tail)
 
     # NEVER WIDER THAN THE SHORTER LEG.
     #
@@ -3523,7 +3535,8 @@ def open_crest(tail, bow_px: float = CREST_BOW_PX):
     if bow < 4.0:
         # Not enough room to open anything. Drawing a 2px kink in place
         # of a vertex is not an improvement, it is a different artefact.
-        return tail
+        return _no(out, 'the shorter leg is only %.0fpx, no room to '
+                   'fillet' % leg, tail)
 
     # ROUND THE CORNER, which is all this ever needed to be.
     #
@@ -3558,26 +3571,41 @@ def open_crest(tail, bow_px: float = CREST_BOW_PX):
     i0 = _walk(k, -1, bow)
     i1 = _walk(k, +1, bow)
     if i1 - i0 < 4:
-        return tail
+        return _no(out, 'the fillet span came out too short', tail)
 
     ax, ay = pts[i0][1], pts[i0][2]
     vx, vy = pts[k][1], pts[k][2]
     cx, cy = pts[i1][1], pts[i1][2]
-    out = list(pts)
+    # NOT `out` -- that is the caller's record, and naming the working
+    # list the same thing shadowed it, so every successful fillet
+    # reported nothing at all. The decline paths worked, which made it
+    # look like the fillet simply never fired.
+    work = list(pts)
     span = float(i1 - i0)
     for j in range(i0 + 1, i1):
         t = (j - i0) / span
         w0, w1, w2 = (1 - t) ** 2, 2 * (1 - t) * t, t * t
-        out[j] = (pts[j][0],
+        work[j] = (pts[j][0],
                   w0 * ax + w1 * vx + w2 * cx,
                   w0 * ay + w1 * vy + w2 * cy)
-    out = [(f, int(round(x)), int(round(y))) for f, x, y in out]
+    res = [(f, int(round(x)), int(round(y))) for f, x, y in work]
     # BOTH NUMBERS, WHERE THEY EXIST. Everything downstream measures
     # the FINISHED tail, so the produce report and its log line can
     # only ever say how the crest came out -- never whether anything
     # was done to it, or how bad it was before. This is the one place
     # that holds both.
-    _after = apex_sharpness(out)
+    _after = apex_sharpness(res)
+    if isinstance(out, dict):
+        # SO IT CAN BE SAID WHERE IT IS READ. The produce log is a
+        # different logger with a different prefix, and asking an
+        # operator to know that is not an answer.
+        out.update({
+            "opened": True,
+            "before_deg": _sharp.get("deg"),
+            "after_deg": _after.get("deg"),
+            "fillet_px": round(bow, 1),
+            "at": [int(round(vx)), int(round(vy))],
+        })
     log.info(
         "tracer crest: opened a %.0f° vertex to %.0f° with a %.0fpx "
         "fillet at f%d (%.0f,%.0f) — turn was concentrated %.2f, now "
@@ -3586,7 +3614,7 @@ def open_crest(tail, bow_px: float = CREST_BOW_PX):
         vx, vy, _sharp.get("concentration") or -1.0,
         _after.get("concentration") or -1.0,
     )
-    return out
+    return res
 
 
 # WHY THERE IS NO APEX REPAIR HERE, having tried two.
@@ -4550,7 +4578,7 @@ def _tail_refused(tail, width, height, kind: str) -> bool:
 
 def _extend_to_target(pts, target_xy, fps, width, height,
                       land_frame=None, apex_lift=0.0,
-                      apex_at=0.5):
+                      apex_at=0.5, crest_out=None):
     """(points continuing `pts` to `target_xy`, model, why not).
 
     The third value is the whole point of the signature: every refusal
@@ -4785,7 +4813,8 @@ def _extend_to_target(pts, target_xy, fps, width, height,
     # measures is the line that will actually be drawn. It declines
     # unless the turn is both sharp AND concentrated at one point --
     # a steep flight is not a corner. See `open_crest`.
-    return open_crest(_shape_tail(tail, apex_lift, apex_at)), kind, None
+    return (open_crest(_shape_tail(tail, apex_lift, apex_at),
+                       out=crest_out), kind, None)
 
 
 # A BALL DOES NOT FLY IN A LOOP.
@@ -5576,9 +5605,10 @@ def render_tracer_video(
         # along the ball's current direction, then bends to the target
         # (quadratic Bézier), so there's no kink/squiggle at the join. With
         # no target we simply stop at the last plotted point.
+        _crest = {}
         _tail, _bt, _twhy = _extend_to_target(
             pts, target_xy, fps, width, height, land_frame=target_frame,
-            apex_lift=apex_lift, apex_at=apex_at,
+            apex_lift=apex_lift, apex_at=apex_at, crest_out=_crest,
         )
         if not _tail:
             info["tail"] = {
@@ -5618,6 +5648,11 @@ def render_tracer_video(
                 # both existing guards and is the thing a tracer
                 # must never do, so it travels with every clip.
                 "sharpness": apex_sharpness(_tail),
+                    # What `open_crest` did, or why it did not --
+                    # carried here so the produce log can say it
+                    # on the line the operator already reads,
+                    # rather than on a second logger.
+                    "crest": dict(_crest) if _crest else None,
                 "end_xy": [int(_tail[-1][1]), int(_tail[-1][2])],
                 "apex_lift": round(float(apex_lift), 1),
                 "apex_at": round(float(apex_at), 3),
@@ -5869,10 +5904,11 @@ def render_tracer_video(
             # built from a shorter list would draw the tail and then
             # never uncover it -- the same symptom as not drawing it at
             # all, and far harder to see the cause of.
+            _crest = {}
             _tail, _bt, _twhy = _extend_to_target(
                 smoothed_points, target_xy, fps, width, height,
                 land_frame=target_frame, apex_lift=apex_lift,
-                apex_at=apex_at,
+                apex_at=apex_at, crest_out=_crest,
             )
             if _tail:
                 smoothed_points = _join_tail(smoothed_points, _tail)
@@ -5898,6 +5934,11 @@ def render_tracer_video(
                     # both existing guards and is the thing a tracer
                     # must never do, so it travels with every clip.
                     "sharpness": apex_sharpness(_tail),
+                    # What `open_crest` did, or why it did not --
+                    # carried here so the produce log can say it
+                    # on the line the operator already reads,
+                    # rather than on a second logger.
+                    "crest": dict(_crest) if _crest else None,
                     "end_xy": [int(_tail[-1][1]), int(_tail[-1][2])],
                     "apex_lift": round(float(apex_lift), 1),
                     "apex_at": round(float(apex_at), 3),
