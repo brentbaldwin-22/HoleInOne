@@ -4704,6 +4704,7 @@ function EditWizard({
   // True only between the click and the server accepting the job — the
   // produce itself runs long after this component is gone.
   const [producing, setProducing] = useState(false);
+  const [clearingAim, setClearingAim] = useState(false);
   const [tracerError, setTracerError] = useState(null);
   // start|impact|end signature the current tracer was rendered against.
   // If Step 1 edits any of these frames, Next re-renders instead of
@@ -5007,6 +5008,42 @@ function EditWizard({
       onSaved?.(r);
     } catch (e) {
       console.warn("save metrics failed", e);
+    }
+  }
+
+  // THE SAVED AIM POINT ON THE SWING BEING EDITED, if there is one.
+  // Read straight off the record rather than from any local state:
+  // this wizard has no aim-point editor, so there is nothing local to
+  // read, and the whole point is to surface a value written somewhere
+  // else entirely.
+  const aimSwingIdx = isMulti ? selectedSwing : 0;
+  const aimOnSwing = (() => {
+    const e = swings[aimSwingIdx]?.tracer_end;
+    return Array.isArray(e) && e.length === 2
+      ? [Math.round(Number(e[0])), Math.round(Number(e[1]))] : null;
+  })();
+
+  async function clearSavedAim() {
+    setClearingAim(true);
+    try {
+      // NOT `persistPatch`. On a single-swing row that writes the patch
+      // at the TOP LEVEL of edit_metrics, which is right for the keys
+      // it was built for -- and wrong here, because produce reads this
+      // one from `swings[i]` and nowhere else. A top-level
+      // `tracer_end: null` would report success and change nothing.
+      //
+      // An explicit null, not a missing key: the save endpoint stores a
+      // null as a null, and leaving the key out keeps the override.
+      const next = swings.map((sw, i) =>
+        i === aimSwingIdx ? { ...sw, tracer_end: null } : sw);
+      setSwings(next);
+      const r = await api.saveEditMetrics(
+        adminPassword, row.id, { swings: next });
+      onSaved?.(r);
+    } catch (e) {
+      console.warn("could not clear the saved aim", e);
+    } finally {
+      setClearingAim(false);
     }
   }
 
@@ -5782,6 +5819,33 @@ function EditWizard({
               both by eye. So this hands those two numbers to the same
               pipeline produce uses and closes -- the work happens on the
               server and the production card shows its progress. */}
+          {/* THE SAVED AIM POINT, WHERE IT CAN BE SEEN AND TAKEN BACK.
+              `tracer_end` overrides the green->tee mapping on every
+              produce -- by design, because a saved one is supposed to
+              mean "the operator looked at the tee picture and said
+              HERE". But it is written by click-to-plot and this wizard
+              never touched it, so from HERE it was invisible and
+              immortal: produce after produce aimed at a point this
+              screen could not show, let alone clear, and re-plotting
+              the chains could not reach it because the chains were
+              never what it aimed at. */}
+          {aimOnSwing && (
+            <button
+              type="button"
+              className="ghost small"
+              style={{ width: "auto" }}
+              disabled={producing || clearingAim}
+              onClick={clearSavedAim}
+              title={`This swing has a saved aim point at (${
+                aimOnSwing[0]}, ${aimOnSwing[1]}) which overrides the `
+                + "green\u2192tee calibration every time it is produced. "
+                + "Clear it to let the calibration decide where the ball "
+                + "lands."}
+            >
+              {clearingAim ? "Clearing…" : `Clear saved aim (${
+                aimOnSwing[0]}, ${aimOnSwing[1]})`}
+            </button>
+          )}
           <button
             type="button"
             disabled={producing || !draft || !draft.ball

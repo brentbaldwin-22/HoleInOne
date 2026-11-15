@@ -96,6 +96,26 @@ check("  and a clearance makes Save available",
 check("control, Reset arc still exists", "Reset arc" in J, True)
 
 
+print("\n-- and from the edit wizard, which is where produce is pressed")
+# TWO EDITORS, ONE OVERRIDE. `tracer_end` is written by click-to-plot
+# and the edit wizard never touched it -- so from the wizard, which is
+# where ✎ Edit lands and where Produce is pressed, the override was
+# invisible AND immortal. Produce after produce aimed at a point that
+# screen could not show, let alone clear, and re-plotting the chains
+# could not reach it because the chains were never what it aimed at.
+check("the wizard surfaces a saved aim", "aimOnSwing" in J, True)
+check("  and can clear it", "clearSavedAim" in J, True)
+check("  with the coordinates on the button",
+      "Clear saved aim (" in J, True)
+# IT MUST WRITE INTO `swings[i]`. `persistPatch` puts a patch at the
+# TOP LEVEL on a single-swing row, and produce reads this key from the
+# swing and nowhere else -- so that spelling would report success and
+# change nothing.
+check("it writes into the swings array, not the top level",
+      "tracer_end: null } : sw)" in J, True)
+check("  and does NOT go through persistPatch",
+      bool(re.search(r"persistPatch\(\{\s*tracer_end", J)), False)
+
 print("\n-- produce says which source aimed the arc")
 _fn = next((n for n in ast.walk(ast.parse(P))
             if isinstance(n, ast.FunctionDef)
