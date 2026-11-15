@@ -3364,6 +3364,182 @@ def _drop_stalled_tail(pts: list) -> list:
     return out[:len(out) - n] if n else out
 
 
+# HOW FAR APART THE TWO LEGS ARE HELD AT THE CREST, in pixels. This is
+# the whole knob: raise it for a rounder top, lower it for a truer one.
+# It is the distance stepped back along each leg from the vertex to
+# place the fillet, so it is roughly the radius of the crest it draws.
+# Measured on a 460px-leg spike: 40px takes a 80-degree vertex to 46,
+# 80px takes it to 30 and reads as a proper top. Past that the cap
+# below binds and nothing more happens.
+CREST_BOW_PX = 90.0
+
+# ...but never more than this share of the arc's own size, so a short
+# tail is not given a crest wider than its flight.
+_CREST_BOW_MAX_FRAC = 0.18   # ...of the SHORTER leg; see below
+
+# PAST THIS TURN, the crest reads as a corner rather than a top, and
+# gets opened. Measured in degrees by `apex_sharpness`, which samples
+# by distance along the line.
+#
+# TRIGGERED ON THE ANGLE, NOT ON THE SPEED. The first version fired
+# when the drawn ball slowed below a pixel a frame, on the reasoning
+# that a path whose speed reaches zero has a cusp. True, and it
+# declines the case that actually gets complained about: rebuilt from
+# a real swing's geometry -- a landing down on the green rather than
+# back along the launch ray -- the ball keeps 1.2px a frame through a
+# 40-degree crest. Sharp to the eye, and nowhere near stopped.
+_CREST_MAX_TURN_DEG = 30.0
+
+# ...AND the turn must be CONCENTRATED at one point rather than spread
+# along the arc. See `apex_sharpness`: a smooth parabola scores about
+# 0.33 on that ratio and a spike about 1.09, so this sits well clear of
+# both. Without it the angle alone condemns good steep flights.
+_CREST_CONCENTRATION = 0.65
+
+
+def open_crest(tail, bow_px: float = CREST_BOW_PX):
+    """Hold the two legs apart where the drawn ball would otherwise stop.
+
+    THE CUSP IS IN THE SPEED, NOT THE CURVE. `_ballistic_tail` solves
+    along the flight and across it, and its across-axis starts at zero
+    speed by definition -- so at the along-apex the ball's entire
+    screen speed is |dv|/S, where dv is how far the landing sits across
+    the launch ray. A tee camera looks down the hole, dv is small, and
+    the measured speed at the crest reaches 0.00 px/frame: the path
+    goes out along a ray and comes back down the same ray, converging
+    to a point. That is a cusp in SPACE even though the curve is
+    perfectly smooth in its parameter, which is why neither a different
+    model nor a smoothing pass could touch it -- both were tried.
+
+    Opening it means drawing a path the ball did not take. That is a
+    decision, not a bug fix: a shot tracer is a drawing of a flight,
+    and a drawing that reads as a spike is wrong even when it is
+    faithful. So the licence is BOUNDED and it is spent only at the top.
+
+        offset(u) = bow * tanh((u - u_c)/sigma) * sin^2(pi*u)
+
+    along the normal to the flight at the crest, where u is the
+    fraction of the way along the tail and u_c is the crest.
+
+      - sin^2 is zero in VALUE and in SLOPE at both ends, so the
+        hand-off still leaves exactly along the tracked ball and the
+        landing is still exactly the landing. Neither measurement
+        moves. This is the same guarantee `_shape_tail` relies on.
+      - tanh is odd about the crest: the leg arriving is pushed one
+        way, the leg leaving the other, so the two are held about
+        `bow` apart instead of meeting at a point.
+      - and at the crest itself tanh is zero but its SLOPE is not, so
+        the ball now has a lateral speed exactly where it used to have
+        none. That is what turns the vertex into a radius.
+
+    Does nothing when the ball never slows enough to need it. Never
+    raises; returns the original on anything it cannot read.
+    """
+    try:
+        pts = [(int(p[0]), float(p[1]), float(p[2])) for p in (tail or [])]
+    except (TypeError, ValueError, IndexError):
+        return tail
+    n = len(pts)
+    if n < 9 or bow_px <= 0:
+        return tail
+
+    # IS THERE A CORNER AT ALL? Measured the same way it is reported,
+    # so the trigger and the number on the clip cannot disagree.
+    _sharp = apex_sharpness(pts)
+    if (_sharp.get("deg") or 0.0) <= _CREST_MAX_TURN_DEG:
+        return tail                     # gentle everywhere
+    if (_sharp.get("concentration") or 0.0) < _CREST_CONCENTRATION:
+        # Sharp, but the turn is SPREAD -- that is a steep flight, not
+        # a corner, and bowing it would damage a good arc. This is the
+        # check that matters: on angle alone a perfectly smooth steep
+        # parabola reads 40 degrees and would have been "repaired".
+        return tail
+
+    # WHERE THE CORNER IS. The sharpest point by the distance-sampled
+    # measure, falling back to the slowest point -- on a true cusp the
+    # two coincide, and on a short descent leg the sampler can step
+    # clean over the crest and report a bend further down.
+    _w = 3
+    sp = []
+    for i in range(n):
+        a, b = pts[max(0, i - _w)], pts[min(n - 1, i + _w)]
+        sp.append(math.hypot(b[1] - a[1], b[2] - a[2])
+                  / max(1, b[0] - a[0]))
+    k = min(range(n), key=lambda i: sp[i])
+    # A crest at the very start or end is not a crest; it is the arc
+    # running out of frames, and bowing there would tilt a measurement.
+    if k < 2 or k > n - 3:
+        return tail
+
+    # NEVER WIDER THAN THE SHORTER LEG.
+    #
+    # Measured against the whole arc first, which was wrong: on a
+    # landing close to the hand-off the descent leg is a few dozen
+    # pixels long, and a bow sized off the long ascent curled that
+    # short leg into a hook. The licence has to fit the smaller of the
+    # two things it is separating.
+    _up = 0.0
+    for a, b in zip(pts[:k], pts[1:k + 1]):
+        _up += math.hypot(b[1] - a[1], b[2] - a[2])
+    _dn = 0.0
+    for a, b in zip(pts[k:], pts[k + 1:]):
+        _dn += math.hypot(b[1] - a[1], b[2] - a[2])
+    leg = min(_up, _dn)
+    bow = min(float(bow_px), _CREST_BOW_MAX_FRAC * leg)
+    if bow < 4.0:
+        # Not enough room to open anything. Drawing a 2px kink in place
+        # of a vertex is not an improvement, it is a different artefact.
+        return tail
+
+    # ROUND THE CORNER, which is all this ever needed to be.
+    #
+    # Four shapes were tried before this one and every one of them was
+    # a sideways OFFSET -- weighted by sin^2, by a Gaussian, by a held
+    # tanh step, along one normal and then along each point's own. They
+    # moved the legs about (up to 42px) and left the vertex exactly as
+    # sharp, because shifting two lines sideways does not round the
+    # place they meet. The pictures said so each time.
+    #
+    # A corner is rounded by a fillet: step back a fixed DISTANCE along
+    # each leg from the vertex and replace what is between with a
+    # quadratic Bezier through those two points, pulled by the vertex.
+    #
+    #     B(t) = (1-t)^2*A + 2(1-t)t*V + t^2*C
+    #
+    # It leaves A and arrives at C along the legs' own directions, so
+    # there is no new corner at either join, and at t=0.5 it sits
+    # halfway between V and the chord -- the vertex becomes an arc.
+    #
+    # BY DISTANCE, NOT BY FRAME COUNT. At the crest the ball crawls, so
+    # a span of N frames there covers almost no ground; an earlier
+    # attempt filleted +-2 frames and moved the line 1.4px.
+    def _walk(start, step, want):
+        i, acc = start, 0.0
+        while 0 < i < n - 1 and acc < want:
+            j = i + step
+            acc += math.hypot(pts[j][1] - pts[i][1], pts[j][2] - pts[i][2])
+            i = j
+        return i
+
+    i0 = _walk(k, -1, bow)
+    i1 = _walk(k, +1, bow)
+    if i1 - i0 < 4:
+        return tail
+
+    ax, ay = pts[i0][1], pts[i0][2]
+    vx, vy = pts[k][1], pts[k][2]
+    cx, cy = pts[i1][1], pts[i1][2]
+    out = list(pts)
+    span = float(i1 - i0)
+    for j in range(i0 + 1, i1):
+        t = (j - i0) / span
+        w0, w1, w2 = (1 - t) ** 2, 2 * (1 - t) * t, t * t
+        out[j] = (pts[j][0],
+                  w0 * ax + w1 * vx + w2 * cx,
+                  w0 * ay + w1 * vy + w2 * cy)
+    return [(f, int(round(x)), int(round(y))) for f, x, y in out]
+
+
 # WHY THERE IS NO APEX REPAIR HERE, having tried two.
 #
 # The crest is sharp because the drawn ball STOPS there. Measured on a
@@ -4014,7 +4190,7 @@ def _arc_tail(pts, target_xy, fps, width, height, land_frame=None):
     return out
 
 
-def apex_sharpness(tail, step_px: float = 24.0) -> dict:
+def apex_sharpness(tail, step_px: float = 24.0, _depth: int = 0) -> dict:
     """How hard the drawn arc turns at its sharpest, and where.
 
     SAMPLED BY DISTANCE ALONG THE LINE, NOT BY FRAME. The first version
@@ -4044,7 +4220,8 @@ def apex_sharpness(tail, step_px: float = 24.0) -> dict:
     raises.
     """
     out = {"deg": None, "at_frame": None, "xy": None,
-           "step_px": float(step_px), "min_speed_px": None}
+           "step_px": float(step_px), "min_speed_px": None,
+           "concentration": None}
     try:
         pts = [(int(p[0]), float(p[1]), float(p[2])) for p in (tail or [])]
     except (TypeError, ValueError, IndexError):
@@ -4088,6 +4265,23 @@ def apex_sharpness(tail, step_px: float = 24.0) -> dict:
             out["xy"] = [int(round(P[i][1])), int(round(P[i][2]))]
     if worst >= 0:
         out["deg"] = round(worst, 1)
+
+    # IS THE TURN CONCENTRATED, OR SPREAD? This is what tells a spike
+    # from a steep-but-smooth arc, and the angle alone cannot: a good
+    # parabola rebuilt from a real swing reads ~40 degrees at this
+    # stride and looks perfect.
+    #
+    # Read the same line at four times the stride. On a real flight the
+    # turn is distributed, so a longer step sweeps through more of it
+    # and the angle GROWS -- measured 12.5 degrees at 24px against 38.4
+    # at 96px, a ratio of 0.33. On a spike the whole turn happens at
+    # one vertex, so every stride reports the same thing -- 79.7
+    # against 73.0, a ratio of 1.09. Nothing else separated them.
+    if _depth <= 0 and out["deg"] is not None:
+        wide = apex_sharpness(pts, step_px=float(step_px) * 4.0,
+                              _depth=1).get("deg")
+        if wide:
+            out["concentration"] = round(out["deg"] / wide, 2)
     return out
 
 
@@ -4538,7 +4732,11 @@ def _extend_to_target(pts, target_xy, fps, width, height,
             "both continuation models curled back on themselves, so no "
             "line was drawn rather than a loop. The flight time or the "
             "landing is wrong")
-    return _shape_tail(tail, apex_lift, apex_at), kind, None
+    # THE CREST LAST, after the operator's own shaping, so what it
+    # measures is the line that will actually be drawn. It declines
+    # unless the turn is both sharp AND concentrated at one point --
+    # a steep flight is not a corner. See `open_crest`.
+    return open_crest(_shape_tail(tail, apex_lift, apex_at)), kind, None
 
 
 # A BALL DOES NOT FLY IN A LOOP.
