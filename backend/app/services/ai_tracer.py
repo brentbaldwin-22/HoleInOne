@@ -4893,9 +4893,27 @@ def _clip_point_to_frame(ax, ay, bx, by, w, h):
     return ax + (bx - ax) * t_min, ay + (by - ay) * t_min
 
 
+# HOW FAR AHEAD OF THE BALL THE DRAWN TIP RUNS, as a multiple of its
+# observed progress. 1.0 is the ball's own pace.
+#
+# THE TIP IS NOT THE BALL. The flight is timed to the other camera's
+# clock and the tee half is cut where the green half begins, so on a
+# long shot the cut arrives with the arc only part drawn -- the line
+# stops in mid-air, which reads as the tracer being too slow, because
+# next to it the real ball has already gone. Running the tip ahead
+# covers more of the arc in the SAME frames: the geometry, the
+# duration and the cut are all untouched, only how much of the line is
+# uncovered on each one.
+#
+# Raise it to have the tracer reach further before the cut; 1.0 puts
+# it back on the ball's own pace.
+TRACER_PACE = 1.35
+
+
 def _tip_reveal_schedule(
     samples: list[tuple[int, int, int]],
     anchors: list[tuple[int, int, int]],
+    pace: float = None,
 ) -> tuple[int, int, list[int]] | None:
     """Per-frame reveal counts so the drawn tip follows the ball's
     OBSERVED progress along the smooth curve.
@@ -4959,7 +4977,17 @@ def _tip_reveal_schedule(
     # From the last knot's frame on, the whole curve is visible (any
     # tail past the final anchor's projection appears with it).
     counts.append(len(samples))
-    return first_f, last_f, _ease_reveal(counts, samples)
+    sched = _ease_reveal(counts, samples)
+
+    # THE PACE, APPLIED LAST. After the easing, so the two do not fight
+    # -- `_ease_reveal` is zero-sum across the frames it is given and
+    # scaling it afterwards keeps that shape, just further along. The
+    # counts stay non-decreasing, which the caller's slice relies on.
+    _p = TRACER_PACE if pace is None else float(pace)
+    if _p and abs(_p - 1.0) > 1e-6:
+        _n = len(samples)
+        sched = [min(_n, max(1, int(round(c * _p)))) for c in sched]
+    return first_f, last_f, sched
 
 
 # THE SLOWEST THE DRAWN TIP MAY CRAWL, in pixels per source frame.
@@ -5990,7 +6018,8 @@ def render_tracer_video(
             "%d smoothed render points (parabola)%s",
             len(anchors), len(rejected_indices), len(smoothed_points),
             (
-                f", tip timing remapped over {len(reveal_sched[2])} frames"
+                f", tip timing remapped over {len(reveal_sched[2])} "
+                f"frames at pace {TRACER_PACE:.2f}"
                 if reveal_sched else ""
             ),
         )
