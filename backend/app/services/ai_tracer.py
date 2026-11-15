@@ -3986,6 +3986,62 @@ def _arc_tail(pts, target_xy, fps, width, height, land_frame=None):
     return out
 
 
+def apex_sharpness(tail, win: int = 6) -> dict:
+    """How hard the drawn arc turns at its sharpest, and where.
+
+    A GOLF TRACER THAT CORNERS IS THE COMPLAINT, and nothing measured
+    it. `_turns_back_on_itself` catches a tail that loops (>200 degrees
+    of TOTAL turn) and `_tail_refused` catches an apex off the top of
+    the picture; a clean 90-degree corner at the top of the arc passes
+    both, and is exactly the thing a shot tracer must never do.
+
+    The cause is in `_ballistic_tail`'s own algebra. It defines the
+    across-axis to start at zero speed -- "across is defined by where
+    the ball was going" -- so every bit of sideways motion has to come
+    from the curvature that reaches the landing, `qv = dv/S^2`. At the
+    along-apex the along-speed is zero by construction, so the whole
+    screen speed there is |dv|/S and the radius of curvature collapses
+    to
+
+        R = dv^2 / (2*v*S)
+
+    where `dv` is how far the landing sits ACROSS the launch ray. On a
+    camera looking down the line that offset is small, R falls to a
+    fraction of a pixel, and the model draws an arc that is smooth in
+    the mathematics and a spike on the screen. Measured on this code:
+    dv=5px gives a 90 degree corner, dv=150px gives 25.
+
+    Reported in DEGREES OVER `win` FRAMES, the scale an eye reads --
+    per-frame, integer rounding dominates and every tail looks jagged.
+    Never raises.
+    """
+    out = {"deg": None, "at_frame": None, "xy": None, "win": int(win)}
+    try:
+        pts = [(int(p[0]), float(p[1]), float(p[2])) for p in (tail or [])]
+    except (TypeError, ValueError, IndexError):
+        return out
+    step = max(1, int(win))
+    P = pts[::step]
+    if len(P) < 3:
+        return out
+    worst = -1.0
+    for i in range(1, len(P) - 1):
+        ax, ay = P[i][1] - P[i - 1][1], P[i][2] - P[i - 1][2]
+        bx, by = P[i + 1][1] - P[i][1], P[i + 1][2] - P[i][2]
+        la, lb = math.hypot(ax, ay), math.hypot(bx, by)
+        if la < 1e-9 or lb < 1e-9:
+            continue
+        c = max(-1.0, min(1.0, (ax * bx + ay * by) / (la * lb)))
+        d = math.degrees(math.acos(c))
+        if d > worst:
+            worst = d
+            out["at_frame"] = P[i][0]
+            out["xy"] = [int(round(P[i][1])), int(round(P[i][2]))]
+    if worst >= 0:
+        out["deg"] = round(worst, 1)
+    return out
+
+
 def _shape_tail(tail, lift=0.0, at=0.5):
     """Reshape a tail: how HIGH it goes, and WHERE it peaks.
 
@@ -5261,6 +5317,11 @@ def render_tracer_video(
                 "land_frame": (int(target_frame)
                                if target_frame is not None else None),
                 "apex_y": int(min(p[2] for p in _tail)),
+                # HOW HARD IT TURNS AT ITS SHARPEST. See
+                # `apex_sharpness`: a corner at the top passes
+                # both existing guards and is the thing a tracer
+                # must never do, so it travels with every clip.
+                "sharpness": apex_sharpness(_tail),
                 "end_xy": [int(_tail[-1][1]), int(_tail[-1][2])],
                 "apex_lift": round(float(apex_lift), 1),
                 "apex_at": round(float(apex_at), 3),
@@ -5536,6 +5597,11 @@ def render_tracer_video(
                     "land_frame": (int(target_frame)
                                    if target_frame is not None else None),
                     "apex_y": int(min(p[2] for p in _tail)),
+                    # HOW HARD IT TURNS AT ITS SHARPEST. See
+                    # `apex_sharpness`: a corner at the top passes
+                    # both existing guards and is the thing a tracer
+                    # must never do, so it travels with every clip.
+                    "sharpness": apex_sharpness(_tail),
                     "end_xy": [int(_tail[-1][1]), int(_tail[-1][2])],
                     "apex_lift": round(float(apex_lift), 1),
                     "apex_at": round(float(apex_at), 3),

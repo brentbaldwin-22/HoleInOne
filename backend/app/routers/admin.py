@@ -34273,6 +34273,8 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                             or ((_rv or {}).get("tail") or {}).get("why")),
                     "kind": ((_rv or {}).get("tail") or {}).get("kind"),
                     "frames": ((_rv or {}).get("tail") or {}).get("frames"),
+                    "sharpness": ((_rv or {}).get("tail")
+                                  or {}).get("sharpness"),
                     # See the swing record above: the duration the arc
                     # was given, and where that number came from.
                     "timing": _timing,
@@ -34300,6 +34302,24 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
             # ball drawn from a third of a second of track comes down on
             # the wrong side of the green.
             _tl = (_rv or {}).get("tail") or {}
+            # HOW SHARP THE APEX CAME OUT. The complaint that has
+            # outlived every other one on this path is "the tracer
+            # corners at the top", and no number anywhere said how
+            # sharp any given arc was -- so each round was a screenshot
+            # and an argument. See ai_tracer.apex_sharpness: a real
+            # flight turns gradually, and anything past about 40
+            # degrees in a sixth of a second reads as a corner.
+            _sh = (_tl.get("sharpness") or {}).get("deg")
+            if _sh is not None:
+                log.info(
+                    "d3 produce: swing %s tracer turns %.0f° at its "
+                    "sharpest%s — a flight turns gradually, so past "
+                    "~40° this is the hard apex",
+                    i, float(_sh),
+                    (" (around %s)" % ((_tl.get("sharpness") or {})
+                                       .get("xy"),))
+                    if (_tl.get("sharpness") or {}).get("xy") else "",
+                )
             log.info(
                 "d3 produce: swing %s aim=%s model=%s over %s frame(s) "
                 "— %s",
