@@ -3318,6 +3318,11 @@ LOOK_COLORS = {
     "too big": (255, 255, 0),        # over the size cap
     "on the golfer": (160, 160, 160),  # inside a stance, read as a shoe
     "shape": (255, 160, 0),          # refused before any score
+    # TOO DIM TO BE A CANDIDATE AT ALL -- found only by the second
+    # pass, which lowers the binarisation threshold purely to report.
+    # Never treated as a ball; this says "there IS something here and
+    # the floor is hiding it".
+    "under the floor": (255, 80, 220),
 }
 
 
@@ -3494,6 +3499,10 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
                     if _v == "shape":
                         cv2.drawMarker(out, (_ex, _ey), _col,
                                        cv2.MARKER_TILTED_CROSS, 9, 2,
+                                       cv2.LINE_AA)
+                    elif _v == "under the floor":
+                        cv2.drawMarker(out, (_ex, _ey), _col,
+                                       cv2.MARKER_DIAMOND, 11, 2,
                                        cv2.LINE_AA)
                     elif _v == "off the ground":
                         # THE SHAPE SAYS "OUTSIDE THE BAND". A down

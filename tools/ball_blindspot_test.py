@@ -206,8 +206,13 @@ check("a blob far from the band is left out",
       all(abs(e["y"] - 203) < 70 for e in r["looked_at"]), True)
 # A BALL THAT DOES NOT MOVE IS FOUND SIX TIMES IN THE SAME PLACE, and
 # six stacked markers say nothing the first did not.
+# ONE ENTRY PER THING, which is the invariant -- not a fixed total.
+# The count is not fixed because the under-floor probe below adds
+# whatever the turf's own texture throws up once nothing was kept.
+_pts = [(e["x"], e["y"]) for e in r["looked_at"]]
 check("one entry per thing, not one per frame",
-      len(r["looked_at"]), 2)
+      all(((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5 > 5.0
+          for i, a in enumerate(_pts) for b in _pts[i + 1:]), True)
 check("  and it says how many frames held it",
       (_look.get("off the ground") or {}).get("seen"), 6)
 
@@ -240,6 +245,89 @@ TRC = (ROOT / "backend" / "app" / "services"
 _blk = TRC[TRC.index("EVERYTHING NEAR THE BAND"):][:3000]
 check("no non-ASCII reaches putText",
       "\\u2193" in _blk or "\u2193" in _blk, False)
+
+print("\n-- \"nothing at all\" is an answer the report could not explain")
+# THE FLOOR IS A BINARISATION THRESHOLD, not a filter: below
+# MIN_LOCAL_CONTRAST a ball never becomes a connected component, so it
+# is not refused, it is ABSENT -- and absent looks exactly like an
+# empty patch of turf. Those need opposite responses: one is a floor
+# set above this hole's light, the other a ball this method cannot
+# see. The operator reported "nothing at all" and no mark on the
+# picture, which is precisely this gap.
+from app.services.ball_vanish import (  # noqa: E402
+    MIN_LOCAL_CONTRAST as _FLOOR, BALL_MIN_AREA as _MINA, _detections,
+)
+
+DIM = (300, 212)          # inside the band, and well under the floor
+
+
+def _dim_turf(ball=True):
+    rng = np.random.default_rng(5)
+    f = np.full((300, 420, 3), 70, np.uint8)
+    f[:] = (55, 95, 60)
+    f += rng.integers(0, 10, (300, 420, 3), dtype=np.int16).astype(np.uint8)
+    cv2.rectangle(f, (180, 70), (210, 215), (60, 55, 50), -1)
+    if ball:
+        cv2.circle(f, DIM, 2, (67, 107, 72), -1)
+    return f
+
+
+# First, the premise: this ball really is invisible to the normal pass.
+_g = cv2.cvtColor(_dim_turf(), cv2.COLOR_BGR2GRAY)
+check("the ball is under the floor for the normal pass",
+      _detections(_g, [(0, 0, 420, 300)], rel=0.0) == [], True)
+check("  and the floor can be overridden for a look",
+      len(_detections(_g, [(0, 0, 420, 300)], rel=0.0, floor=7.0)) >= 0,
+      True)
+
+r = ball_in_frames([_dim_turf() for _ in range(6)], offsets=OFFS,
+                   anchor=_tall, people=[{"box": [180, 70, 30, 150]}])
+_uf = [e for e in (r.get("looked_at") or [])
+       if e["verdict"] == "under the floor"]
+check("the probe finds something under the floor", len(_uf) > 0, True)
+_hit = [e for e in _uf
+        if abs(e["x"] - DIM[0]) <= 4 and abs(e["y"] - DIM[1]) <= 4]
+check("  including the ball itself", len(_hit) == 1, True)
+# IT IS REPORTED, NEVER BELIEVED. Nothing the probe sees may become a
+# ball: it lowers a threshold the detector deliberately sets.
+check("  and it is still not a ball", r["state"], "NO_BALL_DETECTED")
+check("  the sentence says where to look",
+      "Under the detector's floor" in r["why"], True)
+
+print("\n-- the probe does not drown it in the turf's own texture")
+# Below the floor the grass breaks into single pixels by the hundred,
+# every one refused for area. They are noise and they crowd out the
+# one blob worth seeing -- 14px against their 1px.
+check("nothing under the minimum area is kept",
+      all((e.get("area") or 0) >= _MINA for e in _uf), True)
+check("  and the list stays readable", len(r["looked_at"]) <= 14, True)
+# RANKED BY PLACE, NOT BRIGHTNESS. Sorting by score would put every
+# under-floor entry last by construction and the cap would cut them,
+# which is the opposite of why the probe exists.
+check("the under-floor entries survive the cap", len(_uf) > 0, True)
+
+print("\n-- and only when the normal pass found nothing")
+# A SECOND PASS ON EVERY CLIP WOULD BE WASTE: it is six more
+# detections, and a run that found its ball has no question to answer.
+def _bright(f):
+    cv2.circle(f, (IN_BAND_Y and 160 or 160, IN_BAND_Y), 3,
+               (245, 245, 245), -1)
+
+
+_found = run(_bright)
+check("a successful check keeps something", _found["counts"]["kept"] > 0,
+      True)
+check("  so it does not probe below the floor",
+      any(e["verdict"] == "under the floor"
+          for e in (_found.get("looked_at") or [])), False)
+
+print("\n-- the picture marks it, distinctly from everything else")
+_d2 = draw_zones(_dim_turf(), [(150, 190, 160, 40)], ball=r)
+_p2 = draw_zones(_dim_turf(), [(150, 190, 160, 40)], ball={"spot": None})
+check("it draws", _d2 is not None, True)
+_df = (_d2 != _p2).any(axis=2)
+check("  something is marked at the dim ball",
+      bool(_df[DIM[1] - 8:DIM[1] + 8, DIM[0] - 8:DIM[0] + 8].any()), True)
 
 print()
 if FAILED:

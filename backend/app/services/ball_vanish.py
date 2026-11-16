@@ -57,6 +57,12 @@ MAX_ASPECT = 2.2
 # bright patches; they are not brighter than what is right beside them.
 MIN_LOCAL_CONTRAST = 18.0
 
+# HOW FAR BELOW THE FLOOR TO LOOK WHEN NOTHING WAS FOUND. Reporting
+# only: see the second pass in `ball_in_frames`. Low enough to catch a
+# ball the floor is hiding, high enough that the turf's own texture
+# does not fill the picture with marks.
+UNDER_FLOOR_PROBE = 7.0
+
 # ── A BALL IN FLIGHT IS NOT ROUND ───────────────────────────────────
 #
 # AND MAX_ASPECT THREW EVERY ONE OF THEM AWAY. The two gates above
@@ -235,7 +241,7 @@ def _axis_gap_deg(a, b):
 def _detections(gray, roi_boxes, rel: float = 0.55, rejects=None,
                 stats_out=None, min_area=None, max_area=None,
                 kernel_px: int = 15, motion=None, motion_toward=None,
-                shapes_out=None):
+                shapes_out=None, floor=None):
     """Small, round, locally bright things inside the boxes.
 
     `rel` scales the threshold off the BRIGHTEST thing in the box.
@@ -310,13 +316,22 @@ def _detections(gray, roi_boxes, rel: float = 0.55, rejects=None,
         _kp = max(3, int(kernel_px) | 1)
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_kp, _kp))
         hat = cv2.morphologyEx(sub, cv2.MORPH_TOPHAT, k)
+        # THE FLOOR IS A BINARISATION THRESHOLD, NOT A FILTER, which
+        # is the whole reason it needs an override. Everything under
+        # it is never a connected component, so it cannot be reported
+        # as refused -- it does not exist. A caller that has found
+        # nothing and wants to know whether there was anything THERE
+        # has no way to ask without lowering the threshold and
+        # looking again. See ball_in_frames' second pass.
+        _floor = (float(MIN_LOCAL_CONTRAST) if floor is None
+                  else max(1.0, float(floor)))
         if stats_out is not None:
             stats_out.append({"box": [x0, y0, x1, y1],
                               "hat_max": int(hat.max()),
-                              "needs": int(MIN_LOCAL_CONTRAST)})
-        if hat.max() < MIN_LOCAL_CONTRAST:
+                              "needs": int(round(_floor))})
+        if hat.max() < _floor:
             continue
-        thr = max(MIN_LOCAL_CONTRAST, float(rel) * float(hat.max()))
+        thr = max(_floor, float(rel) * float(hat.max()))
         _, mask = cv2.threshold(hat, thr, 255, cv2.THRESH_BINARY)
         n, _lab, stats, cents = cv2.connectedComponentsWithStats(
             mask.astype(np.uint8), 8)
@@ -1147,6 +1162,84 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
         # BIGGEST FIRST: among blobs in the band, the largest is the
         # likeliest ball, and a one-pixel speck rejected for being
         # one pixel is not news.
+        # ── AND IF NOTHING WAS SEEN AT ALL, LOOK LOWER ──────────────
+        #
+        # "Nothing at all" is the one answer the report above cannot
+        # explain, because the floor is a BINARISATION THRESHOLD: a
+        # ball dimmer than MIN_LOCAL_CONTRAST never becomes a blob, so
+        # it is not refused, it is absent, and absent looks identical
+        # to an empty patch of turf.
+        #
+        # Those need opposite fixes -- one is a floor set above this
+        # hole's light, the other a ball that is not visible to this
+        # method at all -- and the operator cannot tell them apart by
+        # looking at a picture with no marks on it.
+        #
+        # So: one more pass at a lower floor, ONLY when the first
+        # found nothing in the band, and only to report. Nothing it
+        # finds is ever treated as a ball; the entries are marked
+        # "under the floor" and carry the number a floor would have to
+        # drop to in order to see them.
+        _under = []
+        if not any(e["verdict"] == "kept" for e in _looked):
+            for fr in shots[:int(before)]:
+                if fr is None:
+                    continue
+                try:
+                    _g2 = cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY)
+                    _rj2 = []
+                    for d in _detections(_g2, boxes, rel=0.0,
+                                         floor=UNDER_FLOOR_PROBE,
+                                         rejects=_rj2):
+                        if float(d[3]) >= float(MIN_LOCAL_CONTRAST):
+                            continue        # the first pass had this
+                        _under.append({"x": float(d[0]), "y": float(d[1]),
+                                       "area": int(d[2]),
+                                       "score": round(float(d[3]), 1),
+                                       "verdict": "under the floor"})
+                    # AND THE ONES IT REFUSED ON SHAPE DOWN HERE, which
+                    # is most of them: a blob this close to the noise
+                    # is ragged, so it fails MIN_FILL as well as the
+                    # floor. Measured on a synthetic ball at a top-hat
+                    # of 11 -- "fills 0.47 of its 5x6 box, needs 0.55".
+                    # Collecting only what the detector RETURNED left
+                    # exactly the case this probe exists for invisible,
+                    # which is the same mistake twice in one function.
+                    for _r in _rj2:
+                        # BIG ENOUGH TO HAVE BEEN A BALL. Below the
+                        # floor the turf's own texture breaks into
+                        # single pixels by the hundred, all of them
+                        # refused for area and all of them noise;
+                        # they crowd out the one blob worth seeing,
+                        # which on a synthetic ball was 14px against
+                        # their 1px.
+                        if int(_r.get("area") or 0) < BALL_MIN_AREA:
+                            continue
+                        _under.append({
+                            "x": float(_r["x"]), "y": float(_r["y"]),
+                            "area": int(_r.get("area") or 0),
+                            "score": None,
+                            "verdict": "under the floor",
+                            "why": str(_r.get("why") or "")})
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("ball: under-floor probe failed (%s)", exc)
+                    break
+            # ONLY WHAT THE FIRST PASS COULD NOT SEE AT ALL. A blob
+            # the normal pass already classified -- too faint, off the
+            # ground -- has a better verdict than "under the floor",
+            # and adding a second entry for it would both duplicate
+            # the marker and make `seen` count two different kinds of
+            # look as one number.
+            _under.sort(key=lambda e: -(e.get("area") or 0))
+            _fresh = []
+            for _u in _under:
+                if any(((_u["x"] - _o["x"]) ** 2
+                        + (_u["y"] - _o["y"]) ** 2) ** 0.5 <= 5.0
+                       for _o in _looked):
+                    continue
+                _fresh.append(_u)
+            _looked.extend(_fresh[:12])
+
         # ── WHAT TO SHOW, AND WHAT IS NOISE ─────────────────────────
         #
         # The whole frame is full of refused specks; the only ones
@@ -1186,8 +1279,26 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                 if (_e.get("score") or -1) > (_dup.get("score") or -1):
                     _dup.update({k: _e[k] for k in
                                  ("score", "verdict", "area")})
-        _show.sort(key=lambda e: (-(e.get("score") or 0),
-                                  -(e.get("area") or 0)))
+        # RANKED BY PLACE, NOT BY BRIGHTNESS. Sorting by score and
+        # capping was a trap of its own making: the entries most worth
+        # seeing are the DIM ones near where the ball should be, and
+        # they are exactly the ones a brightness ranking drops off the
+        # end. The under-floor probe above would have been sorted last
+        # and cut, which is the opposite of why it exists.
+        #
+        # So: inside the band beats near it, nearer beats further, and
+        # brightness only breaks ties.
+        if _band:
+            _mid = (float(_band[0]) + float(_band[1])) / 2.0
+        else:
+            _mid = None
+
+        def _rank(e):
+            _in = 0 if (_band and _band[0] <= e["y"] <= _band[1]) else 1
+            _d = 0.0 if _mid is None else abs(e["y"] - _mid)
+            return (_in, _d, -(e.get("score") or 0))
+
+        _show.sort(key=_rank)
         out["looked_at"] = [
             {k: v for k, v in dict(
                 e, x=int(round(e["x"])), y=int(round(e["y"]))).items()
@@ -1321,6 +1432,24 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             elif _shape_n:
                 _shape = (" %d more never became candidates (size or "
                           "shape), none of them in the band." % _shape_n)
+            # AND THE ANSWER TO "NOTHING AT ALL". When the report
+            # above is empty the operator is looking at a clip with a
+            # ball plainly in it and a picture with no marks on it.
+            # This is the only line that separates "the floor is above
+            # this hole's light" from "the ball is not visible to this
+            # method", and those need opposite responses.
+            _deep = ""
+            _uf = [e for e in (out.get("looked_at") or [])
+                   if e.get("verdict") == "under the floor"]
+            if _uf:
+                _u0 = max(_uf, key=lambda e: e.get("area") or 0)
+                _deep = (
+                    " Under the detector's floor of %.0f there was a %dpx "
+                    "blob at (%d, %d)%s — too dim to become a candidate at "
+                    "all, so no bar above ever saw it."
+                    % (MIN_LOCAL_CONTRAST, _u0.get("area") or 0,
+                       _u0["x"], _u0["y"],
+                       (": %s" % _u0["why"]) if _u0.get("why") else ""))
             _close = ""
             if _nb is not None:
                 _close = (
@@ -1341,7 +1470,7 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                    int(cap_area), float(min_contrast),
                    "" if _band is None
                    else ", ball must sit y %d..%d" % (_band[0], _band[1]))
-                + _close + _shape)
+                + _close + _shape + _deep)
             # THE SEARCH RAN AND CAME BACK EMPTY, which is a different
             # answer from "could not look" -- the branches that could
             # not look leave the initialiser's INCONCLUSIVE alone.
