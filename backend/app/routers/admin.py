@@ -16314,6 +16314,10 @@ def _test_cut_run(
                             cut_entry["frames_confidence"] = _jf.get(
                                 "confidence")
                             cut_entry["frames_reason"] = _jf.get("reason")
+                            # WHICH WAY ROUND THEY STAND. Rides along
+                            # on the judge's own call, and is never
+                            # part of the verdict -- see the prompt.
+                            cut_entry["frames_handed"] = _jf.get("handed")
                             _final = {
                                 "is_swing": _jf.get("is_swing"),
                                 "confidence": _jf.get("confidence"),

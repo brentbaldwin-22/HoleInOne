@@ -441,6 +441,19 @@ export function CutVerdicts({ cuts }) {
                   <div className="muted">
                     {c.frames_reason}
                   </div>
+                  {/* WHICH WAY ROUND THEY STAND.
+                      From the same call that judged
+                      the swing, so it costs
+                      nothing extra -- and it is
+                      NOT part of the verdict: a
+                      golfer whose handedness could
+                      not be read still swung. */}
+                  {c.frames_handed && (
+                    <div className="muted">
+                      stance:{" "}
+                      <b>{c.frames_handed}-handed</b>
+                    </div>
+                  )}
                   {/* AND WHICH ONE WON. The row's
                       own verdict column already
                       shows it, but not next to the

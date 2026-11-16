@@ -9383,8 +9383,30 @@ _JUDGE_SWING_FRAMES_PROMPT = (
     "show a person with a club, answer false whatever shape the heat "
     "map makes.\n"
     "Say in `reason` what you actually saw in the FRAMES.\n"
+    # ── AND WHICH WAY ROUND THEY STAND ──────────────────────────────
+    #
+    # A SEPARATE QUESTION, ASKED LAST, AND IT MUST NOT MOVE THE FIRST
+    # ONE. The swing verdict above is tuned and A/B-tested against
+    # real clips; this rides along on a call that is being made
+    # anyway, so it is close to free, but a model that starts
+    # reasoning about stance before it answers `is_swing` is a
+    # different judge from the one that was measured.
+    #
+    # `handed` IS NOT PART OF THE VERDICT. Nothing downstream may
+    # refuse a swing because the handedness was unclear -- "unknown"
+    # is a first-class answer and the common one when the golfer is
+    # side-on or small in frame.
+    "SEPARATELY, and only after you have decided `is_swing`: which "
+    "way round does the golfer stand? A RIGHT-handed golfer swings "
+    "with the club travelling right-to-left from this camera's view "
+    "and finishes with their chest turned to the LEFT of where they "
+    "started; a LEFT-handed golfer is the mirror of that. Use the "
+    "address tile and the finish tile. Answer \"unknown\" freely -- a "
+    "guess is worse than nothing here, and this never changes "
+    "`is_swing`.\n"
     'Reply with JSON only:\n{"is_swing": true|false, '
-    '"confidence": "high"|"medium"|"low", "reason": "<one short sentence>"}'
+    '"confidence": "high"|"medium"|"low", "reason": "<one short '
+    'sentence>", "handed": "right"|"left"|"unknown"}'
 )
 
 
@@ -9703,6 +9725,11 @@ def judge_swing_with_frames(frames_path, image_path,
         out["is_swing"] = parsed["is_swing"]
     out["confidence"] = parsed.get("confidence")
     out["reason"] = parsed.get("reason")
+    # ONLY THE THREE WORDS IT WAS OFFERED. A model that answers
+    # "right-handed" or "righty" or "R" would otherwise reach the
+    # page as a fourth value nothing renders.
+    _h = str(parsed.get("handed") or "").strip().lower()
+    out["handed"] = _h if _h in ("right", "left") else None
     return out
 
 
