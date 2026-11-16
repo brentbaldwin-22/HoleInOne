@@ -149,8 +149,61 @@ for _lbl, _vid, _gates, _ok in (
         # AND IT SAYS WHY, in the operator's own units.
         _cons = _r.get("considered") or []
         _said = [c.get("why") or "" for c in _cons]
-        check("    naming the cone and the bearing",
-              any("cone" in w and "off vertical" in w for w in _said), True)
+        # EITHER TEST MAY BE THE ONE THAT REFUSED, and the sentence
+        # has to say which: a chain outside the WEDGE is in the wrong
+        # part of the picture, a chain with the wrong HEADING is in
+        # the right part going the wrong way, and they want different
+        # answers from the operator.
+        check("    naming the wedge or the heading, with the numbers",
+              any(("wedge of" in w or "travelling at" in w)
+                  and "+" in w for w in _said), True)
+
+print("\n-- the wedge and the heading are different tests")
+# A BIRD INSIDE THE WEDGE, GOING THE WRONG WAY. It sits where a ball
+# can be and travels where a ball cannot, so the wedge keeps it and
+# only the heading throws it out. Built as a chain by hand, because
+# the point is the arithmetic rather than the detector.
+_TEE = (330.0, 400.0)
+
+
+def _chain_from(x0, y0, vx, vy, n=10):
+    return [{"frame": 40 + i, "x": int(x0 + vx * i), "y": int(y0 + vy * i)}
+            for i in range(n)]
+
+
+def _wedge_hits(pts, lo, hi):
+    _out = []
+    for q in pts:
+        dx, dy = q["x"] - _TEE[0], q["y"] - _TEE[1]
+        if math.hypot(dx, dy) < 15.0:
+            continue
+        b = math.degrees(math.atan2(dx, -dy))
+        if not (lo <= b <= hi):
+            _out.append(b)
+    return len(_out)
+
+
+_ball = _chain_from(400, 360, 12, -7)
+# A SHORT BIRD, so it is still inside the wedge for its whole length.
+# A longer one eventually crosses out, which is the wedge doing its
+# job -- but then the demonstration would be about chain length
+# rather than about the two tests being different.
+_bird = _chain_from(560, 300, -11, -6, n=4)
+check("the ball's points sit inside the wedge",
+      _wedge_hits(_ball, 45, 77), 0)
+check("  and so do this bird's — the wedge cannot tell them apart",
+      _wedge_hits(_bird, 45, 77), 0)
+_bh = math.degrees(math.atan2(-11, 6))
+check("  but the bird TRAVELS outside the cone",
+      45 <= _bh <= 77, False)
+check("  while the ball travels inside it",
+      45 <= math.degrees(math.atan2(12, 7)) <= 77, True)
+# AND A BALL IN THE RIGHT DIRECTION ON THE WRONG SIDE OF THE HOLE is
+# the mirror case, which only the wedge catches.
+_far = _chain_from(120, 360, 12, -7)
+check("a correct heading on the far side is outside the wedge",
+      _wedge_hits(_far, 45, 77) > 0, True)
+
 
 print("\n-- the window is honoured when the hole sets one")
 _r = find_ascents(RIGHT, float(FPS), IMPACT, TEE,

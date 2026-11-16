@@ -1954,6 +1954,7 @@ DESCENT_WHY_COLORS = {
     "points": "#b5487d",
     # Leaning too far off vertical to be falling.
     "tilt": "#2fa8b5",
+    "cone": "#d946ef",
     # "Landed" at the very edge of the picture, which means it left.
     "edge": "#7d6b4f",
     # "Landed" up where the sky is, which means it is not a ball.
@@ -4426,17 +4427,52 @@ def find_ascents(
             #
             # THIS IS THE DIRECTIONAL VERSION OF `ascent_max_tilt_deg`,
             # which takes absolute values and so asks "within N of
-            # vertical, either side". Both apply: the cone cannot
-            # widen what tilt refuses, and tilt cannot tell left from
-            # right. A hole that sets no cone gets the full half-turn
-            # and nothing changes.
+            # vertical, either side". That gate lives in the SWEEP,
+            # not here -- this search has never had one -- so the cone
+            # is the only heading test on this path. A hole that sets
+            # no cone gets the full half-turn and nothing changes.
             _bearing = math.degrees(math.atan2(_vx, -_vy))
             _row["bearing_deg"] = round(_bearing, 1)
             if _CONE_LO > -180.0 or _CONE_HI < 180.0:
+                # ── TWO TESTS, AND THEY ARE NOT THE SAME TEST ───────
+                #
+                # The operator drew a WEDGE anchored at the tee --
+                # where the ball can BE. The heading asks which way
+                # it is GOING. For a struck ball the two agree; they
+                # part company on exactly the thing a cone is for.
+                #
+                # Measured on this scene: a bird crossing the picture
+                # SITS at +66 degrees from the tee, squarely inside a
+                # 45..77 wedge, while TRAVELLING at -61. The wedge
+                # alone keeps it. The heading alone would admit a ball
+                # flying the right way on the other side of the hole.
+                #
+                # So both, and the report says which refused.
+                _out = []
+                for _q in pts:
+                    _dx = float(_q["x"]) - bx
+                    _dy = float(_q["y"]) - by
+                    # NOT RIGHT ON THE APEX: within a few pixels of
+                    # the ball the bearing is noise, and the first
+                    # point of a real chain is routinely 200px up
+                    # anyway.
+                    if math.hypot(_dx, _dy) < 15.0:
+                        continue
+                    _b = math.degrees(math.atan2(_dx, -_dy))
+                    if not (_CONE_LO <= _b <= _CONE_HI):
+                        _out.append(round(_b, 1))
+                _row["out_of_wedge"] = len(_out)
+                if _out:
+                    _row["why"] = (
+                        "%d of %d points sit outside this tee's wedge of "
+                        "%+.0f..%+.0f (worst %+.0f)"
+                        % (len(_out), len(pts), _CONE_LO, _CONE_HI,
+                           max(_out, key=abs)))
+                    continue
                 if not (_CONE_LO <= _bearing <= _CONE_HI):
                     _row["why"] = (
-                        "left at %+.0f deg off vertical, outside this "
-                        "zone's cone of %+.0f..%+.0f"
+                        "travelling at %+.0f deg off vertical, outside "
+                        "this tee's cone of %+.0f..%+.0f"
                         % (_bearing, _CONE_LO, _CONE_HI))
                     continue
             # ── THE SAME TEST TWICE, AND THE SECOND ONE IS WORSE ────
@@ -4654,6 +4690,7 @@ ASCENT_WHY_COLORS = {
     "wander": "#7d6b4f",
     # Leaning too far off vertical.
     "tilt": "#2fa8b5",
+    "cone": "#d946ef",
     # Left the tee line too long ago to have been a tee shot.
     "backrun": "#b5487d",
     # Points back outside the hitting area.
@@ -6115,6 +6152,8 @@ def sweep_ascents(
     ASCENT_BEND_PER_POINT_PX = _G["ascent_bend_per_point_px"]
     ASCENT_MIN_STRAIGHT = _G["ascent_min_straight"]
     ASCENT_MAX_TILT_DEG = _G["ascent_max_tilt_deg"]
+    _CONE_LO, _CONE_HI = sorted((float(_G["ascent_cone_from_deg"]),
+                                 float(_G["ascent_cone_to_deg"])))
     ASCENT_MIN_DENSITY = _G["ascent_min_density"]
     ASCENT_MAX_STEP_FRAMES = _G["ascent_max_step_frames"]
     ASCENT_MAX_BACKRUN_SEC = _G["ascent_max_backrun_sec"]
@@ -6421,10 +6460,32 @@ def sweep_ascents(
             # away from the tee steeply; something crossing the picture
             # on a long diagonal is going somewhere else. See the
             # constant for the measured split.
-            _tilt = math.degrees(math.atan2(abs(_vx), abs(_vy))) \
-                if abs(_vy) > 1e-6 else 90.0
-            if _tilt > ASCENT_MAX_TILT_DEG:
-                _why.append("tilt")
+            # ── THE CONE SUPERSEDES THE TILT, WHERE THERE IS ONE ───
+            #
+            # MEASURED ON THE OPERATOR'S OWN DRAWING: the cone they
+            # drew for one tee runs +45 to +77 degrees off vertical,
+            # and ASCENT_MAX_TILT_DEG is 55 measured as an ABSOLUTE
+            # value. So "both gates apply" would have refused every
+            # flight past 55 -- most of the cone -- and the feature
+            # would have read as broken on exactly the hole it was
+            # drawn for.
+            #
+            # They are two statements of one thing and the cone is the
+            # better one: tilt is an undirected proxy for "a struck
+            # ball climbs away steeply", and the cone says where this
+            # tee actually sends it. So a hole that has set a cone is
+            # judged by the cone, and a hole that has not keeps tilt
+            # exactly as before.
+            _coned = _CONE_LO > -180.0 or _CONE_HI < 180.0
+            _bearing = math.degrees(math.atan2(_vx, -_vy))
+            if _coned:
+                if not (_CONE_LO <= _bearing <= _CONE_HI):
+                    _why.append("cone")
+            else:
+                _tilt = math.degrees(math.atan2(abs(_vx), abs(_vy))) \
+                    if abs(_vy) > 1e-6 else 90.0
+                if _tilt > ASCENT_MAX_TILT_DEG:
+                    _why.append("tilt")
             _from_x = _from_f = None
             _from_model = None
             if _vy < -0.5:
@@ -6659,7 +6720,14 @@ def sweep_ascents(
              "knobs": ["ascent_max_tilt_deg"],
              "what": "degrees off vertical, measured on the first few "
                      "points. A struck ball climbs away steeply; "
-                     "something crossing the picture does not."},
+                     "something crossing the picture does not. "
+                     "Not asked when this tee has a launch cone, "
+                     "which says the same thing with a direction."},
+            {"key": "cone", "limit": f"{_CONE_LO:+g}..{_CONE_HI:+g}°",
+             "knobs": ["ascent_cone_from_deg", "ascent_cone_to_deg"],
+             "what": "signed degrees off vertical -- 0 straight up, "
+                     "positive leaning right. Where a ball from THIS "
+                     "tee can go. Replaces tilt when set."},
             {"key": "backrun",
              "limit": f"{ASCENT_MAX_BACKRUN_SEC:g}s "
                       f"({int(ASCENT_MAX_BACKRUN_SEC * float(fps or 30.0))}"
