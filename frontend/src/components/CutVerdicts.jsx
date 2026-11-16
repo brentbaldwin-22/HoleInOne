@@ -336,6 +336,21 @@ export function CutVerdicts({ cuts }) {
                       and the detector could not
                     </div>
                   )}
+                  {/* AND WHERE THE JUDGE PUT IT.
+                      The model's answer, in frame
+                      pixels, marked "AI" on the
+                      strip in yellow -- never the
+                      ball's own red, because this
+                      is a claim from a different
+                      process and nothing has
+                      checked it yet. */}
+                  {Array.isArray(c.frames_ball_xy) && (
+                    <div className="muted">
+                      the judge puts the ball at{" "}
+                      ({c.frames_ball_xy[0]},{" "}
+                      {c.frames_ball_xy[1]})
+                    </div>
+                  )}
                   {/* WHICH OF THE SIX IT WAS READ FROM. The sentence
                       above argues about one candidate; the counts in
                       it are over the whole set. Neither can say that

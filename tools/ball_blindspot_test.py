@@ -124,35 +124,31 @@ check("  and no sentence about it",
       "never became candidates" in r["why"], False)
 
 
-print("\n-- the strip DRAWS what it looked at when it found nothing")
+# ── THE DRAWING IS DELIBERATELY GONE ────────────────────────────────
+#
+# These three sections used to assert that each measurement appeared
+# ON the strip, and each addition was reasonable on its own. Together
+# they put a band of circles, crosses and diamonds across the tee with
+# the ball somewhere underneath, and the operator asked for it
+# removed: a picture you cannot read is not a diagnostic.
+#
+# So the assertions follow the decision rather than going quiet. What
+# is REPORTED is what matters and is checked above; what is DRAWN for
+# a failed check is now nothing but the swing judge's own ball mark,
+# which `ai_ball_xy_test` covers.
+print("\n-- a found ball is still marked; a failed check is left clean")
 ZONES = [(100, 140, 120, 40)]
 base = frame(_sliver)
-
-
-def drawn(ball):
-    out = draw_zones(base, ZONES, ball=ball)
-    return None if out is None else out
-
-
-_found = drawn({"spot": [130, IN_BAND_Y]})
-check("a found ball still draws", _found is not None, True)
+_found = draw_zones(base, ZONES, ball={"spot": [130, IN_BAND_Y]})
+check("a found ball still draws its spot", _found is not None, True)
 
 r = run(_sliver)
-_fail = drawn(r)
-check("a FAILED check draws too", _fail is not None, True)
-# IT USED TO BE BLANK HERE. `spot` is None, so the old code drew the
-# zones and nothing else -- the same picture whether the check had
-# looked in the right place or not.
 _zonly = draw_zones(base, ZONES, ball={"spot": None})
-check("  and it is not the same picture as zones alone",
-      _fail is not None and _zonly is not None
-      and bool((_fail != _zonly).any()), True)
-# THE BAND, as two lines across the picture.
-_rows = sorted(set(int(y) for y in
-                   np.where((_fail != _zonly).any(axis=2))[0]))
-check("  it marks rows near the band edges",
-      any(abs(y - 148) <= 3 for y in _rows)
-      and any(abs(y - 172) <= 3 for y in _rows), True)
+_fail = draw_zones(base, ZONES, ball=r)
+check("a failed check adds nothing to the zones",
+      int((_fail != _zonly).any(axis=2).sum()), 0)
+check("  though it still reports what it refused",
+      (r.get("shape_rejects") or {}).get("n", 0) > 0, True)
 
 print("\n-- every blob near the band, with what was decided about it")
 # THE CASE THAT COST A WRONG DIAGNOSIS, reproduced. A decoy in the
@@ -216,35 +212,18 @@ check("one entry per thing, not one per frame",
 check("  and it says how many frames held it",
       (_look.get("off the ground") or {}).get("seen"), 6)
 
-print("\n-- the picture tells the two apart")
-_img = _turf()
-_drawn = draw_zones(_img, [(150, 190, 160, 40)], ball=r)
-check("it draws", _drawn is not None, True)
-_plain = draw_zones(_turf(), [(150, 190, 160, 40)], ball={"spot": None})
-_diff = (_drawn != _plain).any(axis=2)
-check("  something is marked at the ball",
-      bool(_diff[LOW_BALL[1] - 8:LOW_BALL[1] + 8,
-                 LOW_BALL[0] - 8:LOW_BALL[0] + 8].any()), True)
-check("  and at the decoy",
-      bool(_diff[DECOY[1] - 8:DECOY[1] + 8,
-                 DECOY[0] - 8:DECOY[0] + 8].any()), True)
-# DIFFERENT COLOURS, because the two verdicts need different fixes:
-# one is a bar to lower, the other a band to widen.
-_bpx = _drawn[LOW_BALL[1] - 8:LOW_BALL[1] + 8,
-              LOW_BALL[0] - 8:LOW_BALL[0] + 8].reshape(-1, 3)
-_dpx = _drawn[DECOY[1] - 8:DECOY[1] + 8,
-              DECOY[0] - 8:DECOY[0] + 8].reshape(-1, 3)
-check("  in different colours",
-      bool({tuple(c) for c in _bpx} & {tuple(c) for c in _dpx}
-           != {tuple(c) for c in _bpx}), True)
-# THE LABEL MUST BE ASCII: cv2's Hershey fonts cannot draw a down
-# arrow and render it as "???" beside the number, which reads as the
-# number being unknown.
-TRC = (ROOT / "backend" / "app" / "services"
-       / "tracer.py").read_text(encoding="utf-8")
-_blk = TRC[TRC.index("EVERYTHING NEAR THE BAND"):][:3000]
-check("no non-ASCII reaches putText",
-      "\\u2193" in _blk or "\u2193" in _blk, False)
+print("\n-- the REPORT still tells the two apart, which is the half "
+      "that mattered")
+# The decoy and the ball need opposite fixes -- one is a bar to lower,
+# the other a band to widen -- and the two are still distinguished by
+# `verdict`, which is where the operator reads them now.
+check("the decoy and the ball carry different verdicts",
+      _look.get("too faint", {}).get("verdict")
+      != _look.get("off the ground", {}).get("verdict"), True)
+check("  and the picture stays out of it",
+      int((draw_zones(_turf(), [(150, 190, 160, 40)], ball=r)
+           != draw_zones(_turf(), [(150, 190, 160, 40)],
+                         ball={"spot": None})).any(axis=2).sum()), 0)
 
 print("\n-- \"nothing at all\" is an answer the report could not explain")
 # THE FLOOR IS A BINARISATION THRESHOLD, not a filter: below
@@ -321,13 +300,13 @@ check("  so it does not probe below the floor",
       any(e["verdict"] == "under the floor"
           for e in (_found.get("looked_at") or [])), False)
 
-print("\n-- the picture marks it, distinctly from everything else")
-_d2 = draw_zones(_dim_turf(), [(150, 190, 160, 40)], ball=r)
-_p2 = draw_zones(_dim_turf(), [(150, 190, 160, 40)], ball={"spot": None})
-check("it draws", _d2 is not None, True)
-_df = (_d2 != _p2).any(axis=2)
-check("  something is marked at the dim ball",
-      bool(_df[DIM[1] - 8:DIM[1] + 8, DIM[0] - 8:DIM[0] + 8].any()), True)
+print("\n-- and it is reported, not drawn")
+check("the under-floor finding is in the sentence",
+      "Under the detector's floor" in r["why"], True)
+check("  and nothing is drawn for it",
+      int((draw_zones(_dim_turf(), [(150, 190, 160, 40)], ball=r)
+           != draw_zones(_dim_turf(), [(150, 190, 160, 40)],
+                         ball={"spot": None})).any(axis=2).sum()), 0)
 
 print()
 if FAILED:

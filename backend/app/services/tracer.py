@@ -3303,28 +3303,9 @@ FOOT_COLOR = (0, 255, 0)
 # The ball, in red: the one colour not already spoken for here, and
 # not in COLORMAP_TURBO's ramp at the brightness it is drawn.
 BALL_COLOR = (0, 0, 255)
-# THE MARKS FOR A CHECK THAT FOUND NOTHING. BGR, and deliberately not
-# the ball's red: these say "looked here and refused", which is the
-# opposite claim.
-BAND_COLOR = (0, 200, 255)       # the strip a teed ball must sit in
-REGION_COLOR = (0, 255, 120)     # the stance box, searched at a lower bar
-NEAR_COLOR = (0, 165, 255)       # the brightest thing in it, and its score
-SHAPE_COLOR = (255, 160, 0)      # refused on shape, before any score
-# ONE COLOUR PER VERDICT, so a glance at the ball says which rule took
-# it. BGR.
-LOOK_COLORS = {
-    "kept": (0, 220, 0),             # survived every bar
-    "too faint": (0, 165, 255),      # under the contrast bar
-    "off the ground": (200, 60, 200),  # outside the band, with an arrow
-    "too big": (255, 255, 0),        # over the size cap
-    "on the golfer": (160, 160, 160),  # inside a stance, read as a shoe
-    "shape": (255, 160, 0),          # refused before any score
-    # TOO DIM TO BE A CANDIDATE AT ALL -- found only by the second
-    # pass, which lowers the binarisation threshold purely to report.
-    # Never treated as a ball; this says "there IS something here and
-    # the floor is hiding it".
-    "under the floor": (255, 80, 220),
-}
+# WHERE THE SWING JUDGE SAYS THE BALL IS -- a vision model's answer,
+# never the detector's, so never the ball's own red.
+AI_BALL_COLOR = (255, 255, 0)
 
 
 def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
@@ -3441,116 +3422,40 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
                     drew += 1
             except Exception:  # noqa: BLE001
                 pass
-        # AND WHEN IT FOUND NOTHING, WHAT IT LOOKED AT.
+        # ── WHAT A FAILED CHECK DRAWS: THE AI'S ANSWER, AND THAT IS
+        #    ALL ─────────────────────────────────────────────────────
         #
-        # THE PICTURE WAS BLANK IN EXACTLY THE CASE IT WAS WANTED FOR.
-        # A found ball gets a red circle; a check that found none drew
-        # nothing at all, so the one question the operator has --
-        # "it's right there, what were you looking at?" -- had no
-        # answer in the only picture that could give one. The numbers
-        # were in the sentence and nothing put them on the turf.
+        # THIS USED TO DRAW EVERYTHING IT LOOKED AT -- the band, the
+        # near miss, every blob in the neighbourhood colour-coded by
+        # verdict, and the under-floor probe's finds on top. Each
+        # addition answered a real question and the sum was a solid
+        # band of circles and crosses across the tee with the ball
+        # somewhere underneath it. A picture you cannot read is not a
+        # diagnostic, and on a clip with a dozen marks per tile the
+        # operator could no longer tell which one was being claimed.
         #
-        # Two marks, both only when there is no spot to circle:
-        #   the BAND, as two lines, because "ball must sit y 702..728"
-        #   is a sentence about a place and this is the place; and
-        #   the NEAR MISS, the brightest thing in that band, with the
-        #   score it missed the bar by.
-        elif ball:
+        # The measurements are all still REPORTED -- `looked_at`,
+        # `near`, `shape_rejects`, `counts` -- and the sentence names
+        # the ones that matter. Only the drawing is gone, because the
+        # drawing is the part that has to be glanceable.
+        #
+        # What is left is the one mark worth a glance: where the swing
+        # judge says the ball is. It is the model's answer, not the
+        # detector's, so it gets its own colour and its own label and
+        # is never confused with a found ball.
+        elif ball and ball.get("ai_xy"):
             try:
-                _lim = ball.get("limits") or {}
-                # THE BOX IT SEARCHED HARD, drawn as a box, because
-                # "it looked where the ball should be and found
-                # nothing" and "it never looked there" are different
-                # answers and used to be the same picture.
-                _rg = ball.get("region")
-                if _rg and len(_rg) == 4:
-                    _a = (int(round((float(_rg[0]) - ox) * sc)),
-                          int(round((float(_rg[1]) - oy) * sc)))
-                    _b = (int(round((float(_rg[2]) - ox) * sc)),
-                          int(round((float(_rg[3]) - oy) * sc)))
-                    cv2.rectangle(out, _a, _b, REGION_COLOR, 1,
-                                  cv2.LINE_AA)
-                    drew += 1
-                _bd = _lim.get("ground band y")
-                if _bd and len(_bd) == 2:
-                    for _yy in _bd:
-                        _py = int(round((float(_yy) - oy) * sc))
-                        if -5 < _py < h + 5:
-                            cv2.line(out, (0, _py), (w, _py),
-                                     BAND_COLOR, 1, cv2.LINE_AA)
-                            drew += 1
-                # THE BAR ITSELF belongs on the blob that came
-                # closest to it, and nowhere else. Drawn in the loop
-                # below rather than here: a separate near-miss marker
-                # put two circles and two labels on one speck.
-                _nr = ball.get("near") or {}
-                _best_at = (_nr.get("best_in_band_at")
-                            or _nr.get("best_at"))
-                # EVERYTHING NEAR THE BAND, AND WHAT WAS DECIDED.
-                #
-                # ONE MARKER IS NOT ENOUGH, which cost a wrong
-                # diagnosis: the single best reject was drawn, it
-                # scored 28 against a bar of 30, and it was read as
-                # the ball falling two levels short. The picture then
-                # showed that 28 sitting eight pixels left of the
-                # golfer with the real ball well to the right -- a
-                # different object entirely, and nothing on the
-                # picture could have said so while only the winner
-                # was drawn.
-                #
-                # So every blob in the band's neighbourhood gets its
-                # own mark and its own number: the operator can point
-                # at the ball and read what was decided THERE, rather
-                # than inferring it from the one that scored highest
-                # somewhere else.
-                for _e in (ball.get("looked_at") or [])[:14]:
-                    _ex = int(round((float(_e["x"]) - ox) * sc))
-                    _ey = int(round((float(_e["y"]) - oy) * sc))
-                    if not (-30 < _ex < w + 30 and -30 < _ey < h + 30):
-                        continue
-                    _v = _e.get("verdict")
-                    _col = LOOK_COLORS.get(_v, SHAPE_COLOR)
-                    if _v == "shape":
-                        cv2.drawMarker(out, (_ex, _ey), _col,
-                                       cv2.MARKER_TILTED_CROSS, 9, 2,
-                                       cv2.LINE_AA)
-                    elif _v == "under the floor":
-                        cv2.drawMarker(out, (_ex, _ey), _col,
-                                       cv2.MARKER_DIAMOND, 11, 2,
-                                       cv2.LINE_AA)
-                    elif _v == "off the ground":
-                        # THE SHAPE SAYS "OUTSIDE THE BAND". A down
-                        # arrow in the label would be clearer and
-                        # cv2.putText cannot draw one -- the Hershey
-                        # fonts are ASCII, and a non-ASCII character
-                        # comes out as "???" next to the number,
-                        # which reads as the number being unknown.
-                        cv2.drawMarker(out, (_ex, _ey), _col,
-                                       cv2.MARKER_TRIANGLE_DOWN, 11, 2,
-                                       cv2.LINE_AA)
-                    else:
-                        cv2.circle(out, (_ex, _ey), 6, _col, 1,
-                                   cv2.LINE_AA)
-                    # THE SCORE IS THE ACTIONABLE PART for the two
-                    # verdicts a ball can wrongly land in. A shape
-                    # reject has no score -- it was refused before
-                    # anything measured its brightness.
-                    _t = ("" if _e.get("score") is None
-                          else "%.0f" % float(_e["score"]))
-                    # AND THE BAR, on the one blob that came closest
-                    # to clearing it: "28/30" says what it needed,
-                    # which a bare score does not.
-                    if (_t and _best_at
-                            and abs(_e["x"] - _best_at[0]) <= 3
-                            and abs(_e["y"] - _best_at[1]) <= 3):
-                        _bar = _lim.get("min contrast")
-                        if _bar is not None:
-                            _t = "%s/%.0f" % (_t, float(_bar))
-                    if _t:
-                        for _c, _th in (((0, 0, 0), 3), (_col, 1)):
-                            cv2.putText(out, _t, (_ex + 7, _ey - 5),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.34,
-                                        _c, _th, cv2.LINE_AA)
+                _ax = int(round((float(ball["ai_xy"][0]) - ox) * sc))
+                _ay = int(round((float(ball["ai_xy"][1]) - oy) * sc))
+                if -30 < _ax < w + 30 and -30 < _ay < h + 30:
+                    cv2.drawMarker(out, (_ax, _ay), AI_BALL_COLOR,
+                                   cv2.MARKER_CROSS, 15, 2, cv2.LINE_AA)
+                    cv2.circle(out, (_ax, _ay), 10, AI_BALL_COLOR, 1,
+                               cv2.LINE_AA)
+                    for _c, _t in (((0, 0, 0), 3), (AI_BALL_COLOR, 1)):
+                        cv2.putText(out, "AI", (_ax + 13, _ay - 7),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                                    _c, _t, cv2.LINE_AA)
                     drew += 1
             except Exception:  # noqa: BLE001
                 pass

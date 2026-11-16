@@ -9418,14 +9418,32 @@ _JUDGE_SWING_FRAMES_PROMPT = (
     # and a confidently wrong box turns "could not find it" into
     # "definitely not there". The box comes from the stance; this
     # says whether to believe a null result.
-    "ALSO SEPARATELY: in the ADDRESS tile only, can you see a golf "
-    "ball sitting on the grass near the golfer's feet? Answer "
-    "\"unknown\" if you are not sure. Do not give coordinates and do "
-    "not let this change `is_swing`.\n"
+    "ALSO SEPARATELY: look at the ADDRESS TILE ONLY -- the FIRST "
+    "tile, top-left, labelled about -1.20s. Can you see the golf ball "
+    "sitting on the grass? It is small and pale, on the ground near "
+    "the golfer's feet, on the target side of their stance.\n"
+    # ── WHERE, IN THE ONE FRAME OF REFERENCE A MODEL CAN HOLD ───────
+    #
+    # FRACTIONS OF THAT TILE, not pixels of anything. The tile is a
+    # crop of the frame at whatever scale fitted the grid, so pixel
+    # coordinates would be in a space that exists nowhere else and
+    # would have to be guessed at twice. A fraction is scale-free: the
+    # caller maps it back through the crop rectangle it already has.
+    #
+    # ONE TILE, NAMED, because the picture is a 3x2 grid and "where is
+    # the ball" over the whole grid is a different and harder
+    # question -- the ball is gone from four of the six tiles.
+    "If you can see it, give `ball_xy` as [x, y] FRACTIONS of that "
+    "tile: [0, 0] is its top-left corner and [1, 1] its bottom-right. "
+    "Be as precise as you can. If you cannot see a ball, or are not "
+    "sure which pale speck is the ball, give null -- a guess here is "
+    "worse than nothing, because it will be searched and believed. "
+    "None of this may change `is_swing`.\n"
     'Reply with JSON only:\n{"is_swing": true|false, '
     '"confidence": "high"|"medium"|"low", "reason": "<one short '
     'sentence>", "handed": "right"|"left"|"unknown", '
-    '"ball_seen": true|false|"unknown"}'
+    '"ball_seen": true|false|"unknown", '
+    '"ball_xy": [<x>, <y>]|null}'
 )
 
 
@@ -9754,6 +9772,19 @@ def judge_swing_with_frames(frames_path, image_path,
     # "the model says there is no ball", which is a real claim.
     _bs = parsed.get("ball_seen")
     out["ball_seen"] = _bs if isinstance(_bs, bool) else None
+    # FRACTIONS, AND ONLY IF THEY ARE FRACTIONS. A model that answers
+    # pixels, a string, three numbers or something off the tile is
+    # answering a different question, and the caller must not map
+    # whatever it said into a search window.
+    out["ball_xy"] = None
+    _bxy = parsed.get("ball_xy")
+    if isinstance(_bxy, (list, tuple)) and len(_bxy) == 2:
+        try:
+            _bx, _by = float(_bxy[0]), float(_bxy[1])
+            if 0.0 <= _bx <= 1.0 and 0.0 <= _by <= 1.0:
+                out["ball_xy"] = [round(_bx, 4), round(_by, 4)]
+        except (TypeError, ValueError):
+            pass
     return out
 
 

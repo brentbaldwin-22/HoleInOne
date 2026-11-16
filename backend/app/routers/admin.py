@@ -16344,10 +16344,78 @@ def _test_cut_run(
                             # on the judge's own call, and is never
                             # part of the verdict -- see the prompt.
                             cut_entry["frames_handed"] = _jf.get("handed")
-                            # NOT TO LOCATE THE BALL -- to contradict
-                            # the detector. See the prompt.
                             cut_entry["frames_ball_seen"] = _jf.get(
                                 "ball_seen")
+                            # ── AND WHERE IT SAID THE BALL IS ───────
+                            #
+                            # The judge answers in FRACTIONS of the
+                            # address tile, which is the only frame of
+                            # reference it can hold: the tile is a
+                            # crop of the video at whatever scale fit
+                            # the grid. Mapping is therefore just the
+                            # crop rectangle -- the same
+                            # `frames_rect` the tiles were cut from --
+                            # and no scale factor has to be
+                            # reconstructed or guessed.
+                            cut_entry["frames_ball_xy"] = None
+                            _bxy = _jf.get("ball_xy")
+                            _brect = _chk.get("frames_rect")
+                            if _bxy and _brect and len(_brect) == 4:
+                                try:
+                                    _rx0, _ry0, _rx1, _ry1 = (
+                                        float(v) for v in _brect)
+                                    cut_entry["frames_ball_xy"] = [
+                                        int(round(_rx0 + float(_bxy[0])
+                                                  * (_rx1 - _rx0))),
+                                        int(round(_ry0 + float(_bxy[1])
+                                                  * (_ry1 - _ry0))),
+                                    ]
+                                except (TypeError, ValueError) as _mx:
+                                    log.debug("ball xy map: %s", _mx)
+                            if cut_entry.get("frames_ball_xy"):
+                                log.info(
+                                    "test cut: the judge puts the ball at "
+                                    "%s (tile fraction %s of rect %s)",
+                                    cut_entry["frames_ball_xy"], _bxy,
+                                    _brect)
+                                # ── AND MARK IT ON THE PAGE'S COPY ──
+                                #
+                                # The strip has to exist before the
+                                # judge can be shown it, so the
+                                # judge's answer arrives after the
+                                # picture was drawn. Redrawing the
+                                # ANNOTATED copy is the honest way
+                                # round: it costs one more decode, on
+                                # the clips where the judge actually
+                                # placed a ball, and it reuses the one
+                                # definition of the grid rather than
+                                # reconstructing tile geometry here
+                                # from the saved JPEG's dimensions.
+                                #
+                                # The judge's own input (`_sp`) is NOT
+                                # touched. It has already been seen,
+                                # and marking it afterwards would put
+                                # a claim on the picture the verdict
+                                # was argued from.
+                                try:
+                                    if _zbox and _strip:
+                                        frames_strip(
+                                            src_path, peak_time_sec,
+                                            CLIPS_DIR / (
+                                                "aidrop-%s.jpg"
+                                                % secrets.token_hex(3)),
+                                            rect=_chk.get("frames_rect"),
+                                            box=_heat_box, offsets=_offs,
+                                            zones=_zbox,
+                                            feet=_chk.get(
+                                                "front_candidates"),
+                                            ball=dict(
+                                                _bl or {},
+                                                ai_xy=cut_entry[
+                                                    "frames_ball_xy"]),
+                                            zones_out=_zp)
+                                except Exception as _ax:  # noqa: BLE001
+                                    log.debug("ai ball mark: %s", _ax)
                             _final = {
                                 "is_swing": _jf.get("is_swing"),
                                 "confidence": _jf.get("confidence"),
