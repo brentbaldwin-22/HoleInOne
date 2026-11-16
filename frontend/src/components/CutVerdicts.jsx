@@ -344,6 +344,41 @@ export function CutVerdicts({ cuts }) {
                       is a claim from a different
                       process and nothing has
                       checked it yet. */}
+                  {/* THE BOX, BLOWN UP, WITH BOTH ANSWERS.
+                      Six tiles of nothing but the grass
+                      the ball check searched: a circle
+                      where the brightness detector put
+                      the ball, crosshairs where the
+                      judge did. The swing strip is
+                      framed on the golfer and a ball is
+                      three pixels in it; this is the
+                      other question's picture. */}
+                  {c.ball_box_url && (
+                    <div style={{ marginTop: 3 }}>
+                      <a href={c.ball_box_url} target="_blank"
+                         rel="noreferrer">
+                        <img src={c.ball_box_url}
+                             alt="the search box, zoomed"
+                             style={{ width: "100%", maxWidth: 200,
+                                      borderRadius: 3,
+                                      display: "block" }} />
+                      </a>
+                      <div className="muted">
+                        the box at {c.ball_box_zoom}x
+                        {c.ball_box_seen === true
+                          ? " · judge: ball seen"
+                          : c.ball_box_seen === false
+                          ? " · judge: no ball in the box" : ""}
+                        {c.ball_box_gone === true
+                          ? ", and gone after" : ""}
+                      </div>
+                      {c.ball_box_reason && (
+                        <div className="muted">
+                          {c.ball_box_reason}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {Array.isArray(c.frames_ball_xy) && (
                     <div className="muted">
                       the judge puts the ball at{" "}

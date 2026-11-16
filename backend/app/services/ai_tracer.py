@@ -9694,6 +9694,107 @@ def judge_swing_audio2(frames_path, image_path, *, ratio=None,
     return out
 
 
+_BALL_BOX_PROMPT = (
+    "These are SIX ZOOMED CROPS of one small patch of grass beside a "
+    "golfer on a tee, in time order, labelled with their time "
+    "relative to the strike: about -1.20s, -0.60s, -0.20s, 0.00s "
+    "(the strike), +0.20s and +0.60s. The crop is only a few dozen "
+    "pixels across in the original video, so it is blown up about "
+    "ten times and will look blocky. That is expected.\n"
+    "A golf ball teed on this grass is a SMALL PALE ROUND SPECK, a "
+    "few blocks across at this zoom. It does not move at all in the "
+    "frames before the strike, and after the strike it is GONE.\n"
+    "THE MOST RELIABLE SIGN IS THAT IT VANISHES. Compare the early "
+    "tiles with the late ones: something pale that sits in exactly "
+    "the same place in the first tiles and is absent from the last "
+    "ones is the ball. Something pale in every tile is not -- that "
+    "is a daisy, a pitch mark, a tee marker or a bright blade.\n"
+    "Answer in FRACTIONS of one tile: [0, 0] is a tile's top-left "
+    "corner and [1, 1] its bottom-right. All the tiles show the same "
+    "patch, so one position describes the ball in all of them.\n"
+    "If you cannot see anything that sits still and then vanishes, "
+    "say seen=false and give null. A guess is worse than nothing "
+    "here: it will be searched and believed.\n"
+    'Reply with JSON only:\n{"seen": true|false, "xy": [<x>, <y>]|null, '
+    '"gone_after": true|false, "confidence": "high"|"medium"|"low", '
+    '"reason": "<one short sentence>"}'
+)
+
+
+def ball_in_box(strip_path, model: str | None = None) -> dict:
+    """Where is the ball, asked of a picture that is only the box.
+
+    A SECOND, NARROWER QUESTION, AND A SECOND PICTURE. The swing judge
+    is shown crops around the GOLFER, which is right for a question
+    about a body and a club and hopeless for one about a three-pixel
+    ball: asked where the ball was, it answered with a point on the
+    golfer's legs, above the trigger zone entirely. That is a fair
+    reading of a picture in which the ball cannot be seen.
+
+    Here the whole image is the strip of grass a teed ball can be in,
+    at roughly ten times the scale, and the question leans on the one
+    cue that survives blockiness -- a pale speck that does not move
+    and then is not there.
+
+    Returns {available, seen, xy, gone_after, confidence, reason}.
+    `xy` is a fraction of ONE TILE, which the caller maps back through
+    the box it cut. Never raises.
+    """
+    out = {"available": False, "seen": None, "xy": None,
+           "gone_after": None, "confidence": None, "reason": None}
+    if not strip_path or not Path(strip_path).exists():
+        out["reason"] = "no box strip to look at"
+        return out
+    if not HAS_ANTHROPIC or not os.environ.get("ANTHROPIC_API_KEY"):
+        out["reason"] = "ANTHROPIC_API_KEY not set"
+        return out
+    try:
+        data = Path(strip_path).read_bytes()
+        client = _anthropic_client()
+        resp = client.messages.create(
+            model=_resolve_frame_picker_model(model),
+            max_tokens=220,
+            system=[{
+                "type": "text",
+                "text": _BALL_BOX_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": [
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/jpeg",
+                    "data": base64.standard_b64encode(data).decode("ascii"),
+                }},
+                {"type": "text", "text": "JSON only."},
+            ]}],
+        )
+    except Exception as exc:  # noqa: BLE001
+        out["reason"] = f"api_failed: {exc}"
+        return out
+    text = "".join(
+        c.text for c in resp.content if getattr(c, "type", None) == "text"
+    )
+    parsed = _extract_json(text) or {}
+    out["available"] = True
+    if isinstance(parsed.get("seen"), bool):
+        out["seen"] = parsed["seen"]
+    if isinstance(parsed.get("gone_after"), bool):
+        out["gone_after"] = parsed["gone_after"]
+    out["confidence"] = parsed.get("confidence")
+    out["reason"] = parsed.get("reason")
+    # FRACTIONS, AND ONLY IF THEY ARE FRACTIONS. Same validation as
+    # the swing judge's: a model answering pixels is answering a
+    # different question and must not steer a search.
+    _xy = parsed.get("xy")
+    if isinstance(_xy, (list, tuple)) and len(_xy) == 2:
+        try:
+            _x, _y = float(_xy[0]), float(_xy[1])
+            if 0.0 <= _x <= 1.0 and 0.0 <= _y <= 1.0:
+                out["xy"] = [round(_x, 4), round(_y, 4)]
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
 def judge_swing_with_frames(frames_path, image_path,
                             model: str | None = None) -> dict:
     """The swing judge, shown real frames as well as the heat map.

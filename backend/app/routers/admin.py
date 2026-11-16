@@ -16031,6 +16031,78 @@ def _test_cut_run(
                         cut_entry["ball_region"] = _bl.get("region")
                         cut_entry["ball_region_why"] = _bl.get("region_why")
                         cut_entry["ball_found_by"] = _bl.get("found_by")
+                        # ── THE BOX, BLOWN UP, AND ASKED ABOUT ──────
+                        #
+                        # The swing judge's strip is framed on the
+                        # GOLFER, which is right for the swing and
+                        # hopeless for a three-pixel ball -- asked
+                        # where the ball was it pointed at the
+                        # golfer's legs, above the trigger zone. This
+                        # is the other question's picture: six tiles
+                        # of nothing but the box, at about ten times
+                        # the scale, and a model asked only about a
+                        # pale speck that sits still and then is not
+                        # there.
+                        if _bl.get("region"):
+                            try:
+                                from ..services.tracer import (
+                                    ball_box_strip,
+                                )
+                                from ..services.ai_tracer import (
+                                    ball_in_box,
+                                )
+                                _bsp = CLIPS_DIR / (
+                                    "ballbox-%s-%02d-%s.jpg"
+                                    % (upload_id, idx,
+                                       secrets.token_hex(3)))
+                                _bst = ball_box_strip(
+                                    src_path, peak_time_sec, _bsp,
+                                    box=_bl["region"], offsets=_BO,
+                                    spot=_bl.get("spot"))
+                                if _bst.get("ok"):
+                                    cut_entry["ball_box_zoom"] = \
+                                        _bst.get("zoom")
+                                    _bq = ball_in_box(_bst["clean"])
+                                    cut_entry["ball_box_seen"] = \
+                                        _bq.get("seen")
+                                    cut_entry["ball_box_reason"] = \
+                                        _bq.get("reason")
+                                    cut_entry["ball_box_gone"] = \
+                                        _bq.get("gone_after")
+                                    # BACK THROUGH THE BOX, which is
+                                    # the only mapping there is: the
+                                    # fraction is of one tile and the
+                                    # tile is the box.
+                                    _axy = None
+                                    if _bq.get("xy"):
+                                        _rg = _bl["region"]
+                                        _axy = [
+                                            int(round(_rg[0]
+                                                      + _bq["xy"][0]
+                                                      * (_rg[2] - _rg[0]))),
+                                            int(round(_rg[1]
+                                                      + _bq["xy"][1]
+                                                      * (_rg[3] - _rg[1]))),
+                                        ]
+                                    cut_entry["ball_box_xy"] = _axy
+                                    # REDRAW with both answers on it,
+                                    # now that the model has given one.
+                                    ball_box_strip(
+                                        src_path, peak_time_sec, _bsp,
+                                        box=_bl["region"], offsets=_BO,
+                                        spot=_bl.get("spot"),
+                                        ai_xy=_axy)
+                                    cut_entry["ball_box_url"] = \
+                                        _clip_url_for(_bsp.name)
+                                    log.info(
+                                        "test cut: ball box %s zoom x%s "
+                                        "-> seen=%s gone=%s at %s (%s)",
+                                        _bl["region"], _bst.get("zoom"),
+                                        _bq.get("seen"),
+                                        _bq.get("gone_after"), _axy,
+                                        _bq.get("reason"))
+                            except Exception as _bbx:  # noqa: BLE001
+                                log.debug("ball box strip: %s", _bbx)
                         cut_entry["ball_left"] = _bl["left"]
                         cut_entry["ball_spot"] = _bl["spot"]
                         cut_entry["ball_balls"] = _bl.get("balls")
@@ -16482,6 +16554,21 @@ def _test_cut_run(
                                     # look that also finds nothing must
                                     # not overwrite the first's
                                     # reasoning with its own.
+                                    # THE REASONING IS NEWER EITHER
+                                    # WAY. A second look that also
+                                    # found nothing still looked in a
+                                    # better place, and leaving the
+                                    # first look's words on the page
+                                    # made it read "handedness
+                                    # unknown, assuming right-handed"
+                                    # on a cut whose stance the judge
+                                    # had just called right-handed --
+                                    # which is the panel contradicting
+                                    # itself about something it knew.
+                                    cut_entry["ball_region"] = \
+                                        _bl2.get("region")
+                                    cut_entry["ball_region_why"] = \
+                                        _bl2.get("region_why")
                                     if _bl2.get("state") != \
                                             "NO_BALL_DETECTED":
                                         _bl = _bl2
@@ -16500,6 +16587,11 @@ def _test_cut_run(
                                         cut_entry["ball_found_by"] = (
                                             "the stance box, on the "
                                             "judge's side")
+                                    else:
+                                        cut_entry["ball_why"] = (
+                                            _bl2["why"]
+                                            + " (looked twice: again "
+                                              "with the judge's side)")
                                 except Exception as _s2:  # noqa: BLE001
                                     log.debug("second ball look: %s", _s2)
                             _final = {

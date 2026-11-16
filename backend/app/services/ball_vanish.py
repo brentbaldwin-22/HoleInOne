@@ -785,7 +785,11 @@ BALL_BAND_BELOW_FEET = 0.02
 # drawn by the operator for this camera and this tee, and the crop
 # edge is a fact. Nothing here is a body-height fraction except the
 # small gap that keeps the shoes out.
-BALL_BOX_FOOT_GAP = 0.06     # clear of the instep, in body heights
+# CLEAR OF THE INSTEP, in body heights. Was 0.06 -- seven pixels on a
+# 125px golfer, which put the box's left edge practically on the shoe
+# and let the stance's own highlights into a search deliberately run
+# at a bar of 8. The operator drew the line they wanted further out.
+BALL_BOX_FOOT_GAP = 0.20
 
 # WHICH SIDE A RIGHT-HANDER'S BALL IS ON, IN IMAGE X.
 #

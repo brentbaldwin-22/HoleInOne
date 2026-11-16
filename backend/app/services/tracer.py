@@ -3487,6 +3487,141 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
         return None
 
 
+# THE BALL BOX, BLOWN UP. One tile per offset, each one nothing but
+# the patch of grass the ball check searched.
+BALL_STRIP_TILE_PX = 460
+# What a crop this small has to be scaled to before a model can see a
+# three-pixel ball in it at all. 460 over a 40px box is about 11x.
+BALL_STRIP_MIN_ZOOM = 3.0
+
+
+def ball_box_strip(input_path, at_sec: float, out_path, *, box,
+                   offsets=AUDIO2_OFFSETS_SEC,
+                   tile_px: int = BALL_STRIP_TILE_PX,
+                   ai_xy=None, spot=None, label=True) -> dict:
+    """Six frames of JUST the search box, zoomed. Never raises.
+
+    WHY A SECOND PICTURE RATHER THAN A BETTER FIRST ONE. The judge's
+    strip is six crops around the GOLFER, and it has to be: the swing
+    question is about a body and a club, and a tile holding only grass
+    cannot answer it. But that framing puts a three-pixel ball in a
+    tile where the golfer is two hundred pixels tall, and asked where
+    the ball is the model answered with a point on the golfer's legs,
+    above the trigger zone entirely -- a fair reading of a picture
+    where the ball is invisible.
+
+    This is the other question's picture. The box is forty pixels
+    across, so at one tile each the whole image budget goes on the
+    strip of grass a teed ball can be in, at roughly ten times the
+    scale. Nothing is added -- the ball is still three source pixels
+    -- but a feature that spanned a fraction of one model patch now
+    spans several, which is the difference between information that
+    is present and information that survives.
+
+    Both answers are drawn on the operator's copy, and they are
+    deliberately different marks: CROSSHAIRS for the judge's guess and
+    a CIRCLE for the brightness detector's, so a glance says whether
+    the two agree. The clean copy carries neither, because a model
+    shown its own previous answer is not being asked again.
+
+    Returns {ok, path, clean, zoom, used, why}.
+    """
+    out = {"ok": False, "path": None, "clean": None, "zoom": None,
+           "used": [], "why": None}
+    if not box or len(box) != 4:
+        out["why"] = "no box to cut"
+        return out
+    cap = None
+    try:
+        import numpy as np
+
+        cap = cv2.VideoCapture(str(input_path))
+        if not cap.isOpened():
+            out["why"] = "could not open the clip"
+            return out
+        fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
+        W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        x0 = max(0, min(W - 2, int(box[0])))
+        y0 = max(0, min(H - 2, int(box[1])))
+        x1 = max(x0 + 1, min(W, int(box[2])))
+        y1 = max(y0 + 1, min(H, int(box[3])))
+        _bw, _bh = x1 - x0, y1 - y0
+        _zoom = float(tile_px) / float(max(_bw, _bh))
+        out["zoom"] = round(_zoom, 2)
+
+        tiles, clean, used = [], [], []
+        for off in offsets:
+            f = int(round((float(at_sec) + float(off)) * fps))
+            if f < 0:
+                continue
+            cap.set(cv2.CAP_PROP_POS_FRAMES, f)
+            ok, fr = cap.read()
+            if not ok or fr is None:
+                continue
+            _sub = fr[y0:y1, x0:x1]
+            if _sub.size == 0:
+                continue
+            # NEAREST, NOT CUBIC. At this zoom a smooth interpolation
+            # invents a gradient where there are four pixels, and the
+            # thing being looked for is four pixels.
+            _t = cv2.resize(_sub, (int(round(_bw * _zoom)),
+                                   int(round(_bh * _zoom))),
+                            interpolation=cv2.INTER_NEAREST)
+            clean.append(_t.copy())
+            if label:
+                _l = "%+.2fs" % off
+                for _c, _w in (((0, 0, 0), 3), ((255, 255, 255), 1)):
+                    cv2.putText(_t, _l, (5, 18),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, _c, _w,
+                                cv2.LINE_AA)
+            # ── THE TWO ANSWERS, SIDE BY SIDE ───────────────────────
+            # Different marks on purpose: the operator should be able
+            # to see agreement or disagreement without reading a key.
+            for _pt, _draw in ((ai_xy, "cross"), (spot, "circle")):
+                if not _pt:
+                    continue
+                _px = int(round((float(_pt[0]) - x0) * _zoom))
+                _py = int(round((float(_pt[1]) - y0) * _zoom))
+                if not (-20 < _px < _t.shape[1] + 20
+                        and -20 < _py < _t.shape[0] + 20):
+                    continue
+                if _draw == "cross":
+                    cv2.drawMarker(_t, (_px, _py), AI_BALL_COLOR,
+                                   cv2.MARKER_CROSS, 26, 2, cv2.LINE_AA)
+                else:
+                    cv2.circle(_t, (_px, _py), 13, BALL_COLOR, 2,
+                               cv2.LINE_AA)
+            tiles.append(_t)
+            used.append(round(float(off), 2))
+        if not tiles:
+            out["why"] = "no frames could be read for the box"
+            return out
+        out["used"] = used
+        cv2.imwrite(str(out_path), grid_of_tiles(tiles),
+                    [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        out["path"] = str(out_path)
+        # THE CLEAN ONE IS WHAT A MODEL IS SHOWN. See the docstring:
+        # labels and marks are for the operator.
+        _cp = Path(str(out_path)).with_name(
+            Path(str(out_path)).stem + "-clean.jpg")
+        cv2.imwrite(str(_cp), grid_of_tiles(clean),
+                    [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        out["clean"] = str(_cp)
+        out["ok"] = True
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.debug("ball_box_strip: %s", exc)
+        out["why"] = "strip failed: %s" % exc
+        return out
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def frames_strip(input_path, at_sec: float, out_path, *, box=None,
                  rect=None, offsets=FRAME_OFFSETS_SEC,
                  tile_px: int = 640, pad_frac: float = 1.0,
