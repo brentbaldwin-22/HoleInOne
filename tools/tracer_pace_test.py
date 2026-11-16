@@ -90,6 +90,46 @@ check("the pace is applied after the easing, not before",
 check("and the render log says what pace it used",
       "at pace {TRACER_PACE:.2f}" in src, True)
 
+print("\n-- how early the line finishes, which is the cost of pace")
+# A LINE THAT FINISHES EARLY THEN SITS STILL is the honest trade here,
+# and worth seeing rather than discovering on a clip: past some pace
+# the whole curve is uncovered before the camera cut, and the last
+# stretch of the tee half shows a complete, motionless line. Measured
+# on a 329-point curve: 1.0 finishes at frame 327 of 329, 1.35 at 242,
+# 2.0 at 163 -- half way.
+_LONG = [(1000 + i, 700 + 3 * i, 500 - 4 * i + 0.012 * i * i)
+         for i in range(329)]
+_LA = [(1000 + i, 700 + 3 * i, 500 - 4 * i + 0.012 * i * i)
+       for i in range(0, 60, 10)]
+
+
+def _full_at(pace):
+    _, _, c = T._tip_reveal_schedule(_LONG, _LA, pace=pace)
+    j = next((j for j, v in enumerate(c) if v >= len(_LONG)), None)
+    return None if j is None else j / float(len(c))
+
+
+_f1, _f2 = _full_at(1.0), _full_at(2.0)
+print("     pace 1.0 finishes %.0f%% through; pace 2.0 at %.0f%%"
+      % (_f1 * 100, _f2 * 100))
+check("a faster pace finishes the line earlier", _f2 < _f1, True)
+check("  and 2.0 finishes around halfway", _f2 < 0.6, True)
+# CONTROL: finishing early must not mean finishing SHORT. The whole
+# curve is still drawn -- that is the point of the clamp.
+_, _, _c20 = T._tip_reveal_schedule(_LONG, _LA, pace=2.0)
+check("control, the whole curve is still reached", max(_c20), len(_LONG))
+
+
+print("\n-- the pace travels to the produce log")
+adm = (ROOT / "backend" / "app" / "routers"
+       / "admin.py").read_text(encoding="utf-8")
+check("produce says which pace drew the clip",
+      "tip drawn at pace" in adm, True)
+src2 = (ROOT / "backend" / "app" / "services"
+        / "ai_tracer.py").read_text(encoding="utf-8")
+check("  carried on both tail records",
+      src2.count('"pace": TRACER_PACE,'), 2)
+
 print()
 if FAILED:
     print("%d FAILED: %s" % (len(FAILED), ", ".join(FAILED)))

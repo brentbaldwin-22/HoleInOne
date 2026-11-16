@@ -4907,7 +4907,7 @@ def _clip_point_to_frame(ax, ay, bx, by, w, h):
 #
 # Raise it to have the tracer reach further before the cut; 1.0 puts
 # it back on the ball's own pace.
-TRACER_PACE = 1.35
+TRACER_PACE = 2.0
 
 
 def _tip_reveal_schedule(
@@ -5676,6 +5676,10 @@ def render_tracer_video(
                 # both existing guards and is the thing a tracer
                 # must never do, so it travels with every clip.
                 "sharpness": apex_sharpness(_tail),
+                    # The tip pace this clip was drawn at, so the
+                    # produce log can say it on the line the
+                    # operator reads rather than the renderer's own.
+                    "pace": TRACER_PACE,
                     # What `open_crest` did, or why it did not --
                     # carried here so the produce log can say it
                     # on the line the operator already reads,
@@ -5962,6 +5966,10 @@ def render_tracer_video(
                     # both existing guards and is the thing a tracer
                     # must never do, so it travels with every clip.
                     "sharpness": apex_sharpness(_tail),
+                    # The tip pace this clip was drawn at, so the
+                    # produce log can say it on the line the
+                    # operator reads rather than the renderer's own.
+                    "pace": TRACER_PACE,
                     # What `open_crest` did, or why it did not --
                     # carried here so the produce log can say it
                     # on the line the operator already reads,

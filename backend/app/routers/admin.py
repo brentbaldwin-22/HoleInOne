@@ -34364,6 +34364,20 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                 (_aim_why or _tl.get("why")
                  or "no reason recorded"),
             )
+            # HOW FAST THE DRAWN TIP RAN, on the same line. The arc is
+            # timed to the other camera's clock and the tee half is cut
+            # where the green half starts, so on a long shot the cut
+            # arrives with the line part drawn; the pace is what
+            # decides how much of it is uncovered by then. It was said
+            # only by the renderer's own logger, under a prefix nobody
+            # greps for.
+            if _tl.get("pace") is not None:
+                log.info(
+                    "d3 produce: swing %s tip drawn at pace %.2f "
+                    "(1.00 = the ball's own; higher reaches further "
+                    "before the cut)",
+                    i, float(_tl["pace"]),
+                )
         except Exception as exc:  # noqa: BLE001
             db.rollback()
             log.warning("d3 produce: swing %s failed: %s", i, exc)
