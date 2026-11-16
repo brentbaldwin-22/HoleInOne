@@ -134,26 +134,39 @@ check_in("says it was a choice", "set to sweep the whole clip",
          out.get("reason"))
 
 print()
-print("A DWELL CLIP IS NOT A MANUAL UPLOAD and must not be narrowed")
-# Both reach here with no rig impact, and they are different cases.
-# A dwell clip has an event and no heard strike: eighty-eight of its
-# ninety seconds are birds, carts and branches, and `_ascent_windows`
-# refuses the audio pass on it because a missed swing then narrows
-# onto the wrong two seconds instead of widening -- silently, and in
-# the direction that costs a swing. `ai_launch_plot_test` holds the
-# same line; this says why it is here.
+print("A DWELL CLIP GETS THE SAME TREATMENT")
+# It has a camera event and no heard strike, and this used to refuse
+# it on the reasoning `_ascent_windows` gives for refusing the audio
+# pass there -- a missed swing narrows the search onto the wrong two
+# seconds instead of widening, which costs a swing.
+#
+# That reasoning is about THE SWEEP WINDOW. Stage 1 does not set one:
+# it chooses a frame to zoom into and measure the ball at rest on, and
+# `_win` is untouched either way. The worst a wrong instant does here
+# is aim the pictures at the wrong moment, which is visible in the
+# pictures. No pictures at all is not visible in anything.
 out = _run([24.80], 0.0, event_id=42)
-check("the cutter is never asked", out.get("_cutter_called"), False)
-check("no impact frame", out.get("impact_frame"), None)
-check_in("says the audio is deliberately not searched",
-         "not searched for one", out.get("reason"))
-check_in("and what starts the line instead", "back to the tee line",
-         out.get("reason"))
+check("the cutter is asked anyway", out.get("_cutter_called"), True)
+check("it gets an impact frame", out.get("impact_frame"),
+      int(24.80 * 30.0))
+check_in("and the picture says which clock it came from",
+         "audio cutter", out.get("impact_from"))
+check_in("and that the rig had nothing", "no rig impact",
+         out.get("impact_from"))
 
 print()
-print("a manual upload DOES ask the cutter")
+print("a manual upload, the same")
 out = _run([24.80], 0.0, event_id=None)
 check("the cutter is asked", out.get("_cutter_called"), True)
+
+print()
+print("nothing heard anywhere still names the fallback")
+# `ai_launch_plot_test` holds this sentence: a stage that declines
+# must say what starts the tracer line instead of it.
+out = _run([], 0.0, event_id=42)
+check("no impact frame", out.get("impact_frame"), None)
+check_in("says what happens instead", "back to the tee line",
+         out.get("reason"))
 
 print()
 print("the reason is PRINTED, not just stored")

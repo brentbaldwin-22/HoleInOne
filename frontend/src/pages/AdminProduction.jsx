@@ -11130,6 +11130,64 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                   : ""}
               </div>
             )}
+            {/* THE TWO PICTURES THIS STAGE WAS ALREADY DRAWING FOR
+                NOBODY. `frames_image_url` is the six-frame strip
+                around the impact and `measured_image_url` is the
+                frame the ball was measured at rest on, with the box
+                it was found in. Both were cut, written to disk and
+                never rendered anywhere -- CutVerdicts has a
+                `frames_image_url` of its own, per cut, which is a
+                different object, so a grep for the name found a
+                caller and the stage's own pictures still went
+                nowhere. Reported from the field, twice, as "I'm not
+                seeing any of the images that we discussed". */}
+            {!rep.ai_launch.frames_image_url
+              && rep.ai_launch.frames_why && (
+              <div className="tiny muted" style={{ marginTop: 6 }}>
+                no six-frame strip: {rep.ai_launch.frames_why}
+              </div>
+            )}
+            {rep.ai_launch.frames_image_url && (
+              <figure style={{ margin: "8px 0 0" }}>
+                <a href={rep.ai_launch.frames_image_url}
+                   target="_blank" rel="noreferrer">
+                  <img src={rep.ai_launch.frames_image_url}
+                       alt="the six frames around the impact"
+                       style={{ width: "100%", borderRadius: 6,
+                                display: "block" }} />
+                </a>
+                <figcaption className="tiny muted">
+                  the six frames the ball check looked at, around
+                  f{rep.ai_launch.impact_frame}
+                  {/* THE SAME FRAMES WITH NOTHING DRAWN ON THEM.
+                      The ring marking the ball is wider than the
+                      ball, so the one thing the marked strip cannot
+                      show is the ball itself. */}
+                  {rep.ai_launch.frames_plain_url && (
+                    <> · <a href={rep.ai_launch.frames_plain_url}
+                           target="_blank" rel="noreferrer">
+                      unmarked
+                    </a></>
+                  )}
+                </figcaption>
+              </figure>
+            )}
+            {rep.ai_launch.measured_image_url && (
+              <figure style={{ margin: "8px 0 0" }}>
+                <a href={rep.ai_launch.measured_image_url}
+                   target="_blank" rel="noreferrer">
+                  <img src={rep.ai_launch.measured_image_url}
+                       alt="the ball measured at rest"
+                       style={{ width: "100%", borderRadius: 6,
+                                display: "block" }} />
+                </a>
+                <figcaption className="tiny muted">
+                  the ball at rest, measured off the pixels
+                  {rep.ai_launch.measured_why
+                    ? ` — ${rep.ai_launch.measured_why}` : ""}
+                </figcaption>
+              </figure>
+            )}
             {rep.ai_launch.image_url && (
               <figure style={{ margin: "8px 0 0" }}>
                 <img src={rep.ai_launch.image_url} alt="AI launch plot"

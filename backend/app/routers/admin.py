@@ -29283,35 +29283,29 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
         # so `rig_impact_explained` writes out the same sum and the
         # lag an operator tuned is applied here too rather than only
         # in Test Cut.
-        # ── A MANUAL UPLOAD ONLY, NEVER A DWELL CLIP ────────────────
+        # ── A DWELL CLIP GETS THIS TOO ──────────────────────────────
         #
-        # Both arrive here with no rig impact, and they are NOT the
-        # same case:
+        # This used to refuse a clip that had a camera event and no
+        # heard strike -- a dwell trigger -- on the reasoning
+        # `_ascent_windows` gives for refusing the audio pass there:
+        # eighty-eight of a dwell's ninety seconds are birds, carts
+        # and branches, so a missed swing narrows the search onto the
+        # wrong two seconds instead of widening, silently, in the
+        # direction that costs a swing.
         #
-        #   a manual upload has no camera event at all -- somebody
-        #   deliberately uploaded one swing to test it, and the audio
-        #   is the only narrowing available;
+        # THAT REASONING IS ABOUT THE SWEEP WINDOW, AND THIS IS NOT
+        # ONE. `_ascent_windows` decides how much of the clip stage 2
+        # searches, and narrowing it wrongly loses the ball outright.
+        # Stage 1 only chooses a frame to zoom into and measure the
+        # ball at rest on; it does not touch `_win`, and the sweep
+        # still searches exactly what it searched before. The worst a
+        # wrong instant does here is aim the pictures at the wrong
+        # moment -- which is visible in the pictures, which is the
+        # whole point of them.
         #
-        #   a DWELL clip has an event and no audio impact, because the
-        #   rig never heard a strike. Eighty-eight of its ninety
-        #   seconds are birds, carts and branches, and `_ascent_windows`
-        #   refuses the audio pass on exactly this clip for exactly
-        #   that reason: when the swing is missed and something else
-        #   is heard, the search does not widen, it narrows onto the
-        #   wrong two seconds and reports a clip with no ball in it.
-        #   Silently, and in the direction that costs a swing.
-        #
-        # So the fallback follows that same rule rather than inventing
-        # a second one -- `ai_launch_plot_test` holds this line.
-        if getattr(row, "camera_event_id", None):
-            out["reason"] = (
-                "the rig heard no strike in this clip, so there is no "
-                "frame to zoom in on — and its own audio is not "
-                "searched for one, because on a dwell clip a missed "
-                "swing narrows onto the wrong two seconds rather than "
-                "widening. The chain's own run back to the tee line "
-                "starts the line instead")
-            return out
+        # So the cost of being wrong is a picture the operator can see
+        # is wrong, against the certainty of no pictures at all. The
+        # operator asked for the pictures.
         try:
             _cut, _cut_why = _cutter_for(db, row)
             if _cut in ("auto", "none"):
@@ -29337,7 +29331,9 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
                 out["reason"] = (
                     "this clip has no rig impact, and the %s cutter "
                     "heard no strike in it either — so there is no "
-                    "frame to zoom in on" % _cut)
+                    "frame to zoom in on, and the chain's own run "
+                    "back to the tee line starts the line instead"
+                    % _cut)
                 return out
             _heard = float(_ct[0])
             _rig = {"sec": max(0.0, _heard - _lag), "heard_sec": _heard,
@@ -29777,7 +29773,13 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
                 out["frames_offsets"] = list(_A2)
                 out["frames_rect"] = list(_r6)
         except Exception as _fx:  # noqa: BLE001
-            log.debug("ai launch: six-frame strip failed: %s", _fx)
+            # NOT AT DEBUG LEVEL. This is one of the pictures the
+            # operator checks, and it failing into a log nobody has
+            # open is how "no images" got its second cause.
+            log.warning("ai launch: six-frame strip failed: %s", _fx,
+                        exc_info=True)
+            out["frames_why"] = ("the six-frame strip could not be cut: "
+                                 "%s: %s" % (type(_fx).__name__, _fx))
         if _dstrip(src_path, _sp,
                    rect=(None if not _rect else
                          (_rect[0], _rect[1], _rect[0] + _rect[2],
