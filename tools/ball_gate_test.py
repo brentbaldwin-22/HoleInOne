@@ -118,8 +118,18 @@ ADM = (ROOT / "backend" / "app" / "routers"
        / "admin.py").read_text(encoding="utf-8")
 check("the test-cut ball check resolves the gate",
       '"ball_min_contrast"' in ADM, True)
-check("  with this cut's own zone",
-      'zone=cut_entry.get("gate")' in ADM, True)
+# WITH THIS CUT'S OWN ZONE -- and this line used to assert the bug.
+# It checked for `zone=cut_entry.get("gate")`, which is not a zone:
+# it is a sentence from the pre-judge, and it is not even set until
+# two hundred lines after the gates are resolved. So the override an
+# operator typed for one tee had never once applied, and the test
+# said it had.
+check("  with this cut's own zone, from the trigger",
+      "_bzone = _trigger_zone(db, row)" in ADM, True)
+check("    which is the source the audio cutter uses too",
+      "_az = _trigger_zone(db, row)" in ADM, True)
+check("    and not the pre-judge's reason string",
+      'zone=cut_entry.get("gate")' in ADM, False)
 check("  and passes it in", "min_contrast=float(_bmc)" in ADM, True)
 # A NameError HERE WOULD HAVE KILLED THE WHOLE BALL CHECK SILENTLY:
 # the call sits inside a swallow. `_d3` is imported per-function in
