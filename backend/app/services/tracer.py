@@ -3309,6 +3309,16 @@ BALL_COLOR = (0, 0, 255)
 BAND_COLOR = (0, 200, 255)       # the strip a teed ball must sit in
 NEAR_COLOR = (0, 165, 255)       # the brightest thing in it, and its score
 SHAPE_COLOR = (255, 160, 0)      # refused on shape, before any score
+# ONE COLOUR PER VERDICT, so a glance at the ball says which rule took
+# it. BGR.
+LOOK_COLORS = {
+    "kept": (0, 220, 0),             # survived every bar
+    "too faint": (0, 165, 255),      # under the contrast bar
+    "off the ground": (200, 60, 200),  # outside the band, with an arrow
+    "too big": (255, 255, 0),        # over the size cap
+    "on the golfer": (160, 160, 160),  # inside a stance, read as a shoe
+    "shape": (255, 160, 0),          # refused before any score
+}
 
 
 def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
@@ -3450,41 +3460,75 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
                             cv2.line(out, (0, _py), (w, _py),
                                      BAND_COLOR, 1, cv2.LINE_AA)
                             drew += 1
+                # THE BAR ITSELF belongs on the blob that came
+                # closest to it, and nowhere else. Drawn in the loop
+                # below rather than here: a separate near-miss marker
+                # put two circles and two labels on one speck.
                 _nr = ball.get("near") or {}
-                _at = _nr.get("best_in_band_at") or _nr.get("best_at")
-                _sc_val = (_nr.get("best_in_band")
-                           if _nr.get("best_in_band_at") else
-                           _nr.get("best_contrast"))
-                if _at:
-                    _nx = int(round((float(_at[0]) - ox) * sc))
-                    _ny = int(round((float(_at[1]) - oy) * sc))
-                    if -30 < _nx < w + 30 and -30 < _ny < h + 30:
-                        cv2.circle(out, (_nx, _ny), 9, NEAR_COLOR, 2,
-                                   cv2.LINE_AA)
-                        if _sc_val is not None:
-                            _bar = _lim.get("min contrast")
-                            _lbl = "%.0f/%s" % (
-                                float(_sc_val),
-                                ("%.0f" % float(_bar)) if _bar is not None
-                                else "?")
-                            for _c, _t in (((0, 0, 0), 3),
-                                           (NEAR_COLOR, 1)):
-                                cv2.putText(out, _lbl, (_nx + 12, _ny - 8),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.42,
-                                            _c, _t, cv2.LINE_AA)
-                        drew += 1
-                # AND A BLOB THAT NEVER BECAME A CANDIDATE, which the
-                # near miss cannot show: it was refused for its shape
-                # before anything measured its brightness.
-                for _sr in ((ball.get("shape_rejects") or {})
-                            .get("in_band") or [])[:2]:
-                    _sx = int(round((float(_sr["x"]) - ox) * sc))
-                    _sy = int(round((float(_sr["y"]) - oy) * sc))
-                    if -30 < _sx < w + 30 and -30 < _sy < h + 30:
-                        cv2.drawMarker(out, (_sx, _sy), SHAPE_COLOR,
-                                       cv2.MARKER_TILTED_CROSS, 11, 2,
+                _best_at = (_nr.get("best_in_band_at")
+                            or _nr.get("best_at"))
+                # EVERYTHING NEAR THE BAND, AND WHAT WAS DECIDED.
+                #
+                # ONE MARKER IS NOT ENOUGH, which cost a wrong
+                # diagnosis: the single best reject was drawn, it
+                # scored 28 against a bar of 30, and it was read as
+                # the ball falling two levels short. The picture then
+                # showed that 28 sitting eight pixels left of the
+                # golfer with the real ball well to the right -- a
+                # different object entirely, and nothing on the
+                # picture could have said so while only the winner
+                # was drawn.
+                #
+                # So every blob in the band's neighbourhood gets its
+                # own mark and its own number: the operator can point
+                # at the ball and read what was decided THERE, rather
+                # than inferring it from the one that scored highest
+                # somewhere else.
+                for _e in (ball.get("looked_at") or [])[:14]:
+                    _ex = int(round((float(_e["x"]) - ox) * sc))
+                    _ey = int(round((float(_e["y"]) - oy) * sc))
+                    if not (-30 < _ex < w + 30 and -30 < _ey < h + 30):
+                        continue
+                    _v = _e.get("verdict")
+                    _col = LOOK_COLORS.get(_v, SHAPE_COLOR)
+                    if _v == "shape":
+                        cv2.drawMarker(out, (_ex, _ey), _col,
+                                       cv2.MARKER_TILTED_CROSS, 9, 2,
                                        cv2.LINE_AA)
-                        drew += 1
+                    elif _v == "off the ground":
+                        # THE SHAPE SAYS "OUTSIDE THE BAND". A down
+                        # arrow in the label would be clearer and
+                        # cv2.putText cannot draw one -- the Hershey
+                        # fonts are ASCII, and a non-ASCII character
+                        # comes out as "???" next to the number,
+                        # which reads as the number being unknown.
+                        cv2.drawMarker(out, (_ex, _ey), _col,
+                                       cv2.MARKER_TRIANGLE_DOWN, 11, 2,
+                                       cv2.LINE_AA)
+                    else:
+                        cv2.circle(out, (_ex, _ey), 6, _col, 1,
+                                   cv2.LINE_AA)
+                    # THE SCORE IS THE ACTIONABLE PART for the two
+                    # verdicts a ball can wrongly land in. A shape
+                    # reject has no score -- it was refused before
+                    # anything measured its brightness.
+                    _t = ("" if _e.get("score") is None
+                          else "%.0f" % float(_e["score"]))
+                    # AND THE BAR, on the one blob that came closest
+                    # to clearing it: "28/30" says what it needed,
+                    # which a bare score does not.
+                    if (_t and _best_at
+                            and abs(_e["x"] - _best_at[0]) <= 3
+                            and abs(_e["y"] - _best_at[1]) <= 3):
+                        _bar = _lim.get("min contrast")
+                        if _bar is not None:
+                            _t = "%s/%.0f" % (_t, float(_bar))
+                    if _t:
+                        for _c, _th in (((0, 0, 0), 3), (_col, 1)):
+                            cv2.putText(out, _t, (_ex + 7, _ey - 5),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.34,
+                                        _c, _th, cv2.LINE_AA)
+                    drew += 1
             except Exception:  # noqa: BLE001
                 pass
         return out if drew else None

@@ -1050,6 +1050,25 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
         # worth a sentence are the ones in the band.
         _shape_n = 0
         _shape_band = []
+        # EVERYTHING NEAR WHERE A BALL WOULD BE, AND WHAT WAS DECIDED.
+        #
+        # The counts total the frame and `near` keeps the single best
+        # reject. Between them they could not answer the only question
+        # an operator actually asks, pointing at the ball: "what did
+        # you see THERE?" -- because the ball may be the second-best
+        # near miss, or refused for its shape, or three pixels under
+        # the band, and all three read as silence.
+        #
+        # It cost a wrong diagnosis: the best reject scored 28 against
+        # a bar of 30, I read that as the ball two levels short, and
+        # the drawn picture then put that 28 eight pixels left of the
+        # golfer's box with the real ball well to the right of it.
+        # One number, confidently misattributed, because nothing said
+        # where it was.
+        #
+        # So every blob in the band's NEIGHBOURHOOD is kept with its
+        # verdict, and the picture draws them all.
+        _looked = []
         per_frame = []
         for fr in shots:
             if fr is None:
@@ -1064,10 +1083,13 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             _rj = []
             for d in _detections(gray, boxes, rel=0.0, rejects=_rj):
                 _tally["seen"] += 1
+                _verdict = None
                 if d[2] > int(cap_area):
                     _tally["too big"] += 1
+                    _verdict = "too big"
                 elif d[3] < float(min_contrast):
                     _tally["too faint"] += 1
+                    _verdict = "too faint"
                     _c = float(d[3])
                     if (_near["best_contrast"] is None
                             or _c > _near["best_contrast"]):
@@ -1088,31 +1110,28 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                     # that test needs the answer: at the foot line it
                     # is looking for a shoe, not a person.
                     _tally["off the ground"] += 1
+                    _verdict = "off the ground"
                 elif _on_a_person(d[0], d[1], people, at_ground=True):
                     _tally["on the golfer"] += 1
+                    _verdict = "on the golfer"
                 else:
                     _tally["kept"] += 1
+                    _verdict = "kept"
                     dets.append(d)
+                _looked.append({"x": float(d[0]), "y": float(d[1]),
+                                "area": int(d[2]),
+                                "score": round(float(d[3]), 1),
+                                "verdict": _verdict})
             _shape_n += len(_rj)
             for _r in _rj:
                 if _on_the_ground(_r.get("y"), anchor):
                     _shape_band.append(_r)
+                _looked.append({"x": float(_r["x"]), "y": float(_r["y"]),
+                                "area": int(_r.get("area") or 0),
+                                "score": None,
+                                "verdict": "shape",
+                                "why": str(_r.get("why") or "")})
             per_frame.append(dets)
-        out["counts"] = dict(_tally)
-        # BIGGEST FIRST: among blobs in the band, the largest is the
-        # likeliest ball, and a one-pixel speck rejected for being
-        # one pixel is not news.
-        _shape_band.sort(key=lambda r: -float(r.get("area") or 0))
-        out["shape_rejects"] = {
-            "n": int(_shape_n),
-            "in_band": [{"x": int(round(float(r["x"]))),
-                         "y": int(round(float(r["y"]))),
-                         "area": int(r.get("area") or 0),
-                         "why": str(r.get("why") or "")}
-                        for r in _shape_band[:3]],
-        }
-        out["near"] = {k: (round(v, 1) if isinstance(v, float) else v)
-                       for k, v in _near.items()}
         # THE BARS THEMSELVES, beside the counts. "9 too faint" is only
         # actionable next to the number they had to clear.
         _band = None
@@ -1124,6 +1143,68 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                              int(round(_f + BALL_BAND_BELOW_FEET * _h))]
             except Exception:  # noqa: BLE001
                 _band = None
+        out["counts"] = dict(_tally)
+        # BIGGEST FIRST: among blobs in the band, the largest is the
+        # likeliest ball, and a one-pixel speck rejected for being
+        # one pixel is not news.
+        # ── WHAT TO SHOW, AND WHAT IS NOISE ─────────────────────────
+        #
+        # The whole frame is full of refused specks; the only ones
+        # worth a marker are the ones near where a teed ball sits. So:
+        # the band, widened by its own height each way, which catches
+        # a ball just UNDER the line as well as one in it. That matters
+        # because the margin below the feet is 0.02 of a golfer's
+        # height -- two and a half pixels on a 126px golfer -- and a
+        # ball teed forward of the stance sits lower in the frame than
+        # the feet do.
+        #
+        # Deduplicated across the six frames: a ball that does not move
+        # is found six times in the same place, and six stacked markers
+        # say nothing the first one did not.
+        _show = []
+        if _band:
+            _h = max(8.0, float(_band[1] - _band[0]))
+            _lo, _hi2 = _band[0] - _h, _band[1] + _h
+        else:
+            _lo = _hi2 = None
+        for _e in _looked:
+            if _lo is not None and not (_lo <= _e["y"] <= _hi2):
+                continue
+            _dup = None
+            for _o in _show:
+                if ((_e["x"] - _o["x"]) ** 2
+                        + (_e["y"] - _o["y"]) ** 2) ** 0.5 <= 5.0:
+                    _dup = _o
+                    break
+            if _dup is None:
+                _show.append(dict(_e, seen=1))
+            else:
+                _dup["seen"] += 1
+                # KEEP THE BEST SIGHTING of a thing seen repeatedly:
+                # the frame where it scored highest is the one that
+                # says how close it came to the bar.
+                if (_e.get("score") or -1) > (_dup.get("score") or -1):
+                    _dup.update({k: _e[k] for k in
+                                 ("score", "verdict", "area")})
+        _show.sort(key=lambda e: (-(e.get("score") or 0),
+                                  -(e.get("area") or 0)))
+        out["looked_at"] = [
+            {k: v for k, v in dict(
+                e, x=int(round(e["x"])), y=int(round(e["y"]))).items()
+             if k != "why" or v}
+            for e in _show[:14]
+        ]
+        _shape_band.sort(key=lambda r: -float(r.get("area") or 0))
+        out["shape_rejects"] = {
+            "n": int(_shape_n),
+            "in_band": [{"x": int(round(float(r["x"]))),
+                         "y": int(round(float(r["y"]))),
+                         "area": int(r.get("area") or 0),
+                         "why": str(r.get("why") or "")}
+                        for r in _shape_band[:3]],
+        }
+        out["near"] = {k: (round(v, 1) if isinstance(v, float) else v)
+                       for k, v in _near.items()}
         out["limits"] = {
             "max area": int(cap_area),
             "min contrast": round(float(min_contrast), 1),
