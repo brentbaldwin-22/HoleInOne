@@ -106,6 +106,27 @@ _gt = body("get_gate_tuning") or TEXT
 check("the current choice is served", '"cutter": _cutter_for' in TEXT, True)
 check("  with the menu beside it", '"cutters": [{"name": k' in TEXT, True)
 
+print("\n-- every path NAMES the cutter, including the ones that ignore it")
+# A cutter that ran and one that was never consulted looked identical:
+# the only tell was the clip coming out different, and on a sweep that
+# found the same swing anyway it did not. "auto, and the rig had
+# already heard it" is an answer; silence is not.
+check("the lookup happens once, for every path",
+      '_cw = {"cutter": _cut, "cutter_why": _cut_why}' in _aw, True)
+check("  and the window record carries the extras",
+      'dict({"detail": msg, "spans": spans}, **extra)' in _aw, True)
+for path, needle in (
+        ("the rig's impact", 'ran="the rig\'s own impact"'),
+        ("a chosen cutter that found cuts", 'ran="the %s cutter" % _cut'),
+        ("one that found nothing", "which found nothing"),
+        ("one that threw", "which failed"),
+        ("auto skipping a dwell clip", "auto skips a dwell clip"),
+        ("auto's own audio pass", 'ran="auto\'s audio pass"'),
+        ("set to sweep on purpose", 'ran="nothing, by choice"')):
+    check("  %s" % path, needle in _aw, True)
+check("the times it cut at travel too", "times=[round(t, 2)" in _aw, True)
+
+
 print("\n-- and the operator can actually choose one")
 JSX = (ROOT / "frontend" / "src" / "components"
        / "GateTuning.jsx").read_text(encoding="utf-8")
@@ -121,6 +142,13 @@ check("choosing one saves it", "saveCutter" in JSX, True)
 check("  and carries the pending gates with it",
       "api.setGateTuning(\n        adminPassword, uploadId, pending(), name)"
       in JSX, True)
+PROD = (ROOT / "frontend" / "src" / "pages"
+        / "AdminProduction.jsx").read_text(encoding="utf-8")
+check("Find ascents shows which cutter ran",
+      "rep.window.cutter" in PROD and "rep.window.ran" in PROD, True)
+check("  the times it cut at", "rep.window.times" in PROD, True)
+check("  and says plainly when it found nothing",
+      "cannot have hidden a swing" in PROD, True)
 API = (ROOT / "frontend" / "src" / "api.js").read_text(encoding="utf-8")
 check("the api sends the cutter only when given one",
       "cutter === undefined ? { gates } : { gates, cutter }" in API, True)

@@ -10819,6 +10819,57 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             + "clips are left alone."}
         </div>
 
+        {/* WHICH CUTTER RAN, AND WHAT IT FOUND.
+            The cutter narrows the search before any of this starts,
+            and nothing said so — the only way to tell one that ran
+            from one that was never consulted was that the clip came
+            out different, and on a sweep that found the same swing
+            anyway it did not. Same three facts Test Cut shows. */}
+        {rep?.window && (
+          <div className="tiny" style={{
+            marginTop: 8, padding: "6px 8px", borderRadius: 6,
+            background: "rgba(255,255,255,0.04)" }}>
+            <b>Cutter</b>{" "}
+            <code>{rep.window.cutter || "auto"}</code>
+            {rep.window.cutter_why ? (
+              <span className="muted"> · {rep.window.cutter_why}</span>
+            ) : null}
+            {rep.window.ran ? (
+              <div className="muted" style={{ marginTop: 2 }}>
+                Searched using {rep.window.ran}.
+              </div>
+            ) : null}
+            {Array.isArray(rep.window.times) && rep.window.times.length > 0 && (
+              <div style={{ marginTop: 2 }}>
+                Cut at {rep.window.times.map((t) => `${t}s`).join(", ")}
+                {Array.isArray(rep.window.spans) && (
+                  <span className="muted">
+                    {" "}· searching{" "}
+                    {rep.window.spans
+                      .map((w) => `f${w[0]}–f${w[1]}`).join(", ")}
+                  </span>
+                )}
+              </div>
+            )}
+            {Array.isArray(rep.window.times)
+              && rep.window.times.length === 0 && (
+              <div style={{ color: "#f59e0b", marginTop: 2 }}>
+                Found nothing — the whole clip is being swept instead, so
+                this cannot have hidden a swing.
+              </div>
+            )}
+            {rep.window.debug?.reason && (
+              <div className="muted" style={{ marginTop: 2 }}>
+                {rep.window.debug.reason}
+              </div>
+            )}
+            {rep.window.debug?.gates_from && (
+              <div className="muted" style={{ marginTop: 2 }}>
+                Gates: {rep.window.debug.gates_from}
+              </div>
+            )}
+          </div>
+        )}
         {rep?.clear_error && (
           <div className="err-text small" style={{ marginTop: 8 }}>
             ⚠ {rep.clear_error}

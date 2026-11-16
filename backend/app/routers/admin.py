@@ -25766,14 +25766,20 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
     clip exactly as before. This narrows a search; it must never be
     able to hide a ball.
     """
-    def _note(msg, spans=None):
+    def _note(msg, spans=None, **extra):
         if rep is not None:
             # ITS OWN KEY, NOT rep["stages"]. This went in among the
             # numbered stages, and the timing table reads every stage
             # as int(st["n"]) -- so a dict without one raised
             # KeyError('n'), which reached the card as a red 'n' and
             # took down every ascent run with it.
-            rep["window"] = {"detail": msg, "spans": spans}
+            # THE CUTTER TRAVELS WITH THE ANSWER. Which one was in
+            # force, where it came from and what it found -- the same
+            # three facts Test Cut shows -- because the only way to
+            # tell a cutter that ran from one that was never consulted
+            # was that the clip looked different, and on a sweep that
+            # found the same swing anyway it did not.
+            rep["window"] = dict({"detail": msg, "spans": spans}, **extra)
             # THE ONE LINE THE OPERATOR IS WATCHING. The toast is the
             # only feedback during a sweep that takes a minute, and
             # saying "the whole clip" while searching two seconds of
@@ -25788,6 +25794,14 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
                         int((t + ASCENT_WIN_POST_SEC) * fps)))
         return out or None
 
+    # WHICH CUTTER THIS HOLE IS SET TO. A dict read, not a decision --
+    # the decision is below, after the rig's own impact, which nothing
+    # displaces. Read here so that EVERY path can name it, including
+    # the ones that ignore it: "auto, and the rig had already heard it"
+    # is an answer, and silence is not.
+    _cut, _cut_why = _cutter_for(db, row)
+    _cw = {"cutter": _cut, "cutter_why": _cut_why}
+
     # 1. The rig heard it.
     #
     # THE SAME READER THE PRODUCE SIDE USES, not a second copy of the
@@ -25800,7 +25814,8 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
             w = _around([_rig["sec"]])
             _note("the rig's impact at %.2fs (heard %.2fs, %.2fs lead "
                   "applied)" % (_rig["sec"], _rig["heard_sec"],
-                                _rig["lead_sec"]), w)
+                                _rig["lead_sec"]), w,
+                  ran="the rig's own impact", times=[_rig["sec"]], **_cw)
             return w
     except Exception as exc:  # noqa: BLE001
         log.warning("ascent window: could not read the rig's impact (%s)", exc)
@@ -25839,19 +25854,18 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
     #
     # After the rig's own impact and before everything else: that one
     # is a confirmed instant rather than a search of the clip, exact
-    # and free, so nothing displaces it. Looked up HERE rather than at
-    # the top of the function, where it read as deciding first.
+    # and free, so nothing displaces it.
     #
     # IT MAY NARROW, IT MAY NOT HIDE. A cutter that finds nothing --
     # or throws -- returns None and the caller sweeps the whole clip,
     # exactly as if none were set. The rule this function is built on
     # is that narrowing onto the wrong two seconds costs a swing,
     # while scanning too much only costs time.
-    _cut, _cut_why = _cutter_for(db, row)
     if _cut != "auto":
         if _cut == "none":
             _note("this hole is set to sweep the whole clip rather than "
-                  "narrow it (%s)" % _cut_why)
+                  "narrow it (%s)" % _cut_why, ran="nothing, by choice",
+                  **_cw)
             return None
         try:
             _dbg: dict = {}
@@ -25861,11 +25875,16 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
                 _note("%d cut(s) from the %s cutter, %s: %s — %s"
                       % (len(_times), _cut, _cut_why,
                          ", ".join("%.1fs" % t for t in _times),
-                         PRODUCE_CUTTERS[_cut]), w)
+                         PRODUCE_CUTTERS[_cut]), w,
+                      ran="the %s cutter" % _cut,
+                      times=[round(t, 2) for t in _times],
+                      debug=_dbg, **_cw)
                 return w
             _note("the %s cutter (%s) found nothing (%s) — sweeping the "
                   "whole clip" % (_cut, _cut_why,
-                                  _dbg.get("reason") or "no candidates"))
+                                  _dbg.get("reason") or "no candidates"),
+                  ran="the %s cutter, which found nothing" % _cut,
+                  times=[], debug=_dbg, **_cw)
         except Exception as exc:  # noqa: BLE001
             # A CHOSEN CUTTER THAT THROWS MUST NOT COST THE SWING. It
             # falls back to the sweep, loudly, which is the same place
@@ -25873,14 +25892,16 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
             log.warning("ascent window: the %s cutter failed (%s) — "
                         "scanning all", _cut, exc)
             _note("the %s cutter failed (%s) — sweeping the whole clip"
-                  % (_cut, exc))
+                  % (_cut, exc),
+                  ran="the %s cutter, which failed" % _cut, **_cw)
         return None
 
     _kind = _trigger_kind(db, row)
     if _kind == "dwell":
         _note("a dwell clip — sweeping the whole clip rather than "
               "narrowing on its audio, which can only narrow onto the "
-              "wrong seconds when the swing is the quiet thing in them")
+              "wrong seconds when the swing is the quiet thing in them",
+              ran="nothing — auto skips a dwell clip's audio", **_cw)
         return None
 
     try:
@@ -25913,10 +25934,14 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
         if times:
             w = _around(times)
             _note("%d impact(s) heard in the clip: %s"
-                  % (len(times), ", ".join("%.1fs" % t for t in times)), w)
+                  % (len(times), ", ".join("%.1fs" % t for t in times)), w,
+                  ran="auto's audio pass",
+                  times=[round(t, 2) for t in times], debug=dbg, **_cw)
             return w
         _note("nothing heard in the clip (%s) — scanning all of it"
-              % (dbg.get("reason") or "no peak over the gate"))
+              % (dbg.get("reason") or "no peak over the gate"),
+              ran="auto's audio pass, which heard nothing",
+              times=[], debug=dbg, **_cw)
     except Exception as exc:  # noqa: BLE001
         log.warning("ascent window: audio pass failed (%s) — scanning all",
                     exc)
