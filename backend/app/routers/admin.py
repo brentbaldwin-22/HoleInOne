@@ -15942,7 +15942,38 @@ def _test_cut_run(
                 # the check is hunting specks across all of it.
                 _bl = None
                 _anc = _ffx = _zy = None
-                _bmc = _d3_defaults_ball_bar()
+                # ── THIS HOLE'S BALL GATES, RESOLVED ONCE ───────────
+                #
+                # ONCE, AND HERE, because two things need them: the
+                # ball check below and the six-frame strip further
+                # down, which has to be cut around the same instant or
+                # the picture argues with the verdict.
+                #
+                # AND WITH THE RIGHT ZONE. This used to pass
+                # `cut_entry.get("gate")`, which is not a zone -- it
+                # is a sentence from the pre-judge, and it is not set
+                # until two hundred lines after this runs. So it was
+                # always None twice over, and every zone override an
+                # operator typed was silently ignored. Reported from
+                # the field as "I changed the lag and nothing
+                # happened".
+                from ..services import debug3 as _bd3
+                _bmc = _bd3.GATE_DEFAULTS["ball_min_contrast"]
+                _blag = _bd3.GATE_DEFAULTS["audio_lag_sec"]
+                try:
+                    _bzone = _trigger_zone(db, row)
+                    _bgt, _, _ = _gate_tuning_for(db, row)
+                    _bgates = _bd3.resolve_gates(_bgt, zone=_bzone)
+                    _bmc = _bgates["ball_min_contrast"]
+                    _blag = _bgates["audio_lag_sec"]
+                    log.info("test cut: ball gates for zone %s — "
+                             "contrast %.0f, audio lag %.2fs",
+                             _bzone, _bmc, _blag)
+                except Exception as _gx:  # noqa: BLE001
+                    log.debug("ball gates: %s — using defaults", _gx)
+                # THE INSTANT EVERYTHING IS CUT AROUND. The sound is
+                # late by `_blag`; the strike is that much earlier.
+                _strike_sec = peak_time_sec - float(_blag)
                 if _golfer and _chk.get("golfer_crop"):
                     try:
                         from ..services.ball_vanish import ball_at_address
@@ -15975,20 +16006,6 @@ def _test_cut_run(
                         # have raised NameError into the swallow
                         # below, taking the whole ball check with it
                         # and reporting nothing.
-                        from ..services import debug3 as _bd3
-                        _bmc = _bd3.GATE_DEFAULTS["ball_min_contrast"]
-                        _blag = _bd3.GATE_DEFAULTS["audio_lag_sec"]
-                        try:
-                            _bg, _, _ = _gate_tuning_for(db, row)
-                            _bgates = _bd3.resolve_gates(
-                                _bg, zone=cut_entry.get("gate"))
-                            _bmc = _bgates["ball_min_contrast"]
-                            # HOW LATE THE SOUND IS on this hole. The
-                            # tiles move earlier by it; see the gate.
-                            _blag = _bgates["audio_lag_sec"]
-                        except Exception as _gx:  # noqa: BLE001
-                            log.debug("ball gate: %s — using %s",
-                                      _gx, _bmc)
                         # THE STANCE BOX. `feet_x` is what turns the
                         # search from "this band across the whole
                         # crop" into a patch of grass beside the
@@ -16069,8 +16086,7 @@ def _test_cut_run(
                                     % (upload_id, idx,
                                        secrets.token_hex(3)))
                                 _bst = ball_box_strip(
-                                    src_path,
-                                    peak_time_sec - float(_blag), _bsp,
+                                    src_path, _strike_sec, _bsp,
                                     box=_bl["region"], offsets=_BO,
                                     spot=_bl.get("spot"))
                                 if _bst.get("ok"):
@@ -16102,8 +16118,7 @@ def _test_cut_run(
                                     # REDRAW with both answers on it,
                                     # now that the model has given one.
                                     ball_box_strip(
-                                        src_path,
-                                        peak_time_sec - float(_blag),
+                                        src_path, _strike_sec,
                                         _bsp, box=_bl["region"],
                                         offsets=_BO,
                                         spot=_bl.get("spot"),
@@ -16389,7 +16404,29 @@ def _test_cut_run(
                                 # frame and a finish.
                                 _offs = (AUDIO2_OFFSETS_SEC if _golfer
                                          else FRAME_OFFSETS_SEC)
-                                if frames_strip(src_path, peak_time_sec, _sp,
+                                # ── CUT AROUND THE STRIKE, NOT THE
+                                #    SOUND ─────────────────────────
+                                #
+                                # THIS IS THE PICTURE THE OPERATOR WAS
+                                # LOOKING AT, and it never moved. The
+                                # lag was applied to the ball check
+                                # and to the zoomed box strip, and not
+                                # here -- so every lag setting left
+                                # these six tiles exactly where they
+                                # were and the whole feature read as
+                                # doing nothing.
+                                #
+                                # It is also simply wrong to leave it.
+                                # On a clip whose sound is 0.6s late
+                                # the tile labelled -1.20s (address)
+                                # is really mid-backswing, there is no
+                                # address tile at all, and the judge
+                                # is asked to find a ball in a frame
+                                # the ball has already left. The
+                                # prompt describes these tiles by what
+                                # they are supposed to show; the lag
+                                # is what makes that description true.
+                                if frames_strip(src_path, _strike_sec, _sp,
                                                 rect=_chk.get("frames_rect"),
                                                 box=_heat_box,
                                                 offsets=_offs,
@@ -16515,7 +16552,7 @@ def _test_cut_run(
                                 try:
                                     if _zbox and _strip:
                                         frames_strip(
-                                            src_path, peak_time_sec,
+                                            src_path, _strike_sec,
                                             CLIPS_DIR / (
                                                 "aidrop-%s.jpg"
                                                 % secrets.token_hex(3)),

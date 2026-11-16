@@ -139,6 +139,58 @@ check("a check that found no ball offers no reading",
                      anchor=ANCHOR).get("lag_implied_sec"), None)
 
 
+print("\n-- END TO END: the lag really moves which frames are read")
+# THE PROPERTY THAT WAS BROKEN AND NOTHING TESTED. Every assertion
+# above worked on tiles handed in directly, so all of it passed while
+# the lag reached nothing on a real clip. The operator's report was
+# "I changed the lag and the same picture comes back".
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+
+from app.services.ball_vanish import ball_at_address  # noqa: E402
+
+
+def _have_ffmpeg():
+    try:
+        subprocess.run(["ffmpeg", "-version"], check=True, timeout=30,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+if _have_ffmpeg():
+    _tmp = Path(tempfile.mkdtemp(prefix="lag-"))
+    _fr = _tmp / "f"
+    _fr.mkdir()
+    _FPS, _IMPACT = 60, 2.00
+    # The ball leaves at 2.00s; the peak we are handed is 0.60s LATE.
+    _PEAK = _IMPACT + 0.60
+    for _i in range(220):
+        _f = np.full((240, 320, 3), 60, np.uint8)
+        _f[::7, ::7] = 72
+        if _i / _FPS < _IMPACT:
+            cv2.circle(_f, BALL, 3, (245, 245, 245), -1)
+        cv2.imwrite(str(_fr / ("f%04d.png" % _i)), _f)
+    _vid = _tmp / "c.mp4"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate",
+                    str(_FPS), "-i", str(_fr / "f%04d.png"), "-c:v",
+                    "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
+                    str(_vid)], check=True, timeout=300)
+
+    _no = ball_at_address(_vid, _PEAK, OFFS, anchor=ANCHOR, lag_sec=0.0)
+    _yes = ball_at_address(_vid, _PEAK, OFFS, anchor=ANCHOR, lag_sec=0.6)
+    check("with no correction the ball cannot be found twice",
+          _no["state"], "NO_BALL_DETECTED")
+    check("  and it IS in the first tile, which is the whole point",
+          (_no["frames"][0]["kept"] or 0) > 0, True)
+    check("with the hole's lag applied it is found",
+          _yes["state"], "BALL_PRESENT_DISAPPEARED")
+    check("  in two of the first three", _yes["seen_before"] >= 2, True)
+else:
+    print("  ffmpeg is not installed here — end to end unchecked")
+
+
 print("\n-- the wiring")
 ADM = (ROOT / "backend" / "app" / "routers"
        / "admin.py").read_text(encoding="utf-8")
@@ -148,8 +200,27 @@ check("  and passes it to the ball check",
 # THE ZOOMED STRIP MUST AGREE WITH THE SEARCH. A box strip cut around
 # the uncorrected peak would show different frames from the ones the
 # verdict came from.
-check("  and cuts the zoomed strip around the same instant",
-      "peak_time_sec - float(_blag)" in ADM, True)
+# ONE INSTANT, USED EVERYWHERE. The six-frame strip the judge is
+# shown, the zoomed box strip and the ball check must all be cut
+# around the same moment, or the picture argues with the verdict --
+# and the strip is the picture the operator actually looks at, so a
+# lag that moved everything EXCEPT it read as doing nothing at all.
+check("  there is one corrected instant", "_strike_sec = peak_time_sec"
+      in ADM, True)
+check("  the judge's six-frame strip is cut at it",
+      "frames_strip(src_path, _strike_sec" in ADM, True)
+check("  and so is the zoomed box strip",
+      "src_path, _strike_sec, _bsp" in ADM, True)
+check("  with nothing still cutting at the raw peak",
+      "frames_strip(src_path, peak_time_sec" in ADM, False)
+# THE ZONE HAS TO BE A ZONE. This read `cut_entry.get("gate")`, which
+# is a sentence from the pre-judge and is not set until two hundred
+# lines later -- so every zone override typed by an operator was
+# silently ignored, twice over.
+check("  the zone comes from the trigger, as the cutter's does",
+      "_bzone = _trigger_zone(db, row)" in ADM, True)
+check("  and not from the pre-judge's reason string",
+      'zone=cut_entry.get("gate")' in ADM, False)
 check("  the reading reaches the page",
       'cut_entry["ball_lag_implied"]' in ADM, True)
 JSX = (ROOT / "frontend" / "src" / "components"
