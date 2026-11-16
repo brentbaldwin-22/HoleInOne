@@ -166,6 +166,105 @@ def lowest_at(point, value):
     return best_i
 
 
+def body_span(point, height_px=0.0, frac=1.0):
+    """The vertical span a person occupies, from their feet upward.
+
+    `point` is the FEET. A standing person extends UP the picture from
+    there, so the span is [feet_y - frac*height, feet_y]. `frac` is how
+    much of them counts: 0 is the feet alone (where this started), 1.0
+    is any part of them.
+
+    Returns (y_top, y_bottom) or None if there is nothing to measure.
+    """
+    try:
+        y = float(point[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    h = max(0.0, float(height_px or 0.0)) * max(0.0, min(1.0, float(frac)))
+    return (y - h, y)
+
+
+def contains_body(point, value, height_px=0.0, frac=1.0) -> bool:
+    """Is any of this person inside a zone?
+
+    WHY A BODY AND NOT A POINT, and why this is still safe.
+
+    The feet are where somebody IS, and testing them alone is what
+    makes a zone mean "this patch of ground" -- which is what an
+    operator draws. But a golfer addressing a ball stands a pace or two
+    BEHIND the spot the ball sits on, and on a camera looking down the
+    hole "behind" is LOWER in the picture. So a zone drawn accurately
+    on the tee surface can miss the person playing from it.
+
+    Testing the whole body fixes that and -- this is the part that
+    makes it safe -- fixes it in ONE DIRECTION ONLY. A person extends
+    upward from their feet, so:
+
+      - standing ON the zone: feet inside it, as before;
+      - standing BEHIND it (lower in frame, nearer the camera): the
+        feet are below the zone and the body reaches up into it, so
+        they count. They are the ones about to play from it;
+      - standing IN FRONT of it (higher in frame, toward the hole):
+        the feet are above the zone's top edge, so the whole body is
+        above it and NOTHING of them overlaps. They never count.
+
+    That asymmetry is not a rule that had to be written; it falls out
+    of people being above their own feet. Which is why this is an
+    overlap test and not a padded box.
+
+    `frac` bounds how much of the body counts, so the reach backwards
+    is bounded too: 0 is the old feet-only test exactly, 1.0 is any
+    part. Never raises.
+    """
+    span = body_span(point, height_px, frac)
+    if span is None:
+        return False
+    y_top, y_bot = span
+    try:
+        px = float(point[0])
+    except (TypeError, ValueError, IndexError):
+        return False
+    for b in boxes(value):
+        x0, y0 = b["x"], b["y"]
+        x1, y1 = x0 + b["w"], y0 + b["h"]
+        # THE FEET'S OWN COLUMN, not the whole bounding box. A person's
+        # box is wider than they are standing, and widening the zones
+        # sideways would catch somebody beside the tee -- which is not
+        # what "they are about to play from here" means.
+        if x0 <= px <= x1 and y_top <= y1 and y_bot >= y0:
+            return True
+    return False
+
+
+def lowest_at_body(point, value, height_px=0.0, frac=1.0):
+    """`lowest_at`, for a body rather than a point.
+
+    Exists because the zone an event is FILED under has to be the one
+    that let it through. With a body test, a golfer standing behind a
+    zone is in none of them by their feet, so `lowest_at` answers None
+    and the event loses its zone -- which is how a trigger ends up
+    labelled "zone ?" on the events page.
+    """
+    span = body_span(point, height_px, frac)
+    if span is None:
+        return None
+    y_top, y_bot = span
+    try:
+        px = float(point[0])
+    except (TypeError, ValueError, IndexError):
+        return None
+    best = None
+    for i, b in enumerate(boxes(value)):
+        x0, y0 = b["x"], b["y"]
+        x1, y1 = x0 + b["w"], y0 + b["h"]
+        if x0 <= px <= x1 and y_top <= y1 and y_bot >= y0:
+            # Lowest on screen is nearest the camera; ties keep the
+            # first drawn. Same rule as `lowest_at`.
+            if best is None or y1 > best[1]:
+                best = (i, y1)
+    return None if best is None else best[0]
+
+
 def contains(point, value) -> bool:
     """Is this point inside ANY zone? False when none are set — an
     unconfigured camera should not trigger on everything that walks

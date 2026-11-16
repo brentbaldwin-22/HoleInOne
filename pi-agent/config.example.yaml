@@ -236,6 +236,28 @@ detection:
   # the cap at 12s just as it does at 30s. It ends the clip in the
   # gaps, which is where most of the 120 seconds was being spent.
   no_person_timeout_seconds: 12
+  # HOW MUCH OF A PERSON HAS TO BE IN A ZONE, measured up from their
+  # feet. 0 is the feet alone; 1.0 is any part of them.
+  #
+  # The feet are where somebody IS, and the zones are drawn on the
+  # ground accordingly. But a golfer addressing a ball stands a pace
+  # behind it, and on a camera looking down the hole "behind" is LOWER
+  # in the picture -- so a zone drawn accurately on the tee surface can
+  # miss the player using it.
+  #
+  # Counting the whole body fixes that in ONE DIRECTION ONLY, which is
+  # what makes it safe: a person extends UP from their feet, so
+  # somebody standing in FRONT of a zone (nearer the hole, higher in
+  # frame) has their feet above its top edge and no part of them
+  # overlaps it. They still never trigger. Somebody BEHIND it reaches
+  # up into it, and they are the one about to play from it.
+  #
+  # It does reach backwards by roughly a body height in pixels, so
+  # somebody walking close past the camera is large enough to clip a
+  # zone. If that starts triggering, lower this rather than redrawing
+  # the zones: 0.5 counts them from the waist down, 0 restores the
+  # feet-only test exactly.
+  trigger_body_fraction: 1.0
   # Frame is downsampled to this width before the pose model sees it.
   # Smaller = faster but less reliable at distance. 320 px works
   # well for a person at ~5-15 m.

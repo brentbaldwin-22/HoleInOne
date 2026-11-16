@@ -38,6 +38,12 @@ class _Runner:
         self._roi_lock = threading.Lock()
         self.roi = {"boxes": [{"x": 0, "y": 0, "w": 100, "h": 100}]}
         self._person_seen_at = []
+        # THE SAME ATTRIBUTES THE REAL RUNNER CARRIES. A double that
+        # has drifted from its subject fails as an AttributeError deep
+        # inside the policy, which reads as the policy being broken.
+        self._last_height = 0.0
+        self.body_frac = 0.0
+        self._zone_of = tee.TeeAgent._zone_of.__get__(self)
 
 
 def run(windows, timeout, *, until=200.0, det_period=0.3):
@@ -47,7 +53,12 @@ def run(windows, timeout, *, until=200.0, det_period=0.3):
     # _in_roi is a module function over a real ROI shape; the point here
     # is the TIMING, so presence is decided by the detector stub alone.
     orig = tee._in_roi
-    tee._in_roi = lambda stance, roi: stance is not None
+    # THE DOUBLE TAKES THE REAL SIGNATURE, including the height and
+    # body fraction the body test added. A stand-in with the wrong
+    # arity fails as a TypeError inside the policy, which reads as
+    # the policy being broken.
+    tee._in_roi = (lambda stance, roi, height_px=0.0, frac=0.0:
+                   stance is not None)
     try:
         stop = tee.TeeAgent._copy_stop_policy(
             runner, det, timeout, det_period)
@@ -114,7 +125,12 @@ def main():
     runner = _Runner()
     det = _Det([(0.0, 5.0)])
     orig = tee._in_roi
-    tee._in_roi = lambda stance, roi: stance is not None
+    # THE DOUBLE TAKES THE REAL SIGNATURE, including the height and
+    # body fraction the body test added. A stand-in with the wrong
+    # arity fails as a TypeError inside the policy, which reads as
+    # the policy being broken.
+    tee._in_roi = (lambda stance, roi, height_px=0.0, frac=0.0:
+                   stance is not None)
     try:
         stop = tee.TeeAgent._copy_stop_policy(runner, det, 12.0, 0.3)
         import time as _t

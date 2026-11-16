@@ -186,6 +186,10 @@ class MediaPipePersonDetector:
         # knowledge of which index is which and degrades sensibly when
         # the feet are out of shot, to whatever IS lowest.
         cy = max(ys) * sh / scale
+        # HOW TALL THEY ARE ON SCREEN, for the body-overlap test in
+        # `_in_roi`. Landmark extent rather than a model: it degrades
+        # the same way `cy` does when part of them is out of shot.
+        self.last_height = max(0.0, (max(ys) - min(ys)) * sh / scale)
         return int(round(cx)), int(round(cy))
 
     def close(self):
@@ -235,6 +239,10 @@ class YoloPersonDetector:
         self.net = cv2.dnn.readNetFromONNX(str(model_path))
         self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
         self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        # The last detection's on-screen height, for `_in_roi`. 0 until
+        # something is seen, which reads as "feet only" -- the old
+        # behaviour, which is the right thing to fall back to.
+        self.last_height = 0.0
 
     def detect(self, frame, conf_override: Optional[float] = None) -> Optional[tuple[int, int]]:
         conf = self.conf if conf_override is None else float(conf_override)
@@ -276,6 +284,9 @@ class YoloPersonDetector:
         # middle.
         best = max(idxs, key=lambda i: confs[i])
         x, y, bw_px, bh_px = boxes[best]
+        # The box height was computed and thrown away here; `_in_roi`
+        # needs it to ask whether any of the person is in a zone.
+        self.last_height = float(bh_px)
         return int(x + bw_px / 2), int(y + bh_px)
 
     def close(self):
@@ -347,6 +358,9 @@ class MotionFallbackDetector:
         # as the others rather than a different one.
         _bx, _by, _bw, _bh = cv2.boundingRect(biggest)
         cy = _by + _bh
+        # As crude as `cy` is here, and for the same reason: a blob is
+        # not a body. Reported so the one test works on every detector.
+        self.last_height = float(_bh) / scale
         return int(round(cx / scale)), int(round(cy / scale))
 
     def close(self):
@@ -458,7 +472,8 @@ class Dwell:
         return max(0.0, self.dwell - (now - self.first_seen))
 
 
-def _in_roi(pt: tuple[int, int], roi) -> bool:
+def _in_roi(pt: tuple[int, int], roi, height_px: float = 0.0,
+            frac: float = 0.0) -> bool:
     """Is the golfer standing on A tee? Any zone counts.
 
     `pt` IS THE PERSON'S FEET, and used to be the middle of their
@@ -489,10 +504,21 @@ def _in_roi(pt: tuple[int, int], roi) -> bool:
     waist test sit too high and will under-trigger. They need redrawing
     onto the ground. The agent says so once at startup.
     """
+    # ANY PART OF THEM, when `frac` says so. A golfer addressing a ball
+    # stands a pace behind it, and on a camera looking down the hole
+    # "behind" is LOWER in the picture -- so a zone drawn accurately on
+    # the tee surface can miss the player using it. Testing the body
+    # catches them, and catches them in one direction only: somebody in
+    # FRONT of a zone has their feet above its top edge, so none of them
+    # overlaps it. See tee_roi.contains_body.
+    #
+    # frac=0 is this function exactly as it was.
+    if frac and height_px:
+        return tee_roi.contains_body(pt, roi, height_px, frac)
     return tee_roi.contains(pt, roi)
 
 
-def _roi_zone(pt, roi):
+def _roi_zone(pt, roi, height_px: float = 0.0, frac: float = 0.0):
     """WHICH zone holds this point, for the record only. Never raises.
 
     Deliberately NOT part of the decision -- `_in_roi` above decides
@@ -514,6 +540,14 @@ def _roi_zone(pt, roi):
         # the back tee, and the player is the one standing on turf
         # rather than the figure receding up the picture. See
         # tee_roi.lowest_at.
+        #
+        # AND THE SAME TEST THAT LET THEM THROUGH. With a body test a
+        # golfer standing behind a zone is in none of them by their
+        # feet, so the point version answers None and the trigger is
+        # filed under no zone at all -- which is how an event ends up
+        # labelled "zone ?" on the page it is read from.
+        if frac and height_px:
+            return tee_roi.lowest_at_body(pt, roi, height_px, frac)
         return tee_roi.lowest_at(pt, roi)
     except Exception:  # noqa: BLE001
         return None
@@ -1256,7 +1290,7 @@ class TeeAgent:
         it, and the rig would record nothing while looking healthy.
         """
         try:
-            z = _roi_zone(stance, roi)
+            z = self._zone_of(stance, roi)
             if z is None:
                 return None
             if self._dwell_yields is True or z in self._dwell_yields:
@@ -1264,6 +1298,14 @@ class TeeAgent:
             return None
         except Exception:  # noqa: BLE001
             return None
+
+    def _zone_of(self, stance, roi):
+        """Which zone this sighting belongs to, by the SAME test that
+        let it through. Using the point version here while the trigger
+        uses the body one is how a trigger gets filed under no zone."""
+        if stance is None:
+            return None
+        return _roi_zone(stance, roi, self._last_height, self.body_frac)
 
     def _note_near_miss(self, now, stance, roi) -> None:
         """Somebody was detected, in none of the zones. Say so, rarely.
@@ -1349,7 +1391,7 @@ class TeeAgent:
             # upgrade can hold both shapes at once.
             _sx, _sy = _stance_xy(stance)
             self._person_seen_at.append((
-                float(now), _roi_zone(stance, roi), _sx, _sy))
+                float(now), self._zone_of(stance, roi), _sx, _sy))
         except Exception:  # noqa: BLE001
             pass
 
@@ -1387,7 +1429,7 @@ class TeeAgent:
         try:
             kind = ("capture" if pending_secs is not None
                     else "manual" if forced else "dwell")
-            z = _roi_zone(stance, roi) if stance is not None else None
+            z = self._zone_of(stance, roi)
             d = {
                 "kind": kind,
                 "at": round(float(now), 3),
@@ -1631,6 +1673,16 @@ class TeeAgent:
         # The near-miss window: how many people were detected outside
         # every zone since the last summary, and the closest of them.
         self._near_miss = {"n": 0, "best": None, "said": 0.0}
+        # HOW MUCH OF A PERSON COUNTS AS BEING IN A ZONE, measured up
+        # from their feet. 0 is the feet alone, which is what this did
+        # for its whole life; 1.0 is any part of them. See `_in_roi`.
+        self.body_frac = max(0.0, min(1.0, float(
+            self.det_cfg.get("trigger_body_fraction", 1.0))))
+        # The height of the most recent detection, so the places that
+        # only receive a POINT can still ask the same question the
+        # trigger asked. Threading a detector into each of them would
+        # have been four more signatures for one number.
+        self._last_height = 0.0
         self.motion = None
         if _sw.get("enabled"):
             self.motion = MotionTracker(
@@ -1868,9 +1920,12 @@ class TeeAgent:
                 # every few seconds; rides out on the heartbeat.
                 _focus.sample(frame)
                 stance = detector.detect(frame)
+                self._last_height = float(
+                    getattr(detector, "last_height", 0.0) or 0.0)
                 with self._roi_lock:
                     _roi_now = self.roi
-                in_roi = stance is not None and _in_roi(stance, _roi_now)
+                in_roi = stance is not None and _in_roi(
+                    stance, _roi_now, self._last_height, self.body_frac)
                 if in_roi:
                     self._note_sighting(now, stance, _roi_now)
                 elif stance is not None:
@@ -2249,9 +2304,12 @@ class TeeAgent:
                 # problem, and ending the clip early would hide it.
                 return None
             stance = detector.detect(snap[-1][1])
+            self._last_height = float(
+                getattr(detector, "last_height", 0.0) or 0.0)
             with self._roi_lock:
                 _roi = self.roi
-            if stance is not None and _in_roi(stance, _roi):
+            if stance is not None and _in_roi(
+                    stance, _roi, self._last_height, self.body_frac):
                 state["in_roi"] += 1
                 state["last_seen"] = now
                 # AND REMEMBER THAT WE SAW THEM, which this did not do
@@ -2287,7 +2345,10 @@ class TeeAgent:
                     # Older readers want a bare float, so `_seen_times`
                     # keeps giving them one.
                     _sx, _sy = _stance_xy(stance)
-                    _seen.append((now, _roi_zone(stance, _roi), _sx, _sy))
+                    _seen.append((
+                        now,
+                        self._zone_of(stance, _roi),
+                        _sx, _sy))
                 return None
             if now - state["last_seen"] >= no_person_timeout:
                 return "no_person"
@@ -2453,7 +2514,8 @@ class TeeAgent:
                         # a crash that only appears on whichever engine
                         # the rig happens to run.
                         _seen.append(
-                            (now, _roi_zone(stance, self.tee_box_roi)))
+                            (now, self._zone_of(stance,
+                                                self.tee_box_roi)))
                 elif now - last_person_seen > no_person_timeout:
                     log.info(
                         "no person for %.1fs; stopping (recorded %.1fs)",

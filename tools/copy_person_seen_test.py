@@ -81,6 +81,14 @@ class Fake:
         self.roi = ROI
         self._person_seen_at = __import__('collections').deque(
             maxlen=tee_mod._SIGHTING_MAXLEN)
+        # THE SAME ATTRIBUTES THE REAL RUNNER CARRIES, and the same
+        # bound helper. `_note_sighting` files a sighting under a zone
+        # through `_zone_of`, which asks the body test -- a double
+        # missing either fails as an AttributeError deep inside the
+        # policy, which reads as the policy being broken.
+        self._last_height = 0.0
+        self.body_frac = 0.0
+        self._zone_of = tee_mod.TeeAgent._zone_of.__get__(self)
         self._note_sighting = tee_mod.TeeAgent._note_sighting.__get__(self)
         self._det = Detector(centroid)
 
