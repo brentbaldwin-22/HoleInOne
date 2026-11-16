@@ -62,11 +62,32 @@ def speeds(counts):
             for i in range(1, len(seq))]
 
 
-def sched(floor):
+# AT PACE 1.0, WHICH IS WHAT THIS FILE IS ABOUT.
+#
+# There are two mechanisms in `_ease_reveal` and they are easy to
+# confuse because they act on the same number. The FLOOR lifts frames
+# that crawl and renormalises, so it is zero-sum: same frames, same
+# curve, nothing invented. The PACE multiplies every frame's share of
+# the arc, so it is deliberately NOT zero-sum -- it is the operator
+# asking the tip to cover more ground in the same frames.
+#
+# This file measures the floor, and it used to call the schedule with
+# no pace argument, which means the module's live `TRACER_PACE`. That
+# was 1.0 when these numbers were written. It is 1.2 now, at the
+# operator's request, and every assertion here was quietly measuring
+# the two together: the descent check failed at x1.21, which is the
+# PACE doing exactly what it says on the tin, reported as the floor
+# inflating the descent to pay for the apex. At pace 1.0 the floor
+# leaves the descent at x1.00.
+#
+# So the floor is measured at 1.0 and the pace has its own section
+# below. A test that cannot separate its two subjects will blame
+# whichever one it was not looking at.
+def sched(floor, pace=1.0):
     _o = T.TIP_MIN_ADVANCE_PX
     T.TIP_MIN_ADVANCE_PX = floor
     try:
-        return T._tip_reveal_schedule(SAMPLES, CHAIN)[2]
+        return T._tip_reveal_schedule(SAMPLES, CHAIN, pace=pace)[2]
     finally:
         T.TIP_MIN_ADVANCE_PX = _o
 
@@ -119,6 +140,51 @@ check("the descent is not inflated to pay for the apex",
       _seg(S_EASED, .40, .70) < 1.15 * _seg(S_RAW, .40, .70), True)
 check("and the ascent still outruns the descent",
       _seg(S_EASED, .08, .16) > _seg(S_EASED, .40, .70), True)
+
+print()
+print("THE PACE IS A SEPARATE KNOB, and not zero-sum on purpose:")
+# WHAT THE OPERATOR ASKED FOR, measured, so the cost is written down
+# rather than rediscovered as a failing assertion in six weeks.
+#
+# "the tee tracer needs to go a little further (in same amount of
+# time/frames)" -- so the tip covers `pace` times the arc over the
+# frames it has. It cannot invent curve, so it reaches the end early
+# and holds the finished line until the cut. That is a normal
+# broadcast hold, not a stall, but it is a real consequence and the
+# number belongs here.
+_P = T.TRACER_PACE
+_paced = sched(T.TIP_MIN_ADVANCE_PX, _P)
+_sp = speeds(_paced)
+_n2 = len(_sp)
+_seg2 = lambda sp, a, b: sum(sp[int(a * _n2):int(b * _n2)]) / max(
+    1, int(b * _n2) - int(a * _n2))
+_done = next(i for i, c in enumerate(_paced) if c >= len(SAMPLES))
+print("  pace %.2f: apex %.2f px/frame, mid-descent x%.2f, "
+      "tip completes at frame %d of %d"
+      % (_P, sum(_sp[_ap]) / 70.0,
+         _seg2(_sp, .40, .70) / _seg(S_RAW, .40, .70), _done, len(_paced)))
+check("the default pace is the one the operator set", _P, 1.2)
+# EVERY PART SPEEDS UP BY ROUGHLY THE PACE -- which is the whole point
+# of moving it into distance. Scaling the index counts instead doubled
+# the pixels off the tee and barely moved the apex, which is the
+# complaint that caused the move.
+check("the apex speeds up too, not just the fast part",
+      sum(_sp[_ap]) / sum(S_EASED[_ap]) > 1.1, True)
+check("  and the descent by about the same",
+      1.1 < _seg2(_sp, .40, .70) / _seg(S_EASED, .40, .70) < 1.35, True)
+# A MEANINGFUL HOLD, not a one-frame rounding margin: at pace 1.0
+# the tip lands on the second-to-last frame, which satisfied a bare
+# `_done < len - 1` and made this unfailable.
+check("a pace over 1 finishes early and holds",
+      len(_paced) - 1 - _done >= 10, True)
+# THE SIZE OF THE HOLD, pinned. At 60fps 29 frames is about half a
+# second of completed line before the cut. If this grows, the pace
+# grew, and that is a decision rather than a drift.
+check("  and the hold is a known length, not a surprise",
+      25 <= len(_paced) - 1 - _done <= 35, True)
+check("pace 1.0 uses every frame it has",
+      next(i for i, c in enumerate(EASED) if c >= len(SAMPLES))
+      >= len(EASED) - 3, True)
 
 print()
 print("a floor of 0 is exactly the old behaviour:")
