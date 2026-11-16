@@ -769,60 +769,148 @@ BALL_BAND_ABOVE_FEET = 0.18
 BALL_BAND_BELOW_FEET = 0.02
 
 
-# WHERE A TEED BALL SITS, as fractions of the golfer's own height.
-# From the stance centre, toward the target side, at the foot line.
-# Generous because this is a SEARCH WINDOW, not a gate: everything it
-# admits still has to be a ball-sized round thing sitting in the same
-# few pixels before the strike and gone after.
-BALL_BOX_NEAR = 0.04      # clear of the instep
-BALL_BOX_FAR = 0.55       # ...out to about half a body height
-BALL_BOX_ABOVE = 0.16     # above the foot line
-BALL_BOX_BELOW = 0.10     # and BELOW it -- a teed ball forward of the
-#                           stance sits lower in frame than the feet,
-#                           which the 0.02 band margin barely allows.
+# ── WHERE A TEED BALL SITS ──────────────────────────────────────────
+#
+# THE OPERATOR DREW THIS BOX ON A REAL CLIP, and it is built from
+# things that are measured rather than guessed:
+#
+#   left/right  from the FEET out to the edge of the crop, on the
+#               side the ball is teed
+#   top/bottom  the TRIGGER ZONE's own lines -- the magenta ones on
+#               the strip, which is where a golfer may stand and so
+#               where a ball may sit
+#
+# The previous version used fractions of the golfer's height for all
+# four edges, which is a guess dressed as a measurement: the zone is
+# drawn by the operator for this camera and this tee, and the crop
+# edge is a fact. Nothing here is a body-height fraction except the
+# small gap that keeps the shoes out.
+BALL_BOX_FOOT_GAP = 0.06     # clear of the instep, in body heights
+
+# WHICH SIDE A RIGHT-HANDER'S BALL IS ON, IN IMAGE X.
+#
+# SET FROM THE OPERATOR'S OWN DRAWING on a real clip, where the ball
+# sits to the RIGHT of the feet marker. Note that tracer.py's
+# `_handedness_from_slopes` carries the opposite convention -- righty
+# means clubhead LEFT of the hands -- and the two are not necessarily
+# in conflict: that one is about a club shaft's slope at address seen
+# from behind the line, this one about which way the ball is teed in
+# the frames the judge is shown. They have never been checked against
+# each other on one clip.
+#
+# One constant, so that when they are checked it is one edit.
+RIGHTY_BALL_SIDE = "right"
 
 
-def ball_region(anchor, handed=None, feet_x=None, frame=None):
-    """The patch of grass to search hard, or None if it cannot be had.
+def _flip(side):
+    return "left" if side == "right" else "right"
 
-    THE WHOLE POINT IS THAT IT IS SMALL. The gates everywhere else are
+
+def ball_region(*, feet_x, crop=None, zone_y=None, anchor=None,
+                handed=None, ai_xy=None, frame=None):
+    """The patch of grass to search, and the reasoning, as (box, why).
+
+    THE WHOLE POINT IS THAT IT IS SMALL. Everywhere else the bars are
     tight because the search area is the whole crop: MIN_LOCAL_CONTRAST
     exists to stop the turf's own texture flooding the result, and
     below it the grass breaks into hundreds of single pixels. In a box
     this size there is almost nothing else to confuse, so the caller
-    can afford a far lower floor -- which is the only thing that
-    reaches a ball at 11 grey levels on sunlit grass.
+    can afford a far lower bar -- which is the only thing that reaches
+    a ball at 11 grey levels on sunlit grass.
 
-    `handed` picks the side. At address a RIGHT-handed golfer's
-    clubhead -- and so the ball -- sits LEFT of their hands in image
-    x; see `_handedness_from_slopes` in tracer.py, whose sign
-    convention this follows. Unknown means both sides, which is still
-    a great deal smaller than the whole crop.
+    `ai_xy` is the swing judge's own guess at the ball, and it is used
+    ONLY to pick the side. A vision model's pixel position is not good
+    enough to centre a box on -- measured, on the clip that prompted
+    this it landed on the golfer's legs -- but "left or right of the
+    feet" is a far coarser question and it can answer that. When it
+    does not clearly fall on one side, handedness decides; when that
+    is unknown too, right-handed is assumed, as the operator asked.
+
+    Returns (None, why) when the inputs cannot make a box, so the
+    caller can say what was missing rather than merely finding
+    nothing.
     """
+    _why = []
     try:
-        _f, _h = float(anchor[0]), float(anchor[1])
-    except Exception:  # noqa: BLE001
-        return None
-    if _h <= 0:
-        return None
-    _cx = float(feet_x) if feet_x is not None else None
-    if _cx is None:
-        return None
-    _near, _far = BALL_BOX_NEAR * _h, BALL_BOX_FAR * _h
-    if handed == "right":
-        _x0, _x1 = _cx - _far, _cx - _near
-    elif handed == "left":
-        _x0, _x1 = _cx + _near, _cx + _far
+        _fx = float(feet_x)
+    except (TypeError, ValueError):
+        return None, "no feet to measure from"
+
+    # ── THE SIDE ────────────────────────────────────────────────────
+    _side = None
+    if ai_xy:
+        try:
+            _ax = float(ai_xy[0])
+            # A POINT ON TOP OF THE FEET PICKS NOTHING. It has to be
+            # clearly to one side to be evidence of a side.
+            _gap = 0.0
+            if anchor:
+                _gap = BALL_BOX_FOOT_GAP * float(anchor[1] or 0)
+            if abs(_ax - _fx) > max(4.0, _gap):
+                _side = "right" if _ax > _fx else "left"
+                _why.append("the judge put the ball %s of the feet"
+                            % _side)
+        except (TypeError, ValueError, IndexError):
+            pass
+    if _side is None and handed in ("right", "left"):
+        _side = (RIGHTY_BALL_SIDE if handed == "right"
+                 else _flip(RIGHTY_BALL_SIDE))
+        _why.append("%s-handed, so the ball is teed to the %s"
+                    % (handed, _side))
+    if _side is None:
+        _side = RIGHTY_BALL_SIDE
+        _why.append("handedness unknown, assuming right-handed (%s)"
+                    % _side)
+
+    # ── TOP AND BOTTOM: THE TRIGGER ZONE'S OWN LINES ────────────────
+    _y0 = _y1 = None
+    if zone_y and len(zone_y) == 2:
+        try:
+            _y0, _y1 = float(zone_y[0]), float(zone_y[1])
+            _why.append("down the trigger zone, y %d..%d"
+                        % (int(_y0), int(_y1)))
+        except (TypeError, ValueError):
+            _y0 = _y1 = None
+    if _y0 is None and anchor:
+        # FALLBACK ONLY, for a camera with no zones drawn.
+        try:
+            _f, _h = float(anchor[0]), float(anchor[1])
+            if _h > 0:
+                _y0 = _f - BALL_BAND_ABOVE_FEET * _h
+                _y1 = _f + BALL_BAND_BELOW_FEET * _h
+                _why.append("no zones, so the foot band y %d..%d"
+                            % (int(_y0), int(_y1)))
+        except (TypeError, ValueError):
+            _y0 = _y1 = None
+    if _y0 is None:
+        return None, "no trigger zone and no golfer to measure a band from"
+
+    # ── LEFT AND RIGHT: THE FEET, OUT TO THE EDGE OF THE CROP ───────
+    _gap = 4.0
+    if anchor:
+        try:
+            _gap = max(4.0, BALL_BOX_FOOT_GAP * float(anchor[1] or 0))
+        except (TypeError, ValueError):
+            _gap = 4.0
+    if crop and len(crop) == 4:
+        _cx0, _cx1 = float(crop[0]), float(crop[2])
+    elif frame:
+        _cx0, _cx1 = 0.0, float(frame[0])
     else:
-        _x0, _x1 = _cx - _far, _cx + _far
-    _y0, _y1 = _f - BALL_BOX_ABOVE * _h, _f + BALL_BOX_BELOW * _h
+        return None, "no crop to run the box out to"
+    if _side == "right":
+        _x0, _x1 = _fx + _gap, _cx1
+    else:
+        _x0, _x1 = _cx0, _fx - _gap
+    _why.append("from the feet out to the %s edge of the crop" % _side)
+
     if frame:
-        _W, _H = int(frame[0]), int(frame[1])
-        _x0, _x1 = max(0.0, _x0), min(float(_W), _x1)
-        _y0, _y1 = max(0.0, _y0), min(float(_H), _y1)
+        _x0, _x1 = max(0.0, _x0), min(float(frame[0]), _x1)
+        _y0, _y1 = max(0.0, _y0), min(float(frame[1]), _y1)
     if _x1 - _x0 < 4 or _y1 - _y0 < 4:
-        return None
-    return (int(_x0), int(_y0), int(_x1), int(_y1))
+        return None, ("the box came out empty (%s) — the feet are at the "
+                      "%s edge already" % (" · ".join(_why), _side))
+    return (int(_x0), int(_y0), int(_x1), int(_y1)), " · ".join(_why)
 
 
 def _on_the_ground(y, anchor) -> bool:
@@ -985,7 +1073,7 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
                     before: int = 3, jitter_px: float = ADDRESS_JITTER_PX,
                     min_contrast: float = ADDRESS_MIN_CONTRAST,
                     max_area: int = ADDRESS_MAX_AREA,
-                    feet_x=None, handed=None,
+                    feet_x=None, handed=None, zone_y=None, ai_xy=None,
                     region_contrast: float = None) -> dict:
     """Was a ball sitting there before the strike, and gone after?
 
@@ -1044,8 +1132,8 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
     return ball_in_frames(shots, rect=rect, people=people, anchor=anchor,
                           before=before, jitter_px=jitter_px,
                           min_contrast=min_contrast, max_area=max_area,
-                          feet_x=feet_x, handed=handed,
-                          region_contrast=region_contrast,
+                          feet_x=feet_x, handed=handed, zone_y=zone_y,
+                          ai_xy=ai_xy, region_contrast=region_contrast,
                           # So the per-frame report can say -1.20s
                           # rather than "slot 0".
                           offsets=offs)
@@ -1057,7 +1145,8 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                    max_area: int = ADDRESS_MAX_AREA,
                    offsets=None, region=None,
                    region_contrast: float = None,
-                   feet_x=None, handed=None) -> dict:
+                   feet_x=None, handed=None, zone_y=None,
+                   ai_xy=None) -> dict:
     """The same rule over frames already in hand. Never raises.
 
     `shots` are the six images in chronological order, None where a
@@ -1118,9 +1207,12 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
         # clip it otherwise reads correctly. Both sides is still a
         # roughly twentyfold narrowing, which is all the lower bar
         # needs.
-        if region is None and anchor is not None and feet_x is not None:
-            region = ball_region(anchor, handed, feet_x=feet_x,
-                                 frame=(W, H))
+        if region is None and feet_x is not None:
+            region, _rwhy = ball_region(
+                feet_x=feet_x, crop=(x0, y0, x1, y1), zone_y=zone_y,
+                anchor=anchor, handed=handed, ai_xy=ai_xy,
+                frame=(W, H))
+            out["region_why"] = _rwhy
         if region is not None:
             _rx0 = max(x0, min(x1 - 1, int(region[0])))
             _ry0 = max(y0, min(y1 - 1, int(region[1])))
@@ -1255,8 +1347,30 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             # high because the wide area is full of grass; inside a
             # box this size there is almost nothing to confuse, so the
             # bar can come down to where a dim ball actually lives.
-            _cand = [(d, False) for d in
-                     _detections(gray, boxes, rel=0.0, rejects=_rj)]
+            # ── ONLY THE BOX, WHEN THERE IS ONE ────────────────────
+            #
+            # The wide pass over the whole crop is what has been
+            # failing: it is the reason the bar has to be high, the
+            # reason the turf floods the report, and the reason a
+            # bright speck a hundred pixels from the stance can win
+            # the vote. With a box built from the feet, the trigger
+            # zone and the crop edge, there is no question the wide
+            # pass answers better.
+            #
+            # It still RUNS -- the counts and the rejects are the
+            # diagnosis when the box finds nothing, and they cost
+            # only the arithmetic on frames already decoded -- but
+            # its candidates no longer reach the verdict.
+            _wide = _detections(gray, boxes, rel=0.0, rejects=_rj)
+            _cand = ([] if region is not None
+                     else [(d, False) for d in _wide])
+            if region is not None:
+                for d in _wide:
+                    _tally["seen"] += 1
+                    _looked.append({"x": float(d[0]), "y": float(d[1]),
+                                    "area": int(d[2]),
+                                    "score": round(float(d[3]), 1),
+                                    "verdict": "outside the box"})
             if region is not None and _rbar is not None:
                 try:
                     _rd = _detections(gray, [tuple(region)], rel=0.0,
@@ -1692,6 +1806,19 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             # THE SEARCH RAN AND CAME BACK EMPTY, which is a different
             # answer from "could not look" -- the branches that could
             # not look leave the initialiser's INCONCLUSIVE alone.
+            # AND THE BOX IT SEARCHED, IN WORDS. "No ball" from a
+            # search of the whole crop and "no ball" from a patch of
+            # grass beside the stance are different claims, and the
+            # second is only worth anything if the operator can see
+            # where it looked and why there.
+            if out.get("region"):
+                out["why"] += (
+                    " Searched only the stance box %s at a bar of %.0f: %s."
+                    % (tuple(out["region"]), float(_rbar or 0),
+                       out.get("region_why") or "no reasoning recorded"))
+            elif out.get("region_why"):
+                out["why"] += (" No stance box: %s."
+                               % out["region_why"])
             out["state"] = "NO_BALL_DETECTED"
             return out
         # EVERY BALL, NOT THE BEST ONE: the one that matters is

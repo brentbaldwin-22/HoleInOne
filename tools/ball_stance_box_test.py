@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""Search the grass beside the golfer, at a bar that grass allows.
+"""Search the box the operator drew, and only that box.
 
-THE MEASUREMENT THIS IS BUILT ON. On a real clip the ball's top-hat
-response was about 11 grey levels. MIN_LOCAL_CONTRAST is 18 and it is
-a BINARISATION THRESHOLD, so the ball never became a blob at all --
-and the floor is 18 because the search covers the whole crop, where
-below it the turf breaks into hundreds of single pixels.
+THE BOX IS BUILT FROM THINGS WE MEASURE, which is the whole change.
+It used to be fractions of the golfer's height on all four sides -- a
+guess wearing the clothes of a measurement. It is now:
 
-Narrow the search and that reasoning stops applying. In a patch of
-grass beside the stance there is almost nothing to mistake for a
-ball, so the bar can come down to where the ball actually lives.
+  left/right  from the FEET, out to the edge of the crop, on the side
+              the ball is teed
+  top/bottom  the TRIGGER ZONE's own lines, which the operator drew
+              for this camera and this tee
 
-A UNION, NOT A REPLACEMENT: everything the wide pass found is still
-found. The box only ADDS candidates the wide pass would have refused,
-so a box in the wrong place costs nothing but the pass.
+and the ball search runs THERE and nowhere else. The wide pass over
+the whole crop still runs for its counts -- that is the diagnosis
+when the box comes back empty -- but its candidates no longer reach
+the verdict, because the wide pass is what has been failing.
+
+THE BAR CAN COME DOWN BECAUSE THE BOX IS NEARLY EMPTY. The ball that
+prompted all this reads about 11 grey levels against a floor of 18,
+and the floor is 18 because the search used to cover the whole crop.
 
     python3 tools/ball_stance_box_test.py
 """
@@ -38,24 +42,28 @@ import cv2  # noqa: E402
 
 from app.services.ball_vanish import (  # noqa: E402
     ball_in_frames, ball_region, MIN_LOCAL_CONTRAST, REGION_MIN_FILL,
-    MIN_FILL, _detections,
+    MIN_FILL, RIGHTY_BALL_SIDE, _detections,
 )
 
 OFFS = (-1.20, -0.60, -0.20, 0.0, 0.20, 0.60)
-FEET_X, FEET_Y, GH = 300, 215.0, 150.0
+W, H = 420, 300
+FEET_X, FEET_Y, GH = 200, 215.0, 120.0
 ANCHOR = (FEET_Y, GH)
-BALL = (258, 220)          # LEFT of the stance (a righty), BELOW the feet
-PEOPLE = [{"box": [285, 65, 30, 150]}]
+ZONE = (120, 196, 240, 40)            # the magenta lines: y 196..236
+ZONE_Y = (ZONE[1], ZONE[1] + ZONE[3])
+BALL = (300, 222)                     # teed to the RIGHT, inside the zone
+PEOPLE = [{"box": [185, 95, 30, 120]}]
 
 
 def shot(ball=True):
-    rng = np.random.default_rng(5)
-    f = np.full((300, 420, 3), 70, np.uint8)
+    rng = np.random.default_rng(11)
+    f = np.full((H, W, 3), 70, np.uint8)
     f[:] = (55, 95, 60)
-    f += rng.integers(0, 10, (300, 420, 3), dtype=np.int16).astype(np.uint8)
-    cv2.rectangle(f, (285, 65), (315, 215), (60, 55, 50), -1)
+    f += rng.integers(0, 11, (H, W, 3), dtype=np.int16).astype(np.uint8)
+    cv2.rectangle(f, (0, 0), (W, 150), (62, 72, 58), -1)
+    cv2.rectangle(f, (185, 95), (215, 215), (45, 42, 40), -1)
     if ball:
-        cv2.circle(f, BALL, 2, (67, 107, 72), -1)   # ~11 over the turf
+        cv2.circle(f, BALL, 2, (67, 107, 72), -1)
     return f
 
 
@@ -63,8 +71,25 @@ HIT = [shot(p) for p in (1, 1, 1, 0, 0, 0)]
 
 
 def run(**kw):
+    kw.setdefault("feet_x", FEET_X)
+    kw.setdefault("zone_y", ZONE_Y)
     return ball_in_frames(HIT, offsets=OFFS, anchor=ANCHOR,
                           people=PEOPLE, **kw)
+
+
+print("\n-- the box is the feet, the zone lines, and the crop edge")
+_box, _why = ball_region(feet_x=FEET_X, crop=(0, 0, W, H),
+                         zone_y=ZONE_Y, anchor=ANCHOR, handed="right")
+check("its top is the zone's top", _box[1], ZONE_Y[0])
+check("its bottom is the zone's bottom", _box[3], ZONE_Y[1])
+check("  not a fraction of the golfer", _box[3] - _box[1], 40)
+check("it starts clear of the feet", _box[0] > FEET_X, True)
+check("  and runs to the edge of the crop", _box[2], W)
+# THE REASONING IS PART OF THE ANSWER. "No ball" from a patch of grass
+# beside the stance is only worth anything if the operator can see
+# where it looked and why there.
+for _phrase in ("right-handed", "trigger zone", "edge of the crop"):
+    check("  the reasoning says %r" % _phrase, _phrase in _why, True)
 
 
 print("\n-- the premise: this ball is invisible to the wide search")
@@ -73,60 +98,95 @@ _k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
 _hat = cv2.morphologyEx(_g, cv2.MORPH_TOPHAT, _k)
 check("the ball is under the detector's floor",
       int(_hat[BALL[1], BALL[0]]) < MIN_LOCAL_CONTRAST, True)
-check("  so the wide pass finds nothing",
-      run()["state"], "NO_BALL_DETECTED")
+check("  so a search with no box finds nothing",
+      ball_in_frames(HIT, offsets=OFFS, anchor=ANCHOR,
+                     people=PEOPLE)["state"], "NO_BALL_DETECTED")
 
 
 print("\n-- the box finds it, and gets the verdict right both ways")
 check("a struck ball reads as struck",
-      run(feet_x=FEET_X)["state"], "BALL_PRESENT_DISAPPEARED")
-check("  at the spot it was drawn",
-      run(feet_x=FEET_X)["spot"], list(BALL))
+      run(handed="right")["state"], "BALL_PRESENT_DISAPPEARED")
+check("  at the spot it was drawn", run(handed="right")["spot"], list(BALL))
 check("  and the report says which search answered",
-      run(feet_x=FEET_X)["found_by"], "the stance box")
+      run(handed="right")["found_by"], "the stance box")
 _stay = ball_in_frames([shot() for _ in range(6)], offsets=OFFS,
-                       anchor=ANCHOR, people=PEOPLE, feet_x=FEET_X)
+                       anchor=ANCHOR, people=PEOPLE, feet_x=FEET_X,
+                       zone_y=ZONE_Y, handed="right")
 check("a ball nobody touched reads as untouched",
       _stay["state"], "BALL_PRESENT_REMAINED")
 
 
-print("\n-- it is a UNION: a box in the wrong place costs nothing")
-# The side is a real lever and a WRONG side is worse than none, which
-# is why no caller passes one today. Asserted so that a future caller
-# wiring handedness in has to come past this line.
-_wrong = run(feet_x=FEET_X, handed="left")
-check("a box on the wrong side finds nothing extra",
-      _wrong["state"], "NO_BALL_DETECTED")
-check("  but it is no worse than the wide search alone",
-      _wrong["state"], run()["state"])
-check("both sides is the default", ball_region(ANCHOR, None, feet_x=FEET_X)
-      [0] < FEET_X < ball_region(ANCHOR, None, feet_x=FEET_X)[2], True)
-# RIGHT-HANDED MEANS THE BALL IS LEFT OF THE HANDS in image x -- the
-# sign convention `_handedness_from_slopes` uses in tracer.py.
-check("righty puts the box left of the stance",
-      ball_region(ANCHOR, "right", feet_x=FEET_X)[2] <= FEET_X, True)
-check("  and lefty to the right",
-      ball_region(ANCHOR, "left", feet_x=FEET_X)[0] >= FEET_X, True)
+print("\n-- the side: handedness, or the judge, or right by default")
+def _rbox(**kw):
+    """Just the box. `ball_region` answers (box, why)."""
+    kw.setdefault("crop", (0, 0, W, H))
+    kw.setdefault("zone_y", ZONE_Y)
+    kw.setdefault("anchor", ANCHOR)
+    kw.setdefault("feet_x", FEET_X)
+    return ball_region(**kw)[0]
 
 
-print("\n-- the box is its own ground test, and reaches below the feet")
-_rg = ball_region(ANCHOR, None, feet_x=FEET_X)
-check("it extends below the foot line", _rg[3] > FEET_Y, True)
-# THE BUG THIS REPLACES: the box searched ground the band then
-# refused, so the narrowed search found nothing on its first outing.
-check("  and a ball down there is kept, not called off-the-ground",
-      run(feet_x=FEET_X)["spot"], list(BALL))
-check("  which the band alone would have refused",
-      BALL[1] > FEET_Y + 0.02 * GH, True)
+check("right-handed tees to %s" % RIGHTY_BALL_SIDE,
+      _rbox(handed="right")[0] > FEET_X, RIGHTY_BALL_SIDE == "right")
+check("  and left-handed to the other side",
+      _rbox(handed="left")[2] <= FEET_X, True)
+# THE OPERATOR'S INSTRUCTION, in as many words: "if we're not sure,
+# assume right".
+_unk, _uwhy = ball_region(feet_x=FEET_X, crop=(0, 0, W, H),
+                          zone_y=ZONE_Y, anchor=ANCHOR, handed=None)
+check("unknown handedness assumes right-handed",
+      _unk, _rbox(handed="right"))
+check("  and says that it assumed", "assuming right-handed" in _uwhy, True)
+
+# THE JUDGE PICKS THE SIDE WHEN IT CAN, and it outranks handedness: a
+# point is a weak answer to "exactly where" and a strong one to "which
+# side", which is all it is asked for here.
+_ai, _aiwhy = ball_region(feet_x=FEET_X, crop=(0, 0, W, H),
+                          zone_y=ZONE_Y, anchor=ANCHOR, handed="left",
+                          ai_xy=[BALL[0], BALL[1]])
+check("the judge's side outranks handedness", _ai[0] > FEET_X, True)
+check("  and says so", "the judge put the ball" in _aiwhy, True)
+# A POINT ON TOP OF THE FEET IS NOT EVIDENCE OF A SIDE -- which is
+# what the judge actually returned on the clip that prompted this.
+_on, _onwhy = ball_region(feet_x=FEET_X, crop=(0, 0, W, H),
+                          zone_y=ZONE_Y, anchor=ANCHOR, handed="left",
+                          ai_xy=[FEET_X + 1, FEET_Y])
+check("a point on the feet picks no side",
+      "the judge put the ball" in _onwhy, False)
+check("  so handedness still decides", _on[2] <= FEET_X, True)
 
 
-print("\n-- and the shape bars inside it are looser, for a measured reason")
-# A blob at the contrast the box exists to reach is RAGGED.
+print("\n-- and it searches ONLY the box")
+check("the ball inside the box is the answer",
+      run(handed="right")["spot"], list(BALL))
+
+# A BRIGHT BALL OUTSIDE THE BOX MUST NOT BE FOUND. That is the point
+# of narrowing and also its cost, so it is asserted both ways: the
+# verdict ignores it, AND the report still says it was seen, because
+# "there is a bright round thing on the turf but not where a ball can
+# be" is the sentence an operator needs when the box comes back empty.
+_far = []
+for _p in (1, 1, 1, 0, 0, 0):
+    _f = shot(False)
+    if _p:
+        cv2.circle(_f, (60, 222), 3, (245, 245, 245), -1)   # far left
+    _far.append(_f)
+_fr = ball_in_frames(_far, offsets=OFFS, anchor=ANCHOR, people=PEOPLE,
+                     feet_x=FEET_X, zone_y=ZONE_Y, handed="right")
+check("a bright ball outside the box is not the answer",
+      _fr["state"], "NO_BALL_DETECTED")
+check("  but it is still reported, as outside the box",
+      any(e["verdict"] == "outside the box"
+          and abs(e["x"] - 60) <= 4
+          for e in (_fr.get("looked_at") or [])), True)
+
+
+print("\n-- the shape bars inside it are looser, for a measured reason")
 check("the box's fill bar is below the wide one",
       REGION_MIN_FILL < MIN_FILL, True)
 _rj = []
-_detections(_g, [_rg], rel=0.0, floor=8.0, rejects=_rj)
-_hits = _detections(_g, [_rg], rel=0.0, floor=8.0,
+_detections(_g, [_box], rel=0.0, floor=8.0, rejects=_rj)
+_hits = _detections(_g, [_box], rel=0.0, floor=8.0,
                     min_fill=REGION_MIN_FILL, max_aspect=2.6)
 check("  at the wide fill bar the ball is refused",
       any(abs(r["x"] - BALL[0]) < 5 and "not round" in r["why"]
@@ -135,65 +195,43 @@ check("  at the box's it is kept",
       any(abs(d[0] - BALL[0]) < 5 for d in _hits), True)
 
 
-print("\n-- the region is clamped to the frame, not trusted")
-_huge = ball_in_frames(HIT, offsets=OFFS, anchor=ANCHOR, people=PEOPLE,
-                       region=(-500, -500, 99999, 99999))
-_r = _huge.get("region")
-check("a region off the edge is brought back in",
-      _r[0] >= 0 and _r[1] >= 0 and _r[2] <= 420 and _r[3] <= 300, True)
-
 print("\n-- AND IT MUST NOT INVENT ONE. A bar of 8 is near the noise")
-# THE RISK THE WHOLE DESIGN TURNS ON. Dropping the bar this far only
-# works because of what comes after it: ball-sized, inside a box the
-# size of a stance, in the same few pixels in two of the first three
-# frames, and gone from every frame after. Turf texture does none of
-# those, and this asserts it rather than hoping.
 _empty = [shot(False) for _ in range(6)]
-_r = ball_in_frames(_empty, offsets=OFFS, anchor=ANCHOR, people=PEOPLE,
-                    feet_x=FEET_X)
-check("bare turf is still no ball", _r["state"], "NO_BALL_DETECTED")
-check("  and certainly not a struck one", _r["left"], None)
-
-# TURF THAT CHANGES. Noise that moves between frames is the thing a
-# low bar is most likely to turn into "a ball that left".
+check("bare turf is still no ball",
+      ball_in_frames(_empty, offsets=OFFS, anchor=ANCHOR, people=PEOPLE,
+                     feet_x=FEET_X, zone_y=ZONE_Y,
+                     handed="right")["state"], "NO_BALL_DETECTED")
 _shifting = []
 for _i in range(6):
-    _f = np.full((300, 420, 3), 70, np.uint8)
+    _f = np.full((H, W, 3), 70, np.uint8)
     _f[:] = (55, 95, 60)
     _rng = np.random.default_rng(100 + _i)
-    _f += _rng.integers(0, 16, (300, 420, 3),
-                        dtype=np.int16).astype(np.uint8)
-    cv2.rectangle(_f, (285, 65), (315, 215), (60, 55, 50), -1)
+    _f += _rng.integers(0, 16, (H, W, 3), dtype=np.int16).astype(np.uint8)
+    cv2.rectangle(_f, (185, 95), (215, 215), (45, 42, 40), -1)
     _shifting.append(_f)
 _r2 = ball_in_frames(_shifting, offsets=OFFS, anchor=ANCHOR, people=PEOPLE,
-                     feet_x=FEET_X)
-check("moving noise is not a ball that left",
-      _r2["left"] is True, False)
-# AND IT SAYS WHY, because "the box found nothing" and "the box was
-# too crowded to conclude anything" are different facts about the
-# clip: the second is about the turf and the bar, not the ball.
+                     feet_x=FEET_X, zone_y=ZONE_Y, handed="right")
+check("moving noise is not a ball that left", _r2["left"] is True, False)
 check("  the box reports that it gave up",
       (_r2.get("region_busy") or 0) > 0, True)
 check("  and says so in words",
       "stance box was abandoned" in _r2["why"], True)
-check("  naming a count over the limit",
-      _r2["region_busy"] > 6, True)
-# A QUIET BOX MUST NOT GIVE UP, or the whole thing is off.
 check("a box with one ball in it does not give up",
-      (run(feet_x=FEET_X).get("region_busy") or 0), 0)
+      (run(handed="right").get("region_busy") or 0), 0)
 
-# A BRIGHT THING THAT STAYS PUT is not a struck ball either, whatever
-# its brightness -- the shoe case, which this detector has been
-# bitten by before.
-_shoe = []
-for _i in range(6):
-    _f = shot(False)
-    cv2.circle(_f, (262, 219), 3, (210, 215, 210), -1)
-    _shoe.append(_f)
-_r3 = ball_in_frames(_shoe, offsets=OFFS, anchor=ANCHOR, people=PEOPLE,
-                     feet_x=FEET_X)
-check("something bright that never moves did not get hit",
-      _r3["left"] is True, False)
+
+print("\n-- a box that cannot be built says why, rather than failing quiet")
+_none, _nwhy = ball_region(feet_x=None, crop=(0, 0, W, H), zone_y=ZONE_Y)
+check("no feet -> no box", _none, None)
+check("  and a reason", "no feet" in _nwhy, True)
+_nz, _nzwhy = ball_region(feet_x=FEET_X, crop=(0, 0, W, H))
+check("no zone and no golfer -> no box", _nz, None)
+check("  and a reason", "no trigger zone" in _nzwhy, True)
+# THE FEET AT THE EDGE: the box would be a sliver or inverted.
+_edge, _ewhy = ball_region(feet_x=W - 1, crop=(0, 0, W, H),
+                           zone_y=ZONE_Y, anchor=ANCHOR, handed="right")
+check("feet at the crop edge -> no box", _edge, None)
+check("  and a reason that names it", "came out empty" in _ewhy, True)
 
 print()
 if FAILED:

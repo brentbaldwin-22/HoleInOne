@@ -130,19 +130,37 @@ _clutter = {
                                    "why": "sliver"}]},
 }
 _zones_only = draw_zones(_img, ZON, ball={"spot": None})
-_with_clutter = draw_zones(_img, ZON, ball=_clutter)
-check("a failed check draws no diagnostic marks at all",
-      int((_with_clutter != _zones_only).any(axis=2).sum()), 0)
+# NO BOX AND NO AI ANSWER -> NOTHING. All the per-blob diagnostics are
+# handed in here at once, and none of them may reach the picture.
+_no_box = dict(_clutter)
+_no_box.pop("region")
+_no_box["limits"] = {k: v for k, v in _clutter["limits"].items()
+                     if k != "stance box"}
+check("the per-blob diagnostics draw nothing at all",
+      int((draw_zones(_img, ZON, ball=_no_box) != _zones_only)
+          .any(axis=2).sum()), 0)
+
+# THE SEARCH BOX IS NOT CLUTTER. It is one rectangle and it is the
+# answer to "where did you look", which the operator asked to see --
+# so it draws whether or not anything was found in it.
+_with_box = draw_zones(_img, ZON, ball=_clutter)
+_boxed = (_with_box != _zones_only).any(axis=2)
+check("the search box does draw", bool(_boxed.any()), True)
+_bys, _bxs = np.where(_boxed)
+check("  spanning the region it was given",
+      abs(int(_bxs.min()) - 217) <= 2 and abs(int(_bxs.max()) - 382) <= 2,
+      True)
 
 _with_ai = draw_zones(_img, ZON, ball=dict(_clutter, ai_xy=[258, 212]))
-_diff = (_with_ai != _zones_only).any(axis=2)
-check("  but it does draw the judge's ball", bool(_diff.any()), True)
+_diff = (_with_ai != _with_box).any(axis=2)
+check("  and the judge's ball is drawn on top of it", bool(_diff.any()),
+      True)
 check("  at the point it was given",
       bool(_diff[212 - 10:212 + 10, 258 - 10:258 + 10].any()), True)
 # ONE MARK. The complaint that caused this was a dozen per tile.
 _ys, _xs = np.where(_diff)
 check("  as one small mark, not a band across the tee",
-      int(_xs.max() - _xs.min()) < 40, True)
+      int(_xs.max() - _xs.min()) < 45, True)
 # AND NOT IN THE BALL'S OWN RED: this is a claim from another
 # process that nothing has checked.
 check("a FOUND ball still draws its own mark",

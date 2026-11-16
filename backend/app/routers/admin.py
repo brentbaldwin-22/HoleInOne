@@ -15519,6 +15519,16 @@ def test_cut_long_upload(
     )
 
 
+def _d3_defaults_ball_bar() -> float:
+    """The ball-brightness gate's default, without importing at module
+    scope. `debug3` is imported per-function throughout this file."""
+    try:
+        from ..services import debug3 as _bd3
+        return float(_bd3.GATE_DEFAULTS["ball_min_contrast"])
+    except Exception:  # noqa: BLE001
+        return 30.0
+
+
 def _wipe_test_cuts(upload_id) -> int:
     """Delete this upload's previous test-cut MP4s. Returns the count.
 
@@ -15931,6 +15941,8 @@ def _test_cut_run(
                 # fallback the rect is a hundred yards of turf and
                 # the check is hunting specks across all of it.
                 _bl = None
+                _anc = _ffx = _zy = None
+                _bmc = _d3_defaults_ball_bar()
                 if _golfer and _chk.get("golfer_crop"):
                     try:
                         from ..services.ball_vanish import ball_at_address
@@ -15987,12 +15999,26 @@ def _test_cut_run(
                                 _ffx = float(_chk["front_feet"][0])
                             except Exception:  # noqa: BLE001
                                 _ffx = None
+                        # THE TRIGGER ZONE'S OWN LINES are the top
+                        # and bottom of the box -- the magenta ones on
+                        # the strip. The operator drew the zone for
+                        # this camera and this tee, which makes it a
+                        # measurement; a fraction of a golfer's height
+                        # is a guess wearing the same clothes.
+                        _zy = None
+                        if _zbox:
+                            try:
+                                _zy = (min(int(z[1]) for z in _zbox),
+                                       max(int(z[1]) + int(z[3])
+                                           for z in _zbox))
+                            except Exception:  # noqa: BLE001
+                                _zy = None
                         _bl = ball_at_address(
                             src_path, peak_time_sec, _BO,
                             rect=_chk.get("frames_rect"),
                             people=_people2, anchor=_anc,
                             min_contrast=float(_bmc),
-                            feet_x=_ffx,
+                            feet_x=_ffx, zone_y=_zy,
                             # THE BOX'S OWN BAR (REGION_CONTRAST),
                             # well under both the hole's bar and the
                             # detector's floor. Both of those are set
@@ -16003,6 +16029,7 @@ def _test_cut_run(
                             # answer.
                             region_contrast=None)
                         cut_entry["ball_region"] = _bl.get("region")
+                        cut_entry["ball_region_why"] = _bl.get("region_why")
                         cut_entry["ball_found_by"] = _bl.get("found_by")
                         cut_entry["ball_left"] = _bl["left"]
                         cut_entry["ball_spot"] = _bl["spot"]
@@ -16416,6 +16443,65 @@ def _test_cut_run(
                                             zones_out=_zp)
                                 except Exception as _ax:  # noqa: BLE001
                                     log.debug("ai ball mark: %s", _ax)
+                            # ── AND LOOK AGAIN, WITH THE JUDGE'S SIDE
+                            #
+                            # The ball check has to run before the
+                            # judge, because the judge is shown the
+                            # strip and the strip is built alongside
+                            # it -- so the first look could only use
+                            # the assumed side. If it found nothing
+                            # and the judge has since said which side
+                            # the ball is on, that is new information
+                            # about WHERE TO LOOK, and looking again
+                            # costs one more read of six frames.
+                            #
+                            # Only on a failed check: a box that
+                            # already found its ball has no question
+                            # left for the judge to answer.
+                            if (_bl is not None
+                                    and _bl.get("state")
+                                    == "NO_BALL_DETECTED"
+                                    and (cut_entry.get("frames_ball_xy")
+                                         or _jf.get("handed"))):
+                                try:
+                                    _bl2 = ball_at_address(
+                                        src_path, peak_time_sec, _BO,
+                                        rect=_chk.get("frames_rect"),
+                                        people=_people2, anchor=_anc,
+                                        min_contrast=float(_bmc),
+                                        feet_x=_ffx, zone_y=_zy,
+                                        handed=_jf.get("handed"),
+                                        ai_xy=cut_entry.get(
+                                            "frames_ball_xy"))
+                                    log.info(
+                                        "test cut: second look with the "
+                                        "judge's side -> %s (%s)",
+                                        _bl2.get("state"),
+                                        _bl2.get("region_why"))
+                                    # KEEP THE BETTER ANSWER. A second
+                                    # look that also finds nothing must
+                                    # not overwrite the first's
+                                    # reasoning with its own.
+                                    if _bl2.get("state") != \
+                                            "NO_BALL_DETECTED":
+                                        _bl = _bl2
+                                        cut_entry["ball_left"] = \
+                                            _bl2["left"]
+                                        cut_entry["ball_spot"] = \
+                                            _bl2["spot"]
+                                        cut_entry["ball_state"] = \
+                                            _bl2.get("state")
+                                        cut_entry["ball_why"] = \
+                                            _bl2["why"]
+                                        cut_entry["ball_region"] = \
+                                            _bl2.get("region")
+                                        cut_entry["ball_region_why"] = \
+                                            _bl2.get("region_why")
+                                        cut_entry["ball_found_by"] = (
+                                            "the stance box, on the "
+                                            "judge's side")
+                                except Exception as _s2:  # noqa: BLE001
+                                    log.debug("second ball look: %s", _s2)
                             _final = {
                                 "is_swing": _jf.get("is_swing"),
                                 "confidence": _jf.get("confidence"),

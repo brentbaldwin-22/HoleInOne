@@ -3306,6 +3306,9 @@ BALL_COLOR = (0, 0, 255)
 # WHERE THE SWING JUDGE SAYS THE BALL IS -- a vision model's answer,
 # never the detector's, so never the ball's own red.
 AI_BALL_COLOR = (255, 255, 0)
+# THE BOX THE BALL CHECK SEARCHED -- the operator's own drawing, from
+# the feet, the trigger zone and the crop edge.
+REGION_COLOR = (0, 230, 0)
 
 
 def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
@@ -3412,6 +3415,24 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
         # AND THE BALL, CIRCLED. Which bright speck on the turf the
         # check settled on is the one thing its sentence cannot say,
         # and on 8 Nov the answer turned out to be a shoe.
+        # THE BOX IT SEARCHED, whether or not it found anything in
+        # there. "It looked here and found nothing" and "it never
+        # looked here" are different answers and used to be the same
+        # picture -- and on a success it is the one line that says the
+        # ball was found where a ball can be, rather than anywhere.
+        if ball and ball.get("region") and len(ball["region"]) == 4:
+            try:
+                _rg = ball["region"]
+                cv2.rectangle(
+                    out,
+                    (int(round((float(_rg[0]) - ox) * sc)),
+                     int(round((float(_rg[1]) - oy) * sc))),
+                    (int(round((float(_rg[2]) - ox) * sc)),
+                     int(round((float(_rg[3]) - oy) * sc))),
+                    REGION_COLOR, 2, cv2.LINE_AA)
+                drew += 1
+            except Exception:  # noqa: BLE001
+                pass
         if ball and ball.get("spot"):
             try:
                 bx = int(round((float(ball["spot"][0]) - ox) * sc))
@@ -3443,8 +3464,10 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
         # judge says the ball is. It is the model's answer, not the
         # detector's, so it gets its own colour and its own label and
         # is never confused with a found ball.
-        elif ball and ball.get("ai_xy"):
+        elif ball and (ball.get("ai_xy") or ball.get("region")):
             try:
+                if not ball.get("ai_xy"):
+                    return out if drew else None
                 _ax = int(round((float(ball["ai_xy"][0]) - ox) * sc))
                 _ay = int(round((float(ball["ai_xy"][1]) - oy) * sc))
                 if -30 < _ax < w + 30 and -30 < _ay < h + 30:
