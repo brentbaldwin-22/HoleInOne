@@ -83,12 +83,79 @@ check("  and the default runs the tip ahead", T.TRACER_PACE > 1.0, True)
 
 src = (ROOT / "backend" / "app" / "services"
        / "ai_tracer.py").read_text(encoding="utf-8")
-check("the pace is applied after the easing, not before",
-      src.index("sched = _ease_reveal(counts, samples)")
-      < src.index("_p = TRACER_PACE if pace is None else float(pace)"),
-      True)
+# THE PACE LIVES IN THE DISTANCE DOMAIN. It used to scale the finished
+# index counts, which is the bug this file's evenness check exists for.
+check("the pace is applied inside the arc-length easing",
+      "_want = min(total, float(pace) * total * acc / _sw)" in src, True)
+check("  and _ease_reveal takes it",
+      "def _ease_reveal(counts: list, samples: list," in src, True)
+check("  and nothing scales the finished counts any more",
+      "int(round(c * _p))" in src, False)
 check("and the render log says what pace it used",
       "at pace {TRACER_PACE:.2f}" in src, True)
+
+print("\n-- speeding up must not make the tip UNEVEN")
+# THE COMPLAINT THIS EXISTS FOR: "it starts faster, then slows to a
+# crawl at the apex and then speeds up again". The pace was applied to
+# the finished INDEX counts, and index is not proportional to
+# distance -- the samples bunch up at the crest where the ball crawls.
+# So doubling the index advance doubled the pixels off the tee and
+# barely moved the tip at the apex: the fast part got faster, the
+# crawl stayed a crawl, and the clip was LESS even at pace 2 than at
+# pace 1. Measured: 0.340 against 0.377.
+#
+# `_ease_reveal` already works in arc length, so the pace belongs in
+# there, where every frame's share of the ARC is scaled alike.
+_C = []
+for _i in range(300):
+    _t = _i / 299.0
+    _C.append((1000 + _i, 700 + 900 * (1 - (1 - _t) ** 2.2),
+               500 - 520 * __import__("math").sin(
+                   __import__("math").pi * _t * 0.78)))
+_CA = [_C[_i] for _i in range(0, 60, 10)]
+_cum = [0.0]
+for _j in range(1, len(_C)):
+    _cum.append(_cum[-1] + __import__("math").hypot(
+        _C[_j][1] - _C[_j - 1][1], _C[_j][2] - _C[_j - 1][2]))
+
+
+def evenness(pace):
+    """Slowest third of the arc over the fastest, in px/frame. 1.0
+    would be a tip that never changes speed."""
+    _, _, c = T._tip_reveal_schedule(_C, _CA, pace=pace)
+    d = [_cum[min(len(_cum) - 1, max(0, v - 1))] for v in c]
+    bins = {0: [], 1: [], 2: []}
+    for i in range(1, len(d)):
+        adv = d[i] - d[i - 1]
+        if adv <= 0:            # line already complete; not movement
+            continue
+        f = d[i] / _cum[-1]
+        bins[0 if f < 0.33 else (1 if f < 0.66 else 2)].append(adv)
+    v = [sum(x) / len(x) for x in bins.values() if x]
+    return min(v) / max(v)
+
+
+_e1, _e2 = evenness(1.0), evenness(2.0)
+print("     evenness at pace 1.0: %.3f   at pace 2.0: %.3f" % (_e1, _e2))
+check("a faster tip is not LESS even", _e2 >= _e1, True)
+check("  and at pace 2 it is clearly more even", _e2 > 0.6, True)
+# THE OLD WAY, kept as the thing that must not come back: scaling the
+# finished counts by the pace.
+_, _, _base = T._tip_reveal_schedule(_C, _CA, pace=1.0)
+_old = [min(len(_C), max(1, int(round(c * 2.0)))) for c in _base]
+_d = [_cum[min(len(_cum) - 1, max(0, v - 1))] for v in _old]
+_b = {0: [], 1: [], 2: []}
+for i in range(1, len(_d)):
+    adv = _d[i] - _d[i - 1]
+    if adv <= 0:
+        continue
+    f = _d[i] / _cum[-1]
+    _b[0 if f < 0.33 else (1 if f < 0.66 else 2)].append(adv)
+_v = [sum(x) / len(x) for x in _b.values() if x]
+check("control, scaling the index instead WOULD be less even",
+      (min(_v) / max(_v)) < _e1, True)
+check("  and the fix beats it", _e2 > (min(_v) / max(_v)), True)
+
 
 print("\n-- how early the line finishes, which is the cost of pace")
 # A LINE THAT FINISHES EARLY THEN SITS STILL is the honest trade here,

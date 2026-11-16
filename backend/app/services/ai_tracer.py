@@ -4977,17 +4977,8 @@ def _tip_reveal_schedule(
     # From the last knot's frame on, the whole curve is visible (any
     # tail past the final anchor's projection appears with it).
     counts.append(len(samples))
-    sched = _ease_reveal(counts, samples)
-
-    # THE PACE, APPLIED LAST. After the easing, so the two do not fight
-    # -- `_ease_reveal` is zero-sum across the frames it is given and
-    # scaling it afterwards keeps that shape, just further along. The
-    # counts stay non-decreasing, which the caller's slice relies on.
     _p = TRACER_PACE if pace is None else float(pace)
-    if _p and abs(_p - 1.0) > 1e-6:
-        _n = len(samples)
-        sched = [min(_n, max(1, int(round(c * _p)))) for c in sched]
-    return first_f, last_f, sched
+    return first_f, last_f, _ease_reveal(counts, samples, _p)
 
 
 # THE SLOWEST THE DRAWN TIP MAY CRAWL, in pixels per source frame.
@@ -5017,7 +5008,8 @@ def _tip_reveal_schedule(
 TIP_MIN_ADVANCE_PX = 2.5
 
 
-def _ease_reveal(counts: list, samples: list) -> list:
+def _ease_reveal(counts: list, samples: list,
+                 pace: float = 1.0) -> list:
     """Redistribute the reveal so the apex does not stand still.
 
     Zero-sum by construction: same frames, same curve, same first and
@@ -5053,7 +5045,23 @@ def _ease_reveal(counts: list, samples: list) -> list:
         out, acc = [], 0.0
         for i in range(len(counts)):
             acc += w[i]
-            _want = total * acc / _sw
+            # THE PACE BELONGS HERE, IN DISTANCE, not on the index
+            # counts afterwards.
+            #
+            # Scaling the finished counts was the first attempt and it
+            # made the complaint worse. Index and distance are not
+            # proportional -- the samples bunch up at the crest, where
+            # the ball crawls -- so doubling the INDEX advance doubles
+            # the pixels off the tee and barely moves the tip at the
+            # apex. The fast part got faster, the crawl stayed a crawl,
+            # and the unevenness that was already there was amplified.
+            #
+            # Here every frame's share of the ARC is multiplied, so the
+            # tip speeds up by the same percentage everywhere, crest
+            # included. Clamped at the full length: a pace that would
+            # run past the end finishes early and holds, which is the
+            # honest consequence of asking for it.
+            _want = min(total, float(pace) * total * acc / _sw)
             lo, hi = 0, len(cum) - 1
             while lo < hi:
                 mid = (lo + hi) // 2
