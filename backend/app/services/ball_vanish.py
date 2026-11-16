@@ -959,6 +959,19 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
         # one that failed two tests.
         _tally = {"seen": 0, "too big": 0, "too faint": 0,
                   "on the golfer": 0, "off the ground": 0, "kept": 0}
+        # HOW CLOSE THE NEAR-MISSES CAME, which the counts cannot say.
+        #
+        # "102 too faint" reads the same whether the brightest of them
+        # was 29 against a bar of 30 or 5 against it, and those want
+        # opposite responses: one is a bar set a hair too high on this
+        # light, the other is a clip with no ball visible in it at all.
+        # The same hole the audio gate had before `below_gate_peaks`.
+        #
+        # Tracked only for specks that got as far as the contrast test
+        # -- something already rejected for being the size of a shoe is
+        # not a ball that was nearly bright enough.
+        _near = {"best_contrast": None, "best_at": None,
+                 "best_in_band": None, "best_in_band_at": None}
         per_frame = []
         for fr in shots:
             if fr is None:
@@ -976,6 +989,21 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                     _tally["too big"] += 1
                 elif d[3] < float(min_contrast):
                     _tally["too faint"] += 1
+                    _c = float(d[3])
+                    if (_near["best_contrast"] is None
+                            or _c > _near["best_contrast"]):
+                        _near["best_contrast"] = _c
+                        _near["best_at"] = [int(d[0]), int(d[1])]
+                    # AND THE BEST ONE THAT WAS IN THE RIGHT PLACE.
+                    # The brightest reject is often a highlight on a
+                    # shoulder or a cart roof; the useful number is the
+                    # brightest thing sitting where a teed ball sits,
+                    # because that is the one the bar is keeping out.
+                    if _on_the_ground(d[1], anchor) and (
+                            _near["best_in_band"] is None
+                            or _c > _near["best_in_band"]):
+                        _near["best_in_band"] = _c
+                        _near["best_in_band_at"] = [int(d[0]), int(d[1])]
                 elif not _on_the_ground(d[1], anchor):
                     # ASKED BEFORE the on-a-person test now, because
                     # that test needs the answer: at the foot line it
@@ -988,6 +1016,8 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                     dets.append(d)
             per_frame.append(dets)
         out["counts"] = dict(_tally)
+        out["near"] = {k: (round(v, 1) if isinstance(v, float) else v)
+                       for k, v in _near.items()}
         # THE BARS THEMSELVES, beside the counts. "9 too faint" is only
         # actionable next to the number they had to clear.
         _band = None
@@ -1038,6 +1068,41 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                 "%d %s" % (_tally[k], k) for k in
                 ("too big", "too faint", "on the golfer", "off the ground")
                 if _tally[k])
+            # AND WHAT A LOWER BAR WOULD HAVE CAUGHT. See `_near`:
+            # "102 too faint" is unactionable without knowing whether
+            # the brightest of them missed by one grey level or by
+            # twenty-five.
+            _nb = _near.get("best_in_band")
+            _na = _near.get("best_in_band_at")
+            if _nb is None:
+                _nb, _na = _near.get("best_contrast"), _near.get("best_at")
+                _where = "the brightest reject anywhere"
+            else:
+                _where = "the brightest reject sitting where a teed ball sits"
+            # AND THE FLOOR UNDER THE WHOLE COUNT, because the range
+            # these numbers can take is not 0..30.
+            #
+            # `_detections` applies MIN_LOCAL_CONTRAST before any of
+            # this, so "102 too faint" counts specks that cleared 18
+            # and missed 30 -- a ball dimmer than 18 over its
+            # surroundings never becomes a candidate and reads here as
+            # "no bright spots", not as a near miss. Saying so stops
+            # the reader concluding from a count whose floor they
+            # cannot see.
+            #
+            # A "nowhere near the bar" warning was written here and
+            # removed: with the floor at 18 and the bar at 30, nothing
+            # can score under half the bar, so the branch could never
+            # fire. A test that cannot be failed is worse than none --
+            # it implies a distinction this cannot actually make.
+            _close = ""
+            if _nb is not None:
+                _close = (
+                    " %s was %.0f at (%d, %d) — a contrast bar under that "
+                    "would have kept it (nothing under %.0f is counted at "
+                    "all)."
+                    % (_where, _nb, (_na or [0, 0])[0], (_na or [0, 0])[1],
+                       MIN_LOCAL_CONTRAST))
             out["why"] = (
                 "no ball clearly in the same spot in 2 of the first %d "
                 "frames — no judgement from the ball. Looked at %d bright "
@@ -1049,7 +1114,8 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                     % _tally["kept"]) if _tally["kept"] else "",
                    int(cap_area), float(min_contrast),
                    "" if _band is None
-                   else ", ball must sit y %d..%d" % (_band[0], _band[1])))
+                   else ", ball must sit y %d..%d" % (_band[0], _band[1]))
+                + _close)
             return out
         # EVERY BALL, NOT THE BEST ONE: the one that matters is
         # whichever LEFT. See classify_balls.
