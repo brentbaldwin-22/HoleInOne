@@ -101,6 +101,20 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
   }
 
   const rows = Object.keys(spec);
+  // ── THE GATES THAT DIFFER PER TEE ───────────────────────────────
+  //
+  // The audio ones do because loudness is distance. The launch cone
+  // does because a tee AIMS somewhere: the back and the forward tee
+  // on one hole send the ball off at different bearings, and a cone
+  // set for one refuses the other. So they get the same per-zone
+  // column layout rather than a single value for the hole.
+  //
+  // DECLARED BEFORE `asc`, WHICH READS IT. `const` is hoisted but not
+  // initialised, so a reference from an earlier line is a
+  // ReferenceError at render -- which blanks the whole app, and which
+  // `vite build` compiles happily because it is a runtime fault.
+  // That shipped once.
+  const CONE = ["ascent_cone_from_deg", "ascent_cone_to_deg"];
   const asc = rows.filter((k) => k.startsWith("ascent_")
     && !CONE.includes(k));
   const desc = rows.filter((k) => k.startsWith("descent_"));
@@ -109,14 +123,6 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
   // The audio gates landed in exactly that hole: added to the spec,
   // rendered by nothing, and reported as tunable when they were not.
   const aud = rows.filter((k) => k.startsWith("audio_"));
-  // ── THE GATES THAT DIFFER PER TEE ───────────────────────────────
-  //
-  // The audio ones do because loudness is distance. The launch cone
-  // does because a tee AIMS somewhere: the back and the forward tee
-  // on one hole send the ball off at different bearings, and a cone
-  // set for one refuses the other. So they get the same per-zone
-  // column layout rather than a single value for the hole.
-  const CONE = ["ascent_cone_from_deg", "ascent_cone_to_deg"];
   const perZone = [...aud, ...CONE.filter((k) => rows.includes(k))];
   // THE BALL AT ADDRESS, its own group. It landed in "Other" working
   // correctly, which is the trap this comment block is about: a gate

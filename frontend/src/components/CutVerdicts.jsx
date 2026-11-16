@@ -613,7 +613,15 @@ export function CutVerdicts({ cuts }) {
               )}
             </td>
             <td style={{ padding: "1px 10px 1px 0" }}>
-              {c.start_sec.toFixed(1)}–{c.end_sec.toFixed(1)}s
+              {/* GUARDED, like every other number in this row. These
+                  two are always on a real cut entry, which is why
+                  this stood for so long -- but an unguarded read here
+                  does not blank a cell, it throws out of render and
+                  blanks the whole page. Nothing on this table is
+                  worth that. */}
+              {c.start_sec != null && c.end_sec != null
+                ? `${c.start_sec.toFixed(1)}–${c.end_sec.toFixed(1)}s`
+                : "—"}
             </td>
             <td style={{ padding: "1px 10px 1px 0" }}>
               {c.confidence || "—"}
