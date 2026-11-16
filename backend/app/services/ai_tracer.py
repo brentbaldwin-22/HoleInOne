@@ -4907,7 +4907,7 @@ def _clip_point_to_frame(ax, ay, bx, by, w, h):
 #
 # Raise it to have the tracer reach further before the cut; 1.0 puts
 # it back on the ball's own pace.
-TRACER_PACE = 2.0
+TRACER_PACE = 1.2
 
 
 def _tip_reveal_schedule(
