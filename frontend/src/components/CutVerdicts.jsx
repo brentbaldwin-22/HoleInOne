@@ -398,6 +398,18 @@ export function CutVerdicts({ cuts }) {
                       )}
                     </div>
                   )}
+                  {/* AND WHEN THERE IS NO PICTURE, WHY NOT. Four
+                      nested conditions stand between a cut and this
+                      zoom -- a golfer crop, a search box, a strip
+                      that cuts, a model that answers -- and all four
+                      used to fail into the same blank space. The
+                      operator's report of it was "I'm not seeing any
+                      of the images we discussed". */}
+                  {!c.ball_box_url && c.ball_box_why && (
+                    <div className="muted" style={{ marginTop: 3 }}>
+                      no zoomed box: {c.ball_box_why}
+                    </div>
+                  )}
                   {Array.isArray(c.frames_ball_xy) && (
                     <div className="muted">
                       the judge puts the ball at{" "}

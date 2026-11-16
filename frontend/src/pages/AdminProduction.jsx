@@ -10879,6 +10879,15 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                 could read "swing" on one screen and "not" on the
                 other. Only on a find: the judges are vision calls,
                 and a produce does not pay for them. */}
+            {/* AND WHEN THERE ARE NO VERDICTS, WHY. A blank space
+                here meant three different things -- the verification
+                threw, it ran and found nothing, or it never ran --
+                and the operator could not tell them apart. */}
+            {rep.window.verify_error && (
+              <div style={{ color: "#b45309", marginTop: 6 }}>
+                No swing verdicts: {rep.window.verify_error}
+              </div>
+            )}
             {Array.isArray(rep.window.cuts) && rep.window.cuts.length > 0 && (
               <div style={{ marginTop: 6 }}>
                 {rep.window.verified_by && (

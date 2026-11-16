@@ -16128,6 +16128,17 @@ def _test_cut_run(
                                     src_path, _strike_sec, _bsp,
                                     box=_bl["region"], offsets=_BO,
                                     spot=_bl.get("spot"))
+                                if not _bst.get("ok"):
+                                    # SAY SO. Four nested conditions
+                                    # stand between a cut and this
+                                    # picture, and every one of them
+                                    # used to fail into the same
+                                    # blank space.
+                                    cut_entry["ball_box_why"] = (
+                                        "the zoomed box could not be "
+                                        "cut: %s"
+                                        % (_bst.get("why")
+                                           or "no reason given"))
                                 if _bst.get("ok"):
                                     cut_entry["ball_box_zoom"] = \
                                         _bst.get("zoom")
@@ -16172,7 +16183,32 @@ def _test_cut_run(
                                         _bq.get("gone_after"), _axy,
                                         _bq.get("reason"))
                             except Exception as _bbx:  # noqa: BLE001
-                                log.debug("ball box strip: %s", _bbx)
+                                # NOT AT DEBUG LEVEL, AND NOT ONLY IN
+                                # THE LOG. This swallow is why "no
+                                # images" had no cause anywhere an
+                                # operator could see it.
+                                log.warning("ball box strip failed: %s",
+                                            _bbx, exc_info=True)
+                                cut_entry["ball_box_why"] = (
+                                    "the zoomed box raised %s: %s"
+                                    % (type(_bbx).__name__, _bbx))
+                        else:
+                            # BOTH KEYS ARE LIVE, on different paths.
+                            # ball_in_frames returns `region_why` when
+                            # it looked and placed no box;
+                            # ball_at_address's three early returns
+                            # never get that far and carry `why`
+                            # instead ("needs the six frames", "could
+                            # not open the clip", "ball check
+                            # failed"). Reading only one of them would
+                            # print "no reason given" for half the
+                            # failures that actually have a reason.
+                            cut_entry["ball_box_why"] = (
+                                "no search box was placed, so there "
+                                "was nothing to zoom into: %s"
+                                % (_bl.get("region_why")
+                                   or _bl.get("why")
+                                   or "no reason given"))
                         cut_entry["ball_left"] = _bl["left"]
                         cut_entry["ball_spot"] = _bl["spot"]
                         cut_entry["ball_balls"] = _bl.get("balls")
@@ -16184,9 +16220,26 @@ def _test_cut_run(
                         cut_entry["ball_state"] = "INCONCLUSIVE"
                         cut_entry["ball_why"] = "the ball check failed"
                 elif _golfer:
+                    # WITH THE HEAT CHECK'S OWN REASON. "No zoom crop"
+                    # is the symptom; whether the person detector
+                    # found nobody, or found somebody outside the
+                    # zones, is the answer, and the check already
+                    # knows which.
+                    # `reason` IS THE KEY, and `why` is not one --
+                    # swing_heat_check sets reason, picked_from,
+                    # verdict and no `why` at all. A `.get("why")`
+                    # here would read None for ever and the fallback
+                    # would hide it, which is the same class of bug
+                    # as the blank space this line exists to fill.
+                    _ccw = (_chk.get("reason")
+                            or _chk.get("picked_from")
+                            or "the swing heat check gave no reason")
                     cut_entry["ball_why"] = (
                         "no zoom crop on this one, so the ball was not "
-                        "looked for")
+                        "looked for — %s" % _ccw)
+                    cut_entry["ball_box_why"] = (
+                        "the golfer was not cropped, so there was no "
+                        "box to zoom into — %s" % _ccw)
                 # AND THE WHOLE FRAME IT WAS CUT FROM, for QC. The
                 # crop is now chosen by a detector, a zone test and a
                 # furthest-up rule, and every one of those can be
@@ -26286,8 +26339,17 @@ def _find_test_cut(db, row, cutter, gates):
             audio_max_attack_ms=float(gates["audio_max_attack_ms"]),
         ) or {}
     except Exception as exc:  # noqa: BLE001
-        log.warning("find: test-cut verification failed (%s)", exc)
-        return {}
+        # SAY SO ON THE PAGE, not only in a log nobody has open.
+        #
+        # This swallow is right -- a second opinion must not take the
+        # find down with it -- but returning {} made a failure
+        # indistinguishable from a clip with nothing to verify, and
+        # the operator's report of it was "I'm not seeing any of the
+        # images we discussed". A diagnostic that fails invisibly is
+        # the thing this whole panel exists to stop.
+        log.warning("find: test-cut verification failed (%s)", exc,
+                    exc_info=True)
+        return {"_error": "%s: %s" % (type(exc).__name__, exc)}
 
 
 def _ascent_windows(db, row, src_path, fps, rep=None):
@@ -26688,7 +26750,26 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
               if (rep.get("ai_launch") or {}).get("reused") else
               " | nothing reused — this clip has no stored verify "
               "analysis, so the golfer and the ball were found again "
-              "from the clip"),
+              "from the clip")
+           # ── AND WHEN IT DECLINED, WHY ────────────────────────────
+           #
+           # Every early return in `_ascent_ai_launch` sets `reason`,
+           # and this line printed none of them. So a stage that did
+           # nothing at all read "not placed | not measured | not
+           # timed" -- three absences and no cause -- which is what
+           # the operator was looking at when they asked where the
+           # images had gone. The cause was one field away the whole
+           # time.
+           + (" | DID NOT RUN: " + str((rep.get("ai_launch") or {})
+                                       .get("reason"))
+              if (rep.get("ai_launch") or {}).get("reason") else "")
+           # WHICH CLOCK THE IMPACT CAME FROM. The rig's confirmed
+           # instant and the cutter's own search of the clip are not
+           # the same kind of answer, and the frame numbers below mean
+           # different things depending on which one this was.
+           + (" | impact from: " + str((rep.get("ai_launch") or {})
+                                       .get("impact_from"))
+              if (rep.get("ai_launch") or {}).get("impact_from") else ""),
            1 if (rep.get("ai_launch") or {}).get("measured_ball") else 0,
            "ball(s) measured at rest",
            time.perf_counter() - _t)
@@ -26758,6 +26839,15 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
         # once, which is the point: it cannot break only this one and
         # leave a blank column nobody notices.
         _cuts = list((_tc.get("cuts") or [])[:6])
+        # WHY THERE ARE NONE, which is three different facts: the
+        # verification threw, it ran and the detector found nothing,
+        # or it was never reached. They were one blank space.
+        if _tc.get("_error"):
+            rep["window"]["verify_error"] = _tc["_error"]
+        elif not _cuts:
+            rep["window"]["verify_error"] = (
+                "the %s cutter's own run found no cuts to judge"
+                % _tc_det)
         if _cuts:
             rep["window"]["cuts"] = _cuts
             rep["window"]["verified_by"] = (
@@ -29170,12 +29260,106 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
                          "deployment (ASCENT_AI_LAUNCH=0)")
         return out
     _rig = _rig_impact_sec(db, row, getattr(row, "id", None))
+    out["impact_from"] = "the rig's own impact" if _rig else None
     if _rig is None:
-        out["reason"] = (
-            "this clip was not cut around an impact the rig heard, so "
-            "there is no frame to zoom in on — the chain's own run back "
-            "to the tee line starts the line instead")
-        return out
+        # ── NO CAMERA EVENT IS NOT NO IMPACT ────────────────────────
+        #
+        # `_rig_impact_sec` returns None the moment `camera_event_id`
+        # is unset, and a MANUALLY UPLOADED clip never has one. So on
+        # every upload this whole stage declined -- no golfer, no
+        # ball, no impact frame, none of the pictures -- and the only
+        # trace of it was `reason`, which the report did not print.
+        # Reported from the field as "I'm not seeing any of the images
+        # we discussed".
+        #
+        # But an uploaded clip DOES have a heard strike: the audio
+        # cutter finds it, this very run is about to narrow on it in
+        # stage 2, and Test Cut measures the ball off exactly that
+        # number. Refusing it here meant the find and Test Cut
+        # disagreed about whether the clip had an impact at all.
+        #
+        # SAME SHAPE, SAME SEMANTICS as the rig's: `heard_sec` is what
+        # the microphone reported and `sec` is the corrected instant,
+        # so `rig_impact_explained` writes out the same sum and the
+        # lag an operator tuned is applied here too rather than only
+        # in Test Cut.
+        # ── A MANUAL UPLOAD ONLY, NEVER A DWELL CLIP ────────────────
+        #
+        # Both arrive here with no rig impact, and they are NOT the
+        # same case:
+        #
+        #   a manual upload has no camera event at all -- somebody
+        #   deliberately uploaded one swing to test it, and the audio
+        #   is the only narrowing available;
+        #
+        #   a DWELL clip has an event and no audio impact, because the
+        #   rig never heard a strike. Eighty-eight of its ninety
+        #   seconds are birds, carts and branches, and `_ascent_windows`
+        #   refuses the audio pass on exactly this clip for exactly
+        #   that reason: when the swing is missed and something else
+        #   is heard, the search does not widen, it narrows onto the
+        #   wrong two seconds and reports a clip with no ball in it.
+        #   Silently, and in the direction that costs a swing.
+        #
+        # So the fallback follows that same rule rather than inventing
+        # a second one -- `ai_launch_plot_test` holds this line.
+        if getattr(row, "camera_event_id", None):
+            out["reason"] = (
+                "the rig heard no strike in this clip, so there is no "
+                "frame to zoom in on — and its own audio is not "
+                "searched for one, because on a dwell clip a missed "
+                "swing narrows onto the wrong two seconds rather than "
+                "widening. The chain's own run back to the tee line "
+                "starts the line instead")
+            return out
+        try:
+            _cut, _cut_why = _cutter_for(db, row)
+            if _cut in ("auto", "none"):
+                _cut = "audio" if _cut == "auto" else _cut
+            if _cut == "none":
+                out["reason"] = (
+                    "this hole is set to sweep the whole clip rather "
+                    "than narrow it (%s), and this clip has no rig "
+                    "impact — so there is no frame to zoom in on"
+                    % _cut_why)
+                return out
+            _lag = 0.0
+            try:
+                from ..services import debug3 as _ld3
+                _lg, _, _ = _gate_tuning_for(db, row)
+                _lag = float(_ld3.resolve_gates(
+                    _lg, zone=_trigger_zone(db, row))["audio_lag_sec"])
+            except Exception as _lx:  # noqa: BLE001
+                log.debug("ai launch: no lag gate (%s)", _lx)
+            _ct = _cutter_times(_cut, db, row, src_path,
+                                float(fps or 30.0), {})
+            if not _ct:
+                out["reason"] = (
+                    "this clip has no rig impact, and the %s cutter "
+                    "heard no strike in it either — so there is no "
+                    "frame to zoom in on" % _cut)
+                return out
+            _heard = float(_ct[0])
+            _rig = {"sec": max(0.0, _heard - _lag), "heard_sec": _heard,
+                    "lead_sec": _lag, "event_id": None,
+                    "hole_number": None}
+            out["impact_from"] = (
+                "the %s cutter's first strike in this clip at %.2fs"
+                "%s — this clip has no rig impact"
+                % (_cut, _heard,
+                   (", less the %.2fs audio lag" % _lag) if _lag else ""))
+            log.info("ai launch: no rig impact for upload %s — using the "
+                     "%s cutter's %.2fs (lag %.2fs) instead",
+                     getattr(row, "id", None), _cut, _heard, _lag)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ai launch: could not fall back to the clip's "
+                        "own audio (%s)", exc, exc_info=True)
+            out["reason"] = (
+                "this clip was not cut around an impact the rig heard, "
+                "and reading its own audio failed (%s: %s) — the "
+                "chain's own run back to the tee line starts the line "
+                "instead" % (type(exc).__name__, exc))
+            return out
     _fps = float(fps or 30.0)
     _f = max(0, int(float(_rig["sec"]) * _fps))
     out["impact_frame"] = _f
