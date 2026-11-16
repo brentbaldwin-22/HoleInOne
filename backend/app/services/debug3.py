@@ -8198,6 +8198,28 @@ GATE_SPEC = {
     "audio_min_ratio": (4.0, 1.5, 60.0, False),
     "audio_min_separation_sec": (2.0, 0.2, 30.0, False),
     "audio_max_attack_ms": (25.0, 2.0, 200.0, False),
+    # ── HOW BRIGHT A BALL AT ADDRESS HAS TO BE ──────────────────────
+    #
+    # `ADDRESS_MIN_CONTRAST`, which was a constant, and the wrong
+    # scope for the same reason the audio gates were: it is a property
+    # of THIS hole's light and turf. Measured on one hole the ball
+    # scored 28 grey levels over its surroundings against a bar of 30
+    # and was reported as "no ball identified" on a clip where the
+    # operator could see it plainly.
+    #
+    # Lowering the constant would have moved every hole to catch one
+    # hole's lighting, and what it keeps out is bright patches of mown
+    # grass -- which is a false "the ball was hit" on a clip where
+    # nobody swung. So it tunes per hole, like the rest.
+    #
+    # THE FLOOR IS 18, NOT 0: `_detections` applies
+    # MIN_LOCAL_CONTRAST before this bar is ever consulted, so a
+    # setting under 18 buys nothing and would read as a knob that does
+    # not work. The ball check's own sentence says so too.
+    #
+    # The default is the old constant, so a hole that tunes nothing
+    # behaves exactly as it does today.
+    "ball_min_contrast": (30.0, 18.0, 120.0, False),
     # key                        default                  lo     hi   int
     # NOT A FILTER ON CHAINS, unlike everything else here: this one is
     # the DETECTOR's per-frame keep. Every other gate can only refuse a

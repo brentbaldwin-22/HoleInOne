@@ -108,9 +108,13 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
   // The audio gates landed in exactly that hole: added to the spec,
   // rendered by nothing, and reported as tunable when they were not.
   const aud = rows.filter((k) => k.startsWith("audio_"));
+  // THE BALL AT ADDRESS, its own group. It landed in "Other" working
+  // correctly, which is the trap this comment block is about: a gate
+  // nobody can find is a gate nobody tunes.
+  const ball = rows.filter((k) => k.startsWith("ball_"));
   const other = rows.filter((k) => !asc.includes(k) && !desc.includes(k)
-    && !aud.includes(k));
-  const label = (k) => k.replace(/^(ascent|descent|audio)_/, "")
+    && !aud.includes(k) && !ball.includes(k));
+  const label = (k) => k.replace(/^(ascent|descent|audio|ball)_/, "")
     .replace(/_/g, " ");
   const zones = data.zones || [];
 
@@ -209,6 +213,7 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
             section than a silently missing one -- the audio gates
             were added to the spec and shown by nobody, and nothing
             said so. */}
+        {ball.length > 0 && group("Ball — sitting on the tee", ball)}
         {other.length > 0 && group("Other", other)}
       </div>
       {aud.length > 0 && (

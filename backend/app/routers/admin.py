@@ -15946,10 +15946,38 @@ def _test_cut_run(
                         _anc = None
                         if _chk.get("front_feet") and _chk.get("front_h"):
                             _anc = (_chk["front_feet"][1], _chk["front_h"])
+                        # THE HOLE'S BAR, NOT THE CONSTANT. See
+                        # GATE_SPEC's `ball_min_contrast`: how bright
+                        # a ball has to be against its own turf is a
+                        # property of this hole's light, and the
+                        # constant was reporting "no ball identified"
+                        # on a clip where it scored 28 against 30.
+                        #
+                        # Resolved from the hole the cut belongs to,
+                        # with this cut's own zone, so a back tee and
+                        # a forward one can differ -- the same reason
+                        # the audio gates take zone overrides.
+                        # `_d3` is imported per-function in this
+                        # module, not at its top, so it has to be
+                        # named here too -- and a bare `_d3.` would
+                        # have raised NameError into the swallow
+                        # below, taking the whole ball check with it
+                        # and reporting nothing.
+                        from ..services import debug3 as _bd3
+                        _bmc = _bd3.GATE_DEFAULTS["ball_min_contrast"]
+                        try:
+                            _bg, _, _ = _gate_tuning_for(db, row)
+                            _bmc = _bd3.resolve_gates(
+                                _bg, zone=cut_entry.get("gate"),
+                            )["ball_min_contrast"]
+                        except Exception as _gx:  # noqa: BLE001
+                            log.debug("ball gate: %s — using %s",
+                                      _gx, _bmc)
                         _bl = ball_at_address(
                             src_path, peak_time_sec, _BO,
                             rect=_chk.get("frames_rect"),
-                            people=_people2, anchor=_anc)
+                            people=_people2, anchor=_anc,
+                            min_contrast=float(_bmc))
                         cut_entry["ball_left"] = _bl["left"]
                         cut_entry["ball_spot"] = _bl["spot"]
                         cut_entry["ball_balls"] = _bl.get("balls")
