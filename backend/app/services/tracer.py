@@ -3303,6 +3303,12 @@ FOOT_COLOR = (0, 255, 0)
 # The ball, in red: the one colour not already spoken for here, and
 # not in COLORMAP_TURBO's ramp at the brightness it is drawn.
 BALL_COLOR = (0, 0, 255)
+# THE MARKS FOR A CHECK THAT FOUND NOTHING. BGR, and deliberately not
+# the ball's red: these say "looked here and refused", which is the
+# opposite claim.
+BAND_COLOR = (0, 200, 255)       # the strip a teed ball must sit in
+NEAR_COLOR = (0, 165, 255)       # the brightest thing in it, and its score
+SHAPE_COLOR = (255, 160, 0)      # refused on shape, before any score
 
 
 def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
@@ -3417,6 +3423,68 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
                     cv2.circle(out, (bx, by), 11, BALL_COLOR, 2,
                                cv2.LINE_AA)
                     drew += 1
+            except Exception:  # noqa: BLE001
+                pass
+        # AND WHEN IT FOUND NOTHING, WHAT IT LOOKED AT.
+        #
+        # THE PICTURE WAS BLANK IN EXACTLY THE CASE IT WAS WANTED FOR.
+        # A found ball gets a red circle; a check that found none drew
+        # nothing at all, so the one question the operator has --
+        # "it's right there, what were you looking at?" -- had no
+        # answer in the only picture that could give one. The numbers
+        # were in the sentence and nothing put them on the turf.
+        #
+        # Two marks, both only when there is no spot to circle:
+        #   the BAND, as two lines, because "ball must sit y 702..728"
+        #   is a sentence about a place and this is the place; and
+        #   the NEAR MISS, the brightest thing in that band, with the
+        #   score it missed the bar by.
+        elif ball:
+            try:
+                _lim = ball.get("limits") or {}
+                _bd = _lim.get("ground band y")
+                if _bd and len(_bd) == 2:
+                    for _yy in _bd:
+                        _py = int(round((float(_yy) - oy) * sc))
+                        if -5 < _py < h + 5:
+                            cv2.line(out, (0, _py), (w, _py),
+                                     BAND_COLOR, 1, cv2.LINE_AA)
+                            drew += 1
+                _nr = ball.get("near") or {}
+                _at = _nr.get("best_in_band_at") or _nr.get("best_at")
+                _sc_val = (_nr.get("best_in_band")
+                           if _nr.get("best_in_band_at") else
+                           _nr.get("best_contrast"))
+                if _at:
+                    _nx = int(round((float(_at[0]) - ox) * sc))
+                    _ny = int(round((float(_at[1]) - oy) * sc))
+                    if -30 < _nx < w + 30 and -30 < _ny < h + 30:
+                        cv2.circle(out, (_nx, _ny), 9, NEAR_COLOR, 2,
+                                   cv2.LINE_AA)
+                        if _sc_val is not None:
+                            _bar = _lim.get("min contrast")
+                            _lbl = "%.0f/%s" % (
+                                float(_sc_val),
+                                ("%.0f" % float(_bar)) if _bar is not None
+                                else "?")
+                            for _c, _t in (((0, 0, 0), 3),
+                                           (NEAR_COLOR, 1)):
+                                cv2.putText(out, _lbl, (_nx + 12, _ny - 8),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                                            _c, _t, cv2.LINE_AA)
+                        drew += 1
+                # AND A BLOB THAT NEVER BECAME A CANDIDATE, which the
+                # near miss cannot show: it was refused for its shape
+                # before anything measured its brightness.
+                for _sr in ((ball.get("shape_rejects") or {})
+                            .get("in_band") or [])[:2]:
+                    _sx = int(round((float(_sr["x"]) - ox) * sc))
+                    _sy = int(round((float(_sr["y"]) - oy) * sc))
+                    if -30 < _sx < w + 30 and -30 < _sy < h + 30:
+                        cv2.drawMarker(out, (_sx, _sy), SHAPE_COLOR,
+                                       cv2.MARKER_TILTED_CROSS, 11, 2,
+                                       cv2.LINE_AA)
+                        drew += 1
             except Exception:  # noqa: BLE001
                 pass
         return out if drew else None

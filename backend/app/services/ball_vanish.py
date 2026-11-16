@@ -975,12 +975,36 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
         else:
             x0, y0, x1, y1 = 0, 0, W, H
         boxes = [(x0, y0, x1, y1)]
-        # SCALED TO THE GOLFER when there is one to scale to.
+        # SCALED TO THE GOLFER WE CROPPED TO, when there is one.
+        #
+        # THE ANCHOR'S HEIGHT, NOT THE AVERAGE OF EVERYBODY'S. This
+        # took the mean height of every detected person, which is the
+        # same mistake `_on_the_ground` was already fixed for: the
+        # band is measured against ONE golfer -- the one the crop was
+        # cut around -- so measuring the ball's size limit against a
+        # different number says the two describe the same picture when
+        # they do not. On the clip that raised it the picked golfer
+        # was 126px and a partner 117, giving a cap of 36px where the
+        # golfer's own height gives 39; a figure further down the tee
+        # drags it further, and the ball is "too big" in a frame where
+        # nothing about the ball changed.
+        #
+        # Falls back to the average when there is no anchor, which is
+        # the old behaviour and still better than nothing.
         cap_area = int(max_area)
-        _hs = [p["box"][3] for p in (people or [])
-               if isinstance(p, dict) and p.get("box")]
-        if _hs:
-            _d = BALL_MAX_DIAM_OVER_GOLFER * (sum(_hs) / float(len(_hs)))
+        _ah = None
+        try:
+            if anchor and float(anchor[1]) > 0:
+                _ah = float(anchor[1])
+        except Exception:  # noqa: BLE001
+            _ah = None
+        if _ah is None:
+            _hs = [p["box"][3] for p in (people or [])
+                   if isinstance(p, dict) and p.get("box")]
+            if _hs:
+                _ah = sum(_hs) / float(len(_hs))
+        if _ah:
+            _d = BALL_MAX_DIAM_OVER_GOLFER * _ah
             cap_area = max(4, int(_d * _d))
 
         # WHICH FILTER KILLED IT. Four tests stand between a bright
@@ -1008,6 +1032,24 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
         # not a ball that was nearly bright enough.
         _near = {"best_contrast": None, "best_at": None,
                  "best_in_band": None, "best_in_band_at": None}
+        # AND THE ONES THAT NEVER BECAME CANDIDATES AT ALL.
+        #
+        # THE BLIND SPOT UNDER EVERY COUNT ABOVE. `_tally` counts what
+        # `_detections` HANDED BACK; a blob it threw out itself -- too
+        # small, not round, a sliver, under the local-contrast floor --
+        # leaves no trace, so a ball sitting down in grass that fails
+        # MIN_FILL because blades cut into its outline is not "too
+        # faint" or "too big", it is absent from the report entirely.
+        # The sentence then says "looked at 133 bright spots" and the
+        # ball is not one of them, with nothing to say why.
+        #
+        # `_detections` already works out the reason for every blob it
+        # refuses and takes a list to put them in. Nothing was passing
+        # one. Only the ones sitting where a teed ball sits are kept
+        # here: the frame is full of rejected specks and the only ones
+        # worth a sentence are the ones in the band.
+        _shape_n = 0
+        _shape_band = []
         per_frame = []
         for fr in shots:
             if fr is None:
@@ -1019,7 +1061,8 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             # the ball cannot clear. The ADDRESS_MIN_CONTRAST filter
             # below is the real bar here.
             dets = []
-            for d in _detections(gray, boxes, rel=0.0):
+            _rj = []
+            for d in _detections(gray, boxes, rel=0.0, rejects=_rj):
                 _tally["seen"] += 1
                 if d[2] > int(cap_area):
                     _tally["too big"] += 1
@@ -1050,8 +1093,24 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                 else:
                     _tally["kept"] += 1
                     dets.append(d)
+            _shape_n += len(_rj)
+            for _r in _rj:
+                if _on_the_ground(_r.get("y"), anchor):
+                    _shape_band.append(_r)
             per_frame.append(dets)
         out["counts"] = dict(_tally)
+        # BIGGEST FIRST: among blobs in the band, the largest is the
+        # likeliest ball, and a one-pixel speck rejected for being
+        # one pixel is not news.
+        _shape_band.sort(key=lambda r: -float(r.get("area") or 0))
+        out["shape_rejects"] = {
+            "n": int(_shape_n),
+            "in_band": [{"x": int(round(float(r["x"]))),
+                         "y": int(round(float(r["y"]))),
+                         "area": int(r.get("area") or 0),
+                         "why": str(r.get("why") or "")}
+                        for r in _shape_band[:3]],
+        }
         out["near"] = {k: (round(v, 1) if isinstance(v, float) else v)
                        for k, v in _near.items()}
         # THE BARS THEMSELVES, beside the counts. "9 too faint" is only
@@ -1163,6 +1222,24 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             # can score under half the bar, so the branch could never
             # fire. A test that cannot be failed is worse than none --
             # it implies a distinction this cannot actually make.
+            # AND THE ONES THAT NEVER GOT AS FAR AS A BAR. Without
+            # this the reader concludes from "133 bright spots" that
+            # the ball was one of the 133 and lost on a number, when
+            # it may never have been counted.
+            _shape = ""
+            if _shape_band:
+                _b0 = _shape_band[0]
+                _shape = (
+                    " %d more never became candidates (size or shape); the "
+                    "biggest where a teed ball sits was %dpx at (%d, %d) — "
+                    "%s."
+                    % (_shape_n, int(_b0.get("area") or 0),
+                       int(round(float(_b0["x"]))),
+                       int(round(float(_b0["y"]))),
+                       _b0.get("why") or "no reason recorded"))
+            elif _shape_n:
+                _shape = (" %d more never became candidates (size or "
+                          "shape), none of them in the band." % _shape_n)
             _close = ""
             if _nb is not None:
                 _close = (
@@ -1183,7 +1260,7 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                    int(cap_area), float(min_contrast),
                    "" if _band is None
                    else ", ball must sit y %d..%d" % (_band[0], _band[1]))
-                + _close)
+                + _close + _shape)
             # THE SEARCH RAN AND CAME BACK EMPTY, which is a different
             # answer from "could not look" -- the branches that could
             # not look leave the initialiser's INCONCLUSIVE alone.
