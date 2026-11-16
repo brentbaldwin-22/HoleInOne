@@ -15973,11 +15973,37 @@ def _test_cut_run(
                         except Exception as _gx:  # noqa: BLE001
                             log.debug("ball gate: %s — using %s",
                                       _gx, _bmc)
+                        # THE STANCE BOX. `feet_x` is what turns the
+                        # search from "this band across the whole
+                        # crop" into a patch of grass beside the
+                        # golfer -- and the bar inside it can then
+                        # come down to where a dim ball actually
+                        # lives, because there is nothing else in
+                        # there to mistake for one. The wide search
+                        # still runs; the box only ADDS candidates.
+                        _ffx = None
+                        if _chk.get("front_feet"):
+                            try:
+                                _ffx = float(_chk["front_feet"][0])
+                            except Exception:  # noqa: BLE001
+                                _ffx = None
                         _bl = ball_at_address(
                             src_path, peak_time_sec, _BO,
                             rect=_chk.get("frames_rect"),
                             people=_people2, anchor=_anc,
-                            min_contrast=float(_bmc))
+                            min_contrast=float(_bmc),
+                            feet_x=_ffx,
+                            # THE BOX'S OWN BAR (REGION_CONTRAST),
+                            # well under both the hole's bar and the
+                            # detector's floor. Both of those are set
+                            # for a search across open turf, which is
+                            # the thing the box exists to get out
+                            # from under; leaving either in place
+                            # makes this a slower way to get the same
+                            # answer.
+                            region_contrast=None)
+                        cut_entry["ball_region"] = _bl.get("region")
+                        cut_entry["ball_found_by"] = _bl.get("found_by")
                         cut_entry["ball_left"] = _bl["left"]
                         cut_entry["ball_spot"] = _bl["spot"]
                         cut_entry["ball_balls"] = _bl.get("balls")
@@ -16318,6 +16344,10 @@ def _test_cut_run(
                             # on the judge's own call, and is never
                             # part of the verdict -- see the prompt.
                             cut_entry["frames_handed"] = _jf.get("handed")
+                            # NOT TO LOCATE THE BALL -- to contradict
+                            # the detector. See the prompt.
+                            cut_entry["frames_ball_seen"] = _jf.get(
+                                "ball_seen")
                             _final = {
                                 "is_swing": _jf.get("is_swing"),
                                 "confidence": _jf.get("confidence"),

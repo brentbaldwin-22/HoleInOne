@@ -3307,6 +3307,7 @@ BALL_COLOR = (0, 0, 255)
 # the ball's red: these say "looked here and refused", which is the
 # opposite claim.
 BAND_COLOR = (0, 200, 255)       # the strip a teed ball must sit in
+REGION_COLOR = (0, 255, 120)     # the stance box, searched at a lower bar
 NEAR_COLOR = (0, 165, 255)       # the brightest thing in it, and its score
 SHAPE_COLOR = (255, 160, 0)      # refused on shape, before any score
 # ONE COLOUR PER VERDICT, so a glance at the ball says which rule took
@@ -3457,6 +3458,19 @@ def draw_zones(img, zones, *, offset=(0, 0), scale=1.0,
         elif ball:
             try:
                 _lim = ball.get("limits") or {}
+                # THE BOX IT SEARCHED HARD, drawn as a box, because
+                # "it looked where the ball should be and found
+                # nothing" and "it never looked there" are different
+                # answers and used to be the same picture.
+                _rg = ball.get("region")
+                if _rg and len(_rg) == 4:
+                    _a = (int(round((float(_rg[0]) - ox) * sc)),
+                          int(round((float(_rg[1]) - oy) * sc)))
+                    _b = (int(round((float(_rg[2]) - ox) * sc)),
+                          int(round((float(_rg[3]) - oy) * sc)))
+                    cv2.rectangle(out, _a, _b, REGION_COLOR, 1,
+                                  cv2.LINE_AA)
+                    drew += 1
                 _bd = _lim.get("ground band y")
                 if _bd and len(_bd) == 2:
                     for _yy in _bd:

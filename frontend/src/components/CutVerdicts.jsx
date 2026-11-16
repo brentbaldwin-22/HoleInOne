@@ -308,6 +308,34 @@ export function CutVerdicts({ cuts }) {
                   <div className="muted">
                     {c.ball_why}
                   </div>
+                  {/* WHICH SEARCH ANSWERED. The wide
+                      band and the stance box have
+                      different bars, so "found" from
+                      one is not the same claim as
+                      "found" from the other. */}
+                  {c.ball_found_by && (
+                    <div className="muted">
+                      found by {c.ball_found_by}
+                    </div>
+                  )}
+                  {/* AND THE DISAGREEMENT, SAID OUT
+                      LOUD. The judge is a vision
+                      model and the ball check is
+                      OpenCV; they know nothing about
+                      each other. When the model can
+                      see a ball on the grass and the
+                      detector cannot, that is a
+                      measurement about the detector,
+                      and until now the two sentences
+                      sat in the same panel with
+                      nothing joining them up. */}
+                  {c.frames_ball_seen === true
+                    && c.ball_state === "NO_BALL_DETECTED" && (
+                    <div style={{ color: "#b45309" }}>
+                      the judge could see a ball here
+                      and the detector could not
+                    </div>
+                  )}
                   {/* WHICH OF THE SIX IT WAS READ FROM. The sentence
                       above argues about one candidate; the counts in
                       it are over the whole set. Neither can say that

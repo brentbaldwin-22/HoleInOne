@@ -9404,9 +9404,28 @@ _JUDGE_SWING_FRAMES_PROMPT = (
     "address tile and the finish tile. Answer \"unknown\" freely -- a "
     "guess is worse than nothing here, and this never changes "
     "`is_swing`.\n"
+    # ── AND WHETHER A BALL IS THERE AT ALL ──────────────────────────
+    #
+    # NOT TO LOCATE IT -- to contradict us. The ball check is OpenCV
+    # and knows nothing about this call; it reports "no ball
+    # identified" while this model writes "golfer at address" in the
+    # same panel, and nothing joins those two sentences up. One word
+    # here does: if the model can see a ball on the grass and the
+    # detector cannot, that is a measurement about the DETECTOR.
+    #
+    # Deliberately not asked for coordinates. A vision model's pixel
+    # positions are not reliable enough to narrow a search to a box,
+    # and a confidently wrong box turns "could not find it" into
+    # "definitely not there". The box comes from the stance; this
+    # says whether to believe a null result.
+    "ALSO SEPARATELY: in the ADDRESS tile only, can you see a golf "
+    "ball sitting on the grass near the golfer's feet? Answer "
+    "\"unknown\" if you are not sure. Do not give coordinates and do "
+    "not let this change `is_swing`.\n"
     'Reply with JSON only:\n{"is_swing": true|false, '
     '"confidence": "high"|"medium"|"low", "reason": "<one short '
-    'sentence>", "handed": "right"|"left"|"unknown"}'
+    'sentence>", "handed": "right"|"left"|"unknown", '
+    '"ball_seen": true|false|"unknown"}'
 )
 
 
@@ -9730,6 +9749,11 @@ def judge_swing_with_frames(frames_path, image_path,
     # page as a fourth value nothing renders.
     _h = str(parsed.get("handed") or "").strip().lower()
     out["handed"] = _h if _h in ("right", "left") else None
+    # TRUE/FALSE ONLY. "unknown", a missing key and anything else all
+    # mean the same thing here -- no opinion -- and must not read as
+    # "the model says there is no ball", which is a real claim.
+    _bs = parsed.get("ball_seen")
+    out["ball_seen"] = _bs if isinstance(_bs, bool) else None
     return out
 
 

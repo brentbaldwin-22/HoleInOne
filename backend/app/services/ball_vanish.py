@@ -63,6 +63,44 @@ MIN_LOCAL_CONTRAST = 18.0
 # does not fill the picture with marks.
 UNDER_FLOOR_PROBE = 7.0
 
+# THE SHAPE BARS INSIDE THE STANCE BOX. Looser than the wide search's
+# for one measured reason: a blob at the contrast the box exists to
+# reach is ragged, and MIN_FILL 0.55 refuses it on exactly the clips
+# where lowering the floor was supposed to help. Still bars enough to
+# throw out a blade of grass or a shoe edge -- a streak is a streak at
+# any threshold.
+REGION_MIN_FILL = 0.35
+REGION_MAX_ASPECT = 2.6
+
+# AND THE BAR ITSELF, WELL UNDER THE DETECTOR'S FLOOR, because that is
+# the entire point of narrowing the search. Defaulting the box to
+# MIN_LOCAL_CONTRAST made it a slower way to get today's answer: the
+# ball that prompted all this reads about 11.
+#
+# What stops this admitting grass is not the bar. It is everything
+# after it: ball-sized, inside a box the size of a stance, in the same
+# few pixels in two of the three frames before the strike, and gone
+# from every frame after. Turf texture does none of that.
+REGION_CONTRAST = 8.0
+
+# HOW MANY SPECKS A BOX MAY HOLD BEFORE IT HAS STOPPED HELPING.
+#
+# THE BAR IS ONLY SAFE BECAUSE THE BOX IS EMPTY. Drop it to 8 over a
+# patch of grass that is genuinely quiet and a ball is the one thing
+# in there -- measured, 1 detection. Drop it over turf whose texture
+# reaches that far and the same box returns ninety-odd, and with that
+# many candidates something lands in the same few pixels in two of the
+# first three frames and nowhere after BY CHANCE. On synthetic noise
+# that produced "a ball sat at (254, 198) ... and is gone from every
+# frame after the strike (42 balls on the turf)" -- a confident false
+# positive on a clip where nobody swung, which is the worst thing this
+# detector can do.
+#
+# So the count is the premise, and the premise is checked: a crowded
+# box is abandoned rather than believed, and the report says so. The
+# wide search still stands, which is where this clip was anyway.
+REGION_MAX_CANDIDATES = 6
+
 # ── A BALL IN FLIGHT IS NOT ROUND ───────────────────────────────────
 #
 # AND MAX_ASPECT THREW EVERY ONE OF THEM AWAY. The two gates above
@@ -241,7 +279,8 @@ def _axis_gap_deg(a, b):
 def _detections(gray, roi_boxes, rel: float = 0.55, rejects=None,
                 stats_out=None, min_area=None, max_area=None,
                 kernel_px: int = 15, motion=None, motion_toward=None,
-                shapes_out=None, floor=None):
+                shapes_out=None, floor=None,
+                min_fill=None, max_aspect=None):
     """Small, round, locally bright things inside the boxes.
 
     `rel` scales the threshold off the BRIGHTEST thing in the box.
@@ -416,15 +455,25 @@ def _detections(gray, roi_boxes, rel: float = 0.55, rejects=None,
             # calibrated against the bounding box; comparing the
             # oriented one to it was never going to agree. Structured
             # this way the question cannot arise.
+            # ROUNDNESS IS A BIG-AREA DISCRIMINATOR, and the caller
+            # may not be searching a big area. Over a whole crop these
+            # keep sunlit grass and tee markers out; inside a box the
+            # size of a stance they are mostly refusing the ball,
+            # because a blob near the noise floor is RAGGED -- measured
+            # at a top-hat of 11, "fills 0.47 of its 5x6 box". The
+            # overrides exist for that caller and nobody else.
+            _fill_bar = MIN_FILL if min_fill is None else float(min_fill)
+            _asp_bar = (MAX_ASPECT if max_aspect is None
+                        else float(max_aspect))
             _why_round = None
             if area > _hi:
                 _why_round = f"{area}px of area, over {_hi:g}"
-            elif max(w / h, h / w) > MAX_ASPECT:
+            elif max(w / h, h / w) > _asp_bar:
                 _why_round = (f"{w}x{h} — {max(w / h, h / w):.1f}:1, a "
-                              f"sliver (limit {MAX_ASPECT}:1)")
-            elif area / float(w * h) < MIN_FILL:
+                              f"sliver (limit {_asp_bar}:1)")
+            elif area / float(w * h) < _fill_bar:
                 _why_round = (f"fills {area / float(w * h):.2f} of its "
-                              f"{w}x{h} box, needs {MIN_FILL} — not round")
+                              f"{w}x{h} box, needs {_fill_bar} — not round")
 
             if _why_round is None:
                 if shapes_out is not None:
@@ -720,6 +769,62 @@ BALL_BAND_ABOVE_FEET = 0.18
 BALL_BAND_BELOW_FEET = 0.02
 
 
+# WHERE A TEED BALL SITS, as fractions of the golfer's own height.
+# From the stance centre, toward the target side, at the foot line.
+# Generous because this is a SEARCH WINDOW, not a gate: everything it
+# admits still has to be a ball-sized round thing sitting in the same
+# few pixels before the strike and gone after.
+BALL_BOX_NEAR = 0.04      # clear of the instep
+BALL_BOX_FAR = 0.55       # ...out to about half a body height
+BALL_BOX_ABOVE = 0.16     # above the foot line
+BALL_BOX_BELOW = 0.10     # and BELOW it -- a teed ball forward of the
+#                           stance sits lower in frame than the feet,
+#                           which the 0.02 band margin barely allows.
+
+
+def ball_region(anchor, handed=None, feet_x=None, frame=None):
+    """The patch of grass to search hard, or None if it cannot be had.
+
+    THE WHOLE POINT IS THAT IT IS SMALL. The gates everywhere else are
+    tight because the search area is the whole crop: MIN_LOCAL_CONTRAST
+    exists to stop the turf's own texture flooding the result, and
+    below it the grass breaks into hundreds of single pixels. In a box
+    this size there is almost nothing else to confuse, so the caller
+    can afford a far lower floor -- which is the only thing that
+    reaches a ball at 11 grey levels on sunlit grass.
+
+    `handed` picks the side. At address a RIGHT-handed golfer's
+    clubhead -- and so the ball -- sits LEFT of their hands in image
+    x; see `_handedness_from_slopes` in tracer.py, whose sign
+    convention this follows. Unknown means both sides, which is still
+    a great deal smaller than the whole crop.
+    """
+    try:
+        _f, _h = float(anchor[0]), float(anchor[1])
+    except Exception:  # noqa: BLE001
+        return None
+    if _h <= 0:
+        return None
+    _cx = float(feet_x) if feet_x is not None else None
+    if _cx is None:
+        return None
+    _near, _far = BALL_BOX_NEAR * _h, BALL_BOX_FAR * _h
+    if handed == "right":
+        _x0, _x1 = _cx - _far, _cx - _near
+    elif handed == "left":
+        _x0, _x1 = _cx + _near, _cx + _far
+    else:
+        _x0, _x1 = _cx - _far, _cx + _far
+    _y0, _y1 = _f - BALL_BOX_ABOVE * _h, _f + BALL_BOX_BELOW * _h
+    if frame:
+        _W, _H = int(frame[0]), int(frame[1])
+        _x0, _x1 = max(0.0, _x0), min(float(_W), _x1)
+        _y0, _y1 = max(0.0, _y0), min(float(_H), _y1)
+    if _x1 - _x0 < 4 or _y1 - _y0 < 4:
+        return None
+    return (int(_x0), int(_y0), int(_x1), int(_y1))
+
+
 def _on_the_ground(y, anchor) -> bool:
     """Is this height plausible for a ball at THIS golfer's feet?
 
@@ -879,7 +984,9 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
                     people=None, anchor=None,
                     before: int = 3, jitter_px: float = ADDRESS_JITTER_PX,
                     min_contrast: float = ADDRESS_MIN_CONTRAST,
-                    max_area: int = ADDRESS_MAX_AREA) -> dict:
+                    max_area: int = ADDRESS_MAX_AREA,
+                    feet_x=None, handed=None,
+                    region_contrast: float = None) -> dict:
     """Was a ball sitting there before the strike, and gone after?
 
     THE OPERATOR'S RULE, 8 Nov: find the ball in at least 2 of the
@@ -937,6 +1044,8 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
     return ball_in_frames(shots, rect=rect, people=people, anchor=anchor,
                           before=before, jitter_px=jitter_px,
                           min_contrast=min_contrast, max_area=max_area,
+                          feet_x=feet_x, handed=handed,
+                          region_contrast=region_contrast,
                           # So the per-frame report can say -1.20s
                           # rather than "slot 0".
                           offsets=offs)
@@ -946,7 +1055,9 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                    before: int = 3, jitter_px: float = ADDRESS_JITTER_PX,
                    min_contrast: float = ADDRESS_MIN_CONTRAST,
                    max_area: int = ADDRESS_MAX_AREA,
-                   offsets=None) -> dict:
+                   offsets=None, region=None,
+                   region_contrast: float = None,
+                   feet_x=None, handed=None) -> dict:
     """The same rule over frames already in hand. Never raises.
 
     `shots` are the six images in chronological order, None where a
@@ -975,7 +1086,9 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
     # back empty, and must not read as one.
     out = {"left": None, "spot": None, "seen_before": 0, "seen_after": 0,
            "balls": 0, "why": "not checked", "counts": None, "limits": None,
-           "state": "INCONCLUSIVE", "frames": None}
+           "state": "INCONCLUSIVE", "frames": None,
+           "region": (list(region) if region else None),
+           "found_by": None}
     try:
         _live = [f for f in (shots or []) if f is not None]
         if len(_live) < 4:
@@ -990,6 +1103,31 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
         else:
             x0, y0, x1, y1 = 0, 0, W, H
         boxes = [(x0, y0, x1, y1)]
+        # ── THE STANCE BOX, BUILT HERE AND CLAMPED HERE ─────────────
+        #
+        # The caller has the golfer; only this function has the frame.
+        # Building it here means a caller cannot hand in a box that
+        # runs off the edge, which `_detections` slices with and would
+        # quietly return an empty or wrapped patch for.
+        #
+        # BOTH SIDES UNLESS TOLD OTHERWISE, and `handed` is left None
+        # by every caller today on purpose. The side halves the box,
+        # but a WRONG side is worse than none: it puts the window
+        # where the ball is not and returns a confident "no ball".
+        # Measured -- with the side inverted this finds nothing on a
+        # clip it otherwise reads correctly. Both sides is still a
+        # roughly twentyfold narrowing, which is all the lower bar
+        # needs.
+        if region is None and anchor is not None and feet_x is not None:
+            region = ball_region(anchor, handed, feet_x=feet_x,
+                                 frame=(W, H))
+        if region is not None:
+            _rx0 = max(x0, min(x1 - 1, int(region[0])))
+            _ry0 = max(y0, min(y1 - 1, int(region[1])))
+            _rx1 = max(_rx0 + 1, min(x1, int(region[2])))
+            _ry1 = max(_ry0 + 1, min(y1, int(region[3])))
+            region = (_rx0, _ry0, _rx1, _ry1)
+            out["region"] = list(region)
         # SCALED TO THE GOLFER WE CROPPED TO, when there is one.
         #
         # THE ANCHOR'S HEIGHT, NOT THE AVERAGE OF EVERYBODY'S. This
@@ -1063,6 +1201,15 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
         # one. Only the ones sitting where a teed ball sits are kept
         # here: the frame is full of rejected specks and the only ones
         # worth a sentence are the ones in the band.
+        # THE BOX'S BAR, which is the whole reason the box exists.
+        # Defaults to the detector's own floor: there is no point
+        # narrowing the search if the narrowed search keeps the bar
+        # that was set for the wide one.
+        _rbar = None
+        if region is not None:
+            _rbar = (float(REGION_CONTRAST) if region_contrast is None
+                     else max(1.0, float(region_contrast)))
+        _rbusy = 0           # the worst frame's candidate count, if busy
         _shape_n = 0
         _shape_band = []
         # EVERYTHING NEAR WHERE A BALL WOULD BE, AND WHAT WAS DECIDED.
@@ -1096,13 +1243,52 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             # below is the real bar here.
             dets = []
             _rj = []
-            for d in _detections(gray, boxes, rel=0.0, rejects=_rj):
+            # ── THE WIDE PASS, AND THEN THE BOX ─────────────────────
+            #
+            # A UNION, not a replacement. The stance box is a guess at
+            # where the ball should be, and a guess that misses must
+            # not take the honest wide search down with it -- so
+            # everything the normal pass finds is still found, and the
+            # box only ADDS candidates it would have refused.
+            #
+            # They are gated differently on purpose. The wide bar is
+            # high because the wide area is full of grass; inside a
+            # box this size there is almost nothing to confuse, so the
+            # bar can come down to where a dim ball actually lives.
+            _cand = [(d, False) for d in
+                     _detections(gray, boxes, rel=0.0, rejects=_rj)]
+            if region is not None and _rbar is not None:
+                try:
+                    _rd = _detections(gray, [tuple(region)], rel=0.0,
+                                      floor=_rbar,
+                                      min_fill=REGION_MIN_FILL,
+                                      max_aspect=REGION_MAX_ASPECT)
+                    # THE PREMISE, CHECKED. See REGION_MAX_CANDIDATES:
+                    # a box holding ninety specks is not a narrowed
+                    # search, it is a lottery, and the 2-of-3-then-gone
+                    # rule has no defence against that many tickets.
+                    if len(_rd) > REGION_MAX_CANDIDATES:
+                        _rbusy = max(_rbusy, len(_rd))
+                        _rd = []
+                    for d in _rd:
+                        if any(abs(d[0] - o[0][0]) <= 3
+                               and abs(d[1] - o[0][1]) <= 3
+                               for o in _cand):
+                            continue      # the wide pass had this one
+                        _cand.append((d, True))
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("ball: region pass failed (%s)", exc)
+            for d, _in_box in _cand:
                 _tally["seen"] += 1
                 _verdict = None
+                # THE BOX'S OWN BAR. A candidate the wide search could
+                # never have produced must not then be judged by the
+                # wide search's threshold.
+                _bar = _rbar if _in_box else float(min_contrast)
                 if d[2] > int(cap_area):
                     _tally["too big"] += 1
                     _verdict = "too big"
-                elif d[3] < float(min_contrast):
+                elif d[3] < float(_bar):
                     _tally["too faint"] += 1
                     _verdict = "too faint"
                     _c = float(d[3])
@@ -1120,10 +1306,21 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                             or _c > _near["best_in_band"]):
                         _near["best_in_band"] = _c
                         _near["best_in_band_at"] = [int(d[0]), int(d[1])]
-                elif not _on_the_ground(d[1], anchor):
+                elif not (_in_box or _on_the_ground(d[1], anchor)):
                     # ASKED BEFORE the on-a-person test now, because
                     # that test needs the answer: at the foot line it
                     # is looking for a shoe, not a person.
+                    #
+                    # AND NOT ASKED AT ALL OF THE BOX. The stance box
+                    # IS a ground test -- a stricter one, since it
+                    # bounds x as well -- and it deliberately reaches
+                    # further below the foot line than the band does,
+                    # because a ball teed forward of the stance sits
+                    # lower in frame than the feet. Applying both
+                    # meant the box searched ground the band then
+                    # refused, which is two rulers for one picture and
+                    # exactly why the narrowed search found nothing on
+                    # its first outing.
                     _tally["off the ground"] += 1
                     _verdict = "off the ground"
                 elif _on_a_person(d[0], d[1], people, at_ground=True):
@@ -1132,6 +1329,8 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                 else:
                     _tally["kept"] += 1
                     _verdict = "kept"
+                    if _in_box and out["found_by"] is None:
+                        out["found_by"] = "the stance box"
                     dets.append(d)
                 _looked.append({"x": float(d[0]), "y": float(d[1]),
                                 "area": int(d[2]),
@@ -1316,10 +1515,15 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
         }
         out["near"] = {k: (round(v, 1) if isinstance(v, float) else v)
                        for k, v in _near.items()}
+        if _rbusy:
+            out["region_busy"] = int(_rbusy)
         out["limits"] = {
             "max area": int(cap_area),
             "min contrast": round(float(min_contrast), 1),
             "ground band y": _band,
+            "stance box": (list(region) if region else None),
+            "stance box contrast": (None if _rbar is None
+                                    else round(float(_rbar), 1)),
         }
 
         head = per_frame[:int(before)]
@@ -1450,6 +1654,20 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                     % (MIN_LOCAL_CONTRAST, _u0.get("area") or 0,
                        _u0["x"], _u0["y"],
                        (": %s" % _u0["why"]) if _u0.get("why") else ""))
+            # AND WHEN THE BOX GAVE UP, which is not the same as
+            # the box finding nothing: one says the grass beside the
+            # golfer held no ball, the other that it held so much
+            # that nothing could be concluded. The second is a
+            # statement about the turf and the bar, not the ball.
+            _busy = ""
+            if out.get("region_busy"):
+                _busy = (
+                    " The stance box was abandoned: %d specks cleared its "
+                    "bar of %.0f in one frame (limit %d), which is turf "
+                    "texture rather than a ball, and with that many "
+                    "candidates one lands in the same spot twice by chance."
+                    % (out["region_busy"], float(_rbar or 0),
+                       REGION_MAX_CANDIDATES))
             _close = ""
             if _nb is not None:
                 _close = (
@@ -1470,7 +1688,7 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                    int(cap_area), float(min_contrast),
                    "" if _band is None
                    else ", ball must sit y %d..%d" % (_band[0], _band[1]))
-                + _close + _shape + _deep)
+                + _close + _shape + _deep + _busy)
             # THE SEARCH RAN AND CAME BACK EMPTY, which is a different
             # answer from "could not look" -- the branches that could
             # not look leave the initialiser's INCONCLUSIVE alone.
@@ -1490,6 +1708,8 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             out["seen_before"] = int(best["frames"])
             out["seen_after"] = int(best["still"])
             out["left"] = True
+            if out["found_by"] is None:
+                out["found_by"] = "the full band"
             out["state"] = "BALL_PRESENT_DISAPPEARED"
             out["why"] = ("a ball sat at (%d, %d) in %d of the first %d "
                           "frames and is gone from every frame after the "
@@ -1505,6 +1725,8 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             out["seen_before"] = int(best["frames"])
             out["seen_after"] = int(best["still"])
             out["left"] = False
+            if out["found_by"] is None:
+                out["found_by"] = "the full band"
             out["state"] = "BALL_PRESENT_REMAINED"
             out["why"] = ("the ball is still at (%d, %d) in %d frames "
                           "after the strike and no ball on the turf left "
