@@ -15953,9 +15953,12 @@ def _test_cut_run(
                         cut_entry["ball_left"] = _bl["left"]
                         cut_entry["ball_spot"] = _bl["spot"]
                         cut_entry["ball_balls"] = _bl.get("balls")
+                        cut_entry["ball_state"] = _bl.get("state")
+                        cut_entry["ball_frames"] = _bl.get("frames")
                         cut_entry["ball_why"] = _bl["why"]
                     except Exception as _bx:  # noqa: BLE001
                         log.debug("test-cut ball check: %s", _bx)
+                        cut_entry["ball_state"] = "INCONCLUSIVE"
                         cut_entry["ball_why"] = "the ball check failed"
                 elif _golfer:
                     cut_entry["ball_why"] = (

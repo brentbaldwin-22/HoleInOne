@@ -165,6 +165,7 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
         "is_swing": None, "confidence": None, "reason": None,
         "heat_is_swing": None, "frames_is_swing": None,
         "ball_left": None, "ball_why": None, "ball_spot": None,
+        "ball_state": None, "ball_frames": None,
         "picked_front": None, "front_candidates": None,
         "golfer_crop": False, "decided_by": None, "zoom_from": None,
         "heat_map_from": None, "plume": None, "plume_why": None,
@@ -383,6 +384,12 @@ def analyse(frames, heat, geo, *, crop, zones, offsets=None,
                                 rect=(fx0, fy0, fx1, fy1),
                                 people=ppl_crop, anchor=anchor)
             out["ball_left"] = bl["left"]
+            out["ball_state"] = bl.get("state")
+            # THE FRAMES IT ACTUALLY READ. `ball_why` is one sentence
+            # about the best candidate; this says which of the six
+            # could be read and which got a vote, which is what
+            # separates "no ball" from "no frames to look at".
+            out["ball_frames"] = bl.get("frames")
             out["ball_why"] = bl["why"]
             out["ball_spot"] = (None if not bl["spot"] else
                                 [bl["spot"][0] + ox, bl["spot"][1] + oy])

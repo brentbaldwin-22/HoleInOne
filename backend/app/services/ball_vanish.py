@@ -797,7 +797,8 @@ def _on_a_person(x, y, people, at_ground: bool = False) -> bool:
     return False
 
 
-def classify_balls(good, tail_live, jitter_px=ADDRESS_JITTER_PX):
+def classify_balls(good, tail_live, jitter_px=ADDRESS_JITTER_PX,
+                   late=None):
     """Split the balls found before the strike into gone and stayed.
 
     THE +0.00 FRAME IS THE STRIKE ITSELF and says nothing. The
@@ -835,7 +836,17 @@ def classify_balls(good, tail_live, jitter_px=ADDRESS_JITTER_PX):
         return any(((x - c["x"]) ** 2 + (y - c["y"]) ** 2) ** 0.5
                    <= float(jitter_px) for (x, y, _a, _c) in dets)
 
-    late = tail_live[1:] if len(tail_live) > 1 else tail_live
+    # WHICH FRAMES ANSWER IT, from the caller, which is the only
+    # thing that knows the SLOTS. This used to be `tail_live[1:]` --
+    # drop the first frame that could be read -- on the assumption
+    # that it is the +0.00 strike frame. It is, right up until the
+    # +0.00 frame is one of the ones that could not be read: then the
+    # dropped frame is +0.20, the rule falls back to the single +0.60
+    # frame, and "absent from every frame after the strike" quietly
+    # becomes "absent from one frame" -- which an occlusion satisfies.
+    # Nothing said so, because the count it reported was still 1 of 1.
+    if late is None:
+        late = tail_live[1:] if len(tail_live) > 1 else tail_live
     gone, stayed = [], []
     for c in good:
         c["still"] = sum(1 for d in tail_live if _there(c, d))
@@ -878,13 +889,14 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
     offs = list(offsets or ())
     if len(offs) < 4:
         return {"left": None, "spot": None, "seen_before": 0,
-                "seen_after": 0, "balls": 0, "why": "needs the six frames"}
+                "seen_after": 0, "balls": 0, "state": "INCONCLUSIVE",
+                "why": "needs the six frames"}
     cap = None
     try:
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             return {"left": None, "spot": None, "seen_before": 0,
-                    "seen_after": 0, "balls": 0,
+                    "seen_after": 0, "balls": 0, "state": "INCONCLUSIVE",
                     "why": "could not open the clip"}
         fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
         shots = []
@@ -899,7 +911,8 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
     except Exception as exc:  # noqa: BLE001
         log.debug("ball_at_address failed (%s)", exc)
         return {"left": None, "spot": None, "seen_before": 0,
-                "seen_after": 0, "balls": 0, "why": "ball check failed"}
+                "seen_after": 0, "balls": 0, "state": "INCONCLUSIVE",
+                "why": "ball check failed"}
     finally:
         if cap is not None:
             try:
@@ -908,13 +921,17 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
                 pass
     return ball_in_frames(shots, rect=rect, people=people, anchor=anchor,
                           before=before, jitter_px=jitter_px,
-                          min_contrast=min_contrast, max_area=max_area)
+                          min_contrast=min_contrast, max_area=max_area,
+                          # So the per-frame report can say -1.20s
+                          # rather than "slot 0".
+                          offsets=offs)
 
 
 def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                    before: int = 3, jitter_px: float = ADDRESS_JITTER_PX,
                    min_contrast: float = ADDRESS_MIN_CONTRAST,
-                   max_area: int = ADDRESS_MAX_AREA) -> dict:
+                   max_area: int = ADDRESS_MAX_AREA,
+                   offsets=None) -> dict:
     """The same rule over frames already in hand. Never raises.
 
     `shots` are the six images in chronological order, None where a
@@ -923,8 +940,27 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
     """
     import cv2
 
+    # `state` NAMES THE ANSWER, instead of leaving the caller to infer
+    # it from two other fields. There have always been four, and
+    # `left` can only say three things:
+    #
+    #   left=True            a ball was there and left
+    #   left=False           a ball was there and stayed
+    #   left=None, balls=0   nothing ball-like was found at all
+    #   left=None, balls>0   a ball was there; what happened is unclear
+    #
+    # The last two are opposite situations -- one is "no evidence of a
+    # ball", the other "a ball, and no evidence of what it did" -- and
+    # every caller had to reconstruct the difference from `balls`,
+    # which reads like a count rather than a verdict. `left` is
+    # unchanged for the callers that already read it.
+    #
+    # A CHECK THAT COULD NOT RUN IS INCONCLUSIVE, never NO_BALL: too
+    # few frames and a thrown exception are not a search that came
+    # back empty, and must not read as one.
     out = {"left": None, "spot": None, "seen_before": 0, "seen_after": 0,
-           "balls": 0, "why": "not checked", "counts": None, "limits": None}
+           "balls": 0, "why": "not checked", "counts": None, "limits": None,
+           "state": "INCONCLUSIVE", "frames": None}
     try:
         _live = [f for f in (shots or []) if f is not None]
         if len(_live) < 4:
@@ -1037,6 +1073,38 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
 
         head = per_frame[:int(before)]
         tail = per_frame[int(before):]
+        # THE FRAMES THEMSELVES, slot by slot. The counts say how many
+        # specks died on each bar across the whole set; they cannot say
+        # that the -1.20s frame was unreadable, which silently turns
+        # "the same spot in 2 of the first 3" into "in 2 of the 2 that
+        # could be read". Nor that the +0.00 frame was missing, which
+        # is what `late` below turns on. A stage that reports nothing
+        # is a stage nobody can check.
+        #
+        # `in_rule` is the honest version of "did this frame get a
+        # vote": the strike frame never does (see classify_balls) and
+        # neither does one that could not be read.
+        _offs = list(offsets or ())
+        _frames = []
+        for _i, _d in enumerate(per_frame):
+            if _i < int(before):
+                _role = "before"
+            elif _i == int(before):
+                _role = "strike"
+            else:
+                _role = "after"
+            _frames.append({
+                "at": (round(float(_offs[_i]), 2)
+                       if _i < len(_offs) else None),
+                "role": _role,
+                "read": _d is not None,
+                "kept": (0 if _d is None else len(_d)),
+                "spots": ([] if _d is None else
+                          [[int(round(_x)), int(round(_y))]
+                           for (_x, _y, _a, _c) in _d]),
+                "in_rule": _d is not None and _role != "strike",
+            })
+        out["frames"] = _frames
         # THE SAME SPOT IN AT LEAST TWO OF THE FIRST THREE. Cluster
         # the pre-strike detections by position; a ball at address
         # lands in the same few pixels every time, a flicker of
@@ -1116,11 +1184,18 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                    "" if _band is None
                    else ", ball must sit y %d..%d" % (_band[0], _band[1]))
                 + _close)
+            # THE SEARCH RAN AND CAME BACK EMPTY, which is a different
+            # answer from "could not look" -- the branches that could
+            # not look leave the initialiser's INCONCLUSIVE alone.
+            out["state"] = "NO_BALL_DETECTED"
             return out
         # EVERY BALL, NOT THE BEST ONE: the one that matters is
         # whichever LEFT. See classify_balls.
         tail_live = [d for d in tail if d is not None]
-        gone, stayed = classify_balls(good, tail_live, jitter_px)
+        # BY SLOT, not by "the first one that could be read" -- the
+        # strike frame is slot `before`, whether or not it was read.
+        _late = [d for d in tail[1:] if d is not None]
+        gone, stayed = classify_balls(good, tail_live, jitter_px, late=_late)
         out["balls"] = len(good)
         if gone:
             best = max(gone, key=lambda c: (c["frames"], c["con"]))
@@ -1128,6 +1203,7 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             out["seen_before"] = int(best["frames"])
             out["seen_after"] = int(best["still"])
             out["left"] = True
+            out["state"] = "BALL_PRESENT_DISAPPEARED"
             out["why"] = ("a ball sat at (%d, %d) in %d of the first %d "
                           "frames and is gone from every frame after the "
                           "strike%s" % (out["spot"][0], out["spot"][1],
@@ -1142,6 +1218,7 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             out["seen_before"] = int(best["frames"])
             out["seen_after"] = int(best["still"])
             out["left"] = False
+            out["state"] = "BALL_PRESENT_REMAINED"
             out["why"] = ("the ball is still at (%d, %d) in %d frames "
                           "after the strike and no ball on the turf left "
                           "its spot" % (out["spot"][0], out["spot"][1],
@@ -1151,6 +1228,7 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
         out["spot"] = [int(round(best["x"])), int(round(best["y"]))]
         out["seen_before"] = int(best["frames"])
         out["seen_after"] = int(best.get("still") or 0)
+        out["state"] = "INCONCLUSIVE"
         out["why"] = ("a ball sat at (%d, %d) before the strike but what "
                       "happened to it is not clear"
                       % (out["spot"][0], out["spot"][1]))

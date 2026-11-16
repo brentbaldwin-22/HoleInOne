@@ -281,13 +281,26 @@ export function CutVerdicts({ cuts }) {
                     : c.ball_left === false
                     ? "#c0392b" : "#777",
                 }}>
-                  {c.ball_left === true
-                    ? "⛳ ball was hit"
-                    : c.ball_left === false
-                    ? "⛳ ball was NOT hit"
-                    : c.ball_balls
-                    ? "⛳ ball found — outcome unclear"
-                    : "⛳ no ball identified"}
+                  {/* ONE FIELD NAMES THE ANSWER. The detector has
+                      four outcomes and `ball_left` can say three, so
+                      this used to read `ball_balls` to tell "no ball
+                      found" from "a ball, and no idea what it did" —
+                      a count standing in for a verdict. `ball_state`
+                      says which. The fallback is for rows stored
+                      before it existed. */}
+                  {{
+                    BALL_PRESENT_DISAPPEARED: "⛳ ball was hit",
+                    BALL_PRESENT_REMAINED: "⛳ ball was NOT hit",
+                    NO_BALL_DETECTED: "⛳ no ball identified",
+                    INCONCLUSIVE: "⛳ ball found — outcome unclear",
+                  }[c.ball_state] ?? (
+                    c.ball_left === true
+                      ? "⛳ ball was hit"
+                      : c.ball_left === false
+                      ? "⛳ ball was NOT hit"
+                      : c.ball_balls
+                      ? "⛳ ball found — outcome unclear"
+                      : "⛳ no ball identified")}
                   {c.decided_by === "majority"
                     && c.ball_left !== null
                     && c.ball_left !== undefined
@@ -295,6 +308,47 @@ export function CutVerdicts({ cuts }) {
                   <div className="muted">
                     {c.ball_why}
                   </div>
+                  {/* WHICH OF THE SIX IT WAS READ FROM. The sentence
+                      above argues about one candidate; the counts in
+                      it are over the whole set. Neither can say that
+                      a frame was never read — which quietly turns
+                      "the same spot in 2 of the first 3" into "in 2
+                      of the 2 that could be read", and is the
+                      difference between "no ball" and "no frames".
+                      ● kept something · – read and empty · ✕ unread,
+                      and the strike frame never votes. */}
+                  {Array.isArray(c.ball_frames)
+                    && c.ball_frames.length > 0 && (
+                    <div className="muted" style={{
+                      fontFamily: "monospace", marginTop: 2,
+                      display: "flex", gap: 5, flexWrap: "wrap",
+                    }}>
+                      {c.ball_frames.map((f, fi) => (
+                        <span
+                          key={fi}
+                          title={[
+                            f.at == null ? `frame ${fi}`
+                              : `${f.at > 0 ? "+" : ""}${f.at.toFixed(2)}s`,
+                            f.role === "strike" ? "the strike frame"
+                              : f.role === "before" ? "before the strike"
+                              : "after the strike",
+                            !f.read ? "could not be read"
+                              : `${f.kept} ball-like spot(s) kept`,
+                            f.in_rule ? "counted" : "did not count",
+                          ].join(" · ")}
+                          style={{
+                            opacity: f.read ? 1 : 0.45,
+                            textDecoration: f.in_rule
+                              ? "none" : "line-through",
+                          }}
+                        >
+                          {f.at == null ? fi
+                            : `${f.at > 0 ? "+" : ""}${f.at.toFixed(2)}`}
+                          {!f.read ? "✕" : f.kept > 0 ? "●" : "–"}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               {/* WHICH GOLFER, AND WHY THAT ONE.
