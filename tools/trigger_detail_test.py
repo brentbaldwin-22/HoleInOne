@@ -46,11 +46,23 @@ ROI = {"boxes": [{"x": 0, "y": 0, "w": 10, "h": 10, "label": "Back"},
 BACK, MIDDLE, UNLABELLED, OUTSIDE = (5, 5), (105, 5), (205, 5), (500, 500)
 
 
-class FakeDwell:
-    def __init__(self, first_seen=90.0, restarts=0, dwell=10.0):
-        self.first_seen = first_seen
-        self.restarts = restarts
-        self.dwell = dwell
+def FakeDwell(first_seen=90.0, restarts=0, dwell=10.0):
+    """THE REAL Dwell, not a stand-in that agrees with it by hand.
+
+    It was a stand-in with three attributes, and it went stale the
+    moment `Dwell` grew `restarts_since_mark` -- `_dwell_detail`
+    swallows every exception by design, so the whole file started
+    reading None and failing twenty lines later on a subscript.
+
+    Nothing here needs a fake. `restarts_since_mark` is a property
+    over `restarts`, so setting the lifetime counter gives the
+    per-trigger one for free and the test exercises the real
+    arithmetic rather than a copy of it.
+    """
+    d = tee_mod.Dwell(float(dwell), 3.0)
+    d.first_seen = first_seen
+    d.restarts = int(restarts)
+    return d
 
 
 class FakeEars:
@@ -67,11 +79,24 @@ class FakeEars:
         return self._healthy
 
 
+# WHAT TeeAgent.__init__ SETS that the methods under test read. The
+# agent cannot be constructed here -- __init__ opens a camera, a
+# detector and threads -- so the state it sets has to be reproduced,
+# and `_agent_state_is_complete` below checks this list against the
+# real __init__ rather than trusting it.
+AGENT_STATE = {
+    "_last_height": 0.0,
+    "body_frac": 1.0,
+}
+
+
 def runner(ears=None, roi=ROI):
     r = object.__new__(tee_mod.TeeAgent)
     r._audio_trigger = ears
     r.roi = roi
     r._roi_lock = threading.Lock()
+    for _k, _v in AGENT_STATE.items():
+        setattr(r, _k, _v)
     return r
 
 
@@ -82,7 +107,96 @@ def dwell_detail(*, stance=BACK, roi=ROI, dwell=None, forced=False,
         forced=forced, pending_secs=pending)
 
 
+# ---- THE HARNESS ITSELF ------------------------------------------------
+#
+# WHY THIS CHECK EXISTS. `_dwell_detail` swallows every exception on
+# purpose: it is an annotation on a recording and must never be able
+# to cost one. The price is that a harness missing one attribute looks
+# exactly like a detail that declined to describe itself -- None --
+# and the first symptom is a TypeError on a subscript many lines
+# later, naming neither the attribute nor the harness.
+#
+# That is not hypothetical. This file built its runner with
+# `object.__new__` and set three attributes; `_zone_of` later began
+# reading `_last_height` and `body_frac`, both set by the real
+# __init__, and every dwell assertion here started failing while the
+# code was correct.
+#
+# So the harness is checked against the code: every attribute the
+# methods under test read off the agent must be one the class really
+# assigns somewhere AND one `runner()` reproduces. A new attribute now
+# fails here, by name, instead of silently blanking the file.
+#
+# ANYWHERE IN THE CLASS, not in __init__: the first version of this
+# check asked __init__ and was wrong about its own subject --
+# `_last_height`, `body_frac` and `_audio_trigger` are all set up in
+# `run()`. Which is also why this half earns its place: an attribute
+# assigned NOWHERE is a misremembered name, and the detectors here
+# carry a `last_height` of their own that differs from the agent's
+# `_last_height` by one underscore.
+import ast  # noqa: E402
+import inspect  # noqa: E402
+
+print("the harness reproduces the state the real agent would have:")
+_src = inspect.getsource(tee_mod.TeeAgent)
+_cls = ast.parse(_src.lstrip()).body[0]
+_bodies = {n.name: n for n in _cls.body
+           if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def _self_reads(*names):
+    """Every `self.X` LOADED by these methods, excluding methods."""
+    got = set()
+    for nm in names:
+        for node in ast.walk(_bodies[nm]):
+            if (isinstance(node, ast.Attribute)
+                    and isinstance(node.ctx, ast.Load)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "self"):
+                if not callable(getattr(tee_mod.TeeAgent, node.attr, None)):
+                    got.add(node.attr)
+    return got
+
+
+def _class_assigns():
+    """Every `self.X` STORED anywhere in the class."""
+    got = set()
+    for node in ast.walk(_cls):
+        if (isinstance(node, ast.Attribute)
+                and isinstance(node.ctx, ast.Store)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "self"):
+            got.add(node.attr)
+    return got
+
+
+_reads = _self_reads("_dwell_detail", "_zone_of", "_zone_name")
+_set_here = set(AGENT_STATE) | {"_audio_trigger", "roi", "_roi_lock"}
+_assigned = _class_assigns()
+check("every attribute it reads is one the agent really sets",
+      sorted(_reads - _assigned), [])
+check("  and one this harness reproduces",
+      sorted(_reads - _set_here), [])
+check("  and the harness sets nothing the code stopped reading",
+      sorted(set(AGENT_STATE) - _reads), [])
+
+# AND THE SWALLOW CANNOT HIDE A STALE HARNESS ANY MORE: if a baseline
+# dwell cannot describe itself, say which of the two it is and stop,
+# rather than running sixty subscripts against None.
+_base = dwell_detail()
+check("a baseline dwell describes itself at all", isinstance(_base, dict),
+      True)
+if not isinstance(_base, dict):
+    print("\n  _dwell_detail returned None on a baseline case. It swallows")
+    print("  every exception, so this is the harness or the Dwell double,")
+    print("  not the page: compare runner()/AGENT_STATE against the state")
+    print("  TeeAgent sets up (in run(), not __init__), and FakeDwell")
+    print("  against Dwell.")
+    print("\n%d FAILED" % len(FAILED))
+    sys.exit(1)
+
 # ---- the dwell account -------------------------------------------------
+print()
 print("a dwell says which tee, for how long, and against what threshold:")
 d = dwell_detail()
 check("kind", d["kind"], "dwell")
@@ -132,12 +246,15 @@ check("garbage roi", dwell_detail(roi="not an roi")["zone"], None)
 
 
 class Exploding:
+    """Deliberately not a Dwell: it exists to throw."""
+
     @property
     def dwell(self):
         raise RuntimeError("boom")
 
     first_seen = 0.0
     restarts = 0
+    restarts_since_mark = 0
 
 
 check("a dwell object that throws -> None, not a crash",

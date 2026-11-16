@@ -102,10 +102,24 @@ check("  building the detail happens before the mark",
       src.index("_dwell_detail_blob = self._dwell_detail")
       < src.index("dwell.mark()"), True)
 
-jsx = (ROOT / "frontend" / "src" / "pages"
-       / "AdminCamerasOld.jsx").read_text(encoding="utf-8")
+# IN THE SHARED RENDERER. This read the old cameras page, which is
+# where the trigger line used to be written; both cameras pages now
+# render one component, so the assertion follows it there instead of
+# going quiet on a page nothing routes to.
+jsx = (ROOT / "frontend" / "src" / "components"
+       / "TriggerLine.jsx").read_text(encoding="utf-8")
 check("the page shows the lifetime figure separately",
       "since the agent started" in jsx, True)
+# AND THIS TRIGGER'S FIGURE BESIDE IT, which is the number the whole
+# commit was about: a lifetime count shown as this trigger's read
+# "the detector nearly missed this one 70 times" when it meant "70
+# people have crossed a zone since breakfast".
+check("  and this trigger's own, which is the point",
+      "restart(s)" in jsx, True)
+check("  on the page that is actually routed",
+      "<TriggerLine" in (ROOT / "frontend" / "src" / "pages"
+                         / "AdminCameras.jsx").read_text(encoding="utf-8"),
+      True)
 
 print()
 if FAILED:

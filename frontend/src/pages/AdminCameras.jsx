@@ -33,6 +33,7 @@ import TriggerZones from "../components/TriggerZones.jsx";
 import GreenOutline from "../components/GreenOutline.jsx";
 import { DailyMarksModal } from "../components/DailyMarksModal.jsx";
 import { SkyLineModal } from "./AdminCamerasOld.jsx";
+import { TriggerLine } from "../components/TriggerLine.jsx";
 import {
   tsRel, secsAgo, heartbeatTone, agentIsDown, offlineReason, cameraState,
 } from "../components/cameraStatus.js";
@@ -735,17 +736,21 @@ function EventsModal({ cam, adminPassword, onClose }) {
                 <td style={{ padding: "4px 8px 4px 0" }}>
                   {e.hole_number ?? "—"}
                 </td>
+                {/* THE WHOLE ACCOUNT, not the one word.
+                    This printed `trigger_detail.kind` and the zone,
+                    which is why a dwell the rig had fully described
+                    -- how long somebody stood there, the threshold it
+                    beat, the blinks forgiven, and whether the
+                    microphone was listening at the time -- showed up
+                    here as "dwell" and nothing else. The field was
+                    never missing; this column was not reading it.
+                    `TriggerLine` is the renderer the old cameras page
+                    has always used, now shared, so a field added to
+                    the detail appears on both. */}
                 <td style={{ padding: "4px 8px 4px 0" }}>
-                  {e.trigger_detail?.kind || "—"}
                   {e.green_camera_id === cam.id && e.tee_camera_id !== cam.id
-                    && <span className="muted"> · as green</span>}
-                  {e.trigger_detail?.zone != null && (
-                    <span className="muted">
-                      {" "}· Zone {e.trigger_detail.zone + 1}
-                      {e.trigger_detail.zone_label
-                        ? ` (${e.trigger_detail.zone_label})` : ""}
-                    </span>
-                  )}
+                    && <span className="muted">as green</span>}
+                  <TriggerLine detail={e.trigger_detail} />
                 </td>
               </tr>
             ))}
