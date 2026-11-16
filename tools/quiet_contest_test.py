@@ -130,8 +130,16 @@ def main() -> int:
           in adm, True)
     page = (ROOT / "frontend" / "src" / "pages"
             / "AdminLongUpload.jsx").read_text()
+    # THE PER-CUT ROW IS SHARED NOW. Find ascents runs Test cut's own
+    # verification, so it renders Test cut's own rows -- the table
+    # moved into the component both screens use, and this follows it
+    # there. The header count is still the page's own.
+    rows = (ROOT / "frontend" / "src" / "components"
+            / "CutVerdicts.jsx").read_text()
     check("the table tells a superseded swing from a refused one",
-          "superseded" in page and "c.supersede_reason" in page, True)
+          "superseded" in rows and "c.supersede_reason" in rows, True)
+    check("  on both screens, because there is one table",
+          "<CutVerdicts" in page, True)
     check("  and the header counts both", "n_superseded" in page, True)
 
     print()

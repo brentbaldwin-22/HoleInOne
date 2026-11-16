@@ -15479,6 +15479,104 @@ def test_cut_long_upload(
     pi_compare_signals: bool = Form(False),
     db: Session = Depends(get_db),
 ):
+    """Dry-run the swing-cutting half of the pipeline.
+
+    A THIN WRAPPER, AND THAT IS THE POINT. The work is in
+    `_test_cut_run` so that Find ascents can run EXACTLY this --
+    same detector, same verification, same judges, same pictures --
+    rather than a second path that agrees with it until it does
+    not. An endpoint's parameters are `Form(...)` objects when it
+    is called as a function, so the body cannot live here and be
+    callable from anywhere else.
+    """
+    return _test_cut_run(
+        upload_id=upload_id,
+        detector=detector,
+        audio_min_peak_ratio=audio_min_peak_ratio,
+        audio_min_separation_sec=audio_min_separation_sec,
+        audio_max_attack_ms=audio_max_attack_ms,
+        verify_refractory_sec=verify_refractory_sec,
+        motion_ratio=motion_ratio,
+        combined_pair_window_sec=combined_pair_window_sec,
+        cut_clips=cut_clips,
+        pi_min_ratio=pi_min_ratio,
+        pi_min_separation_sec=pi_min_separation_sec,
+        pi_before_sec=pi_before_sec,
+        pi_after_sec=pi_after_sec,
+        pi_smooth_seconds=pi_smooth_seconds,
+        pi_max_burst_sec=pi_max_burst_sec,
+        pi_sample_hz=pi_sample_hz,
+        pi_rest_sec=pi_rest_sec,
+        pi_rest_jitter_px=pi_rest_jitter_px,
+        pi_use_zones=pi_use_zones,
+        verify_swings=verify_swings,
+        verify_window_sec=verify_window_sec,
+        judge_with_frames=judge_with_frames,
+        pi_zones_json=pi_zones_json,
+        pi_known_swings=pi_known_swings,
+        pi_compare_signals=pi_compare_signals,
+        db=db,
+    )
+
+
+def _wipe_test_cuts(upload_id) -> int:
+    """Delete this upload's previous test-cut MP4s. Returns the count.
+
+    Housekeeping for the clip-writing half of `_test_cut_run`: a run
+    about to cut six new clips clears the previous six so the
+    directory does not accumulate.
+
+    CALL IT ONLY FROM A RUN THAT WRITES CLIPS. It used to be inline
+    and unconditional, which was correct while Test cut was the only
+    caller. Find ascents now runs the same function with
+    `cut_clips=False`, and from there this is not housekeeping, it is
+    a delete: the operator has the Test cut panel open with six
+    videos in it, presses Find ascents on the other screen, and the
+    videos stop loading with nothing to say why.
+
+    It is a function rather than four lines under an `if` so that the
+    test can call it and watch it delete something, instead of
+    reading the indentation and taking it on trust.
+    """
+    _dir = CLIPS_DIR / TESTCUTS_SUBDIR
+    _n = 0
+    for old in _dir.glob(f"testcut-{upload_id}-*.mp4"):
+        try:
+            old.unlink()
+            _n += 1
+        except OSError as exc:
+            log.warning("test cut: could not remove %s (%s)", old, exc)
+    return _n
+
+
+def _test_cut_run(
+    upload_id: int,
+    detector='motion',
+    audio_min_peak_ratio=10.0,
+    audio_min_separation_sec=6.0,
+    audio_max_attack_ms=30.0,
+    verify_refractory_sec=0.0,
+    motion_ratio=4.0,
+    combined_pair_window_sec=3.0,
+    cut_clips=True,
+    pi_min_ratio=4.0,
+    pi_min_separation_sec=6.0,
+    pi_before_sec=4.5,
+    pi_after_sec=9.0,
+    pi_smooth_seconds=0.15,
+    pi_max_burst_sec=6.0,
+    pi_sample_hz=20.0,
+    pi_rest_sec=5.0,
+    pi_rest_jitter_px=6.0,
+    pi_use_zones=True,
+    verify_swings=False,
+    verify_window_sec=0.5,
+    judge_with_frames=False,
+    pi_zones_json='',
+    pi_known_swings='',
+    pi_compare_signals=False,
+    db=None,
+):
     """Dry-run the swing-cutting half of the long-upload pipeline.
 
     Runs the chosen swing detector on the stored tee video, cuts each
@@ -15708,15 +15806,11 @@ def test_cut_long_upload(
             debug=debug,
         )
 
-    # Wipe any previous test cuts for this upload so re-running the
-    # detector doesn't accumulate stale files.
     testcuts_dir = CLIPS_DIR / TESTCUTS_SUBDIR
     testcuts_dir.mkdir(parents=True, exist_ok=True)
-    for old in testcuts_dir.glob(f"testcut-{upload_id}-*.mp4"):
-        try:
-            old.unlink()
-        except Exception:
-            pass
+    # ONLY WHEN THIS RUN WILL WRITE SOME. See `_wipe_test_cuts`.
+    if cut_clips:
+        _wipe_test_cuts(upload_id)
 
     cuts: list[dict] = []
     t_loop_start = time.monotonic()
@@ -25711,15 +25805,11 @@ def _cutter_times(name, db, row, src_path, fps, dbg):
 def _verify_crop(db, row):
     """(crop, zone span, ground line, zone boxes) for a verification.
 
-    THE SAME FRAMING THE JUDGE IS ALWAYS GIVEN. Test Cut worked this
-    out inline, and Find ascents now asks the same question of the same
-    clip -- two copies of "where do we look" would be two different
-    questions wearing one name, and the one that drifted would be the
-    one nobody was watching.
+    One definition of where to look, shared by Test Cut and anything
+    else that asks the same question of the same clip.
 
     All four are None when the camera has no zones: the caller then
-    gets the whole frame, which is the honest fallback and the one the
-    old code took.
+    gets the whole frame, which is the honest fallback.
     """
     try:
         _zs = _tee_trigger_zones(db, row) or []
@@ -25749,78 +25839,51 @@ def _verify_crop(db, row):
         return None, None, None, None
 
 
-def _verify_cut(db, row, src_path, fps, at_sec, *, tag, window_sec=1.6):
-    """Is there a swing at `at_sec`? The judge's answer and its pictures.
+def _find_test_cut(db, row, cutter, gates):
+    """Run TEST CUT, verification and all, cutting nothing.
 
-    ONE VERDICT, TWO SCREENS. Test Cut has shown this since it existed
-    -- the six tiles, the zones drawn on them, and the heat judge's
-    answer -- and Find ascents showed where the cutter cut and nothing
-    about whether anything was there. Since production can now be SET
-    to that cutter, "it cut at 24.78s" without "and there was a swing
-    there" is half the answer, and the missing half is the one that
-    says whether the setting is right.
+    EXACTLY WHAT TEST CUT DOES, because it IS what Test Cut does --
+    `_test_cut_run` is the function behind that endpoint, called here
+    with `cut_clips=False`. The alternative, and what was here before,
+    was a second verification path that ran a different judge and
+    reported a different answer about the same clip. It agreed with
+    Test Cut until it did not, which is the worst way for two things
+    to disagree.
 
-    Returns {} on anything it cannot do. A second opinion that takes
-    the run down with it is worse than one that is missing.
+    So the judges, the six tiles, the zone overlays, the ball check
+    and the wording all come from one place, and a change to Test Cut
+    changes this too.
+
+    The hole's own gates are passed in, so the run matches the cutter
+    the operator set and tuned rather than the endpoint's form
+    defaults.
+
+    Returns the test-cut report, or {} on anything it cannot do: this
+    is a second opinion on a find, and one that takes the find down
+    with it is worse than one that is missing.
     """
     try:
-        from ..services.tracer import swing_heat_check, find_people_over_time
-        from ..services.tracer import AUDIO2_OFFSETS_SEC as _OFF
-    except Exception as exc:  # noqa: BLE001
-        log.debug("verify: tracer unavailable (%s)", exc)
-        return {}
-    _crop, _zspan, _zfloor, _zbox = _verify_crop(db, row)
-    _people = None
-    try:
-        _people = find_people_over_time(src_path, float(at_sec), _OFF,
-                                        region=_crop)
-    except Exception as exc:  # noqa: BLE001
-        # Empty = could not tell, and pick_front_golfer falls back to
-        # the heat. Not the same as "nobody was there".
-        log.debug("verify: person detect failed (%s)", exc)
-    try:
-        _chk = swing_heat_check(
-            src_path, float(at_sec), fps,
-            crop=_crop, prefer_span=_zspan, floor_y=_zfloor, zones=_zbox,
-            style="golfer",
-            people=_people,
-            # A tee has a player and a playing partner.
-            max_candidates=2,
-            debug_dir=CLIPS_DIR,
-            debug_prefix=tag,
-            before_sec=float(window_sec),
-            after_sec=float(window_sec),
+        return _test_cut_run(
+            upload_id=row.id,
+            detector=cutter,
+            db=db,
+            # NOTHING IS WRITTEN. A find produces no clips, and this
+            # must not either.
+            cut_clips=False,
+            # The verification is the whole reason for calling it.
+            verify_swings=True,
+            judge_with_frames=True,
+            # THE HOLE'S GATES, not the form's defaults -- otherwise
+            # this would judge cuts the operator's settings would
+            # never have made.
+            audio_min_peak_ratio=float(gates["audio_min_ratio"]),
+            audio_min_separation_sec=float(
+                gates["audio_min_separation_sec"]),
+            audio_max_attack_ms=float(gates["audio_max_attack_ms"]),
         ) or {}
     except Exception as exc:  # noqa: BLE001
-        log.warning("verify: heat check failed at %.2fs (%s)", at_sec, exc)
+        log.warning("find: test-cut verification failed (%s)", exc)
         return {}
-
-    # THE SIX TILES ARE A SEPARATE CALL. `swing_heat_check` returns a
-    # heat composite and the RECT to cut the tiles from; it does not
-    # cut them. The first version of this read `frames_image` off its
-    # result and got None every time -- and, from the same mistake,
-    # read `is_swing` when what it returns is `verdict`, so every cut
-    # came back "could not tell" with no picture. Two dead keys, one
-    # cause: guessing a contract instead of reading it.
-    out = dict(_chk)
-    try:
-        from ..services.tracer import frames_strip, AUDIO2_OFFSETS_SEC
-        _sp = CLIPS_DIR / ("%s-frames.jpg" % tag)
-        _zp = CLIPS_DIR / ("%s-frames-zones.jpg" % tag)
-        if frames_strip(src_path, float(at_sec), _sp,
-                        rect=_chk.get("frames_rect"),
-                        offsets=AUDIO2_OFFSETS_SEC,
-                        zones=_zbox,
-                        feet=_chk.get("front_candidates"),
-                        zones_out=(_zp if _zbox else None)):
-            # The drawn-on copy for the page, as Test Cut does: the
-            # judge is shown the clean one.
-            out["frames_image"] = (_zp.name if (_zbox and _zp.exists())
-                                   else _sp.name)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("verify: frames strip failed at %.2fs (%s)",
-                    at_sec, exc)
-    return out
 
 
 def _ascent_windows(db, row, src_path, fps, rep=None):
@@ -26262,48 +26325,44 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     #
     # "It cut at 24.78s" is half the answer, and the missing half is
     # the one that says whether the hole's cutter setting is right.
-    # Test Cut has always shown it; Find ascents showed where and not
-    # whether. Same judge, same framing -- `_verify_cut`.
     #
-    # NOT ON A PRODUCE. Each of these is a vision call on a clip the
+    # THIS RUNS TEST CUT. Not something like it -- `_test_cut_run` is
+    # the function behind that endpoint, called with `cut_clips=False`.
+    # What was here before was a second verification path: it ran the
+    # motion heat where Test Cut runs the AI judges, so the same clip
+    # got two different answers and the one on this screen was the one
+    # nobody had been looking at. Same code is the only way two screens
+    # agree about anything.
+    #
+    # NOT ON A PRODUCE. The judges are vision calls on a clip the
     # produce is about to search anyway: diagnostic value on a run
     # whose whole purpose is to be looked at, dead weight on one whose
-    # purpose is to make clips. A find is already the slow, deliberate
-    # button.
+    # purpose is to make clips.
     if not produce and isinstance(rep.get("window"), dict):
-        _times = rep["window"].get("times") or []
-        _cuts = []
-        for _i, _t in enumerate(_times[:6]):
-            _v = _verify_cut(
-                db, row, src_path, fps, _t,
-                tag="findcut-%s-%02d-%s" % (row.id, _i,
-                                            secrets.token_hex(3)))
-            # `verdict`, NOT `is_swing`. The heat check answers
-            # "club_swing" / "no_swing" / "unknown"; `is_swing` is the
-            # AI judges' word and they are not run here. Reading the
-            # wrong one made every cut "could not tell".
-            _vd = _v.get("verdict")
-            _cuts.append({
-                "at_sec": round(float(_t), 2),
-                "is_swing": (True if _vd == "club_swing"
-                             else False if _vd == "no_swing" else None),
-                "verdict": _vd,
-                "reason": _v.get("reason") or _v.get("why"),
-                "decided_by": "the motion heat (no AI judge on a find)",
-                # `_clip_url_for`, NOT `_named_url` -- that one is a
-                # closure defined inside another endpoint and is not in
-                # scope here. It would have been a NameError on the
-                # first find that cut anything, inside a try nothing
-                # here wraps.
-                "frames_image": _clip_url_for(_v.get("frames_image_zones")
-                                              or _v.get("frames_image")),
-                "image": _clip_url_for(_v.get("image_zones")
-                                       or _v.get("image")),
-            })
+        _cut_name = (rep["window"].get("cutter") or "auto")
+        # "auto" and "none" are not detectors Test Cut knows; auto's
+        # own narrowing is the clip's audio, so that is what to show.
+        _tc_det = "audio" if _cut_name in ("auto", "none") else _cut_name
+        _ag, _, _ = _gate_tuning_for(db, row)
+        _ag = _d3.resolve_gates(_ag, zone=_trigger_zone(db, row))
+        _tc = _find_test_cut(db, row, _tc_det, _ag)
+        # PASSED THROUGH, NOT TRANSLATED. The keys are Test Cut's own
+        # (`peak_time_sec`, `heat_image_url`, `frames_is_swing`, ...)
+        # and the screen renders them with Test Cut's own component,
+        # so there is no mapping layer here to go stale when a field
+        # is added. A rename in the cutter breaks both screens at
+        # once, which is the point: it cannot break only this one and
+        # leave a blank column nobody notices.
+        _cuts = list((_tc.get("cuts") or [])[:6])
         if _cuts:
             rep["window"]["cuts"] = _cuts
-            log.info("ascent window: judged %d cut(s) — %s", len(_cuts),
-                     ", ".join("%.2fs=%s" % (c["at_sec"], c["is_swing"])
+            rep["window"]["verified_by"] = (
+                "Test Cut's own run on the %s cutter (nothing was cut)"
+                % _tc_det)
+            log.info("ascent window: Test Cut judged %d cut(s) — %s",
+                     len(_cuts),
+                     ", ".join("%ss=%s" % (c.get("peak_time_sec"),
+                                           c.get("is_swing"))
                                for c in _cuts))
     _sec_win = time.perf_counter() - _t_sub
     if progress:

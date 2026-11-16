@@ -112,7 +112,11 @@ def main():
            for i in _quiet), True)
 
     # ── AND THE PAGE SHOWS IT ───────────────────────────────────────
-    _jsx = (ROOT / "frontend/src/pages/AdminLongUpload.jsx").read_text()
+    # IN THE SHARED RENDERER, not the page. This block was inline in
+    # Test cut when the check was written; it is now the one component
+    # both Test cut and Find ascents render the audio working with, so
+    # the assertion follows it there rather than going quiet.
+    _jsx = (ROOT / "frontend/src/components/AudioCutDebug.jsx").read_text()
     ok("the page renders the below-gate peaks",
        "below_gate_peaks" in _jsx, True)
     ok("  says a gate under the loudest would have caught it",

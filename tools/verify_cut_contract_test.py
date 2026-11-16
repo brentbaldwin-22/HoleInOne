@@ -13,7 +13,10 @@ None, which is a legal value meaning "could not tell" and "no
 picture". The feature looked implemented and reported nothing.
 
 This runs the real functions against a real clip, so the contract is
-checked rather than remembered.
+checked rather than remembered -- and then checks that the find has
+no verification path of its own to get it wrong in again: it calls
+`_test_cut_run`, the function behind the Test Cut endpoint, and
+renders what comes back with Test Cut's own component.
 
     python3 tools/verify_cut_contract_test.py
 """
@@ -87,22 +90,40 @@ check("  and the file is on disk", _sp.exists(), True)
 check("  and is not empty", _sp.stat().st_size > 1000, True)
 
 
-print("\n-- and the caller reads the keys that exist")
+print("\n-- and the find does not have its own idea of any of this")
+# THE FIX FOR ALL OF IT, and the thing this file now guards: there is
+# no second verification path to get the contract wrong in. The find
+# calls the function behind the Test Cut endpoint. Reading two keys
+# that do not exist was the symptom; having somewhere to read them
+# was the bug.
 SRC = (ROOT / "backend" / "app" / "routers"
        / "admin.py").read_text(encoding="utf-8")
-_i = SRC.index("def _verify_cut")
-_j = SRC.index("def _ascent_windows")
-_vc = SRC[_i:_j]
-check("_verify_cut calls frames_strip", "frames_strip(" in _vc, True)
-check("  and sets frames_image from it",
-      'out["frames_image"]' in _vc, True)
+check("there is no `_verify_cut` to drift from Test Cut",
+      "def _verify_cut(" in SRC, False)
+check("the endpoint is a thin wrapper round a plain function",
+      "def _test_cut_run(" in SRC, True)
+_i = SRC.index("def _find_test_cut")
+_ftc = SRC[_i:_i + 3000]
+check("the find calls it", "_test_cut_run(" in _ftc, True)
+check("  cutting nothing", "cut_clips=False" in _ftc, True)
+check("  and verifying, which is the point",
+      "verify_swings=True" in _ftc, True)
 _k = SRC.index("def _ascent_run")
-_ar = SRC[_k:_k + 40000]
-check("the find maps `verdict`, not `is_swing`",
-      '_vd = _v.get("verdict")' in _ar, True)
-check("  club_swing means yes", '"club_swing"' in _ar, True)
-check("  and it says the AI judge did not run",
-      "no AI judge on a find" in _ar, True)
+_ar = SRC[_k:_k + 60000]
+check("the find runs it", "_find_test_cut(db, row" in _ar, True)
+# NO MAPPING LAYER. A dict comprehension renaming Test Cut's keys is
+# exactly the place the last two dead keys lived; the screen renders
+# Test Cut's own entries with Test Cut's own component instead.
+check("  and passes the entries through untranslated",
+      '_cuts = list((_tc.get("cuts") or [])' in _ar, True)
+UI = (ROOT / "frontend" / "src" / "pages"
+      / "AdminProduction.jsx").read_text(encoding="utf-8")
+TC = (ROOT / "frontend" / "src" / "pages"
+      / "AdminLongUpload.jsx").read_text(encoding="utf-8")
+check("both screens render the same component",
+      "<CutVerdicts" in UI and "<CutVerdicts" in TC, True)
+check("  and the find no longer says 'heat says'",
+      "heat says" in UI, False)
 
 print()
 if FAILED:

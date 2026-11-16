@@ -96,6 +96,7 @@ import { ViewMapModal } from "../components/ViewMapModal.jsx";
 import { D3TeeBox } from "../components/TeeBoxEditor.jsx";
 import { GateTuning } from "../components/GateTuning.jsx";
 import { AudioCutDebug } from "../components/AudioCutDebug.jsx";
+import { CutVerdicts } from "../components/CutVerdicts.jsx";
 
 const ADMIN_PW_STORAGE = "golfreelz.adminPassword";
 const LEGACY_ADMIN_PW_STORAGE = "parone.adminPassword";
@@ -10865,47 +10866,27 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
               </div>
             )}
             {/* WAS THERE A SWING WHERE IT CUT.
-                "Cut at 24.78s" says where; this says whether. Same
-                judge and same framing as Test Cut (`_verify_cut`), so
-                a cut that reads as a swing there reads as one here.
-                Only on a find — a produce does not pay for it. */}
+                "Cut at 24.78s" says where; this says whether.
+                SAME CODE AS TEST CUT, not the same idea as Test Cut:
+                `_find_test_cut` runs the Test Cut endpoint's own
+                function with `cut_clips=False`, hands back its cut
+                entries untranslated, and `CutVerdicts` is the
+                component Test Cut renders them with. Thumbnails,
+                front candidates, ball check, the judges' wording —
+                all of it, because it is all of it.
+                What was here before was a smaller lookalike reading
+                the motion heat instead of the judges, so the same cut
+                could read "swing" on one screen and "not" on the
+                other. Only on a find: the judges are vision calls,
+                and a produce does not pay for them. */}
             {Array.isArray(rep.window.cuts) && rep.window.cuts.length > 0 && (
               <div style={{ marginTop: 6 }}>
-                {rep.window.cuts.map((c, i) => (
-                  <div key={i} style={{ marginTop: 6 }}>
-                    <b>{c.at_sec}s</b>{" "}
-                    <span style={{
-                      color: c.is_swing === true ? "#1a7f37"
-                        : c.is_swing === false ? "#c0392b" : "#777" }}>
-                      {c.is_swing === true ? "✓ swing"
-                        : c.is_swing === false ? "✗ not a swing"
-                        : "could not tell"}
-                    </span>
-                    {/* WHICH JUDGE, because it is not the one Test Cut
-                        uses. This is the motion heat's own verdict —
-                        free, already computed. Test Cut's "✓ swing
-                        (majority)" is three vision calls per cut, and
-                        a find that made eighteen of them would be a
-                        different button. Saying so stops the two
-                        being read as the same answer. */}
-                    {c.verdict && (
-                      <span className="muted"> · heat says {c.verdict}</span>
-                    )}
-                    {c.decided_by && (
-                      <span className="muted"> · {c.decided_by}</span>
-                    )}
-                    {c.reason && (
-                      <div className="muted" style={{ maxWidth: 760 }}>
-                        {c.reason}
-                      </div>
-                    )}
-                    {c.frames_image && (
-                      <img src={c.frames_image} alt={`cut at ${c.at_sec}s`}
-                           style={{ maxWidth: 420, borderRadius: 4,
-                                    marginTop: 4, display: "block" }} />
-                    )}
+                {rep.window.verified_by && (
+                  <div className="muted" style={{ marginBottom: 4 }}>
+                    {rep.window.verified_by}
                   </div>
-                ))}
+                )}
+                <CutVerdicts cuts={rep.window.cuts} />
               </div>
             )}
             {/* THE CUTTER'S OWN WORKING, the same table Test Cut

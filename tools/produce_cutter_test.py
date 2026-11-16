@@ -135,24 +135,41 @@ check("  and Test cut uses it",
       "_crop, _zspan, _zfloor, _zbox = _verify_crop(db, row)" in TEXT, True)
 check("  with no second copy of the zone arithmetic",
       TEXT.count("_x0 - _w, _y0 - 3 * _h, 3 * _w, 4 * _h"), 1)
-check("the judge is the same one", "swing_heat_check" in _vc, True)
-check("  asked about the golfer", 'style="golfer"' in _vc, True)
-check("  and it never takes the run down",
-      "return {}" in _vc, True)
+# NOT A JUDGE OF ITS OWN. The find used to run the motion heat where
+# Test Cut runs the AI judges, so one clip had two answers and the
+# one on this screen was the one nobody had been reading. It now runs
+# TEST CUT -- the function behind that endpoint, with the cutting
+# switched off.
+_ftc = body("_find_test_cut")
+check("there is no separate verification path",
+      bool(body("_verify_cut")), False)
+check("the endpoint is a thin wrapper round a plain function",
+      bool(body("_test_cut_run")), True)
+check("  and the endpoint itself only forwards",
+      "_test_cut_run(" in body("test_cut_long_upload"), True)
+check("the find runs Test cut", "_test_cut_run(" in _ftc, True)
+check("  cutting nothing", "cut_clips=False" in _ftc, True)
+check("  judging, which is the point",
+      "verify_swings=True" in _ftc and "judge_with_frames=True" in _ftc,
+      True)
+check("  on the HOLE's gates, not the form's defaults",
+      "audio_min_peak_ratio=" in _ftc, True)
+check("  and it never takes the run down", "return {}" in _ftc, True)
 _ar = body("_ascent_run")
-check("a FIND judges its cuts", "_verify_cut(" in _ar, True)
+check("a FIND judges its cuts", "_find_test_cut(db, row" in _ar, True)
 # A PRODUCE MUST NOT PAY FOR IT: each is a vision call on a clip the
 # produce is about to search anyway.
 check("  and a produce does not", "if not produce and isinstance" in _ar,
       True)
 check("  bounded, so a noisy clip cannot fan out",
-      "_times[:6]" in _ar, True)
-# THE CLOSURE THAT WOULD HAVE BEEN A NameError: `_named_url` is
-# defined inside another endpoint, not at module level.
-check("it builds urls with the module-level helper",
-      "_clip_url_for(_v.get" in _ar, True)
-check("  not the closure from another endpoint",
-      "_named_url(_v.get" in _ar, False)
+      '_tc.get("cuts") or [])[:6]' in _ar, True)
+# NO MAPPING LAYER. Renaming Test Cut's keys on the way out is where
+# the last pair of dead keys lived, and a field added to a cut entry
+# would not reach this screen through one.
+check("the entries pass through untranslated",
+      '_cuts = list((_tc.get("cuts") or [])' in _ar, True)
+check("  so nothing here reaches for a renamed key",
+      '"frames_image":' in _ar or '"at_sec":' in _ar, False)
 
 print("\n-- and the operator can actually choose one")
 JSX = (ROOT / "frontend" / "src" / "components"
@@ -178,8 +195,35 @@ check("  and says plainly when it found nothing",
       "cannot have hidden a swing" in PROD, True)
 check("Find ascents shows the verdict per cut",
       "rep.window.cuts" in PROD, True)
-check("  with the frame strip", "c.frames_image" in PROD, True)
-check("  and the judge's reason", "c.reason" in PROD, True)
+# THE SAME COMPONENT, so the thumbnails, the front candidates and the
+# ball check come along and the wording cannot drift. The lookalike
+# that was here had none of them and said "heat says".
+TCUT = (ROOT / "frontend" / "src" / "pages"
+        / "AdminLongUpload.jsx").read_text(encoding="utf-8")
+VERD = (ROOT / "frontend" / "src" / "components"
+        / "CutVerdicts.jsx").read_text(encoding="utf-8")
+# THE CODE, not the header comment above it -- which names the screen
+# state this used to read, and would otherwise answer for it below.
+VERD = VERD[VERD.index("export function"):]
+check("  through Test cut's own component", "<CutVerdicts" in PROD, True)
+check("  which Test cut renders through too",
+      "<CutVerdicts" in TCUT, True)
+check("  and Test cut no longer has its own copy",
+      "c.frames_is_swing" in TCUT, False)
+check("  it reads a plain `cuts` prop, not a screen's state",
+      "function CutVerdicts({ cuts })" in VERD, True)
+check("    and indexes no screen's result map", "[u.id]" in VERD, False)
+for _lbl, _needle in (
+        ("the full frame", "c.full_frame_url"),
+        ("the heat composite", "c.heat_image_url"),
+        ("the four-frame strip", "c.frames_image_url"),
+        ("each judge separately", "c.frames_is_swing"),
+        ("the ball check", "c.ball_why"),
+        ("and who decided", "c.decided_by")):
+    check("    %s" % _lbl, _needle in VERD, True)
+check("  and the find no longer has its own wording",
+      "heat says" in PROD, False)
+check("  or its own time key", "c.at_sec" in PROD, False)
 
 print("\n-- the cutter's WORKING is shown, not just its conclusion")
 # "Cut at 24.78s" is a conclusion. The evidence -- the noise floor, the

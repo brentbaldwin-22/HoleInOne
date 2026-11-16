@@ -34,8 +34,13 @@ def check(label, got, want):
         FAILED.append(label)
 
 
-src = inspect.getsource(admin.test_cut_long_upload)
+# TWO HALVES SINCE THE SPLIT. The endpoint declares the Form(...)
+# parameters; `_test_cut_run`, which it forwards to, holds the body --
+# and Find ascents calls that same function with `cut_clips=False`, so
+# what is checked below is what both screens run.
+src = inspect.getsource(admin._test_cut_run)
 params = inspect.signature(admin.test_cut_long_upload).parameters
+run_params = inspect.signature(admin._test_cut_run).parameters
 
 print("the verifier is reachable from Test Cut:")
 check("the endpoint takes verify_swings", "verify_swings" in params, True)
@@ -58,29 +63,39 @@ print("every name the endpoint uses resolves to something:")
 import builtins  # noqa: E402
 import ast  # noqa: E402
 
-tree = ast.parse(inspect.getsource(admin.test_cut_long_upload).lstrip())
-fn = tree.body[0]
-assigned = set()
-for node in ast.walk(fn):
-    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-        assigned.add(node.id)
-    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        assigned.add(node.name)
-    elif isinstance(node, ast.alias):
-        assigned.add((node.asname or node.name).split(".")[0])
-    elif isinstance(node, ast.ExceptHandler) and node.name:
-        assigned.add(node.name)
-    elif isinstance(node, (ast.comprehension,)):
-        for t in ast.walk(node.target):
-            if isinstance(t, ast.Name):
-                assigned.add(t.id)
-known = (assigned | set(params) | set(dir(admin))
-         | set(dir(builtins)) | {"self"})
-unresolved = sorted({
-    n.id for n in ast.walk(fn)
-    if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
-    and n.id not in known
-})
+def _sweep(fobj, fparams, fname):
+    """Every bare name this function loads, that nothing bound."""
+    fn = ast.parse(inspect.getsource(fobj).lstrip()).body[0]
+    assigned = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            assigned.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            assigned.add(node.name)
+        elif isinstance(node, ast.alias):
+            assigned.add((node.asname or node.name).split(".")[0])
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            assigned.add(node.name)
+        elif isinstance(node, (ast.comprehension,)):
+            for t in ast.walk(node.target):
+                if isinstance(t, ast.Name):
+                    assigned.add(t.id)
+    known = (assigned | set(fparams) | set(dir(admin))
+             | set(dir(builtins)) | {"self"})
+    return sorted({
+        "%s: %s" % (fname, n.id) for n in ast.walk(fn)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+        and n.id not in known
+    })
+
+
+# BOTH HALVES, so the split cannot quietly move 600 lines out from
+# under this check. Sweeping only the endpoint would now pass on a
+# three-line wrapper while the body it forwards to -- the body Find
+# ascents also runs -- went unswept entirely.
+unresolved = (_sweep(admin.test_cut_long_upload, params,
+                     "test_cut_long_upload")
+              + _sweep(admin._test_cut_run, run_params, "_test_cut_run"))
 print("  %-56s %s" % ("no name is loaded that was never bound",
                       "ok" if not unresolved else "FAIL: %s" % unresolved))
 if unresolved:
@@ -92,7 +107,7 @@ print("the row carries what the table columns read:")
 # upstream reaches the UI only if it is named here too. attack_ms was
 # printed in the debug line and dashed in the swing's own row for
 # exactly this reason.
-esrc = inspect.getsource(admin.test_cut_long_upload)
+esrc = inspect.getsource(admin._test_cut_run)
 for key in ("attack_ms", "attack_measured", "max_attack_ms",
             "peak_time_sec", "ratio", "confidence"):
     have = '"%s": w.get("%s")' % (key, key) in esrc or '"%s":' % key in esrc
