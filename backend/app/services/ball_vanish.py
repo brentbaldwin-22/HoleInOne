@@ -72,16 +72,44 @@ UNDER_FLOOR_PROBE = 7.0
 REGION_MIN_FILL = 0.35
 REGION_MAX_ASPECT = 2.6
 
-# AND THE BAR ITSELF, WELL UNDER THE DETECTOR'S FLOOR, because that is
-# the entire point of narrowing the search. Defaulting the box to
-# MIN_LOCAL_CONTRAST made it a slower way to get today's answer: the
-# ball that prompted all this reads about 11.
+# ── THE BOX'S BAR IS RELATIVE, NOT LOW ──────────────────────────────
 #
-# What stops this admitting grass is not the bar. It is everything
-# after it: ball-sized, inside a box the size of a stance, in the same
-# few pixels in two of the three frames before the strike, and gone
-# from every frame after. Turf texture does none of that.
-REGION_CONTRAST = 8.0
+# IT WAS A FIXED 8, AND THAT WAS WRONG IN BOTH DIRECTIONS. Measured on
+# the operator's own zoomed strip, where the ball is plainly a white
+# speck on olive turf:
+#
+#   bar 8    the ball MERGES with the grass around it into a 403px
+#            blob and is refused for area (limit 400). Six other
+#            specks clear the bar, the crowded-box guard fires, and
+#            the whole box is abandoned.
+#   bar 30   two candidates in the whole box, the ball among them at
+#            a contrast of 92.
+#
+# So the low bar was not rescuing a dim ball; it was drowning a bright
+# one. A fixed bar cannot be right for both, because what counts as
+# bright depends on the turf -- which is exactly what `rel` is for:
+# the threshold scales off the brightest thing in the box.
+#
+# ON THE SAME SIX TILES, rel 0.55 over the floor:
+#
+#   -1.20s   ONE detection, the ball, contrast 138
+#   -0.60s   ONE detection, the ball, contrast 110, one pixel away
+#   -0.20s and after   things elsewhere, nothing at that spot
+#
+# which is "in the same place in two of the first three and gone from
+# every frame after" exactly.
+#
+# AND IT IS SAFE HERE IN A WAY IT IS NOT OUTSIDE. `ball_in_frames`
+# passes rel=0 to the wide pass on purpose: that box holds the GOLFER,
+# and a white shirt sets a bar the ball can never clear. The stance
+# box holds grass beside the golfer and no shirt, which is the whole
+# reason it can be judged relatively.
+#
+# On bare turf the max IS the texture, so most of it clears the bar,
+# the crowded guard fires and the box is abandoned -- which is the
+# right answer for a box with no ball in it.
+REGION_REL = 0.55
+REGION_CONTRAST = MIN_LOCAL_CONTRAST
 
 # HOW MANY SPECKS A BOX MAY HOLD BEFORE IT HAS STOPPED HELPING.
 #
@@ -1377,8 +1405,8 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
                                     "verdict": "outside the box"})
             if region is not None and _rbar is not None:
                 try:
-                    _rd = _detections(gray, [tuple(region)], rel=0.0,
-                                      floor=_rbar,
+                    _rd = _detections(gray, [tuple(region)],
+                                      rel=REGION_REL, floor=_rbar,
                                       min_fill=REGION_MIN_FILL,
                                       max_aspect=REGION_MAX_ASPECT)
                     # THE PREMISE, CHECKED. See REGION_MAX_CANDIDATES:
