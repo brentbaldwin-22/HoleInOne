@@ -116,6 +116,14 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
     && !aud.includes(k) && !ball.includes(k));
   const label = (k) => k.replace(/^(ascent|descent|audio|ball)_/, "")
     .replace(/_/g, " ");
+  // THE ONE GATE WHOSE NAME DOES NOT EXPLAIN ITSELF. "lag sec" in the
+  // audio column reads as something about the detector; it is how
+  // late the SOUND is against the strike, which is what moves the
+  // ball check's six frames.
+  const hint = (k) => (k === "audio_lag_sec"
+    ? "how late the sound is against the real strike — the ball "
+      + "check's frames move earlier by this"
+    : null);
   const zones = data.zones || [];
 
   const group = (title, keys) => (
@@ -135,6 +143,11 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
                   </span>
                   {sp.verdict && (
                     <span className="muted"> · {sp.verdict}</span>
+                  )}
+                  {hint(k) && (
+                    <div className="tiny muted" style={{ maxWidth: 230 }}>
+                      {hint(k)}
+                    </div>
                   )}
                 </td>
                 <td style={{ paddingRight: 6, textAlign: "right" }}

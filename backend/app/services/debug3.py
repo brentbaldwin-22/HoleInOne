@@ -8220,6 +8220,30 @@ GATE_SPEC = {
     # The default is the old constant, so a hole that tunes nothing
     # behaves exactly as it does today.
     "ball_min_contrast": (30.0, 18.0, 120.0, False),
+    # ── HOW LATE THE SOUND IS ───────────────────────────────────────
+    #
+    # THE AUDIO PEAK IS NOT THE IMPACT. It is the impact plus whatever
+    # the microphone, the encoder and the ring buffer add, and three
+    # separate comments in this codebase say so. Nothing until now
+    # measured it or did anything about it.
+    #
+    # It matters most to the ball check, which cuts six tiles around
+    # the peak and asks for the ball in the same spot in TWO of the
+    # first three. Those three sit at -1.20, -0.60 and -0.20, so:
+    #
+    #   lag 0.00..0.59s   two or three of them are before the strike
+    #   lag 0.60s+        only -1.20 is, and the rule CANNOT be met
+    #
+    # which is exactly the failure reported from the field: "the ball
+    # is only visible in the first frame". It is not that the check
+    # misses the first frame -- it finds the ball there and then has
+    # nowhere to find it twice.
+    #
+    # Per hole because it is a property of a rig and its encoder, and
+    # a course can have more than one. Default 0 so a hole that tunes
+    # nothing behaves exactly as it does today; `ball_lag_implied` on
+    # a cut that DID find its ball is the number to set it from.
+    "audio_lag_sec": (0.0, 0.0, 2.0, False),
     # key                        default                  lo     hi   int
     # NOT A FILTER ON CHAINS, unlike everything else here: this one is
     # the DETECTOR's per-frame keep. Every other gate can only refuse a

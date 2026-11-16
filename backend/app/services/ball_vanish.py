@@ -1106,7 +1106,8 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
                     min_contrast: float = ADDRESS_MIN_CONTRAST,
                     max_area: int = ADDRESS_MAX_AREA,
                     feet_x=None, handed=None, zone_y=None, ai_xy=None,
-                    region_contrast: float = None) -> dict:
+                    region_contrast: float = None,
+                    lag_sec: float = 0.0) -> dict:
     """Was a ball sitting there before the strike, and gone after?
 
     THE OPERATOR'S RULE, 8 Nov: find the ball in at least 2 of the
@@ -1141,9 +1142,17 @@ def ball_at_address(video_path, at_sec: float, offsets, *, rect=None,
                     "seen_after": 0, "balls": 0, "state": "INCONCLUSIVE",
                     "why": "could not open the clip"}
         fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
+        # ── THE SOUND IS LATE, SO THE TILES MOVE EARLIER ───────────
+        #
+        # Every offset is measured from the STRIKE, and the strike is
+        # `lag_sec` before the peak we were handed. Shifting the
+        # centre is the whole correction: the spacing is unchanged, so
+        # a hole that sets this keeps the same six moments of the
+        # swing, just aimed at the right instant.
+        _centre = float(at_sec) - max(0.0, float(lag_sec or 0.0))
         shots = []
         for off in offs:
-            f = int(round((float(at_sec) + float(off)) * fps))
+            f = int(round((_centre + float(off)) * fps))
             if f < 0:
                 shots.append(None)
                 continue
@@ -1855,6 +1864,42 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             return out
         # EVERY BALL, NOT THE BEST ONE: the one that matters is
         # whichever LEFT. See classify_balls.
+        # ── WHAT THE BALL SAYS ABOUT THE LAG ───────────────────────
+        #
+        # THE BALL KNOWS WHEN THE STRIKE WAS, which is the one thing
+        # the audio peak does not. It sits motionless for as long as
+        # anybody looks at it and then in one frame it is not there,
+        # so the last tile holding it and the first tile without it
+        # bracket the real impact -- and the gap between that and the
+        # peak IS the lag, measured rather than assumed.
+        #
+        # Reported, never applied: a number taken off one cut is a
+        # reading, and the setting it feeds (`audio_lag_sec`) is a
+        # property of the rig that an operator should set once from
+        # several of them.
+        def _lag_from(cl):
+            _os = list(offsets or ())
+            if not _os or len(_os) < len(per_frame):
+                return None
+            _seen = [i for i, _d in enumerate(per_frame)
+                     if _d and any(((_x - cl["x"]) ** 2
+                                    + (_y - cl["y"]) ** 2) ** 0.5
+                                   <= float(jitter_px)
+                                   for (_x, _y, _a, _c) in _d)]
+            if not _seen:
+                return None
+            _last = max(_seen)
+            _after = [i for i in range(_last + 1, len(per_frame))
+                      if per_frame[i] is not None]
+            if not _after:
+                return None
+            # The strike is between the last sighting and the first
+            # miss; take the middle, and the lag is how far that is
+            # BEFORE the peak the tiles were cut around.
+            _mid = (float(_os[_last]) + float(_os[_after[0]])) / 2.0
+            return round(-_mid, 2), [round(float(_os[i]), 2)
+                                     for i in _seen]
+
         tail_live = [d for d in tail if d is not None]
         # BY SLOT, not by "the first one that could be read" -- the
         # strike frame is slot `before`, whether or not it was read.
@@ -1866,6 +1911,9 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             out["spot"] = [int(round(best["x"])), int(round(best["y"]))]
             out["seen_before"] = int(best["frames"])
             out["seen_after"] = int(best["still"])
+            _lg = _lag_from(best)
+            if _lg:
+                out["lag_implied_sec"], out["seen_at"] = _lg
             out["left"] = True
             if out["found_by"] is None:
                 out["found_by"] = "the full band"
@@ -1883,6 +1931,9 @@ def ball_in_frames(shots, *, rect=None, people=None, anchor=None,
             out["spot"] = [int(round(best["x"])), int(round(best["y"]))]
             out["seen_before"] = int(best["frames"])
             out["seen_after"] = int(best["still"])
+            _lg = _lag_from(best)
+            if _lg:
+                out["lag_implied_sec"], out["seen_at"] = _lg
             out["left"] = False
             if out["found_by"] is None:
                 out["found_by"] = "the full band"

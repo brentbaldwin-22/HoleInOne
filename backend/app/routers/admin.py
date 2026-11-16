@@ -15977,11 +15977,15 @@ def _test_cut_run(
                         # and reporting nothing.
                         from ..services import debug3 as _bd3
                         _bmc = _bd3.GATE_DEFAULTS["ball_min_contrast"]
+                        _blag = _bd3.GATE_DEFAULTS["audio_lag_sec"]
                         try:
                             _bg, _, _ = _gate_tuning_for(db, row)
-                            _bmc = _bd3.resolve_gates(
-                                _bg, zone=cut_entry.get("gate"),
-                            )["ball_min_contrast"]
+                            _bgates = _bd3.resolve_gates(
+                                _bg, zone=cut_entry.get("gate"))
+                            _bmc = _bgates["ball_min_contrast"]
+                            # HOW LATE THE SOUND IS on this hole. The
+                            # tiles move earlier by it; see the gate.
+                            _blag = _bgates["audio_lag_sec"]
                         except Exception as _gx:  # noqa: BLE001
                             log.debug("ball gate: %s — using %s",
                                       _gx, _bmc)
@@ -16019,6 +16023,7 @@ def _test_cut_run(
                             people=_people2, anchor=_anc,
                             min_contrast=float(_bmc),
                             feet_x=_ffx, zone_y=_zy,
+                            lag_sec=float(_blag),
                             # THE BOX'S OWN BAR (REGION_CONTRAST),
                             # well under both the hole's bar and the
                             # detector's floor. Both of those are set
@@ -16031,6 +16036,14 @@ def _test_cut_run(
                         cut_entry["ball_region"] = _bl.get("region")
                         cut_entry["ball_region_why"] = _bl.get("region_why")
                         cut_entry["ball_found_by"] = _bl.get("found_by")
+                        cut_entry["ball_lag_used"] = float(_blag)
+                        # THE READING, not a setting. When the ball is
+                        # found, its own disappearance says where the
+                        # strike really was; the gate is for an
+                        # operator to set from several of these.
+                        cut_entry["ball_lag_implied"] = _bl.get(
+                            "lag_implied_sec")
+                        cut_entry["ball_seen_at"] = _bl.get("seen_at")
                         # ── THE BOX, BLOWN UP, AND ASKED ABOUT ──────
                         #
                         # The swing judge's strip is framed on the
@@ -16056,7 +16069,8 @@ def _test_cut_run(
                                     % (upload_id, idx,
                                        secrets.token_hex(3)))
                                 _bst = ball_box_strip(
-                                    src_path, peak_time_sec, _bsp,
+                                    src_path,
+                                    peak_time_sec - float(_blag), _bsp,
                                     box=_bl["region"], offsets=_BO,
                                     spot=_bl.get("spot"))
                                 if _bst.get("ok"):
@@ -16088,8 +16102,10 @@ def _test_cut_run(
                                     # REDRAW with both answers on it,
                                     # now that the model has given one.
                                     ball_box_strip(
-                                        src_path, peak_time_sec, _bsp,
-                                        box=_bl["region"], offsets=_BO,
+                                        src_path,
+                                        peak_time_sec - float(_blag),
+                                        _bsp, box=_bl["region"],
+                                        offsets=_BO,
                                         spot=_bl.get("spot"),
                                         ai_xy=_axy)
                                     cut_entry["ball_box_url"] = \
@@ -16542,6 +16558,7 @@ def _test_cut_run(
                                         people=_people2, anchor=_anc,
                                         min_contrast=float(_bmc),
                                         feet_x=_ffx, zone_y=_zy,
+                            lag_sec=float(_blag),
                                         handed=_jf.get("handed"),
                                         ai_xy=cut_entry.get(
                                             "frames_ball_xy"))

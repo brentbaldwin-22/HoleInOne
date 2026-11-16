@@ -313,6 +313,25 @@ export function CutVerdicts({ cuts }) {
                       different bars, so "found" from
                       one is not the same claim as
                       "found" from the other. */}
+                  {/* WHAT THE BALL SAYS ABOUT THE LAG.
+                      The audio peak is the impact plus
+                      whatever the mic and the encoder
+                      add; the ball is the only thing in
+                      the picture that knows when the
+                      strike was. This is a reading off
+                      one cut -- the `audio_lag_sec`
+                      gate is what an operator sets from
+                      several of them. */}
+                  {c.ball_lag_implied != null && (
+                    <div className="muted">
+                      the ball says the strike was{" "}
+                      <b>{c.ball_lag_implied}s</b> before
+                      the sound
+                      {c.ball_lag_used
+                        ? ` (searching ${c.ball_lag_used}s early)`
+                        : ""}
+                    </div>
+                  )}
                   {c.ball_found_by && (
                     <div className="muted">
                       found by {c.ball_found_by}
