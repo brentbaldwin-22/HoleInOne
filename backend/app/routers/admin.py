@@ -26705,6 +26705,24 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                      "read identically in words and are obvious here. "
                      + str(_al1.get("measured_why") or "")),
              "url": _al1.get("measured_image_url")},
+            # THE SIX FRAMES THEMSELVES, which this list did not have.
+            # It held the golfer and the measured ball, and the strip
+            # the ball check actually looked at was cut, written to
+            # disk and in no list and no panel -- so the one picture
+            # that shows whether the box was aimed at the right grass
+            # reached nobody. Twice reported as "I'm not seeing any of
+            # the images that we discussed".
+            {"name": "frames",
+             "title": "The six frames the ball check looked at",
+             "why": ("One tile per frame, around the impact, with the "
+                     "ball ringed where the brightness detector put "
+                     "it. This is the picture that separates \"the "
+                     "ball was not there\" from \"the box was "
+                     "pointed at the wrong grass\" -- the ring is "
+                     "wider than the ball, so follow the unmarked "
+                     "link beside the gallery to see the ball itself. "
+                     + str(_al1.get("impact_from") or "")),
+             "url": _al1.get("frames_image_url")},
         ) if q.get("url")]
 
     _stage(1, "The golfer, the ball and the impact frame",

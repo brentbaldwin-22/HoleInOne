@@ -10954,6 +10954,64 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             question and was the one the report never answered. */}
         <ImpactFrameSum rig={rep?.rig_impact} />
 
+        {/* ── THE PICTURES, NOT BEHIND A FOLD ────────────────────
+            Every one of these was built, written to disk and put in
+            `rep.stage1_stages` -- and the only thing that rendered
+            them was inside a <details> that starts closed, titled
+            "How steps 1 and 2 got their answers". So the dialog's
+            own comments described "the gallery at the top of the
+            dialog" that was never there, and the operator re-ran a
+            find three times reporting "still no images" while the
+            images sat one unopened triangle away.
+
+            A stage that reports a sentence is a stage nobody can
+            check -- and a picture nobody can find is the same thing
+            with extra steps. */}
+        {rep?.ai_launch && (
+          <div className="card" style={{ margin: "10px 0", padding: 10 }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <b>The golfer, the ball and the impact frame</b>
+              {rep.ai_launch.impact_frame != null && (
+                <span className="tiny muted">
+                  zoomed at f{rep.ai_launch.impact_frame}
+                </span>
+              )}
+            </div>
+            {rep.stage1_stages?.length > 0 ? (
+              <>
+                <StepPictures stages={rep.stage1_stages} />
+                {rep.ai_launch.frames_plain_url && (
+                  <div className="tiny muted" style={{ marginTop: 4 }}>
+                    the ring that marks the ball is wider than the ball
+                    {" — "}
+                    <a href={rep.ai_launch.frames_plain_url}
+                       target="_blank" rel="noreferrer">
+                      the same six frames, unmarked
+                    </a>
+                  </div>
+                )}
+              </>
+            ) : (
+              /* AND WHEN THERE ARE NONE, WHY, in the place the
+                 pictures would have been. */
+              <div className="tiny" style={{ color: "#b45309",
+                                             marginTop: 4 }}>
+                No pictures from this stage:{" "}
+                {rep.ai_launch.reason
+                  || rep.ai_launch.frames_why
+                  || "it ran and drew nothing, and said why in neither "
+                     + "`reason` nor `frames_why` — which is itself the "
+                     + "finding."}
+              </div>
+            )}
+            {rep.ai_launch.impact_from && (
+              <div className="tiny muted" style={{ marginTop: 3 }}>
+                impact from: {rep.ai_launch.impact_from}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* STAGE 1, AND IT IS A PICTURE OR IT IS NOTHING. The strip is
             one tile per frame the model was shown, with the crop it
             searched, what it picked and why a frame was refused --
@@ -10996,8 +11054,7 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                 -- the motion heat the golfer was placed from, the
                 departure window frame by frame, the column search
                 with every chain it weighed. */}
-            <StepPictures stages={rep.stage1_stages}
-                          title="What it looked at, in more detail" />
+
             <div className="tiny muted" style={{ marginTop: 3 }}>
               {rep.ai_launch.reason}
               {/* THE SUM, COMPACTLY, WHERE THE FRAME IS USED. The
@@ -11129,64 +11186,6 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                     + " (the rig heard it; this is where it went)"
                   : ""}
               </div>
-            )}
-            {/* THE TWO PICTURES THIS STAGE WAS ALREADY DRAWING FOR
-                NOBODY. `frames_image_url` is the six-frame strip
-                around the impact and `measured_image_url` is the
-                frame the ball was measured at rest on, with the box
-                it was found in. Both were cut, written to disk and
-                never rendered anywhere -- CutVerdicts has a
-                `frames_image_url` of its own, per cut, which is a
-                different object, so a grep for the name found a
-                caller and the stage's own pictures still went
-                nowhere. Reported from the field, twice, as "I'm not
-                seeing any of the images that we discussed". */}
-            {!rep.ai_launch.frames_image_url
-              && rep.ai_launch.frames_why && (
-              <div className="tiny muted" style={{ marginTop: 6 }}>
-                no six-frame strip: {rep.ai_launch.frames_why}
-              </div>
-            )}
-            {rep.ai_launch.frames_image_url && (
-              <figure style={{ margin: "8px 0 0" }}>
-                <a href={rep.ai_launch.frames_image_url}
-                   target="_blank" rel="noreferrer">
-                  <img src={rep.ai_launch.frames_image_url}
-                       alt="the six frames around the impact"
-                       style={{ width: "100%", borderRadius: 6,
-                                display: "block" }} />
-                </a>
-                <figcaption className="tiny muted">
-                  the six frames the ball check looked at, around
-                  f{rep.ai_launch.impact_frame}
-                  {/* THE SAME FRAMES WITH NOTHING DRAWN ON THEM.
-                      The ring marking the ball is wider than the
-                      ball, so the one thing the marked strip cannot
-                      show is the ball itself. */}
-                  {rep.ai_launch.frames_plain_url && (
-                    <> · <a href={rep.ai_launch.frames_plain_url}
-                           target="_blank" rel="noreferrer">
-                      unmarked
-                    </a></>
-                  )}
-                </figcaption>
-              </figure>
-            )}
-            {rep.ai_launch.measured_image_url && (
-              <figure style={{ margin: "8px 0 0" }}>
-                <a href={rep.ai_launch.measured_image_url}
-                   target="_blank" rel="noreferrer">
-                  <img src={rep.ai_launch.measured_image_url}
-                       alt="the ball measured at rest"
-                       style={{ width: "100%", borderRadius: 6,
-                                display: "block" }} />
-                </a>
-                <figcaption className="tiny muted">
-                  the ball at rest, measured off the pixels
-                  {rep.ai_launch.measured_why
-                    ? ` — ${rep.ai_launch.measured_why}` : ""}
-                </figcaption>
-              </figure>
             )}
             {rep.ai_launch.image_url && (
               <figure style={{ margin: "8px 0 0" }}>

@@ -46,16 +46,59 @@ keys = sorted(set(re.findall(r'out\[["\'](\w*_url)["\']\]\s*=', body)))
 print("URL keys _ascent_ai_launch puts on the report: %s" % ", ".join(keys))
 check("it sets some at all", len(keys) > 0)
 
+# THE GALLERY LIST IS A RENDERED ROUTE TOO. `rep["stage1_stages"]`
+# collects the stage's pictures and the frontend renders that list, so
+# a key reaches the screen either by being read off `ai_launch` in the
+# frontend or by being put in that list in the backend. Requiring the
+# first alone would fail the moment a picture moves into the gallery,
+# which is where they belong.
+_g = adm.index('rep["stage1_stages"]')
+gallery = adm[_g:adm.index("if q.get(\"url\")", _g)]
+
 print()
-print("every one of them is read off ai_launch in the frontend:")
+print("every one of them reaches the screen by some route:")
 for k in keys:
-    # ON THE ai_launch OBJECT. `rep.ai_launch.frames_image_url`, or
-    # destructured from it -- not merely the key appearing somewhere
-    # on some other object, which is exactly how this hid.
-    hit = (re.search(r'ai_launch(?:\s*\??\.\s*|\.)' + re.escape(k), fe)
-           or re.search(r'ai_launch\s*\|\|\s*\{\}[^;]{0,200}' + re.escape(k),
-                        fe))
-    check("ai_launch.%s is rendered" % k, bool(hit))
+    # ON THE ai_launch OBJECT, not merely the key appearing somewhere
+    # on some other object -- CutVerdicts has a `frames_image_url` of
+    # its own, per cut, and that is exactly how this hid.
+    direct = (re.search(r'ai_launch(?:\s*\??\.\s*|\.)' + re.escape(k), fe)
+              or re.search(r'ai_launch\s*\|\|\s*\{\}[^;]{0,200}'
+                           + re.escape(k), fe))
+    via_gallery = k in gallery
+    check("%s is rendered%s" % (k, " (gallery)" if via_gallery
+                                and not direct else ""),
+          bool(direct or via_gallery))
+
+# ── AND NOT ONLY BEHIND A CLOSED FOLD ────────────────────────────────
+#
+# THE BUG THIS ROUND. Every picture above was built, written to disk
+# and in `stage1_stages`, and the only thing rendering that list sat
+# inside a <details> with no `open`, titled "How steps 1 and 2 got
+# their answers". The panel's own comments described "the gallery at
+# the top of the dialog", which was never there. The operator re-ran a
+# find three times reporting "still no images" while the images sat
+# one unopened triangle away.
+print()
+print("the gallery is reachable without opening anything:")
+prod = (ROOT / "frontend" / "src" / "pages"
+        / "AdminProduction.jsx").read_text()
+
+
+def _inside_closed_details(text, idx):
+    """True when idx sits inside a <details> that has no `open`."""
+    depth = 0
+    for m in re.finditer(r'<details([^>]*)>|</details>', text[:idx]):
+        if m.group(0).startswith("</"):
+            depth -= 1
+        else:
+            depth += 1
+    return depth > 0
+
+
+_uses = [m.start() for m in re.finditer(r'stage1_stages', prod)]
+check("the frontend renders stage1_stages at all", len(_uses) > 0)
+check("at least one use is not inside a collapsed <details>",
+      any(not _inside_closed_details(prod, i) for i in _uses))
 
 # AND THE REASONS, same rule: a stage that declines must be able to say
 # so on the screen, or it reads exactly like a stage that found nothing.
