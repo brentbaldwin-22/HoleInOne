@@ -10881,8 +10881,18 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                         : c.is_swing === false ? "✗ not a swing"
                         : "could not tell"}
                     </span>
+                    {/* WHICH JUDGE, because it is not the one Test Cut
+                        uses. This is the motion heat's own verdict —
+                        free, already computed. Test Cut's "✓ swing
+                        (majority)" is three vision calls per cut, and
+                        a find that made eighteen of them would be a
+                        different button. Saying so stops the two
+                        being read as the same answer. */}
+                    {c.verdict && (
+                      <span className="muted"> · heat says {c.verdict}</span>
+                    )}
                     {c.decided_by && (
-                      <span className="muted"> · by {c.decided_by}</span>
+                      <span className="muted"> · {c.decided_by}</span>
                     )}
                     {c.reason && (
                       <div className="muted" style={{ maxWidth: 760 }}>

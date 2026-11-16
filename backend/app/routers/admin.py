@@ -25779,13 +25779,12 @@ def _verify_cut(db, row, src_path, fps, at_sec, *, tag, window_sec=1.6):
         # the heat. Not the same as "nobody was there".
         log.debug("verify: person detect failed (%s)", exc)
     try:
-        return swing_heat_check(
+        _chk = swing_heat_check(
             src_path, float(at_sec), fps,
             crop=_crop, prefer_span=_zspan, floor_y=_zfloor, zones=_zbox,
             style="golfer",
             people=_people,
-            # A tee has a player and a playing partner; each extra
-            # candidate is another vision call.
+            # A tee has a player and a playing partner.
             max_candidates=2,
             debug_dir=CLIPS_DIR,
             debug_prefix=tag,
@@ -25795,6 +25794,33 @@ def _verify_cut(db, row, src_path, fps, at_sec, *, tag, window_sec=1.6):
     except Exception as exc:  # noqa: BLE001
         log.warning("verify: heat check failed at %.2fs (%s)", at_sec, exc)
         return {}
+
+    # THE SIX TILES ARE A SEPARATE CALL. `swing_heat_check` returns a
+    # heat composite and the RECT to cut the tiles from; it does not
+    # cut them. The first version of this read `frames_image` off its
+    # result and got None every time -- and, from the same mistake,
+    # read `is_swing` when what it returns is `verdict`, so every cut
+    # came back "could not tell" with no picture. Two dead keys, one
+    # cause: guessing a contract instead of reading it.
+    out = dict(_chk)
+    try:
+        from ..services.tracer import frames_strip, AUDIO2_OFFSETS_SEC
+        _sp = CLIPS_DIR / ("%s-frames.jpg" % tag)
+        _zp = CLIPS_DIR / ("%s-frames-zones.jpg" % tag)
+        if frames_strip(src_path, float(at_sec), _sp,
+                        rect=_chk.get("frames_rect"),
+                        offsets=AUDIO2_OFFSETS_SEC,
+                        zones=_zbox,
+                        feet=_chk.get("front_candidates"),
+                        zones_out=(_zp if _zbox else None)):
+            # The drawn-on copy for the page, as Test Cut does: the
+            # judge is shown the clean one.
+            out["frames_image"] = (_zp.name if (_zbox and _zp.exists())
+                                   else _sp.name)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("verify: frames strip failed at %.2fs (%s)",
+                    at_sec, exc)
+    return out
 
 
 def _ascent_windows(db, row, src_path, fps, rep=None):
@@ -26252,11 +26278,18 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                 db, row, src_path, fps, _t,
                 tag="findcut-%s-%02d-%s" % (row.id, _i,
                                             secrets.token_hex(3)))
+            # `verdict`, NOT `is_swing`. The heat check answers
+            # "club_swing" / "no_swing" / "unknown"; `is_swing` is the
+            # AI judges' word and they are not run here. Reading the
+            # wrong one made every cut "could not tell".
+            _vd = _v.get("verdict")
             _cuts.append({
                 "at_sec": round(float(_t), 2),
-                "is_swing": _v.get("is_swing"),
+                "is_swing": (True if _vd == "club_swing"
+                             else False if _vd == "no_swing" else None),
+                "verdict": _vd,
                 "reason": _v.get("reason") or _v.get("why"),
-                "decided_by": _v.get("decided_by"),
+                "decided_by": "the motion heat (no AI judge on a find)",
                 # `_clip_url_for`, NOT `_named_url` -- that one is a
                 # closure defined inside another endpoint and is not in
                 # scope here. It would have been a NameError on the
