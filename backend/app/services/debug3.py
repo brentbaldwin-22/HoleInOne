@@ -4254,6 +4254,11 @@ def find_ascents(
     # site changed and no chance of one gate being tuned while the one
     # beside it silently reads the module default.
     _G = resolve_gates(gates)
+    # THE CONE, ORDERED. An operator who types the wider number first
+    # means the same cone, and refusing everything because of it would
+    # look exactly like a camera pointed the wrong way.
+    _CONE_LO, _CONE_HI = sorted((float(_G["ascent_cone_from_deg"]),
+                                 float(_G["ascent_cone_to_deg"])))
     ASCENT_MIN_POINTS = _G["ascent_min_points"]
     ASCENT_MIN_RISE_FRAC = _G["ascent_min_rise_frac"]
     ASCENT_RATE_LO = _G["ascent_rate_lo"]
@@ -4280,7 +4285,15 @@ def find_ascents(
             out["reason"] = "the tee video reports no frames"
             return out
         f0 = max(0, int(impact_frame) - 2)
-        f1 = int(impact_frame) + int(window_frames)
+        # THE HOLE'S OWN WINDOW, when it has set one. The signature's
+        # default stays for callers that pass nothing, but a hole that
+        # tunes `ascent_window_frames` means it: a 60fps rig only
+        # needs half a second for the ball to clear the band, and a
+        # longer window is more traffic to sort through.
+        _win = int(window_frames)
+        if gates is not None:
+            _win = int(_G["ascent_window_frames"])
+        f1 = int(impact_frame) + _win
         if n_frames:
             f1 = min(f1, n_frames - 1)
         if f1 <= f0:
@@ -4404,6 +4417,28 @@ def find_ascents(
             _oy = float(pts[0]["y"]) - _vy * _back
             d0 = math.hypot(_ox - bx, _oy - by)
             _row["from_px"] = int(round(d0))
+            # ── AND IT WENT WHERE A BALL FROM THIS TEE GOES ─────────
+            #
+            # The heading is already in hand: `_vx`/`_vy` over the
+            # first few points, which is the same measurement the
+            # back-run above uses. Signed degrees off vertical, so 0
+            # is straight up the picture, positive leans right.
+            #
+            # THIS IS THE DIRECTIONAL VERSION OF `ascent_max_tilt_deg`,
+            # which takes absolute values and so asks "within N of
+            # vertical, either side". Both apply: the cone cannot
+            # widen what tilt refuses, and tilt cannot tell left from
+            # right. A hole that sets no cone gets the full half-turn
+            # and nothing changes.
+            _bearing = math.degrees(math.atan2(_vx, -_vy))
+            _row["bearing_deg"] = round(_bearing, 1)
+            if _CONE_LO > -180.0 or _CONE_HI < 180.0:
+                if not (_CONE_LO <= _bearing <= _CONE_HI):
+                    _row["why"] = (
+                        "left at %+.0f deg off vertical, outside this "
+                        "zone's cone of %+.0f..%+.0f"
+                        % (_bearing, _CONE_LO, _CONE_HI))
+                    continue
             # ── THE SAME TEST TWICE, AND THE SECOND ONE IS WORSE ────
             #
             # When the caller has narrowed the search to a column
@@ -8244,6 +8279,33 @@ GATE_SPEC = {
     # nothing behaves exactly as it does today; `ball_lag_implied` on
     # a cut that DID find its ball is the number to set it from.
     "audio_lag_sec": (0.0, 0.0, 2.0, False),
+    # ── WHERE A BALL FROM THIS TEE CAN GO ───────────────────────────
+    #
+    # A LAUNCH CONE, measured in degrees off VERTICAL and SIGNED:
+    # 0 is straight up the picture, positive leans right, negative
+    # leans left, +-90 is horizontal. So a tee that plays up and to
+    # the right is something like +5..+55.
+    #
+    # PER ZONE IS THE POINT, and it comes free: the gate resolver
+    # already honours "name@N", so a back tee and a forward one on the
+    # same hole can aim differently without any new storage. That is
+    # the whole reason this is a gate rather than a column on the zone.
+    #
+    # WHAT IT ADDS OVER `ascent_max_tilt_deg`. That gate measures
+    # atan2(|vx|, |vy|) -- absolute values, so it asks "within N
+    # degrees of vertical, EITHER side" and cannot know that from this
+    # tee the ball goes right. The cone is the directional version and
+    # the two compose: a chain must satisfy both.
+    #
+    # The defaults are a half-turn wide, which refuses nothing that is
+    # going up at all, so a hole that sets neither behaves exactly as
+    # it does today.
+    "ascent_cone_from_deg": (-90.0, -180.0, 180.0, False),
+    "ascent_cone_to_deg": (90.0, -180.0, 180.0, False),
+    # HOW LONG AFTER THE STRIKE TO LOOK. Was a bare constant of 45
+    # frames; the operator asked for 30 on a 60fps rig, which is half
+    # a second and plenty for a ball to clear the band.
+    "ascent_window_frames": (ASCENT_WINDOW_FRAMES, 8, 240, True),
     # key                        default                  lo     hi   int
     # NOT A FILTER ON CHAINS, unlike everything else here: this one is
     # the DETECTOR's per-frame keep. Every other gate can only refuse a

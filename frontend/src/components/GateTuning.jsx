@@ -101,13 +101,23 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
   }
 
   const rows = Object.keys(spec);
-  const asc = rows.filter((k) => k.startsWith("ascent_"));
+  const asc = rows.filter((k) => k.startsWith("ascent_")
+    && !CONE.includes(k));
   const desc = rows.filter((k) => k.startsWith("descent_"));
   // THE PREFIXES ARE THE GROUPING, and a gate whose prefix matches no
   // group is INVISIBLE here however correctly the backend serves it.
   // The audio gates landed in exactly that hole: added to the spec,
   // rendered by nothing, and reported as tunable when they were not.
   const aud = rows.filter((k) => k.startsWith("audio_"));
+  // ── THE GATES THAT DIFFER PER TEE ───────────────────────────────
+  //
+  // The audio ones do because loudness is distance. The launch cone
+  // does because a tee AIMS somewhere: the back and the forward tee
+  // on one hole send the ball off at different bearings, and a cone
+  // set for one refuses the other. So they get the same per-zone
+  // column layout rather than a single value for the hole.
+  const CONE = ["ascent_cone_from_deg", "ascent_cone_to_deg"];
+  const perZone = [...aud, ...CONE.filter((k) => rows.includes(k))];
   // THE BALL AT ADDRESS, its own group. It landed in "Other" working
   // correctly, which is the trap this comment block is about: a gate
   // nobody can find is a gate nobody tunes.
@@ -120,10 +130,18 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
   // audio column reads as something about the detector; it is how
   // late the SOUND is against the strike, which is what moves the
   // ball check's six frames.
-  const hint = (k) => (k === "audio_lag_sec"
-    ? "how late the sound is against the real strike — the ball "
-      + "check's frames move earlier by this"
-    : null);
+  const HINTS = {
+    audio_lag_sec:
+      "how late the sound is against the real strike — the ball "
+      + "check's frames move earlier by this",
+    ascent_cone_from_deg:
+      "the launch cone's left edge, in degrees off straight up: "
+      + "0 is vertical, negative leans left, +90 is horizontal",
+    ascent_cone_to_deg:
+      "the cone's right edge, same scale. A tee playing up and to "
+      + "the right is about +5 to +55. Leave at -90/+90 for no cone.",
+  };
+  const hint = (k) => HINTS[k] || null;
   const zones = data.zones || [];
 
   const group = (title, keys) => (
@@ -229,10 +247,10 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
         {ball.length > 0 && group("Ball — sitting on the tee", ball)}
         {other.length > 0 && group("Other", other)}
       </div>
-      {aud.length > 0 && (
+      {perZone.length > 0 && (
         <div style={{ marginTop: 10 }}>
           <div className="tiny upper muted" style={{ marginBottom: 4 }}>
-            Audio — hearing the strike
+            Per tee — the sound, and where the ball goes
           </div>
           {/* PER TEE, BECAUSE LOUDNESS IS DISTANCE. The camera stands
               behind the hitting area, so the back tee is a few yards
@@ -264,7 +282,7 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
               </tr>
             </thead>
             <tbody>
-              {aud.map((k) => {
+              {perZone.map((k) => {
                 const isTuned = pending()[k] !== undefined;
                 return (
                   <tr key={k}>
@@ -273,6 +291,11 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
                                      fontWeight: isTuned ? 700 : 400 }}>
                         {label(k)}
                       </span>
+                      {hint(k) && (
+                        <div className="tiny muted" style={{ maxWidth: 230 }}>
+                          {hint(k)}
+                        </div>
+                      )}
                     </td>
                     <td style={{ paddingRight: 6, textAlign: "right" }}
                         className="muted">

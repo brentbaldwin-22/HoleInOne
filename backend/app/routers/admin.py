@@ -16054,6 +16054,45 @@ def _test_cut_run(
                         cut_entry["ball_region_why"] = _bl.get("region_why")
                         cut_entry["ball_found_by"] = _bl.get("found_by")
                         cut_entry["ball_lag_used"] = float(_blag)
+                        # ── THE IMPACT FRAME, TO THE FRAME ──────────
+                        #
+                        # The six tiles are 0.20s apart, so the best
+                        # they can say is "between these two". The
+                        # BALL can do better: `ball_departure` walks
+                        # the real video around the strike and reports
+                        # the first frame with nothing at the ball's
+                        # spot and nothing after it either.
+                        #
+                        # Only when the ball was seen to GO. A ball
+                        # that stayed put, or was never found, leaves
+                        # this None and the 0.00 frame stands -- which
+                        # is what every caller already falls back to.
+                        cut_entry["impact_frame"] = int(round(
+                            _strike_sec * (tee_fps or 30.0)))
+                        cut_entry["impact_from"] = "the 0.00 frame"
+                        if _bl.get("left") is True and _bl.get("spot"):
+                            try:
+                                from ..services.ball_vanish import (
+                                    ball_departure,
+                                )
+                                _dep = ball_departure(
+                                    src_path, _strike_sec,
+                                    rect=_chk.get("frames_rect"),
+                                    people=_people2, anchor=_anc,
+                                    spot=_bl["spot"])
+                                cut_entry["impact_why"] = _dep.get("why")
+                                if _dep.get("impact_frame") is not None:
+                                    cut_entry["impact_frame"] = int(
+                                        _dep["impact_frame"])
+                                    cut_entry["impact_from"] = (
+                                        "the ball leaving")
+                                    log.info(
+                                        "test cut: impact nailed to "
+                                        "frame %s by the ball (%s)",
+                                        _dep["impact_frame"],
+                                        _dep.get("why"))
+                            except Exception as _dx:  # noqa: BLE001
+                                log.debug("impact from ball: %s", _dx)
                         # THE READING, not a setting. When the ball is
                         # found, its own disappearance says where the
                         # strike really was; the gate is for an
