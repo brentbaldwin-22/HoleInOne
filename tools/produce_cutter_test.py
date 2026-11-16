@@ -149,6 +149,29 @@ check("Find ascents shows which cutter ran",
 check("  the times it cut at", "rep.window.times" in PROD, True)
 check("  and says plainly when it found nothing",
       "cannot have hidden a swing" in PROD, True)
+
+print("\n-- the cutter's WORKING is shown, not just its conclusion")
+# "Cut at 24.78s" is a conclusion. The evidence -- the noise floor, the
+# gate that came of it, every peak and which test each one failed -- is
+# what an operator needs when the answer is wrong, and Test Cut was the
+# only screen with it even though production can now be SET to that
+# same cutter.
+COMP = ROOT / "frontend" / "src" / "components" / "AudioCutDebug.jsx"
+check("there is one audio-debug renderer", COMP.exists(), True)
+_c = COMP.read_text(encoding="utf-8")
+for field in ("median_envelope", "min_peak_ratio_used", "top_peaks",
+              "n_after_attack", "below_gate_peaks", "loudest_ratio"):
+    check("  it shows %s" % field, field in _c, True)
+check("  and it reads a plain `debug` prop, not a screen's state",
+      "testCutResults" in _c, False)
+LONG = (ROOT / "frontend" / "src" / "pages"
+        / "AdminLongUpload.jsx").read_text(encoding="utf-8")
+check("Test cut renders through it", "<AudioCutDebug" in LONG, True)
+check("Find ascents renders through it", "<AudioCutDebug" in PROD, True)
+# THE WHOLE POINT OF EXTRACTING IT: two copies drift, and the one that
+# drifts is the one nobody was reading at the time.
+check("  and Test cut no longer has its own copy",
+      "noise floor={testCutResults" in LONG, False)
 API = (ROOT / "frontend" / "src" / "api.js").read_text(encoding="utf-8")
 check("the api sends the cutter only when given one",
       "cutter === undefined ? { gates } : { gates, cutter }" in API, True)

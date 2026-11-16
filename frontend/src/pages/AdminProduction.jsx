@@ -95,6 +95,7 @@ import { parseApiDate } from "../time.js";
 import { ViewMapModal } from "../components/ViewMapModal.jsx";
 import { D3TeeBox } from "../components/TeeBoxEditor.jsx";
 import { GateTuning } from "../components/GateTuning.jsx";
+import { AudioCutDebug } from "../components/AudioCutDebug.jsx";
 
 const ADMIN_PW_STORAGE = "golfreelz.adminPassword";
 const LEGACY_ADMIN_PW_STORAGE = "parone.adminPassword";
@@ -10858,16 +10859,27 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                 this cannot have hidden a swing.
               </div>
             )}
-            {rep.window.debug?.reason && (
-              <div className="muted" style={{ marginTop: 2 }}>
-                {rep.window.debug.reason}
-              </div>
-            )}
             {rep.window.debug?.gates_from && (
               <div className="muted" style={{ marginTop: 2 }}>
                 Gates: {rep.window.debug.gates_from}
               </div>
             )}
+            {/* THE CUTTER'S OWN WORKING, the same table Test Cut
+                shows — one component, so the two cannot drift.
+                "Cut at 24.78s" is a conclusion; this is the evidence,
+                and it is what an operator needs when the answer is
+                wrong. The detector fills the same debug dict either
+                way; only this screen was throwing it away. */}
+            {rep.window.cutter === "audio"
+              || rep.window.cutter === "combined" ? (
+              <div style={{ marginTop: 4 }}>
+                <AudioCutDebug debug={rep.window.debug} />
+              </div>
+            ) : rep.window.debug?.reason ? (
+              <div className="muted" style={{ marginTop: 2 }}>
+                {rep.window.debug.reason}
+              </div>
+            ) : null}
           </div>
         )}
         {rep?.clear_error && (

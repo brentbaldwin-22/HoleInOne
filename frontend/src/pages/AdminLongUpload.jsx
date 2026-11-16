@@ -6,6 +6,7 @@ import { MotionGraph } from "../components/MotionGraph.jsx";
 import { PiTestZones } from "../components/PiTestZones.jsx";
 import { Brand, Icon } from "../components/Brand.jsx";
 import { fmtDateTime } from "../time.js";
+import { AudioCutDebug } from "../components/AudioCutDebug.jsx";
 
 const ADMIN_PW_STORAGE = "golfreelz.adminPassword";
 const LEGACY_ADMIN_PW_STORAGE = "parone.adminPassword";
@@ -1336,100 +1337,9 @@ export default function AdminLongUpload() {
                               })()}
                             </>
                           ) : testCutResults[u.id].detector === "audio" ? (
-                            <>
-                              audio: noise floor={testCutResults[u.id].debug.median_envelope?.toFixed(4)}{" "}
-                              · gate ×{testCutResults[u.id].debug.min_peak_ratio_used}
-                              {" "}(min_ratio) = {testCutResults[u.id].debug.threshold?.toFixed(4)}
-                              {testCutResults[u.id].debug.highpass_hz_used > 0 && (
-                                <> · highpass @ {testCutResults[u.id].debug.highpass_hz_used} Hz</>
-                              )}
-                              {testCutResults[u.id].debug.threshold_floor_hit && (
-                                <> · <span className="warn-text">
-                                  floor {testCutResults[u.id].debug.threshold_floor ?? "0.001"} active —
-                                  raise audio ratio above {(
-                                    (testCutResults[u.id].debug.threshold_floor ?? 0.001)
-                                    / (testCutResults[u.id].debug.median_envelope || 1)
-                                  ).toFixed(1)} to bite
-                                </span></>
-                              )}
-                              <br />
-                              peaks: {testCutResults[u.id].debug.n_raw_peaks} over the gate
-                              {testCutResults[u.id].debug.n_after_attack != null && (
-                                <> · {testCutResults[u.id].debug.n_after_attack} passed attack
-                                {" "}(≤{Math.round((testCutResults[u.id].debug.max_attack_sec_used ?? 0)*1000)}ms, max_attack_ms)</>
-                              )}
-                              {" "}· {testCutResults[u.id].debug.n_after_nms} after separation
-                              {" "}({testCutResults[u.id].debug.min_separation_sec}s, min_separation_sec)
-                              {" "}over {testCutResults[u.id].debug.duration_sec?.toFixed(1)}s
-                              {Array.isArray(testCutResults[u.id].debug.top_peaks) &&
-                                testCutResults[u.id].debug.top_peaks.length > 0 && (
-                                <>
-                                  <br />
-                                  top peaks (sec, ×ratio over the noise floor,
-                                  {" "}attack ms, kept):
-                                  {" "}✗attack = too slow a rise (voice/rumble);
-                                  {" "}✗-sep = another peak within min_separation_sec.
-                                  <br />
-                                  {testCutResults[u.id].debug.top_peaks.map((p, i) => (
-                                    <span key={i} style={{ marginRight: 10 }}>
-                                      {p.peak_sec}s ×{p.ratio}
-                                      {p.attack_ms != null && (
-                                        <>
-                                          {" "}
-                                          {/* "≥" marks the sentinel: the rise
-                                              never crossed the reference, so
-                                              this is "could not measure", not
-                                              a slow attack. Printing it as a
-                                              plain number hid a filter that
-                                              was dropping quiet strikes. */}
-                                          {p.attack_measured === false ? "≥" : ""}
-                                          {p.attack_ms}ms{p.passes_attack ? "" : "✗attack"}</>
-                                      )}
-                                      {" "}{p.kept ? "✓"
-                                        : (p.passes_attack === false ? "" : "✗sep")}
-                                    </span>
-                                  ))}
-                                </>
-                              )}
-                              {/* NOTHING CLEARED THE GATE. Shown on its
-                                  own line rather than mixed into the
-                                  peaks above, because these failed a
-                                  different test and the ✗attack / ✗sep
-                                  marks up there would be a lie about
-                                  them — they never got that far. */}
-                              {Array.isArray(testCutResults[u.id].debug.below_gate_peaks) &&
-                                testCutResults[u.id].debug.below_gate_peaks.length > 0 && (
-                                <>
-                                  <br />
-                                  <span className="warn-text">
-                                    nothing reached the gate.
-                                  </span>{" "}
-                                  loudest peaks anyway (sec, ×ratio over the
-                                  {" "}noise floor):
-                                  {testCutResults[u.id].debug.loudest_ratio != null && (
-                                    <>
-                                      {" "}a gate under{" "}
-                                      ×{testCutResults[u.id].debug.loudest_ratio}
-                                      {" "}would have caught the loudest.
-                                    </>
-                                  )}
-                                  <br />
-                                  {testCutResults[u.id].debug.below_gate_peaks.map((p, i) => (
-                                    <span key={i} style={{ marginRight: 10 }}>
-                                      {p.peak_sec}s ×{p.ratio}
-                                      {/* Below the gate the rise usually
-                                          cannot be measured at all — the
-                                          reference sits above half the
-                                          peak — so "≥" is the norm here,
-                                          not the exception. */}
-                                      {p.attack_ms != null && p.attack_measured !== false && (
-                                        <> {p.attack_ms}ms</>
-                                      )}
-                                    </span>
-                                  ))}
-                                </>
-                              )}
-                            </>
+                            <AudioCutDebug
+                              debug={testCutResults[u.id].debug}
+                            />
                           ) : (
                             <>
                               motion: median={testCutResults[u.id].debug.median_motion?.toFixed(4)}{" "}
