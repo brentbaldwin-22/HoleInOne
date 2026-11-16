@@ -13152,6 +13152,16 @@ def get_gate_tuning(upload_id: int, db: Session = Depends(get_db)):
         # 2 -- that mismatch is what barred the back tee from the
         # audio trigger for a fortnight.
         "zones": _gate_tuning_zones(db, row),
+        # ── WHICH CUTTER PRODUCTION RUNS ON THIS HOLE ───────────────
+        #
+        # Filed with the gates because the audio cutter is tuned BY
+        # them, so the choice and its settings move together. The menu
+        # is served rather than hard-coded in the editor for the same
+        # reason the gate spec is: one definition of what exists.
+        "cutter": _cutter_for(db, row)[0],
+        "cutter_why": _cutter_for(db, row)[1],
+        "cutters": [{"name": k, "detail": v}
+                    for k, v in PRODUCE_CUTTERS.items()],
     }
 
 
@@ -13191,7 +13201,20 @@ def set_gate_tuning(
             "upload, so there is nothing to tune AGAINST -- a tuning filed "
             "here would apply to this one clip and no other. Set the hole, "
             "or produce from a camera event.")
+    # THE CUTTER IS NOT A GATE and does not go through the numeric
+    # resolver -- it is a name out of a fixed set. Validated against
+    # that set here, because a stored name nothing recognises would
+    # read as "auto" at produce time and look like the setting was
+    # ignored.
+    _cutter = (payload or {}).get("cutter")
+    if _cutter is not None:
+        if _cutter not in PRODUCE_CUTTERS:
+            raise HTTPException(
+                400, "unknown cutter %r — one of: %s"
+                % (_cutter, ", ".join(sorted(PRODUCE_CUTTERS))))
     _in = (payload or {}).get("gates")
+    if _in is None and _cutter is not None:
+        _in = {}
     if not isinstance(_in, dict):
         raise HTTPException(400, "gates must be an object of {name: number}")
     # A ZONE KEY IS A GATE KEY. "audio_min_ratio@2" names the same
@@ -13209,8 +13232,18 @@ def set_gate_tuning(
     _clean = _d3.gates_diff(_keep)
 
     store = dict(course.gate_tuning or {})
-    if _clean:
-        store[key] = _clean
+    # THE CUTTER SURVIVES A GATE SAVE, and vice versa. They live under
+    # one key, so rebuilding that key from the gates alone would clear
+    # the choice every time somebody nudged a threshold -- the same
+    # shape of bug as a save that drops the keys it was not told about.
+    _prev_cut = (store.get(key) or {}).get("cutter")
+    if _cutter is not None:
+        _prev_cut = None if _cutter == "auto" else _cutter
+    if _clean or _prev_cut:
+        _entry = dict(_clean)
+        if _prev_cut:
+            _entry["cutter"] = _prev_cut
+        store[key] = _entry
     else:
         store.pop(key, None)
     # A fresh dict so SQLAlchemy sees the assignment as dirty.
@@ -13219,8 +13252,11 @@ def set_gate_tuning(
     db.add(AuditLog(
         actor="admin", action="gate_tuning",
         target=f"course:{course.id}:{key}",
-        detail=(", ".join(f"{k}={v}" for k, v in sorted(_clean.items()))
-                or "cleared"),
+        detail=(", ".join(
+            [f"{k}={v}" for k, v in sorted(_clean.items())]
+            + ([f"cutter={_prev_cut or 'auto'}"]
+               if _cutter is not None else []))
+            or "cleared"),
     ))
     db.commit()
     log.info("gate tuning: %s on course %s hole %s -> %s",
@@ -25596,6 +25632,113 @@ ASCENT_WIN_PRE_SEC = 1.0
 ASCENT_WIN_POST_SEC = 4.0
 
 
+# WHICH CUTTER NARROWS THE ASCENT SWEEP, per hole.
+#
+# Test Cut can run five detectors and show the operator exactly what
+# each one would cut; production could run none of them. It swept the
+# whole clip unless the rig had heard an impact, and the one narrowing
+# it did have -- the clip's own audio -- was hard-wired on for manual
+# uploads and hard-wired OFF for dwell clips. So the detector somebody
+# had just verified on this hole could not be the one used on it.
+#
+# "auto" is exactly the behaviour described in `_ascent_windows`, and
+# is the default: nothing changes on any hole until somebody chooses.
+PRODUCE_CUTTERS = {
+    "auto": "the rig's impact, then the clip's audio on anything but a "
+            "dwell clip",
+    "none": "never narrow — always sweep the whole clip",
+    "audio": "the clip's own audio, at this hole's gates",
+    "motion": "frame-to-frame motion",
+    "combined": "motion confirmed by audio",
+    "ballgone": "the ball leaving the spot it was teed on",
+    "pi": "the tee rig's own detector, run here",
+}
+
+
+def _cutter_for(db, row, hole_hint=None) -> tuple[str, str]:
+    """(cutter, why) for this upload's hole. Defaults to "auto".
+
+    Filed with the audio gates, under the same key, because it is the
+    same kind of fact about the same pair of viewpoints -- and because
+    the gates are what the audio cutter is tuned by, so a hole that has
+    had one tuned should not keep the choice somewhere else.
+    """
+    try:
+        store, key, why = _gate_tuning_for(db, row, hole_hint)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("cutter: no tuning for upload %s: %s",
+                  getattr(row, "id", None), exc)
+        return "auto", "nothing stored for this hole"
+    got = (store or {}).get("cutter")
+    if not isinstance(got, str) or got not in PRODUCE_CUTTERS:
+        return "auto", "nothing stored for this hole"
+    return got, "set on %s (%s)" % (key, why)
+
+
+def _cutter_times(name, db, row, src_path, fps, dbg):
+    """Impact times (seconds) the named cutter finds, or [].
+
+    Every one of these is the SAME function Test Cut runs, imported
+    rather than reimplemented -- the whole point of choosing a cutter
+    here is that what was verified there is what runs, and a second
+    copy of the arithmetic would quietly make that false.
+    """
+    from ..services.ai_tracer import (
+        detect_swings_from_audio, detect_swings_from_motion,
+        detect_swings_combined,
+    )
+    from ..services import debug3 as _d3
+
+    if name == "audio" or name == "combined":
+        _ag, _, _ = _gate_tuning_for(db, row)
+        _az = _trigger_zone(db, row)
+        _ag = _d3.resolve_gates(_ag, zone=_az)
+        dbg["gates_from"] = (
+            "the hole's audio gates" if _az is None else
+            "the hole's audio gates for zone %d (\"Zone %d\" on screen)"
+            % (_az, _az + 1))
+        _kw = dict(
+            fps=fps,
+            min_peak_ratio=float(_ag["audio_min_ratio"]),
+            min_separation_sec=float(_ag["audio_min_separation_sec"]),
+            max_attack_sec=float(_ag["audio_max_attack_ms"]) / 1000.0,
+        )
+        hits = (detect_swings_combined(src_path, **_kw, debug=dbg)
+                if name == "combined"
+                else detect_swings_from_audio(src_path, **_kw,
+                                              debug=dbg)) or []
+    elif name == "motion":
+        hits = detect_swings_from_motion(src_path, fps=fps,
+                                         debug=dbg) or []
+    elif name == "ballgone":
+        from ..services.ball_vanish import find_ball_vanish
+        _z = None
+        try:
+            _z = _tee_trigger_zones(db, row)
+        except Exception as exc:  # noqa: BLE001
+            dbg["zones"] = "no trigger zones for this camera (%s)" % exc
+        hits = find_ball_vanish(src_path, zones=_z, debug=dbg) or []
+    elif name == "pi":
+        from ..services.pi_swingfind import detect_swings_pi
+        hits = detect_swings_pi(src_path, fps=fps, debug=dbg) or []
+    else:
+        return []
+
+    out = []
+    for h in hits:
+        t = h.get("peak_time_sec")
+        if t is None:
+            # Not every cutter reports a peak; the middle of the window
+            # it would have cut is the same instant to within the
+            # padding `_around` adds anyway.
+            _s, _e = h.get("start_sec"), h.get("end_sec")
+            if _s is not None and _e is not None:
+                t = (float(_s) + float(_e)) / 2.0
+        if t is not None:
+            out.append(float(t))
+    return out
+
+
 def _ascent_windows(db, row, src_path, fps, rep=None):
     """Frames worth searching for a ball leaving, or None for all of them.
 
@@ -25692,6 +25835,47 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
     # impact to fall back on, so the audio is the only narrowing
     # available -- and an uploaded clip is somebody deliberately
     # testing one swing, not ninety seconds of a hole.
+    # 2. THE CUTTER THIS HOLE WAS SET TO, when somebody has set one.
+    #
+    # After the rig's own impact and before everything else: that one
+    # is a confirmed instant rather than a search of the clip, exact
+    # and free, so nothing displaces it. Looked up HERE rather than at
+    # the top of the function, where it read as deciding first.
+    #
+    # IT MAY NARROW, IT MAY NOT HIDE. A cutter that finds nothing --
+    # or throws -- returns None and the caller sweeps the whole clip,
+    # exactly as if none were set. The rule this function is built on
+    # is that narrowing onto the wrong two seconds costs a swing,
+    # while scanning too much only costs time.
+    _cut, _cut_why = _cutter_for(db, row)
+    if _cut != "auto":
+        if _cut == "none":
+            _note("this hole is set to sweep the whole clip rather than "
+                  "narrow it (%s)" % _cut_why)
+            return None
+        try:
+            _dbg: dict = {}
+            _times = _cutter_times(_cut, db, row, src_path, fps, _dbg)
+            if _times:
+                w = _around(_times)
+                _note("%d cut(s) from the %s cutter, %s: %s — %s"
+                      % (len(_times), _cut, _cut_why,
+                         ", ".join("%.1fs" % t for t in _times),
+                         PRODUCE_CUTTERS[_cut]), w)
+                return w
+            _note("the %s cutter (%s) found nothing (%s) — sweeping the "
+                  "whole clip" % (_cut, _cut_why,
+                                  _dbg.get("reason") or "no candidates"))
+        except Exception as exc:  # noqa: BLE001
+            # A CHOSEN CUTTER THAT THROWS MUST NOT COST THE SWING. It
+            # falls back to the sweep, loudly, which is the same place
+            # every other failure here lands.
+            log.warning("ascent window: the %s cutter failed (%s) — "
+                        "scanning all", _cut, exc)
+            _note("the %s cutter failed (%s) — sweeping the whole clip"
+                  % (_cut, exc))
+        return None
+
     _kind = _trigger_kind(db, row)
     if _kind == "dwell":
         _note("a dwell clip — sweeping the whole clip rather than "

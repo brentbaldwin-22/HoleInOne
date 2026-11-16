@@ -990,10 +990,15 @@ export const api = {
     }),
   // {gates: {name: number | null}} — null clears one back to the
   // default, {} clears the hole.
-  setGateTuning: (key, uploadId, gates) =>
+  // `cutter` is which detector PRODUCTION narrows the ascent sweep
+  // with on this hole -- the same five Test Cut can run, plus "auto"
+  // (today's behaviour) and "none". Filed with the gates because the
+  // audio cutter is tuned by them. Omit it to leave the choice alone;
+  // gates and cutter can each be saved without clearing the other.
+  setGateTuning: (key, uploadId, gates, cutter) =>
     request(`/api/admin/long-uploads/${uploadId}/gate-tuning`, {
       method: "POST",
-      body: { gates },
+      body: cutter === undefined ? { gates } : { gates, cutter },
       adminPassword: key,
     }),
   saveHolePin: (key, uploadId, payload = {}) =>

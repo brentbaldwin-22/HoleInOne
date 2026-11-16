@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""The cutter an operator verified is the cutter production runs.
+
+Test Cut can run five detectors and show exactly what each would cut.
+Production could run none of them: it swept the whole clip unless the
+RIG had heard an impact, and the one narrowing it did have -- the
+clip's own audio -- was hard-wired ON for manual uploads and hard-wired
+OFF for dwell clips. So the detector somebody had just verified on a
+hole could not be the one used on it.
+
+THE RULE THIS SITS UNDER, from `_ascent_windows`: narrowing onto the
+wrong two seconds returns a clip with no ball in it and reads exactly
+like one, while scanning too much only costs time. So a cutter may
+narrow and must never hide: one that finds nothing, or throws, falls
+back to the full sweep.
+
+    python3 tools/produce_cutter_test.py
+"""
+import ast
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "backend" / "app" / "routers" / "admin.py"
+TEXT = SRC.read_text(encoding="utf-8")
+TREE = ast.parse(TEXT)
+
+FAILED = []
+
+
+def check(label, got, want):
+    ok = got == want
+    print("  %-62s %s" % (label, "ok" if ok else "FAIL got %r" % (got,)))
+    if not ok:
+        FAILED.append(label)
+
+
+def fn(name):
+    return next((n for n in ast.walk(TREE)
+                 if isinstance(n, ast.FunctionDef) and n.name == name), None)
+
+
+def body(name):
+    f = fn(name)
+    return ast.get_source_segment(TEXT, f) if f else ""
+
+
+print("\n-- the menu is one definition, and auto is the default")
+check("the cutters are declared in one place",
+      "PRODUCE_CUTTERS = {" in TEXT, True)
+for name in ("auto", "none", "audio", "motion", "combined", "ballgone",
+             "pi"):
+    check("  %s is offered" % name, '"%s":' % name in TEXT, True)
+_cf = body("_cutter_for")
+check("nothing stored means auto", 'return "auto", ' in _cf, True)
+check("  and an unrecognised name means auto too",
+      "not in PRODUCE_CUTTERS" in _cf, True)
+
+
+print("\n-- it runs the SAME functions Test Cut runs")
+# A second copy of the arithmetic would make "what you verified is what
+# runs" quietly false.
+_ct = body("_cutter_times")
+for f in ("detect_swings_from_audio", "detect_swings_from_motion",
+          "detect_swings_combined", "find_ball_vanish",
+          "detect_swings_pi"):
+    check("  %s" % f, f in _ct, True)
+check("the audio cutter uses the hole's gates",
+      "_gate_tuning_for(db, row)" in _ct and "resolve_gates" in _ct, True)
+
+
+print("\n-- it may narrow; it may never hide")
+_aw = body("_ascent_windows")
+check("a chosen cutter is consulted", "_cutter_for(db, row)" in _aw, True)
+# THE ORDER THAT MATTERS is where the cutter BRANCH sits, not where
+# the lookup does -- the rig's confirmed impact must still return
+# before any search of the clip is run.
+check("  after the rig's own impact, which stays first",
+      _aw.index("_rig_impact_sec") < _aw.index('if _cut != "auto":'),
+      True)
+check("finding nothing sweeps the whole clip",
+      "sweeping the \\nwhole clip" in _aw or "sweeping the whole clip" in _aw,
+      True)
+check("  and a cutter that THROWS also sweeps",
+      "the %s cutter failed" in _aw, True)
+check("  'none' sweeps on purpose",
+      'if _cut == "none":' in _aw, True)
+# CONTROL: the default path is untouched. "auto" must still reach the
+# dwell branch that was argued for earlier.
+check("control, auto still falls through to the dwell rule",
+      'if _cut != "auto":' in _aw and '_kind == "dwell"' in _aw, True)
+
+
+print("\n-- saving one does not clear the gates, or vice versa")
+_sv = body("set_gate_tuning")
+check("an unknown cutter is refused", "unknown cutter" in _sv, True)
+check("the stored cutter survives a gate-only save",
+      '_prev_cut = (store.get(key) or {}).get("cutter")' in _sv, True)
+check("  and auto clears it rather than storing a word",
+      'None if _cutter == "auto" else _cutter' in _sv, True)
+check("the audit line says which cutter", "cutter=" in _sv, True)
+
+
+print("\n-- and the editor is told what exists")
+_gt = body("get_gate_tuning") or TEXT
+check("the current choice is served", '"cutter": _cutter_for' in TEXT, True)
+check("  with the menu beside it", '"cutters": [{"name": k' in TEXT, True)
+
+print("\n-- and the operator can actually choose one")
+JSX = (ROOT / "frontend" / "src" / "components"
+       / "GateTuning.jsx").read_text(encoding="utf-8")
+check("the editor renders the menu the backend serves",
+      "data.cutters" in JSX, True)
+check("  rather than a list of its own",
+      '"audio"' in JSX and '"ballgone"' in JSX, False)
+check("  and shows where the choice came from",
+      "data.cutter_why" in JSX, True)
+check("choosing one saves it", "saveCutter" in JSX, True)
+# A CUTTER SAVE MUST NOT DISCARD TYPED GATES. The backend keeps the
+# half it is not told about, but the editor holds unsaved numbers.
+check("  and carries the pending gates with it",
+      "api.setGateTuning(\n        adminPassword, uploadId, pending(), name)"
+      in JSX, True)
+API = (ROOT / "frontend" / "src" / "api.js").read_text(encoding="utf-8")
+check("the api sends the cutter only when given one",
+      "cutter === undefined ? { gates } : { gates, cutter }" in API, True)
+
+print()
+if FAILED:
+    print("%d FAILED: %s" % (len(FAILED), ", ".join(FAILED)))
+    sys.exit(1)
+print("all good")

@@ -61,6 +61,26 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
   const dirty = Object.keys(draft).length > 0;
   const nTuned = Object.keys(pending()).length;
 
+  async function saveCutter(name) {
+    setBusy(true);
+    setNote(null);
+    try {
+      // THE GATES GO WITH IT, unchanged. The backend keeps whichever
+      // half it is not told about, but sending the pending edits here
+      // means choosing a cutter does not silently discard numbers the
+      // operator has typed and not yet saved.
+      const out = await api.setGateTuning(
+        adminPassword, uploadId, pending(), name);
+      setNote(`Cutter set to ${name}. Re-produce to see it applied.`);
+      await load();
+      onSaved?.(out);
+    } catch (e) {
+      setNote(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function save(clearAll) {
     setBusy(true);
     setNote(null);
@@ -150,6 +170,37 @@ export function GateTuning({ adminPassword, uploadId, onSaved }) {
         only, or leave it blank to use the default. Nothing here touches
         any other hole.
       </div>
+      {/* WHICH CUTTER PRODUCTION RUNS ON THIS HOLE.
+          Test Cut could run five detectors and show exactly what each
+          would cut; production ran none of them — it swept the whole
+          clip unless the rig had heard an impact. So the detector an
+          operator had just verified here could not be the one used.
+          It sits with the gates because the audio cutter is tuned by
+          them. */}
+      {(data.cutters || []).length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <div className="tiny upper muted" style={{ marginBottom: 4 }}>
+            Cutter — what narrows the search when producing
+          </div>
+          <select
+            value={data.cutter || "auto"}
+            disabled={busy}
+            onChange={(e) => saveCutter(e.target.value)}
+            style={{ width: "auto", maxWidth: "100%" }}
+          >
+            {(data.cutters || []).map((c) => (
+              <option key={c.name} value={c.name}>
+                {c.name} — {c.detail}
+              </option>
+            ))}
+          </select>
+          <div className="tiny muted" style={{ marginTop: 4 }}>
+            {data.cutter_why}. A cutter that finds nothing falls back to
+            searching the whole clip, so this can narrow the search but
+            never hide a swing.
+          </div>
+        </div>
+      )}
       <div className="row" style={{ gap: 16, flexWrap: "wrap",
                                     alignItems: "flex-start" }}>
         {group("Ascent — leaving the tee", asc)}
