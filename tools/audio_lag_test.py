@@ -160,6 +160,46 @@ GT = (ROOT / "frontend" / "src" / "components"
 check("and the editor explains the one gate that needs it",
       "audio_lag_sec" in GT, True)
 
+print("\n-- AND IT TOUCHES NOTHING ELSE")
+#
+# REPORTED FROM THE FIELD: after setting this gate the audio cutter
+# "basically stopped working" -- 0 peaks over the gate, where it had
+# been cutting. The suspicion was fair and the answer was no: the
+# cutter's own gate was already at x8 on that hole and the loudest
+# peak in the clip was x4.86, which the report said in as many words.
+#
+# But "a new gate cannot disturb an old one" is exactly the property
+# nothing was checking, and it is worth a test rather than an
+# argument. A gate is a shared, stored dict read by several
+# detectors; the next one added deserves this guard too.
+_BASE = {"audio_min_ratio": 8.0, "audio_min_separation_sec": 3.0,
+         "audio_max_attack_ms": 20.0, "ball_min_contrast": 24.0}
+_plain = resolve_gates(dict(_BASE))
+for _lag in (0.0, 0.2, 0.6, 2.0, "nonsense", -5):
+    _with = resolve_gates(dict(_BASE, **{KEY: _lag}))
+    _moved = [k for k in _plain
+              if k != KEY and _plain[k] != _with[k]]
+    check("setting it to %-9s moves no other gate" % repr(_lag),
+          _moved, [])
+# AND A ZONE OVERRIDE OF IT IS JUST AS INERT.
+_z = resolve_gates(dict(_BASE, **{KEY + "@2": 0.6}), zone=2)
+check("a zone override of it moves no other gate",
+      [k for k in _plain if k != KEY and _plain[k] != _z[k]], [])
+# THE CUTTER NEVER READS IT. Two call sites, both the ball check.
+import subprocess  # noqa: E402
+_hits = subprocess.run(
+    ["grep", "-rn", "audio_lag_sec", "--include=*.py",
+     str(ROOT / "backend" / "app" / "routers"),
+     str(ROOT / "backend" / "app" / "services")],
+    capture_output=True, text=True).stdout.splitlines()
+_code = [h for h in _hits
+         if "debug3.py" not in h and not h.split(":", 2)[-1].strip()
+         .startswith("#")]
+check("it is read only where the ball check runs",
+      all("admin.py" in h for h in _code), True)
+check("  and never in a detector's own module",
+      any("d3.py" in h or "debug2.py" in h for h in _code), False)
+
 print()
 if FAILED:
     print("%d FAILED: %s" % (len(FAILED), ", ".join(FAILED)))
