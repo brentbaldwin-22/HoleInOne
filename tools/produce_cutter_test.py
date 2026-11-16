@@ -127,6 +127,33 @@ for path, needle in (
 check("the times it cut at travel too", "times=[round(t, 2)" in _aw, True)
 
 
+print("\n-- was there a SWING where it cut")
+_vc = body("_verify_cut")
+_vr = body("_verify_crop")
+check("one definition of where to look", bool(_vr), True)
+check("  and Test cut uses it",
+      "_crop, _zspan, _zfloor, _zbox = _verify_crop(db, row)" in TEXT, True)
+check("  with no second copy of the zone arithmetic",
+      TEXT.count("_x0 - _w, _y0 - 3 * _h, 3 * _w, 4 * _h"), 1)
+check("the judge is the same one", "swing_heat_check" in _vc, True)
+check("  asked about the golfer", 'style="golfer"' in _vc, True)
+check("  and it never takes the run down",
+      "return {}" in _vc, True)
+_ar = body("_ascent_run")
+check("a FIND judges its cuts", "_verify_cut(" in _ar, True)
+# A PRODUCE MUST NOT PAY FOR IT: each is a vision call on a clip the
+# produce is about to search anyway.
+check("  and a produce does not", "if not produce and isinstance" in _ar,
+      True)
+check("  bounded, so a noisy clip cannot fan out",
+      "_times[:6]" in _ar, True)
+# THE CLOSURE THAT WOULD HAVE BEEN A NameError: `_named_url` is
+# defined inside another endpoint, not at module level.
+check("it builds urls with the module-level helper",
+      "_clip_url_for(_v.get" in _ar, True)
+check("  not the closure from another endpoint",
+      "_named_url(_v.get" in _ar, False)
+
 print("\n-- and the operator can actually choose one")
 JSX = (ROOT / "frontend" / "src" / "components"
        / "GateTuning.jsx").read_text(encoding="utf-8")
@@ -149,6 +176,10 @@ check("Find ascents shows which cutter ran",
 check("  the times it cut at", "rep.window.times" in PROD, True)
 check("  and says plainly when it found nothing",
       "cannot have hidden a swing" in PROD, True)
+check("Find ascents shows the verdict per cut",
+      "rep.window.cuts" in PROD, True)
+check("  with the frame strip", "c.frames_image" in PROD, True)
+check("  and the judge's reason", "c.reason" in PROD, True)
 
 print("\n-- the cutter's WORKING is shown, not just its conclusion")
 # "Cut at 24.78s" is a conclusion. The evidence -- the noise floor, the

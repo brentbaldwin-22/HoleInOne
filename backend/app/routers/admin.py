@@ -15753,42 +15753,11 @@ def test_cut_long_upload(
             # that dies because the opinion could not be had is worse
             # than one that reports without it.
             try:
-                _crop = None
-                _zspan = None
-                _zfloor = None
-                _zbox = None
-                try:
-                    _zs = _tee_trigger_zones(db, row) or []
-                    if _zs:
-                        _x0 = min(int(z["x"]) for z in _zs)
-                        _y0 = min(int(z["y"]) for z in _zs)
-                        _x1 = max(int(z["x"]) + int(z["w"]) for z in _zs)
-                        _y1 = max(int(z["y"]) + int(z["h"]) for z in _zs)
-                        _w, _h = _x1 - _x0, _y1 - _y0
-                        _crop = (_x0 - _w, _y0 - 3 * _h, 3 * _w, 4 * _h)
-                        # AND THE SPAN A GOLFER MUST BE STANDING IN.
-                        # A long upload has no person detector, so
-                        # there is no stance point -- but the zones are
-                        # right here, and without something the
-                        # measurement falls back to the largest mover.
-                        # On clip 1734 that was a bystander at a cart
-                        # who beat the actual swing by 27% of area.
-                        _zspan = (_x0, _x1)
-                        # The zones are drawn round FEET, so their
-                        # bottom edge is the ground line the crop
-                        # should reach down to.
-                        _zfloor = _y1
-                        # AND THE BOXES THEMSELVES, to draw. The span
-                        # above is their union; these are the zones as
-                        # the operator actually drew them, which is
-                        # what they want to check the picture against.
-                        _zbox = [(int(z["x"]), int(z["y"]),
-                                  int(z["w"]), int(z["h"])) for z in _zs]
-                except Exception:  # noqa: BLE001
-                    _crop = None
-                    _zspan = None
-                    _zfloor = None
-                    _zbox = None
+                # ONE DEFINITION OF WHERE TO LOOK. This was worked
+                # out inline here; Find ascents asks the same question
+                # of the same clip, and two copies would be two
+                # different questions wearing one name.
+                _crop, _zspan, _zfloor, _zbox = _verify_crop(db, row)
                 # BOTH AUDIO PROCESSES GET THE GOLFER CROP AND THE
                 # SIX TILES NOW. They still ask DIFFERENT QUESTIONS --
                 # audio 2 has its own prompt and its own four-way
@@ -25739,6 +25708,95 @@ def _cutter_times(name, db, row, src_path, fps, dbg):
     return out
 
 
+def _verify_crop(db, row):
+    """(crop, zone span, ground line, zone boxes) for a verification.
+
+    THE SAME FRAMING THE JUDGE IS ALWAYS GIVEN. Test Cut worked this
+    out inline, and Find ascents now asks the same question of the same
+    clip -- two copies of "where do we look" would be two different
+    questions wearing one name, and the one that drifted would be the
+    one nobody was watching.
+
+    All four are None when the camera has no zones: the caller then
+    gets the whole frame, which is the honest fallback and the one the
+    old code took.
+    """
+    try:
+        _zs = _tee_trigger_zones(db, row) or []
+        if not _zs:
+            return None, None, None, None
+        _x0 = min(int(z["x"]) for z in _zs)
+        _y0 = min(int(z["y"]) for z in _zs)
+        _x1 = max(int(z["x"]) + int(z["w"]) for z in _zs)
+        _y1 = max(int(z["y"]) + int(z["h"]) for z in _zs)
+        _w, _h = _x1 - _x0, _y1 - _y0
+        return (
+            (_x0 - _w, _y0 - 3 * _h, 3 * _w, 4 * _h),
+            # The span a golfer must be standing in. Without it the
+            # measurement falls back to the largest mover, which on
+            # clip 1734 was a bystander at a cart who beat the actual
+            # swing by 27% of area.
+            (_x0, _x1),
+            # Zones are drawn round FEET, so their bottom edge is the
+            # ground line the crop should reach down to.
+            _y1,
+            [(int(z["x"]), int(z["y"]), int(z["w"]), int(z["h"]))
+             for z in _zs],
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("verify crop: no zones for upload %s (%s)",
+                  getattr(row, "id", None), exc)
+        return None, None, None, None
+
+
+def _verify_cut(db, row, src_path, fps, at_sec, *, tag, window_sec=1.6):
+    """Is there a swing at `at_sec`? The judge's answer and its pictures.
+
+    ONE VERDICT, TWO SCREENS. Test Cut has shown this since it existed
+    -- the six tiles, the zones drawn on them, and the heat judge's
+    answer -- and Find ascents showed where the cutter cut and nothing
+    about whether anything was there. Since production can now be SET
+    to that cutter, "it cut at 24.78s" without "and there was a swing
+    there" is half the answer, and the missing half is the one that
+    says whether the setting is right.
+
+    Returns {} on anything it cannot do. A second opinion that takes
+    the run down with it is worse than one that is missing.
+    """
+    try:
+        from ..services.tracer import swing_heat_check, find_people_over_time
+        from ..services.tracer import AUDIO2_OFFSETS_SEC as _OFF
+    except Exception as exc:  # noqa: BLE001
+        log.debug("verify: tracer unavailable (%s)", exc)
+        return {}
+    _crop, _zspan, _zfloor, _zbox = _verify_crop(db, row)
+    _people = None
+    try:
+        _people = find_people_over_time(src_path, float(at_sec), _OFF,
+                                        region=_crop)
+    except Exception as exc:  # noqa: BLE001
+        # Empty = could not tell, and pick_front_golfer falls back to
+        # the heat. Not the same as "nobody was there".
+        log.debug("verify: person detect failed (%s)", exc)
+    try:
+        return swing_heat_check(
+            src_path, float(at_sec), fps,
+            crop=_crop, prefer_span=_zspan, floor_y=_zfloor, zones=_zbox,
+            style="golfer",
+            people=_people,
+            # A tee has a player and a playing partner; each extra
+            # candidate is another vision call.
+            max_candidates=2,
+            debug_dir=CLIPS_DIR,
+            debug_prefix=tag,
+            before_sec=float(window_sec),
+            after_sec=float(window_sec),
+        ) or {}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("verify: heat check failed at %.2fs (%s)", at_sec, exc)
+        return {}
+
+
 def _ascent_windows(db, row, src_path, fps, rep=None):
     """Frames worth searching for a ball leaving, or None for all of them.
 
@@ -26173,6 +26231,47 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                  "tee", 0, 0)
     _t_sub = time.perf_counter()
     _win = _ascent_windows(db, row, src_path, fps, rep)
+    # WAS THERE A SWING WHERE IT CUT? Only on a FIND, never on a
+    # produce.
+    #
+    # "It cut at 24.78s" is half the answer, and the missing half is
+    # the one that says whether the hole's cutter setting is right.
+    # Test Cut has always shown it; Find ascents showed where and not
+    # whether. Same judge, same framing -- `_verify_cut`.
+    #
+    # NOT ON A PRODUCE. Each of these is a vision call on a clip the
+    # produce is about to search anyway: diagnostic value on a run
+    # whose whole purpose is to be looked at, dead weight on one whose
+    # purpose is to make clips. A find is already the slow, deliberate
+    # button.
+    if not produce and isinstance(rep.get("window"), dict):
+        _times = rep["window"].get("times") or []
+        _cuts = []
+        for _i, _t in enumerate(_times[:6]):
+            _v = _verify_cut(
+                db, row, src_path, fps, _t,
+                tag="findcut-%s-%02d-%s" % (row.id, _i,
+                                            secrets.token_hex(3)))
+            _cuts.append({
+                "at_sec": round(float(_t), 2),
+                "is_swing": _v.get("is_swing"),
+                "reason": _v.get("reason") or _v.get("why"),
+                "decided_by": _v.get("decided_by"),
+                # `_clip_url_for`, NOT `_named_url` -- that one is a
+                # closure defined inside another endpoint and is not in
+                # scope here. It would have been a NameError on the
+                # first find that cut anything, inside a try nothing
+                # here wraps.
+                "frames_image": _clip_url_for(_v.get("frames_image_zones")
+                                              or _v.get("frames_image")),
+                "image": _clip_url_for(_v.get("image_zones")
+                                       or _v.get("image")),
+            })
+        if _cuts:
+            rep["window"]["cuts"] = _cuts
+            log.info("ascent window: judged %d cut(s) — %s", len(_cuts),
+                     ", ".join("%.2fs=%s" % (c["at_sec"], c["is_swing"])
+                               for c in _cuts))
     _sec_win = time.perf_counter() - _t_sub
     if progress:
         if _win:

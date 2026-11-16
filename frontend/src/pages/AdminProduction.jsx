@@ -10864,6 +10864,40 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                 Gates: {rep.window.debug.gates_from}
               </div>
             )}
+            {/* WAS THERE A SWING WHERE IT CUT.
+                "Cut at 24.78s" says where; this says whether. Same
+                judge and same framing as Test Cut (`_verify_cut`), so
+                a cut that reads as a swing there reads as one here.
+                Only on a find — a produce does not pay for it. */}
+            {Array.isArray(rep.window.cuts) && rep.window.cuts.length > 0 && (
+              <div style={{ marginTop: 6 }}>
+                {rep.window.cuts.map((c, i) => (
+                  <div key={i} style={{ marginTop: 6 }}>
+                    <b>{c.at_sec}s</b>{" "}
+                    <span style={{
+                      color: c.is_swing === true ? "#1a7f37"
+                        : c.is_swing === false ? "#c0392b" : "#777" }}>
+                      {c.is_swing === true ? "✓ swing"
+                        : c.is_swing === false ? "✗ not a swing"
+                        : "could not tell"}
+                    </span>
+                    {c.decided_by && (
+                      <span className="muted"> · by {c.decided_by}</span>
+                    )}
+                    {c.reason && (
+                      <div className="muted" style={{ maxWidth: 760 }}>
+                        {c.reason}
+                      </div>
+                    )}
+                    {c.frames_image && (
+                      <img src={c.frames_image} alt={`cut at ${c.at_sec}s`}
+                           style={{ maxWidth: 420, borderRadius: 4,
+                                    marginTop: 4, display: "block" }} />
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
             {/* THE CUTTER'S OWN WORKING, the same table Test Cut
                 shows — one component, so the two cannot drift.
                 "Cut at 24.78s" is a conclusion; this is the evidence,
