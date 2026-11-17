@@ -30814,6 +30814,44 @@ def _ascent_apply_ai_launch(rep, clip_index) -> dict:
         c["ball"] = [int(round(_rx)), int(round(_ry))]
         c["ball_source"] = "the AI launch plot"
         out["applied"] = True
+    # ── AND THE FRAME, BY THE SAME RULE AS THE SPOT ─────────────────
+    #
+    # The rule above is already written down: the ball at address is
+    # an OBSERVATION of the thing the chain's run back only
+    # ESTIMATES, so it becomes the tee spot. That is just as true of
+    # the frame, and the frame was never taken -- stage 1 watched the
+    # ball sit and watched it go, and the clip kept a number run
+    # backwards along a heading instead.
+    #
+    # The estimate's own docstring says it "lands EARLY -- measured on
+    # real ascents, 8 to 23 frames before the strike", and that early
+    # is the harmless direction because it is where the tracer starts.
+    # On the swing that prompted this it landed 31 frames LATE: f827
+    # against a strike the ball check put near f796, which is the
+    # direction that same comment calls a bug. It is clamped never to
+    # exceed the chain's first detected point, and that is what f827
+    # is -- the first frame the ball was seen in the band, half a
+    # second after it left the tee. The run back had nothing to give
+    # and the clamp stood in for it.
+    #
+    # ONLY THIS SWING. `clip_index` is the chain the heard strike was
+    # matched to; stage 1 measured around that one instant, so its
+    # frame means nothing for any other chain on the clip.
+    _mif = _ai.get("measured_impact_frame")
+    if _mif is not None:
+        try:
+            _mif = int(_mif)
+            if c.get("impact_frame") is not None:
+                c["impact_frame_est"] = int(c["impact_frame"])
+                out["impact_moved_frames"] = (
+                    int(c["impact_frame"]) - _mif)
+            c["impact_frame"] = _mif
+            c["impact_source"] = (
+                "the ball was watched sitting and watched going — "
+                "measured, not run back from the chain")
+            out["applied"] = True
+        except (TypeError, ValueError):
+            pass
     # ── the climb the band never saw ─────────────────────────────────
     _asc = rep.get("ascents") or []
     _pts = (_asc[clip_index].get("points") or []
