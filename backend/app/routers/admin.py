@@ -25712,6 +25712,18 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
         _dets = list((sweep or {}).get("dets_sample")
                      or (sweep or {}).get("near_dets") or [])
         if not _con and not _dets:
+            # THE SWEEP'S OWN REASON FIRST. A sweep that THREW returns
+            # no detections and no chains, which is indistinguishable
+            # here from a band that was genuinely empty -- and the two
+            # could not be further apart. "The band contained nothing
+            # that moved" was printed over an UnboundLocalError that
+            # had killed the entire search.
+            _sr = str((sweep or {}).get("reason") or "")
+            if (sweep or {}).get("ok") is False or "failed" in _sr:
+                out["why"] = (
+                    "the sweep did not finish, so there is nothing to "
+                    "draw — %s" % (_sr or "it gave no reason"))
+                return out
             out["why"] = (
                 "the sweep weighed no chains and reported no "
                 "detections either, so there is nothing to draw — "
@@ -26292,9 +26304,20 @@ def _ball_scan_run(row, src_path, db, progress=None) -> dict:
         except Exception as exc:  # noqa: BLE001
             log.debug("ball scan: departure search failed: %s", exc)
         try:
+            # GATES AND THE ZONE THEY ARE FILED UNDER. This passed
+            # neither, so it ran on module defaults while the sibling
+            # sweep four lines down ran on the hole's tuned values --
+            # two searches of one clip answering to different numbers.
+            _fa_zone = None
+            try:
+                _fa_zone = _trigger_zone(db, row)
+            except Exception as _zx:  # noqa: BLE001
+                log.debug("ball scan: no trigger zone (%s)", _zx)
             _asc = _d3.find_ascents(src_path, fps, int(_imp),
                                     (_sp["x"], _sp["y"]),
                                     roi=_roi.get("roi"),
+                                    gates=_gate_tuning_for(db, row)[0],
+                                    zone=_fa_zone,
                                     **_search_area_for(db, row)) or {}
         except Exception as exc:  # noqa: BLE001
             log.warning("ball scan: ascent search failed on %s: %s",
@@ -26318,9 +26341,18 @@ def _ball_scan_run(row, src_path, db, progress=None) -> dict:
     # of the run.
     _t = time.perf_counter()
     try:
+        # THE TEE'S OWN GATES, including the per-zone ones. Reading
+        # the overrides without the zone they are filed under is how a
+        # tuned cone came back as no cone at all.
+        _bs_zone = None
+        try:
+            _bs_zone = _trigger_zone(db, row)
+        except Exception as _zx:  # noqa: BLE001
+            log.debug("ball scan: no trigger zone (%s)", _zx)
         _sweep = _d3.sweep_ascents(
             src_path, fps, roi=_roi.get("roi"),
             gates=_gate_tuning_for(db, row)[0],
+            zone=_bs_zone,
             **_search_area_for(db, row)) or {}
     except Exception as exc:  # noqa: BLE001
         log.warning("ball scan: ascent sweep failed on %s: %s", row.id, exc)
@@ -27263,10 +27295,20 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # _skyline` searches the wedge under the skyline, and the wedge is
     # anchored here -- so this is read once and handed to both.
     _apex_for_cone, _ = _cone_apex_for(rep.get("ai_launch"))
+    # AND WHICH TEE, so the per-zone cone the editor offers is the one
+    # that runs. Without it `resolve_gates` could not see a `name@N`
+    # override and a cone set for zone 3 arrived as -90..+90.
+    _zone_for_cone = None
+    try:
+        _zone_for_cone = _trigger_zone(db, row)
+    except Exception as _zx:  # noqa: BLE001
+        log.debug("ascent sweep: no trigger zone (%s)", _zx)
+    rep["gate_zone"] = _zone_for_cone
     sweep = _d3.sweep_ascents(src_path, fps, roi=_roi.get("roi"),
                               windows=_win,
                               gates=_gt,
                               cone_apex=_apex_for_cone,
+                              zone=_zone_for_cone,
                               **_search_area_for(db, row)) or {}
     _sec_sweep = time.perf_counter() - _t_sub
     _t_sub = time.perf_counter()

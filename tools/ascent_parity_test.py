@@ -52,8 +52,16 @@ def main():
     # ── AND READ THE SAME KEYS OUT OF THE SAME TABLE ────────────────
     _src = inspect.getsource(d3.find_ascents)
     _swp = inspect.getsource(d3.sweep_ascents)
+    # THE SPELLING MOVED, THE CLAIM DID NOT. Both now resolve WITH
+    # the zone, because the editor offers the cone and the audio
+    # gates per tee and a resolve blind to the zone silently ignored
+    # every one of them. Parity means both do it, and both do it the
+    # same way -- which is a stronger statement than the old one, not
+    # a weaker one.
     ok("the column search resolves the gate table",
-       "resolve_gates(gates)" in _src, True)
+       "resolve_gates(gates, zone=zone)" in _src, True)
+    ok("  and the sweep resolves it identically, zone and all",
+       "resolve_gates(gates, zone=zone)" in _swp, True)
     for _k in ("ascent_per_frame", "ascent_three_frame",
                "ascent_ghost_px", "ascent_prefer_area",
                "ascent_merge_px", "ascent_corridor_px"):

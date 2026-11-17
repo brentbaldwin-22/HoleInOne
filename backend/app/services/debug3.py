@@ -2797,6 +2797,10 @@ def find_descents(
     # the cheap pass was simply not looking hard enough, not that the
     # expensive detectors saw something it cannot.
     diff_sens: int = 2,
+    # WHICH TEE, for the per-zone overrides the editor offers on
+    # the cone and the audio gates. None means the hole's own
+    # values, which is exactly how this behaved before.
+    zone: int | None = None,
 ) -> dict:
     """Every ball descent in a green-camera clip, found without being told
     where to look.
@@ -2835,7 +2839,17 @@ def find_descents(
     # default by accident. Nothing may reference these names above this
     # block -- the try/except below would turn an UnboundLocalError into
     # a "reason" string and hide it.
-    _G = resolve_gates(gates)
+    # WITH THIS TEE'S OWN OVERRIDES. The editor offers the cone and
+    # the audio gates PER ZONE -- a tee aims somewhere, and loudness
+    # is distance -- and this resolved with no zone at all. So every
+    # per-zone value was stored, shown as tuned, and then ignored by
+    # the search meant to use it: a cone set for zone 3 arrived here
+    # as -90..+90, which is no cone.
+    #
+    # The same bug the ball gates had, in the same shape ("I changed
+    # the lag and nothing happened"): the override exists and the
+    # resolve cannot see it.
+    _G = resolve_gates(gates, zone=zone)
     DESCENT_MAX_TILT_DEG = _G["descent_max_tilt_deg"]
     DESCENT_MAX_STEP_BACK = _G["descent_max_step_back"]
     DESCENT_MIN_DENSITY = _G["descent_min_density"]
@@ -4238,6 +4252,10 @@ def find_ascents(
     # sweep_ascents is given. Without them this ran a DIFFERENT
     # search -- see the note in the body.
     gates=None,
+    # WHICH TEE, for the per-zone overrides the editor offers on
+    # the cone and the audio gates. None means the hole's own
+    # values, which is exactly how this behaved before.
+    zone: int | None = None,
 ) -> dict:
     """Did a ball rise away from `ball_xy` just after `impact_frame`?
 
@@ -4260,7 +4278,17 @@ def find_ascents(
     # hole's number through the name it already used, with no call
     # site changed and no chance of one gate being tuned while the one
     # beside it silently reads the module default.
-    _G = resolve_gates(gates)
+    # WITH THIS TEE'S OWN OVERRIDES. The editor offers the cone and
+    # the audio gates PER ZONE -- a tee aims somewhere, and loudness
+    # is distance -- and this resolved with no zone at all. So every
+    # per-zone value was stored, shown as tuned, and then ignored by
+    # the search meant to use it: a cone set for zone 3 arrived here
+    # as -90..+90, which is no cone.
+    #
+    # The same bug the ball gates had, in the same shape ("I changed
+    # the lag and nothing happened"): the override exists and the
+    # resolve cannot see it.
+    _G = resolve_gates(gates, zone=zone)
     # THE CONE, ORDERED. An operator who types the wider number first
     # means the same cone, and refusing everything because of it would
     # look exactly like a camera pointed the wrong way.
@@ -4439,7 +4467,7 @@ def find_ascents(
             # no cone gets the full half-turn and nothing changes.
             _bearing = math.degrees(math.atan2(_vx, -_vy))
             _row["bearing_deg"] = round(_bearing, 1)
-            if _CONE_LO > -180.0 or _CONE_HI < 180.0:
+            if _cone_is_set(_CONE_LO, _CONE_HI):
                 # ── TWO TESTS, AND THEY ARE NOT THE SAME TEST ───────
                 #
                 # The operator drew a WEDGE anchored at the tee --
@@ -6122,6 +6150,10 @@ def sweep_ascents(
     # absent evidence would refuse every chain on every clip that
     # never asked.
     aim_x: float | None = None,
+    # WHICH TEE, for the per-zone overrides the editor offers on
+    # the cone and the audio gates. None means the hole's own
+    # values, which is exactly how this behaved before.
+    zone: int | None = None,
 ) -> dict:
     """Every ball leaving the tee in the WHOLE video, found from above.
 
@@ -6154,7 +6186,17 @@ def sweep_ascents(
     # Python raises UnboundLocalError -- which the try/except around the
     # body would turn into a bland "reason" string rather than a crash.
     # Hence the very top, and hence the test that runs this for real.
-    _G = resolve_gates(gates)
+    # WITH THIS TEE'S OWN OVERRIDES. The editor offers the cone and
+    # the audio gates PER ZONE -- a tee aims somewhere, and loudness
+    # is distance -- and this resolved with no zone at all. So every
+    # per-zone value was stored, shown as tuned, and then ignored by
+    # the search meant to use it: a cone set for zone 3 arrived here
+    # as -90..+90, which is no cone.
+    #
+    # The same bug the ball gates had, in the same shape ("I changed
+    # the lag and nothing happened"): the override exists and the
+    # resolve cannot see it.
+    _G = resolve_gates(gates, zone=zone)
     ASCENT_MIN_POINTS = _G["ascent_min_points"]
     ASCENT_MIN_RISE_FRAC = _G["ascent_min_rise_frac"]
     ASCENT_RATE_LO = _G["ascent_rate_lo"]
@@ -6268,7 +6310,7 @@ def sweep_ascents(
         # Two passes keep the band's budget exactly as it was.
         out["cone_below"] = None
         if (bool(int(_G["ascent_cone_below_skyline"])) and cone_apex
-                and (_CONE_LO > -180.0 or _CONE_HI < 180.0)):
+                and _cone_is_set(_CONE_LO, _CONE_HI)):
             try:
                 _ax, _ay = int(cone_apex[0]), int(cone_apex[1])
                 _top = int(band_h)
@@ -6574,16 +6616,31 @@ def sweep_ascents(
             # tee actually sends it. So a hole that has set a cone is
             # judged by the cone, and a hole that has not keeps tilt
             # exactly as before.
-            _coned = _CONE_LO > -180.0 or _CONE_HI < 180.0
+            _coned = _cone_is_set(_CONE_LO, _CONE_HI)
             _bearing = math.degrees(math.atan2(_vx, -_vy))
+            # MEASURED ALWAYS, APPLIED SOMETIMES.
+            #
+            # `tilt_deg` goes into EVERY chain entry for the report,
+            # and this was computed only on the branch where tilt is
+            # also the gate. So on a hole that had set a cone, the
+            # first chain to reach the entry raised
+            #
+            #     cannot access local variable '_tilt'
+            #
+            # and the except around the whole sweep turned that into
+            # "sweep failed" with no detections, no chains and no
+            # pictures -- the entire search lost to a report field.
+            #
+            # Latent until a chain actually formed: a coned hole that
+            # found nothing never got far enough to crash, so it read
+            # as a quiet, working search right up until it worked.
+            _tilt = (math.degrees(math.atan2(abs(_vx), abs(_vy)))
+                     if abs(_vy) > 1e-6 else 90.0)
             if _coned:
                 if not (_CONE_LO <= _bearing <= _CONE_HI):
                     _why.append("cone")
-            else:
-                _tilt = math.degrees(math.atan2(abs(_vx), abs(_vy))) \
-                    if abs(_vy) > 1e-6 else 90.0
-                if _tilt > ASCENT_MAX_TILT_DEG:
-                    _why.append("tilt")
+            elif _tilt > ASCENT_MAX_TILT_DEG:
+                _why.append("tilt")
             _from_x = _from_f = None
             _from_model = None
             if _vy < -0.5:
@@ -6782,7 +6839,7 @@ def sweep_ascents(
         # the gate it illustrates is worse than no picture, because
         # it is believed.
         out["cone_deg"] = [_CONE_LO, _CONE_HI]
-        out["cone_on"] = bool(_CONE_LO > -180.0 or _CONE_HI < 180.0)
+        out["cone_on"] = bool(_cone_is_set(_CONE_LO, _CONE_HI))
         out["window_frames"] = int(_G["ascent_window_frames"])
         # AND A TALLY OF EVERY REASON, over all of them and not just the
         # ones that fit in the picture -- "twelve failed on tilt" is the
@@ -8726,6 +8783,26 @@ def split_gate_key(k):
         return (_n, int(_z))
     except (TypeError, ValueError):
         return (None, None)
+
+
+def _cone_is_set(lo: float, hi: float) -> bool:
+    """Has this tee actually been given a launch cone?
+
+    AGAINST THE DEFAULT, NOT AGAINST -180/180. This asked
+    `lo > -180 or hi < 180`, and the default cone is -90/+90 -- so it
+    was True for every hole in the database whether or not anybody had
+    drawn a cone, and "a hole that has not set a cone keeps tilt
+    exactly as before" was false the moment it was written. Tilt has
+    been switched off everywhere since, with the cone it was replaced
+    by accepting the entire upper half of the picture.
+
+    The editor says it in as many words -- "Leave at -90/+90 for no
+    cone" -- so the default is the sentinel, and anything at or wider
+    than it means the same thing.
+    """
+    _d = GATE_DEFAULTS
+    return (float(lo) > float(_d["ascent_cone_from_deg"])
+            or float(hi) < float(_d["ascent_cone_to_deg"]))
 
 
 def resolve_gates(overrides=None, zone=None) -> dict:
