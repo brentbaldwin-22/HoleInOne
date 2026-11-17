@@ -30421,21 +30421,69 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
             # line the accumulator scores. On the clip that prompted
             # this the brightest rejected speck where a teed ball
             # sits measured 28 against a bar of 30.
-            _bmc1 = None
+            # ALWAYS A NUMBER, never "whatever the function defaults
+            # to". Passing it only when the lookup happened to work
+            # meant a failed gate read silently changed which bar
+            # this ran at -- and Test Cut, which always passes one,
+            # would then be judging the same clip differently again.
+            from ..services import debug3 as _bd1
+            _bmc1 = float(_bd1.GATE_DEFAULTS["ball_min_contrast"])
             try:
-                from ..services import debug3 as _bd1
                 _bt1, _, _ = _gate_tuning_for(db, row)
                 _bmc1 = float(_bd1.resolve_gates(
                     _bt1, zone=_trigger_zone(db, row))
                     ["ball_min_contrast"])
             except Exception as _bx1:  # noqa: BLE001
                 log.debug("ai launch: no ball contrast gate (%s)", _bx1)
+            # ── THE STANCE BOX, WHICH IS WHAT ACTUALLY FINDS IT ──
+            #
+            # Test Cut and this ask the same question of the same
+            # clip and got different answers: Test Cut reported "a
+            # ball sat at (727,727) in 2 of the first 3 frames and is
+            # gone from every frame after the strike — FOUND BY THE
+            # STANCE BOX", while this returned NO_BALL_DETECTED.
+            #
+            # The difference was the arguments. Test Cut passes
+            # `feet_x` and `zone_y`, which is what builds the narrow
+            # box beside the golfer's feet; without them there is no
+            # box, the search falls back to the whole crop, and a
+            # ball that is obvious in a 10x box is one faint speck
+            # among a hundred across open turf. Same function, same
+            # footage, two questions.
+            #
+            # `region_contrast=None` for the same reason Test Cut
+            # does it: the hole's bar and the detector's floor are
+            # both set for a search across open turf, which is the
+            # thing the box exists to get out from under.
+            #
+            # AND NO `lag_sec`. Test Cut hands the raw audio peak and
+            # lets the function subtract; `_rig["sec"]` here is
+            # already corrected, so passing it would take the lag off
+            # twice -- which is the bug this stage shipped once
+            # before.
+            _ffx1 = None
+            try:
+                if _heat.get("front_feet"):
+                    _ffx1 = float(_heat["front_feet"][0])
+            except (TypeError, ValueError, IndexError):
+                _ffx1 = None
+            _zy1 = None
+            try:
+                _, _, _, _zbox1 = _verify_crop(db, row)
+                if _zbox1:
+                    _zy1 = (min(int(z[1]) for z in _zbox1),
+                            max(int(z[1]) + int(z[3]) for z in _zbox1))
+            except Exception as _zy1x:  # noqa: BLE001
+                log.debug("ai launch: no zone band (%s)", _zy1x)
             _addr = _baa(src_path, float(_rig["sec"]), _AO1,
                          rect=(_rect[0], _rect[1],
                                _rect[0] + _rect[2], _rect[1] + _rect[3]),
                          people=(_ppl0 or None), anchor=_anc1,
-                         **({"min_contrast": _bmc1}
-                            if _bmc1 is not None else {}))
+                         feet_x=_ffx1, zone_y=_zy1,
+                         region_contrast=None,
+                         min_contrast=_bmc1)
+            out["address_found_by"] = _addr.get("found_by")
+            out["address_region"] = _addr.get("region")
             out["address_min_contrast"] = _bmc1
             out["address_ball"] = _addr.get("spot")
             out["address_left"] = _addr.get("left")
