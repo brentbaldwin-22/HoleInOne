@@ -25592,6 +25592,228 @@ def _ascent_detection_zoom_image(row, src_path, sweep) -> None:
         log.warning("detection zoom image failed on %s: %s", row.id, exc)
 
 
+def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
+    """The cone search: what the sweep found between the impact frame
+    and `ascent_window_frames` after it, and which of it the cone kept.
+
+    THE QUESTION THIS ANSWERS IS NOT THE ONE THE OTHER PICTURES DO.
+    `_ball_scan_sweep_image` shows every chain in the clip on an
+    arbitrary middle frame; `_ball_scan_considered_image` shows every
+    chain the sweep weighed, also whole-clip. Both are the right
+    picture for "did the sweep find them all" and the wrong one for
+    the question an operator asks after setting a cone, which is:
+
+        of the chains that start in the fifty frames after THIS
+        impact, which ones point where a ball from THIS tee can go?
+
+    A whole-clip picture cannot answer it. The cone is a statement
+    about one tee and one swing, and a chain ninety seconds away is
+    not context for it -- it is clutter that looks like evidence.
+
+    So this is drawn on the impact frame, apexed on the ball the stage
+    measured at rest, with the cone it was judged against drawn from
+    that ball and every chain in the window coloured by whether it
+    survived. A chain refused BY THE CONE is drawn in the cone's own
+    colour, because "the cone threw this away" and "the detector never
+    saw it" are the two answers and they must not look alike.
+
+    Never raises. This is the explanation; a find must still report
+    when the explanation cannot be drawn.
+    """
+    out = {"ok": False, "why": None}
+    try:
+        _al = ai_launch or {}
+        _con = (sweep or {}).get("considered") or []
+        # THE APEX IS THE BALL, not the tee line and not the chain's
+        # foot. A cone drawn from anywhere else is a different cone
+        # from the one the gate applied, and a picture that disagrees
+        # with the gate it illustrates is worse than no picture.
+        _apex = _al.get("measured_ball")
+        if not _apex:
+            _r = _al.get("rest") or {}
+            _apex = ((_r.get("x"), _r.get("y"))
+                     if _r.get("x") is not None else None)
+        _f0 = _al.get("measured_impact_frame")
+        if _f0 is None:
+            _f0 = _al.get("impact_frame")
+        if _apex is None or _f0 is None:
+            out["why"] = (
+                "no impact frame or no ball at rest, so there is no "
+                "apex to draw a cone from — %s"
+                % (_al.get("reason") or _al.get("measured_why")
+                   or "stage 1 reported neither"))
+            return out
+        if not _con:
+            out["why"] = ("the sweep weighed no chains at all, so there "
+                          "is nothing for a cone to keep or refuse")
+            return out
+
+        # FROM THE RUN, NOT FROM A SECOND RESOLUTION OF THE GATES.
+        # `sweep_ascents` resolves them itself (with no zone), so
+        # re-resolving here would be a second reading of one setting
+        # and the two would drift. It reports what it applied.
+        _cone = (sweep or {}).get("cone_deg")
+        if not _cone:
+            out["why"] = ("this sweep did not report the cone it "
+                          "applied, so there is nothing to draw that "
+                          "is known to match it")
+            return out
+        _lo, _hi = float(_cone[0]), float(_cone[1])
+        if not (sweep or {}).get("cone_on"):
+            out["why"] = (
+                "no launch cone is set for this hole (%+g..%+g° is the "
+                "whole picture), so there is no cone to show — set "
+                "ascent_cone_from_deg and ascent_cone_to_deg"
+                % (_lo, _hi))
+            return out
+        # LOCALLY IMPORTED, like every other use of it in this module
+        # -- `_d3` is not a module-level name here, and a bare
+        # reference would have been a NameError inside this function's
+        # own swallow: a picture that silently never appears, which is
+        # the exact failure this whole panel has been chasing.
+        from ..services import debug3 as _d3
+        _win = int((sweep or {}).get("window_frames")
+                   or _d3.ASCENT_WINDOW_FRAMES)
+        _f0 = int(_f0)
+        _f1 = _f0 + _win
+
+        import cv2  # type: ignore
+        import math
+
+        cap = cv2.VideoCapture(str(src_path))
+        if not cap.isOpened():
+            out["why"] = "the tee clip would not open"
+            return out
+        try:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, _f0))
+            ok, im = cap.read()
+        finally:
+            cap.release()
+        if not ok or im is None:
+            out["why"] = "frame f%d would not decode" % _f0
+            return out
+
+        _h, _w = im.shape[:2]
+        im = (im.astype("float32") * 0.55).astype("uint8")
+        ax, ay = int(_apex[0]), int(_apex[1])
+
+        # ── THE CONE, FROM THE BALL ─────────────────────────────────
+        #
+        # Same convention as the gate: bearing = atan2(vx, -vy), so 0
+        # is straight up and positive leans right. A ray at bearing b
+        # therefore travels (sin b, -cos b). Drawing it any other way
+        # would put the picture and the gate in different coordinate
+        # systems, which is the bug this kind of picture usually has.
+        _reach = float(_h + _w)
+
+        def _ray(deg):
+            _r = math.radians(deg)
+            return (int(round(ax + math.sin(_r) * _reach)),
+                    int(round(ay - math.cos(_r) * _reach)))
+
+        _overlay = im.copy()
+        _poly = [(ax, ay)]
+        _step = max(1.0, (_hi - _lo) / 24.0)
+        _d = _lo
+        while _d < _hi:
+            _poly.append(_ray(_d))
+            _d += _step
+        _poly.append(_ray(_hi))
+        import numpy as _np
+        cv2.fillPoly(_overlay, [_np.array(_poly, dtype=_np.int32)],
+                     (60, 150, 60))
+        im = cv2.addWeighted(_overlay, 0.22, im, 0.78, 0.0)
+        for _d in (_lo, _hi):
+            cv2.line(im, (ax, ay), _ray(_d), (90, 230, 90), 2, cv2.LINE_AA)
+
+        _ty = int((sweep or {}).get("tee_line_y") or 0)
+        if _ty:
+            cv2.line(im, (0, _ty), (_w, _ty), (80, 200, 255), 1, cv2.LINE_AA)
+
+        # ── THE CHAINS THAT START IN THE WINDOW ─────────────────────
+        _cols = (sweep or {}).get("why_colors") or {}
+
+        def _bgr(hexstr, fallback=(200, 200, 200)):
+            try:
+                _x = hexstr.lstrip("#")
+                r, g, b = (int(_x[k:k + 2], 16) for k in (0, 2, 4))
+                return (b, g, r)
+            except (AttributeError, TypeError, ValueError):
+                return fallback
+
+        _in_win, _kept, _coned_off, _why_tally = [], 0, 0, {}
+        for a in _con:
+            _ff = a.get("first_frame")
+            if _ff is None or not (_f0 <= int(_ff) <= _f1):
+                continue
+            _in_win.append(a)
+        # WORST FIRST, so a kept chain is never buried under a refused
+        # one -- the same ordering rule the considered picture uses.
+        _in_win.sort(key=lambda a: -len(a.get("why") or []))
+        for a in _in_win:
+            _why = a.get("why") or []
+            _p = a.get("points") or []
+            for _wk in _why:
+                _why_tally[_wk] = _why_tally.get(_wk, 0) + 1
+            if "cone" in _why:
+                _coned_off += 1
+            if not _why:
+                _kept += 1
+            if not _p:
+                continue
+            if _why:
+                _col = _bgr(_cols.get(a.get("why_primary")))
+                _thick, _rad = 1, 2
+            else:
+                _col, _thick, _rad = (255, 255, 255), 2, 3
+            for k in range(1, len(_p)):
+                cv2.line(im,
+                         (int(_p[k - 1]["x"]), int(_p[k - 1]["y"])),
+                         (int(_p[k]["x"]), int(_p[k]["y"])),
+                         _col, _thick, cv2.LINE_AA)
+            for q in _p:
+                cv2.circle(im, (int(q["x"]), int(q["y"])), _rad, _col,
+                           -1, cv2.LINE_AA)
+            if _why:
+                cv2.putText(im, ",".join(_why[:2]),
+                            (int(_p[0]["x"]) + 5, int(_p[0]["y"]) - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, _col, 1,
+                            cv2.LINE_AA)
+
+        # the ball last, so nothing is drawn over it
+        cv2.circle(im, (ax, ay), 7, (0, 220, 255), 2, cv2.LINE_AA)
+
+        cv2.putText(im,
+                    "f%d..f%d  cone %+g..%+g deg  %d chain(s), %d kept"
+                    % (_f0, _f1, _lo, _hi, len(_in_win), _kept),
+                    (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (255, 255, 255), 2, cv2.LINE_AA)
+
+        _p = CLIPS_DIR / ("cone-%s-%s.jpg"
+                          % (getattr(row, "id", 0), secrets.token_hex(3)))
+        cv2.imwrite(str(_p), im)
+        out.update({
+            "ok": True,
+            "url": _clip_url_for(_p.name),
+            "impact_frame": _f0,
+            "last_frame": _f1,
+            "window_frames": _win,
+            "cone_from_deg": _lo,
+            "cone_to_deg": _hi,
+            "apex": [ax, ay],
+            "n_in_window": len(_in_win),
+            "n_kept": _kept,
+            "n_refused_by_cone": _coned_off,
+            "why_tally": _why_tally,
+            "fps": round(float(fps or 30.0), 2),
+        })
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.warning("cone picture failed: %s", exc, exc_info=True)
+        out["why"] = "%s: %s" % (type(exc).__name__, exc)
+        return out
+
+
 def _ascent_trim_considered(sweep) -> None:
     """Drop the coordinates once the picture has been drawn from them.
 
@@ -26912,6 +27134,13 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # BEFORE the trim: it draws from `considered[0]`'s own points, and
     # the trim is what takes those away.
     _ascent_detection_zoom_image(row, src_path, sweep)
+    # ── THE CONE SEARCH, ALSO BEFORE THE TRIM ───────────────────────
+    #
+    # The chains the cone REFUSED are the point of this one, and the
+    # trim is what takes `considered` away. Same reason the zoom above
+    # is drawn on this side of the line.
+    rep["cone_search"] = _ascent_cone_image(
+        row, src_path, sweep, rep.get("ai_launch"), _gt, fps)
     _ascent_trim_considered(sweep)
     _sec_pics = time.perf_counter() - _t_sub
     rep["sweep"] = sweep

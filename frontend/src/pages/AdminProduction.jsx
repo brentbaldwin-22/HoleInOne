@@ -11012,6 +11012,79 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
           </div>
         )}
 
+        {/* ── THE CONE SEARCH ────────────────────────────────────
+            What the gallery above cannot answer. That is stage 1 --
+            the golfer, the ball, the impact frame -- and the cutter
+            section says the same things about the same cut. This is
+            the question an operator asks AFTER setting a cone: of the
+            chains starting in the window after this impact, which
+            point where a ball from this tee can go?
+
+            Always open, for the reason the stage 1 gallery is: the
+            only thing that rendered these pictures used to be inside
+            a <details> that starts closed. */}
+        {rep?.cone_search && (
+          <div className="card" style={{ margin: "10px 0", padding: 10 }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <b>The cone search — chains from the impact frame</b>
+              {rep.cone_search.ok && (
+                <span className="tiny muted">
+                  f{rep.cone_search.impact_frame}–f
+                  {rep.cone_search.last_frame}
+                  {" · "}{rep.cone_search.window_frames} frames
+                  {" · "}{rep.cone_search.cone_from_deg >= 0 ? "+" : ""}
+                  {rep.cone_search.cone_from_deg}°…
+                  {rep.cone_search.cone_to_deg >= 0 ? "+" : ""}
+                  {rep.cone_search.cone_to_deg}°
+                </span>
+              )}
+            </div>
+            {rep.cone_search.ok ? (
+              <>
+                <a href={rep.cone_search.url} target="_blank"
+                   rel="noreferrer">
+                  <img src={rep.cone_search.url}
+                       alt="the cone search"
+                       style={{ width: "100%", borderRadius: 6,
+                                marginTop: 6, display: "block" }} />
+                </a>
+                <div className="tiny muted" style={{ marginTop: 4 }}>
+                  The cone is drawn from the ball the stage measured at
+                  rest, in the run&apos;s own numbers. White is a chain
+                  that survived every gate; a dimmed chain is labelled
+                  with the gates it failed, so a real ascent one gate
+                  from being kept is visible as such.
+                </div>
+                <div className="tiny" style={{ marginTop: 3 }}>
+                  <b>{rep.cone_search.n_in_window}</b> chain(s) started in
+                  the window · <b>{rep.cone_search.n_kept}</b> kept
+                  {rep.cone_search.n_refused_by_cone > 0 && (
+                    <> · <b>{rep.cone_search.n_refused_by_cone}</b> refused
+                      by the cone</>
+                  )}
+                </div>
+                {Object.keys(rep.cone_search.why_tally || {}).length > 0 && (
+                  <div className="tiny muted" style={{ marginTop: 2 }}>
+                    died on:{" "}
+                    {Object.entries(rep.cone_search.why_tally)
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([k, v]) => `${k} ${v}`)
+                      .join(" · ")}
+                  </div>
+                )}
+              </>
+            ) : (
+              /* AND WHY NOT, in the place the picture would have been. */
+              <div className="tiny" style={{ color: "#b45309",
+                                             marginTop: 4 }}>
+                No cone picture: {rep.cone_search.why
+                  || "it did not run and did not say why, which is "
+                     + "itself the finding."}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* STAGE 1, AND IT IS A PICTURE OR IT IS NOTHING. The strip is
             one tile per frame the model was shown, with the crop it
             searched, what it picked and why a frame was refused --

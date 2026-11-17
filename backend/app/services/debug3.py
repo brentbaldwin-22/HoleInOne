@@ -6653,6 +6653,17 @@ def sweep_ascents(
         out["n_considered"] = len(_considered)
         out["why_colors"] = dict(ASCENT_WHY_COLORS)
         out["why_order"] = list(ASCENT_WHY_ORDER)
+        # THE CONE THIS RUN ACTUALLY APPLIED, as numbers.
+        #
+        # So the picture that illustrates the cone reads it from the
+        # run rather than resolving the gates a second time. Two
+        # resolutions of one setting is how a drawn cone and an
+        # applied cone drift apart, and a picture that disagrees with
+        # the gate it illustrates is worse than no picture, because
+        # it is believed.
+        out["cone_deg"] = [_CONE_LO, _CONE_HI]
+        out["cone_on"] = bool(_CONE_LO > -180.0 or _CONE_HI < 180.0)
+        out["window_frames"] = int(_G["ascent_window_frames"])
         # AND A TALLY OF EVERY REASON, over all of them and not just the
         # ones that fit in the picture -- "twelve failed on tilt" is the
         # sentence that says a threshold is wrong.

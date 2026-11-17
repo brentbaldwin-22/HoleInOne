@@ -85,7 +85,16 @@ prod = (ROOT / "frontend" / "src" / "pages"
 
 
 def _inside_closed_details(text, idx):
-    """True when idx sits inside a <details> that has no `open`."""
+    """True when idx sits inside a <details> that has no `open`.
+
+    JSX COMMENTS ARE NOT MARKUP. These files explain themselves, and
+    several of those explanations are ABOUT <details>, so counting
+    tags inside `{/* ... */}` makes every line after such a comment
+    look nested -- and the check then cries wolf on a card that is
+    not folded at all.
+    """
+    text = re.sub(r'\{/\*.*?\*/\}', '', text[:idx], flags=re.S)
+    idx = len(text)
     depth = 0
     for m in re.finditer(r'<details([^>]*)>|</details>', text[:idx]):
         if m.group(0).startswith("</"):
