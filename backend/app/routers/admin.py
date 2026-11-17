@@ -25626,7 +25626,74 @@ def _cone_apex_for(ai_launch):
     return None, None
 
 
-def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
+def _ascent_cone_accumulate(row, src_path, sweep, ai_launch, gates,
+                            zone, fps):
+    """Run the trajectory accumulator over the cone, when asked.
+
+    SEPARATE FROM THE SWEEP ON PURPOSE. It answers a different
+    question with a different method -- no per-frame threshold at all
+    -- and a method that can only be judged against the one it is
+    meant to replace has to be runnable beside it, not instead of it.
+
+    Never raises: this is a third opinion on a find.
+    """
+    out = {"ran": False, "why": None}
+    try:
+        from ..services import debug3 as _ad3
+        _g = _ad3.resolve_gates(gates or {}, zone=zone)
+        if not int(_g["ascent_cone_accumulate"]):
+            out["why"] = ("off for this hole — set "
+                          "ascent_cone_accumulate to 1 to search the "
+                          "cone by integrating along it")
+            return out
+        _cone = (sweep or {}).get("cone_deg")
+        if not _cone or not (sweep or {}).get("cone_on"):
+            out["why"] = ("no launch cone is set for this hole, and "
+                          "the cone is what makes this search small "
+                          "enough to be worth running")
+            return out
+        _apex, _apex_from = _cone_apex_for(ai_launch)
+        if _apex is None:
+            out["why"] = "nothing says where a teed ball sits here"
+            return out
+        _al = ai_launch or {}
+        _f0 = _al.get("measured_impact_frame")
+        if _f0 is None:
+            _f0 = _al.get("impact_frame")
+        if _f0 is None:
+            out["why"] = "no impact frame to start from"
+            return out
+        _win = int((sweep or {}).get("window_frames")
+                   or _ad3.ASCENT_WINDOW_FRAMES)
+        _r = _ad3.cone_accumulate(
+            src_path, apex=_apex, f0=int(_f0), n_frames=_win,
+            cone_lo=float(_cone[0]), cone_hi=float(_cone[1]))
+        _r["ran"] = bool(_r.get("ok"))
+        _r["apex_from"] = _apex_from
+        _min_z = float(_g["ascent_cone_accum_min_z"])
+        _r["min_z"] = _min_z
+        _z = _r.get("margin_z")
+        # CONVINCING IS A SEPARATE QUESTION FROM FOUND. It reports the
+        # best track either way and says which it is, because a bar
+        # nobody can see a near miss against is a bar nobody can set.
+        _r["convincing"] = bool(_z is not None and float(_z) >= _min_z)
+        if _r.get("ok"):
+            log.info("cone accumulate: best %.1f deg at %.1f px/frame, "
+                     "%s/%s frames lit, z=%s (bar %.1f)",
+                     (_r.get("best") or {}).get("bearing_deg", 0.0),
+                     (_r.get("best") or {}).get("speed_px_per_frame", 0.0),
+                     (_r.get("best") or {}).get("n_lit"),
+                     (_r.get("best") or {}).get("n_samples"),
+                     _z, _min_z)
+        return _r
+    except Exception as exc:  # noqa: BLE001
+        log.warning("cone accumulate failed: %s", exc, exc_info=True)
+        out["why"] = "%s: %s" % (type(exc).__name__, exc)
+        return out
+
+
+def _ascent_cone_image(row, src_path, sweep, ai_launch, gates,
+                       fps, accum=None):
     """The cone search: what the sweep found between the impact frame
     and `ascent_window_frames` after it, and which of it the cone kept.
 
@@ -25926,6 +25993,49 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
                             (int(_p[0]["x"]) + 5, int(_p[0]["y"]) - 5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.38, _col, 1,
                             cv2.LINE_AA)
+
+        # ── WHAT THE ACCUMULATOR LIKED, OVER EVERYTHING ────────────
+        #
+        # Drawn last of the overlays because it is the claim under
+        # test: if it is wrong it must be wrong VISIBLY, against the
+        # detections and chains that disagree with it, rather than
+        # buried under them.
+        #
+        # The runners-up are drawn too, thin and dark. One line alone
+        # says "here it is"; the spread around it says whether the
+        # method actually locked on or merely ranked noise, and that
+        # is the thing an operator has to judge before trusting a
+        # number.
+        _ac = accum or {}
+        if _ac.get("ok"):
+            for _c in reversed((_ac.get("candidates") or [])[1:]):
+                _pp = _c.get("points") or []
+                for _q in range(1, len(_pp)):
+                    cv2.line(im, (_pp[_q - 1]["x"], _pp[_q - 1]["y"]),
+                             (_pp[_q]["x"], _pp[_q]["y"]),
+                             (120, 90, 40), 1, cv2.LINE_AA)
+            _bp = (_ac.get("best") or {}).get("points") or []
+            _bcol = ((60, 230, 255) if _ac.get("convincing")
+                     else (120, 160, 190))
+            for _q in range(1, len(_bp)):
+                cv2.line(im, (_bp[_q - 1]["x"], _bp[_q - 1]["y"]),
+                         (_bp[_q]["x"], _bp[_q]["y"]), _bcol, 2,
+                         cv2.LINE_AA)
+            for _q in _bp:
+                cv2.circle(im, (_q["x"], _q["y"]), 3, _bcol, 1,
+                           cv2.LINE_AA)
+            _b = _ac.get("best") or {}
+            cv2.putText(im,
+                        "accumulator: %.1f deg, %.1f px/frame, "
+                        "%s/%s frames lit, z=%s%s"
+                        % (_b.get("bearing_deg", 0.0),
+                           _b.get("speed_px_per_frame", 0.0),
+                           _b.get("n_lit"), _b.get("n_samples"),
+                           _ac.get("margin_z"),
+                           "" if _ac.get("convincing")
+                           else "  (BELOW THE BAR)"),
+                        (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                        _bcol, 1, cv2.LINE_AA)
 
         # the ball last, so nothing is drawn over it
         cv2.circle(im, (ax, ay), 7, (0, 220, 255), 2, cv2.LINE_AA)
@@ -27350,8 +27460,16 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # The chains the cone REFUSED are the point of this one, and the
     # trim is what takes `considered` away. Same reason the zoom above
     # is drawn on this side of the line.
+    # ── THE ACCUMULATOR, BEFORE THE PICTURE DRAWS IT ───────────────
+    #
+    # A third pass, and the only one that does not threshold a frame.
+    # Gated off by default; see `ascent_cone_accumulate`.
+    rep["cone_accum"] = _ascent_cone_accumulate(
+        row, src_path, sweep, rep.get("ai_launch"), _gt,
+        _zone_for_cone, fps)
     rep["cone_search"] = _ascent_cone_image(
-        row, src_path, sweep, rep.get("ai_launch"), _gt, fps)
+        row, src_path, sweep, rep.get("ai_launch"), _gt, fps,
+        accum=rep.get("cone_accum"))
     # AND DROP THE RAW LIST ONCE IT HAS BEEN DRAWN. The picture is
     # what the operator reads; shipping every coordinate to the
     # browser as well is the same waste `_ascent_trim_considered`

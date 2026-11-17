@@ -6077,6 +6077,283 @@ def stitch_ascent_chains(chains: list, tol_px: float = ASCENT_STITCH_PX,
     return out
 
 
+def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
+                    min_samples=6, top_n=5, kernel_px=7, n_speeds=64,
+                    speed_lo=2.0, speed_hi=None, deg_step=None):
+    """Find the ball's first climb by INTEGRATING along candidate
+    trajectories instead of thresholding single frames.
+
+    WHY THIS EXISTS. Below the skyline every leaf is a mover, so being
+    a mover does not distinguish the ball from anything else and no
+    per-frame threshold separates them: turn it down and the picture
+    drowns, turn it up and the ball goes with the noise. The operator
+    reported exactly that, and also the fact that settles it -- "I can
+    see the ball with my eyes if I go frame by frame". The ball is in
+    the pixels. It is the DECISION that is impossible, not the signal.
+
+    What the eye does and the detector does not is integrate. A leaf
+    oscillates in place; the ball translates far, consistently, in one
+    direction, from a point we already know. None of that is visible
+    in one frame, which is all a mover-detector ever looks at.
+
+    So nothing here is thresholded per frame. Three things are known
+    before the search starts -- where the ball sits (`apex`), when it
+    leaves (`f0`) and where it may go (the cone) -- and over the first
+    third of a second the flight is straight. That leaves two
+    unknowns, a bearing and a speed, and every pair of them names a
+    path through space and time. The right pair collects ball on
+    EVERY frame; a wrong one collects noise, and noise does not lie
+    on a straight line at constant velocity through the ball.
+
+    TWO THINGS MAKE THE SIGNAL, and both matter:
+
+      * the per-pixel TEMPORAL MEDIAN is subtracted first, which
+        deletes everything that does not move -- a white house in the
+        cone would otherwise score on every frame of every path that
+        crosses it, and the brightest object in these frames is
+        usually a building;
+      * what is left is TOP-HATTED, which favours things that are
+        small and bright. A swaying leaf is a mover; it is not a small
+        bright blob. The ball is both.
+
+    Returns {ok, why, best, candidates, margin_z, ...}. `margin_z` is
+    the winner's distance above the median candidate in robust sigmas,
+    computed from this clip's own distribution -- so it is a
+    confidence that calibrates itself per swing rather than a
+    threshold somebody has to tune per hole.
+    """
+    import time as _time
+    out = {"ok": False, "why": None, "best": None, "candidates": [],
+           "margin_z": None, "n_candidates": 0, "crop": None,
+           "seconds": 0.0, "n_frames_read": 0}
+    _t0 = _time.monotonic()
+    if not HAS_CV:
+        out["why"] = "no opencv on this box"
+        return out
+    try:
+        import numpy as _np
+
+        _lo, _hi = sorted((float(cone_lo), float(cone_hi)))
+        if _hi - _lo <= 0.0:
+            out["why"] = "the cone has no width"
+            return out
+        _ax, _ay = float(apex[0]), float(apex[1])
+        _n = max(int(min_samples) + 1, int(n_frames))
+
+        cap = cv2.VideoCapture(str(input_path))
+        if not cap.isOpened():
+            out["why"] = "the clip would not open"
+            return out
+        try:
+            _fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            _fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            if _fw <= 0 or _fh <= 0:
+                out["why"] = "the clip reports no frame size"
+                return out
+            # ── THE CROP: THE CONE'S REACH, AND NOTHING ELSE ────────
+            #
+            # Everything below runs on this, so it decides the cost.
+            # The wedge from the apex to the frame edges, bounded.
+            _xs, _ys = [_ax], [_ay]
+            _reach = float(_fw + _fh)
+            for _d in (_lo, _hi):
+                _r = math.radians(_d)
+                _xs.append(_ax + math.sin(_r) * _reach)
+                _ys.append(_ay - math.cos(_r) * _reach)
+            _x0 = max(0, int(min(_xs)) - 8)
+            _x1 = min(_fw, int(max(_xs)) + 8)
+            _y0 = max(0, int(min(_ys)) - 8)
+            _y1 = min(_fh, int(max(_ys)) + 8)
+            if _x1 - _x0 < 16 or _y1 - _y0 < 16:
+                out["why"] = "the cone reaches almost none of the frame"
+                return out
+            out["crop"] = [_x0, _y0, _x1 - _x0, _y1 - _y0]
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(f0)))
+            _stack = []
+            for _ in range(_n):
+                ok_, im = cap.read()
+                if not ok_ or im is None:
+                    break
+                _g = cv2.cvtColor(im[_y0:_y1, _x0:_x1], cv2.COLOR_BGR2GRAY)
+                _stack.append(_g)
+        finally:
+            cap.release()
+        out["n_frames_read"] = len(_stack)
+        if len(_stack) < int(min_samples) + 1:
+            out["why"] = ("only %d frame(s) decoded from f%d, fewer than "
+                          "the %d a track needs"
+                          % (len(_stack), int(f0), int(min_samples) + 1))
+            return out
+
+        _arr = _np.stack(_stack).astype(_np.float32)
+        # WHAT DOES NOT MOVE IS NOT THE BALL. Per-pixel median over the
+        # window; the ball is at any one pixel for a frame or two, so
+        # it cannot survive a median and the background can.
+        _bg = _np.median(_arr, axis=0)
+        _res = _np.clip(_arr - _bg[None, :, :], 0.0, 255.0)
+
+        _k = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (int(kernel_px) | 1, int(kernel_px) | 1))
+        _d3x3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        _resp = _np.empty_like(_res)
+        for _i in range(_res.shape[0]):
+            _th = cv2.morphologyEx(_res[_i], cv2.MORPH_TOPHAT, _k)
+            # A PIXEL OF SLACK. The path is a straight line through a
+            # pixel grid and the ball is a few pixels wide; without
+            # this a track that is right to within one pixel scores
+            # zero on half its samples.
+            _resp[_i] = cv2.dilate(_th, _d3x3)
+
+        _H, _W = _resp.shape[1], _resp.shape[2]
+        _rx, _ry = _ax - _x0, _ay - _y0
+
+        # ── THE CANDIDATES ──────────────────────────────────────────
+        if deg_step is None:
+            # Fine enough that neighbouring bearings separate by about
+            # a ball's width at the far end of the window, and no
+            # finer -- resolution past that buys nothing and costs
+            # linearly.
+            _L = max(60.0, float(speed_hi or 0.0) * _n) or 400.0
+            deg_step = max(0.25, min(2.0, math.degrees(2.0 / _L)))
+        _degs = _np.arange(_lo, _hi + 1e-9, float(deg_step),
+                           dtype=_np.float32)
+        if _degs.size == 0:
+            _degs = _np.array([(_lo + _hi) / 2.0], dtype=_np.float32)
+        if speed_hi is None:
+            speed_hi = max(8.0, float(max(_W, _H)) / float(min_samples))
+        _sp = _np.geomspace(float(speed_lo), float(speed_hi),
+                            int(n_speeds), dtype=_np.float32)
+
+        _TH = _np.repeat(_degs, _sp.size)
+        _SP = _np.tile(_sp, _degs.size)
+        _sin = _np.sin(_np.radians(_TH))
+        _cos = _np.cos(_np.radians(_TH))
+        _C = _TH.size
+        _tot = _np.zeros(_C, dtype=_np.float32)
+        _hit = _np.zeros(_C, dtype=_np.float32)
+        _cnt = _np.zeros(_C, dtype=_np.int32)
+        # LOW, DELIBERATELY. "Lit" must mean "there is something here
+        # at all", not "there is something bright here -- the ball is
+        # the faintest thing in the picture on a far tee, and a floor
+        # set at the 99th percentile is a floor set at LEAF
+        # brightness, which the ball never reaches. It then scored
+        # five hits out of thirty-four and tied the noise.
+        #
+        # The discrimination in this method does not come from
+        # brightness. It comes from the straight line: with the floor
+        # just above sensor noise a wrong track is lit on the few per
+        # cent of samples where it crosses clutter, and the ball's
+        # track is lit on all of them.
+        _lit_floor = float(max(4.0, _np.percentile(_resp, 90.0)))
+
+        # ONE PASS PER FRAME OVER ALL CANDIDATES, not the other way
+        # round: the frames are what is expensive to touch.
+        for _f in range(1, _resp.shape[0]):
+            _t = float(_f)
+            _px = _rx + _sin * (_SP * _t)
+            _py = _ry - _cos * (_SP * _t)
+            _ix = _np.rint(_px).astype(_np.int32)
+            _iy = _np.rint(_py).astype(_np.int32)
+            _in = ((_ix >= 0) & (_ix < _W) & (_iy >= 0) & (_iy < _H))
+            if not _in.any():
+                continue
+            _vals = _resp[_f][_iy[_in], _ix[_in]]
+            _tot[_in] += _vals
+            _hit[_in] += (_vals >= _lit_floor).astype(_np.float32)
+            _cnt[_in] += 1
+
+        _enough = _cnt >= int(min_samples)
+        if not _enough.any():
+            out["why"] = ("no trajectory stays in the picture for %d "
+                          "frames — the cone leaves the frame too fast"
+                          % int(min_samples))
+            return out
+        # ── CONSISTENCY, NOT BRIGHTNESS ─────────────────────────────
+        #
+        # The first version of this scored the MEAN response along a
+        # track, and it ranked the right trajectory first while
+        # separating it from pure noise by almost nothing: z=5.8 with
+        # a ball, z=5.4 with the ball removed from the same footage.
+        # A detector that is equally confident either way has told you
+        # nothing, and the mean is why -- a track that crosses four
+        # bright leaves and sees nothing on the other thirty frames
+        # scores like a track that sees the ball on all of them.
+        #
+        # What separates them is not how bright the samples are, it is
+        # HOW MANY OF THEM THERE ARE. The ball is on the right line in
+        # every frame; a wrong line hits clutter occasionally and
+        # finds empty sky in between. So the statistic is the fraction
+        # of a track's samples that are lit at all, and brightness is
+        # only the tie-break.
+        out["lit_floor"] = round(_lit_floor, 2)
+        # THE COUNT, NOT THE FRACTION. A fraction was the second
+        # mistake here: it lets a six-sample track that is lit all six
+        # times tie a thirty-four-sample track that is lit all
+        # thirty-four, and the tie-break then hands it to whichever
+        # crossed the brighter leaves. The winner came back short and
+        # wrong.
+        #
+        # The count rewards both things at once and needs no
+        # weighting between them: a wrong line is lit on a few per
+        # cent of its samples however long it is, so it cannot
+        # accumulate; the ball is lit on all of them. Brightness
+        # stays as the tie-break only, scaled too small to outrank a
+        # whole extra frame of evidence.
+        _bright = _np.where(_enough, _tot / _np.maximum(_cnt, 1), -1.0)
+        _mean = _np.where(_enough, _hit + 1e-4 * _bright, -1.0)
+        _valid = _mean[_enough]
+        _med = float(_np.median(_valid))
+        _mad = float(_np.median(_np.abs(_valid - _med)))
+        # A FLOOR UNDER THE SPREAD. The scores are counts, and on a
+        # clean clip most candidates score the same small number, so
+        # the MAD collapses to zero and every z becomes infinite --
+        # which reads as certainty and is the opposite of it. One
+        # whole frame of evidence is the smallest difference that
+        # means anything, so it is the smallest sigma allowed.
+        _sigma = max(1.4826 * _mad, 1.0)
+        _order = _np.argsort(-_mean)
+        out["n_candidates"] = int(_enough.sum())
+
+        def _entry(_j):
+            _b = float(_TH[_j])
+            _v = float(_SP[_j])
+            _r = math.radians(_b)
+            return {
+                "bearing_deg": round(_b, 2),
+                "speed_px_per_frame": round(_v, 2),
+                "score": round(float(_mean[_j]), 3),
+                "lit_frac": round(float(_hit[_j]
+                                        / max(1, int(_cnt[_j]))), 3),
+                "n_lit": int(_hit[_j]),
+                "n_samples": int(_cnt[_j]),
+                "points": [
+                    {"frame": int(f0) + _f,
+                     "x": int(round(_ax + math.sin(_r) * _v * _f)),
+                     "y": int(round(_ay - math.cos(_r) * _v * _f))}
+                    for _f in range(0, _resp.shape[0])
+                ],
+            }
+
+        _best_j = int(_order[0])
+        out["best"] = _entry(_best_j)
+        out["candidates"] = [_entry(int(_j)) for _j in _order[:int(top_n)]]
+        out["margin_z"] = round(
+            (float(_mean[_best_j]) - _med) / _sigma, 2)
+        out["median_score"] = round(_med, 3)
+        out["deg_step"] = round(float(deg_step), 3)
+        out["speed_range"] = [round(float(speed_lo), 2),
+                              round(float(speed_hi), 2)]
+        out["ok"] = True
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.warning("cone accumulate failed: %s", exc, exc_info=True)
+        out["why"] = "%s: %s" % (type(exc).__name__, exc)
+        return out
+    finally:
+        out["seconds"] = round(_time.monotonic() - _t0, 2)
+
+
 def sweep_ascents(
     input_path: Path,
     fps: float,
@@ -8589,6 +8866,24 @@ GATE_SPEC = {
     # everything moves, and a surplus chain the cone lets through is a
     # tracer drawn on a branch.
     "ascent_cone_below_skyline": (0, 0, 1, True),
+    # FIND THE CLIMB BY INTEGRATING ALONG IT. Off by default.
+    #
+    # Nothing is thresholded per frame: every straight path out of the
+    # ball inside the cone is scored by how many of its frames are lit
+    # at all, and the ball's path is lit on all of them while a wrong
+    # one is lit on the few per cent where it crosses clutter. For the
+    # case where the ball IS in the pixels -- the operator can see it
+    # frame by frame -- and no per-frame threshold can separate it
+    # from a treeline, which is every far tee.
+    #
+    # It reports a confidence of its own (`margin_z`, in robust sigmas
+    # above this clip's own median candidate), so it is worth looking
+    # at before it is worth trusting.
+    "ascent_cone_accumulate": (0, 0, 1, True),
+    # HOW SURE IS SURE ENOUGH. Below this the accumulator reports its
+    # answer and marks it unconvincing rather than hiding it -- the
+    # picture is how the number gets calibrated against real swings.
+    "ascent_cone_accum_min_z": (8.0, 0.0, 100.0, False),
     # key                        default                  lo     hi   int
     # NOT A FILTER ON CHAINS, unlike everything else here: this one is
     # the DETECTOR's per-frame keep. Every other gate can only refuse a

@@ -11148,6 +11148,44 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                     in the wedge.
                   </div>
                 )}
+                {/* ── THE ACCUMULATOR ───────────────────────────
+                    The one search here that never thresholds a frame.
+                    Its own confidence is printed beside its answer,
+                    and a below-the-bar answer is SHOWN rather than
+                    hidden: a bar nobody can see a near miss against
+                    is a bar nobody can set. */}
+                {rep.cone_accum?.ok && (
+                  <div className="tiny" style={{ marginTop: 3 }}>
+                    <b style={{ color: rep.cone_accum.convincing
+                                  ? "#15803d" : "#b45309" }}>
+                      Accumulator:
+                    </b>{" "}
+                    {rep.cone_accum.best?.bearing_deg}° at{" "}
+                    {rep.cone_accum.best?.speed_px_per_frame} px/frame ·{" "}
+                    {rep.cone_accum.best?.n_lit}/
+                    {rep.cone_accum.best?.n_samples} frames lit ·{" "}
+                    z={rep.cone_accum.margin_z}
+                    {rep.cone_accum.convincing
+                      ? ` (over the bar of ${rep.cone_accum.min_z})`
+                      : ` — BELOW the bar of ${rep.cone_accum.min_z},`
+                        + " so this is a candidate, not an answer"}
+                    <div className="muted">
+                      Scored by how many frames of a straight path out
+                      of the ball are lit at all, not by how bright
+                      they are — z is how far clear of this clip&apos;s
+                      own median path the winner is. The thin dark
+                      lines are the runners-up: if they fan out around
+                      the bright one it locked on, and if they point
+                      all over the cone it did not.
+                    </div>
+                  </div>
+                )}
+                {rep.cone_accum && !rep.cone_accum.ok
+                  && rep.cone_accum.why && (
+                  <div className="tiny muted" style={{ marginTop: 3 }}>
+                    Accumulator did not run: {rep.cone_accum.why}
+                  </div>
+                )}
                 {rep.cone_search.n_in_window === 0
                   && rep.cone_search.n_dets_in_window > 0 && (
                   <div className="tiny" style={{ color: "#b45309",

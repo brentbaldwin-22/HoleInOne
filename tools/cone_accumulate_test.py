@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""Finding the climb by integrating, where thresholding cannot.
+
+THE SITUATION THIS IS FOR. Below the skyline every leaf is a mover, so
+being a mover does not distinguish the ball and no per-frame threshold
+separates them. The operator put it exactly: "just too much noise
+below the skyline... I can see the ball with my eyes if i go frame by
+frame". The ball is in the pixels; the per-frame DECISION is what is
+impossible.
+
+So the fixture is built to be unwinnable frame by frame: a swaying
+treeline whose leaves are the same size and brighter than the ball,
+hundreds of them per frame, and one faint ball crossing. Any
+single-frame ranking buries the ball. The accumulator is asked to find
+it anyway, from the straight line it travels and nothing else.
+
+The control matters as much as the test: run the SAME noise with no
+ball, and the winner must not stand out. A detector that always
+returns a confident answer has told you nothing.
+
+    python3 tools/cone_accumulate_test.py
+"""
+import math
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "backend"))
+
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
+
+from app.services import debug3 as d3  # noqa: E402
+
+FAILED = []
+
+
+def check(label, got, want=True):
+    ok = got == want
+    print("  %-58s %s" % (label, "ok" if ok else "FAIL got %r" % (got,)))
+    if not ok:
+        FAILED.append(label)
+
+
+W, H = 960, 640
+APEX = (300, 560)
+TRUE_DEG, TRUE_V = 58.0, 11.0
+N = 34
+
+
+def clip(path, with_ball=True, seed=5):
+    """A busy treeline plus (optionally) one faint ball."""
+    rng = np.random.default_rng(seed)
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"),
+                         60.0, (W, H))
+    # Static "houses": bright, large, unmoving. These must not win.
+    houses = [(int(rng.integers(320, 900)), int(rng.integers(300, 470)))
+              for _ in range(7)]
+    leaves = [(int(rng.integers(300, 950)), int(rng.integers(250, 555)))
+              for _ in range(240)]
+    for i in range(N + 6):
+        fr = np.full((H, W, 3), 38, dtype=np.uint8)
+        for (hx, hy) in houses:
+            cv2.rectangle(fr, (hx, hy), (hx + 46, hy + 34),
+                          (235, 235, 235), -1)
+        # leaves oscillate IN PLACE, a pixel or two, every frame
+        for (lx, ly) in leaves:
+            jx = int(round(2.0 * math.sin(i * 0.9 + lx)))
+            jy = int(round(2.0 * math.cos(i * 1.1 + ly)))
+            cv2.circle(fr, (lx + jx, ly + jy), 3, (205, 205, 205), -1)
+        if with_ball and 1 <= i <= N:
+            r = math.radians(TRUE_DEG)
+            x = int(round(APEX[0] + math.sin(r) * TRUE_V * i))
+            y = int(round(APEX[1] - math.cos(r) * TRUE_V * i))
+            if 0 <= x < W and 0 <= y < H:
+                # FAINTER AND SMALLER THAN THE LEAVES, deliberately.
+                cv2.circle(fr, (x, y), 2, (150, 150, 150), -1)
+        vw.write(fr)
+    vw.release()
+
+
+def run(with_ball=True, seed=5, lo=35.0, hi=77.0, **kw):
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "c.mp4"
+        clip(p, with_ball=with_ball, seed=seed)
+        return d3.cone_accumulate(
+            p, apex=APEX, f0=0, n_frames=N,
+            cone_lo=lo, cone_hi=hi, **kw)
+
+
+print("the frame-by-frame detector is swamped, as the operator says:")
+with tempfile.TemporaryDirectory() as td:
+    p = Path(td) / "c.mp4"
+    clip(p)
+    dets = d3.detect_movers_by_diff(p, 0, N, sens=3, per_frame=40,
+                                    roi=(250, 240, 700, 340), cap=200000)
+    near = [d for d in dets
+            if abs(d["x"] - (APEX[0] + math.sin(math.radians(TRUE_DEG))
+                             * TRUE_V * d["frame"])) < 6
+            and abs(d["y"] - (APEX[1] - math.cos(math.radians(TRUE_DEG))
+                              * TRUE_V * d["frame"])) < 6]
+    print("     %d detections, %d of them on the ball"
+          % (len(dets), len(near)))
+    check("the noise really does swamp it (<25%% are the ball)",
+          len(near) < max(1, len(dets)) * 0.25)
+
+print()
+print("the accumulator finds the ball anyway:")
+got = run(True)
+check("it ran", got.get("ok"), True)
+best = got.get("best") or {}
+check("  the bearing is right to within 3 degrees",
+      abs(float(best.get("bearing_deg", 0)) - TRUE_DEG) <= 3.0)
+check("  the speed is right to within 15%%",
+      abs(float(best.get("speed_px_per_frame", 0)) - TRUE_V)
+      <= 0.15 * TRUE_V)
+check("  it used the whole window", (best.get("n_samples") or 0) >= 20)
+check("  and it is well clear of the field (z > 6)",
+      (got.get("margin_z") or 0) > 6.0)
+
+print()
+print("a static white house must never win — only movers count:")
+# Every house sits inside the cone and is far brighter than the ball.
+_hit = best.get("points") or []
+check("the winner travels (it is not parked on a house)",
+      len(_hit) > 2
+      and (abs(_hit[-1]["x"] - _hit[0]["x"])
+           + abs(_hit[-1]["y"] - _hit[0]["y"])) > 100)
+
+print()
+print("THE CONTROL — same noise, no ball, no confident answer:")
+none = run(False)
+check("it still ran", none.get("ok"), True)
+check("  but nothing stands out (z < 6)",
+      (none.get("margin_z") or 0) < 6.0)
+print("     with a ball z=%s, without z=%s"
+      % (got.get("margin_z"), none.get("margin_z")))
+check("  and the two are not close",
+      (got.get("margin_z") or 0) > 2.0 * (none.get("margin_z") or 0.01))
+
+print()
+print("and it declines cleanly rather than guessing:")
+bad = run(True, lo=10.0, hi=10.0)
+check("a cone with no width -> declines", bad.get("ok"), False)
+check("  and says so", "no width" in (bad.get("why") or ""))
+short = d3.cone_accumulate(Path("/nonexistent.mp4"), apex=APEX, f0=0,
+                           n_frames=N, cone_lo=35.0, cone_hi=77.0)
+check("an unopenable clip -> declines", short.get("ok"), False)
+check("  and says so", "would not open" in (short.get("why") or ""))
+
+print()
+if FAILED:
+    print("FAILED: %s" % ", ".join(FAILED))
+    sys.exit(1)
+print("all ok — integration finds what thresholding cannot")
+
+# ── THE WIRING, not just the maths ───────────────────────────────────
+#
+# An algorithm that works and is not reachable is worth nothing, which
+# this session has now demonstrated three separate ways: a picture
+# nothing rendered, a picture behind a closed fold, and a gate the
+# search resolved blind to its zone.
+print()
+print("it is reachable from the find, and gated:")
+from app.services.debug3 import GATE_DEFAULTS  # noqa: E402
+
+check("the gate exists", "ascent_cone_accumulate" in GATE_DEFAULTS)
+check("  and is off by default",
+      GATE_DEFAULTS["ascent_cone_accumulate"], 0)
+check("the confidence bar is tunable",
+      "ascent_cone_accum_min_z" in GATE_DEFAULTS)
+
+_adm = (ROOT / "backend" / "app" / "routers" / "admin.py").read_text()
+check("the find calls it", "_ascent_cone_accumulate(" in _adm)
+check("  with the zone, so a per-tee gate is seen",
+      "_zone_for_cone, fps)" in _adm)
+check("  and hands the result to the picture",
+      "accum=rep.get(\"cone_accum\")" in _adm)
+check("the picture draws the runners-up too",
+      'candidates") or [])[1:]' in _adm)
+
+_prod = (ROOT / "frontend" / "src" / "pages"
+         / "AdminProduction.jsx").read_text()
+check("the page shows the answer", "cone_accum" in _prod)
+check("  and shows it even when below the bar",
+      "BELOW the bar" in _prod)
+check("  and says why it did not run",
+      "Accumulator did not run" in _prod)
+
+if FAILED:
+    print("FAILED: %s" % ", ".join(FAILED))
+    sys.exit(1)
+print("all ok — and reachable")
