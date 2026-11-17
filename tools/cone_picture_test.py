@@ -201,24 +201,24 @@ def _apex_run(al, considered=None):
 o = _apex_run({"measured_ball": (320, 400),
                "measured_impact_frame": 60})
 check("a measured ball is used, and said to be measured",
-      o.get("apex_from"), "measured at rest")
+      o.get("origin_from"), "measured at rest")
 check("  and it draws", o.get("ok"))
 
 # no measured ball at all -- only the box the swing check searched
 o = _apex_run({"impact_frame": 60, "measured_why": "no ball in 2 of 3",
                "swing_check": {"ball_box": (300, 380, 40, 40)}})
 check("no measured ball -> still draws", o.get("ok"))
-check("  apexed on the searched box",
-      o.get("apex"), [320, 400])
+check("  started from the searched box",
+      o.get("origin"), [320, 400])
 check("  and says the ball was NOT measured",
-      "not measured" in (o.get("apex_from") or ""))
+      "not measured" in (o.get("origin_from") or ""))
 
 # box gone too -- the tee spot
 o = _apex_run({"impact_frame": 60,
                "swing_check": {"tee_spot": [320, 400]}})
 check("no box either -> the tee spot", o.get("ok"))
 check("  and still says so",
-      "not measured" in (o.get("apex_from") or ""))
+      "not measured" in (o.get("origin_from") or ""))
 
 # nothing at all
 o = _apex_run({"impact_frame": 60, "swing_check": {}})
@@ -238,7 +238,7 @@ print()
 print("the page distinguishes a placed apex from a measured one:")
 _prod = (ROOT / "frontend" / "src" / "pages"
          / "AdminProduction.jsx").read_text()
-check("apex_from is rendered", "cone_search.apex_from" in _prod)
+check("origin_from is rendered", "cone_search.origin_from" in _prod)
 
 
 class _R2:

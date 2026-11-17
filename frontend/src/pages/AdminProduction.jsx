@@ -11096,7 +11096,7 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                     is a measurement, so the difference is said in
                     words rather than left to be inferred. */}
                 <div className="tiny muted" style={{ marginTop: 2 }}>
-                  apex: {rep.cone_search.apex_from}
+                  ball (where the cone starts): {rep.cone_search.origin_from}
                   {rep.cone_search.impact_from
                     ? ` · impact frame from ${rep.cone_search.impact_from}`
                     : ""}

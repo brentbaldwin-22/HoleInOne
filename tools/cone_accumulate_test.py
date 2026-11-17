@@ -220,9 +220,80 @@ with tempfile.TemporaryDirectory() as td:
           * math.cos(math.radians((tight.get("best") or {})
                                   .get("bearing_deg", 0)))
           >= tight.get("min_climb_px_per_frame", 0))
-    check("  which the unfloored winner did not",
-          (loose.get("best") or {}).get("speed_px_per_frame", 99)
-          < (tight.get("best") or {}).get("speed_px_per_frame", 0))
+    # NOT "the unfloored run picks something slower" any more, and
+    # that is the statistic improving rather than the test weakening.
+    # Scoring by the RUN OUT OF THE BALL already disfavours a path
+    # that loiters: a loiterer is lit scattered along its length, not
+    # consecutively from the tee. The floor is now a second line of
+    # defence, so what has to hold is that it never ADMITS a ball
+    # that cannot leave -- which is what the check above measures.
+    check("  both runs now find a ball that leaves the tee",
+          min((loose.get("best") or {}).get("speed_px_per_frame", 0),
+              (tight.get("best") or {}).get("speed_px_per_frame", 0))
+          >= 8.0)
+
+# ── A BALL THAT VANISHES AFTER TEN FRAMES ───────────────────────────
+#
+# THE FAILURE THIS PINS, measured against the wizard's own plot of the
+# swing: the real ascent ran 48.6 degrees at 28 px/frame, and the
+# accumulator answered 36.9 at 11.7. The wizard only plots eight
+# frames of it -- against open sky the ball gets smaller and fainter
+# every frame and then it is simply not there.
+#
+# So a true track and a noise track finish with about the SAME number
+# of lit frames, and COUNTING them cannot separate the two. What
+# separates them is where those frames are: the ball lights 1,2,3...
+# consecutively out of the tee, clutter lights a scattered few
+# anywhere along the line.
+print()
+print("a ball visible for only its first frames is still found:")
+TRUE2_DEG, TRUE2_V, VISIBLE = 48.6, 28.0, 10
+
+
+def clip_fading(path, n=44):
+    rng = np.random.default_rng(17)
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"),
+                         60.0, (W, H))
+    for i in range(n + 2):
+        fr = np.full((H, W, 3), 38, dtype=np.uint8)
+        # clutter EVERYWHERE in the cone, all window long, so a slow
+        # scattered path can rack up lit frames for the whole window
+        for _ in range(260):
+            x = int(rng.integers(APEX[0] - 20, W))
+            y = int(rng.integers(120, APEX[1]))
+            cv2.circle(fr, (x, y), 3, (210, 210, 210), -1)
+        # the ball: bright at first, gone after VISIBLE frames
+        if 1 <= i <= VISIBLE:
+            r = math.radians(TRUE2_DEG)
+            x = int(round(APEX[0] + math.sin(r) * TRUE2_V * i))
+            y = int(round(APEX[1] - math.cos(r) * TRUE2_V * i))
+            if 0 <= x < W and 0 <= y < H:
+                cv2.circle(fr, (x, y), 2, (150, 150, 150), -1)
+        vw.write(fr)
+    vw.release()
+
+
+with tempfile.TemporaryDirectory() as td:
+    p3 = Path(td) / "fade.mp4"
+    clip_fading(p3)
+    fade = d3.cone_accumulate(p3, apex=APEX, f0=0, n_frames=44,
+                              cone_lo=35.0, cone_hi=77.0,
+                              clear_y=APEX[1] - 200)
+    b = fade.get("best") or {}
+    print("     best: %.1f deg at %.1f px/frame, lead %s, lit %s/%s"
+          % (b.get("bearing_deg", 0), b.get("speed_px_per_frame", 0),
+             b.get("lead_frames"), b.get("n_lit"), b.get("n_samples")))
+    check("it ran", fade.get("ok"), True)
+    check("  the bearing is right to within 4 degrees",
+          abs(float(b.get("bearing_deg", 0)) - TRUE2_DEG) <= 4.0)
+    check("  the speed is right to within 20%",
+          abs(float(b.get("speed_px_per_frame", 0)) - TRUE2_V)
+          <= 0.20 * TRUE2_V)
+    # THE POINT OF THE STATISTIC: a run out of the ball, not a tally.
+    check("  it found a run out of the ball",
+          (b.get("lead_frames") or 0) >= VISIBLE - 2)
+    check("  which is most of the frames the ball was visible for",
+          (b.get("lead_frames") or 0) <= VISIBLE + 2)
 
 print()
 print("it is reachable from the find, and gated:")

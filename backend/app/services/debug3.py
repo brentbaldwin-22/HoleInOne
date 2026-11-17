@@ -4175,6 +4175,10 @@ NEAR_DETS_PAD_FRAMES = 12
 # pathological band cannot put a megabyte of coordinates in a report.
 DETS_SAMPLE_CAP = 4000
 
+# How many dark frames may interrupt the run out of the ball
+# before it is judged to have ended. See `cone_accumulate`.
+_LEAD_SLACK = 2
+
 
 def _dets_near_chain(dets: list, chain: dict | None) -> list:
     """Every detection around one chain, in its frames and a pad either
@@ -6078,7 +6082,7 @@ def stitch_ascent_chains(chains: list, tol_px: float = ASCENT_STITCH_PX,
 
 
 def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
-                    min_samples=6, top_n=5, kernel_px=7, n_speeds=64,
+                    min_samples=6, top_n=5, kernel_px=7, n_speeds=160,
                     speed_lo=2.0, speed_hi=None, deg_step=None,
                     clear_y=None, clear_by_frac=0.6):
     """Find the ball's first climb by INTEGRATING along candidate
@@ -6216,7 +6220,15 @@ def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
             # finer -- resolution past that buys nothing and costs
             # linearly.
             _L = max(60.0, float(speed_hi or 0.0) * _n) or 400.0
-            deg_step = max(0.25, min(2.0, math.degrees(2.0 / _L)))
+            # FINE ENOUGH THAT THE RUN SURVIVES. The grid's spacing is
+            # not just an accuracy question: a candidate half a step
+            # off the true speed drifts about half a pixel per frame,
+            # walks off a three-pixel ball by the fifth, and the run
+            # out of the ball -- the whole statistic -- ends there. A
+            # coarse grid does not merely round the answer, it hides
+            # the evidence for it. The frames are already in memory,
+            # so resolution here costs almost nothing.
+            deg_step = max(0.1, min(1.0, math.degrees(1.0 / _L)))
         _degs = _np.arange(_lo, _hi + 1e-9, float(deg_step),
                            dtype=_np.float32)
         if _degs.size == 0:
@@ -6234,6 +6246,26 @@ def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
         _tot = _np.zeros(_C, dtype=_np.float32)
         _hit = _np.zeros(_C, dtype=_np.float32)
         _cnt = _np.zeros(_C, dtype=_np.int32)
+        # ── THE RUN THAT STARTS AT THE BALL ─────────────────────────
+        #
+        # The ball is detectable for the first handful of frames and
+        # then it is not: against open sky it gets smaller and fainter
+        # every frame, and the wizard's own plot of this swing stops
+        # after eight. So a true track and a noise track end up with
+        # about the SAME number of lit frames, and counting them
+        # cannot tell the two apart -- which is why this picked 36.9
+        # degrees at 11.7 px/frame on a swing that really went 48.6 at
+        # 28.
+        #
+        # What separates them is WHERE the lit frames are. The ball
+        # lights frames 1,2,3... consecutively out of the tee and then
+        # stops; clutter lights a scattered few anywhere along the
+        # line. So the score is the length of the unbroken run that
+        # STARTS AT THE BALL, which is also exactly the quantity being
+        # asked for -- the initial ascent, not the whole flight.
+        _lead = _np.zeros(_C, dtype=_np.float32)
+        _miss = _np.zeros(_C, dtype=_np.int32)
+        _alive = _np.ones(_C, dtype=bool)
         # LOW, DELIBERATELY. "Lit" must mean "there is something here
         # at all", not "there is something bright here -- the ball is
         # the faintest thing in the picture on a far tee, and a floor
@@ -6246,7 +6278,17 @@ def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
         # just above sensor noise a wrong track is lit on the few per
         # cent of samples where it crosses clutter, and the ball's
         # track is lit on all of them.
-        _lit_floor = float(max(4.0, _np.percentile(_resp, 90.0)))
+        # FROM THE NOISE, NOT FROM A PERCENTILE. A percentile is a
+        # statement about COVERAGE: in a busy treeline the clutter
+        # occupies more than a tenth of the picture, so the 90th
+        # percentile is a clutter brightness and the ball -- fainter
+        # than every leaf -- never reaches it. The floor should say
+        # "brighter than the sensor's own noise" and nothing more;
+        # the discrimination in this method comes from the line, not
+        # from brightness.
+        _mres = float(_np.median(_resp))
+        _madr = float(_np.median(_np.abs(_resp - _mres)))
+        _lit_floor = float(max(4.0, _mres + 3.0 * 1.4826 * _madr))
 
         # ONE PASS PER FRAME OVER ALL CANDIDATES, not the other way
         # round: the frames are what is expensive to touch.
@@ -6261,8 +6303,18 @@ def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
                 continue
             _vals = _resp[_f][_iy[_in], _ix[_in]]
             _tot[_in] += _vals
-            _hit[_in] += (_vals >= _lit_floor).astype(_np.float32)
+            _was = _np.zeros(_C, dtype=bool)
+            _was[_in] = _vals >= _lit_floor
+            _hit += _was.astype(_np.float32)
             _cnt[_in] += 1
+            # A FRAME OR TWO OF SLACK, because a ball crossing a bright
+            # roofline or a branch vanishes for a frame and comes back,
+            # and a run ended by that is a run that measures the
+            # roofline rather than the ball.
+            _run = _alive & _np.asarray(_in)
+            _lead += (_run & _was).astype(_np.float32)
+            _miss += (_run & ~_was).astype(_np.int32)
+            _alive &= _miss <= _LEAD_SLACK
 
         # ── A STRUCK BALL CLEARS THE TREES, AND FAST ────────────────
         #
@@ -6337,7 +6389,9 @@ def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
         # stays as the tie-break only, scaled too small to outrank a
         # whole extra frame of evidence.
         _bright = _np.where(_enough, _tot / _np.maximum(_cnt, 1), -1.0)
-        _mean = _np.where(_enough, _hit + 1e-4 * _bright, -1.0)
+        # THE LEADING RUN, with total lit frames only as a tie-break.
+        _mean = _np.where(_enough,
+                          _lead + 1e-3 * _hit + 1e-6 * _bright, -1.0)
         _valid = _mean[_enough]
         _med = float(_np.median(_valid))
         _mad = float(_np.median(_np.abs(_valid - _med)))
@@ -6362,6 +6416,7 @@ def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
                 "lit_frac": round(float(_hit[_j]
                                         / max(1, int(_cnt[_j]))), 3),
                 "n_lit": int(_hit[_j]),
+                "lead_frames": int(_lead[_j]),
                 "n_samples": int(_cnt[_j]),
                 "points": [
                     {"frame": int(f0) + _f,
@@ -6399,7 +6454,7 @@ def sweep_ascents(
     # the second pass simply does not run. Passed in rather than
     # guessed here: the caller measured it, and a second guess would
     # draw one cone and search another.
-    cone_apex: tuple | None = None,
+    cone_origin: tuple | None = None,
     # THE DEEP LEVEL, ALWAYS -- not level 2 with a level 3 retry behind
     # it. The operator's map has climbed to "Scan harder" often enough
     # on ascents that the deep level is the one that works, and running
@@ -6629,10 +6684,10 @@ def sweep_ascents(
         # crowded out of a search that was meant to find more of it.
         # Two passes keep the band's budget exactly as it was.
         out["cone_below"] = None
-        if (bool(int(_G["ascent_cone_below_skyline"])) and cone_apex
+        if (bool(int(_G["ascent_cone_below_skyline"])) and cone_origin
                 and _cone_is_set(_CONE_LO, _CONE_HI)):
             try:
-                _ax, _ay = int(cone_apex[0]), int(cone_apex[1])
+                _ax, _ay = int(cone_origin[0]), int(cone_origin[1])
                 _top = int(band_h)
                 if _ay > _top:
                     # The wedge's x-span between the skyline and the
@@ -6680,7 +6735,7 @@ def sweep_ascents(
                     out["cone_below"] = {
                         "ran": True,
                         "rect": [_cx0, _top, _cx1 - _cx0, _ay - _top],
-                        "apex": [_ax, _ay],
+                        "origin": [_ax, _ay],
                         "n_found": len(_below),
                         "n_in_cone": len(_kept_b),
                     }

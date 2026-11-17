@@ -82,7 +82,7 @@ def run(gate, apex=APEX, cone=(45.0, 77.0)):
         return d3.sweep_ascents(
             src, 60.0,
             roi={"y": float(SKY) / H},
-            cone_apex=apex,
+            cone_origin=apex,
             gates={"ascent_cone_from_deg": cone[0],
                    "ascent_cone_to_deg": cone[1],
                    "ascent_cone_below_skyline": gate}) or {}

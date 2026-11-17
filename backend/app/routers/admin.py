@@ -25697,7 +25697,7 @@ def _ascent_detection_zoom_image(row, src_path, sweep) -> None:
         log.warning("detection zoom image failed on %s: %s", row.id, exc)
 
 
-def _cone_apex_for(ai_launch):
+def _cone_origin_for(ai_launch):
     """Where the launch cone is anchored, and how sure we are of it.
 
     ONE DEFINITION, because two things need it and they must not
@@ -25757,8 +25757,8 @@ def _ascent_cone_accumulate(row, src_path, sweep, ai_launch, gates,
                           "the cone is what makes this search small "
                           "enough to be worth running")
             return out
-        _apex, _apex_from = _cone_apex_for(ai_launch)
-        if _apex is None:
+        _origin, _origin_from = _cone_origin_for(ai_launch)
+        if _origin is None:
             out["why"] = "nothing says where a teed ball sits here"
             return out
         _al = ai_launch or {}
@@ -25780,11 +25780,11 @@ def _ascent_cone_accumulate(row, src_path, sweep, ai_launch, gates,
         if _bb2:
             _bandy = int(_bb2[1]) + int(_bb2[3])
         _r = _ad3.cone_accumulate(
-            src_path, apex=_apex, f0=int(_f0), n_frames=_win,
+            src_path, apex=_origin, f0=int(_f0), n_frames=_win,
             cone_lo=float(_cone[0]), cone_hi=float(_cone[1]),
             clear_y=_bandy)
         _r["ran"] = bool(_r.get("ok"))
-        _r["apex_from"] = _apex_from
+        _r["origin_from"] = _origin_from
         _min_z = float(_g["ascent_cone_accum_min_z"])
         _r["min_z"] = _min_z
         _z = _r.get("margin_z")
@@ -25860,7 +25860,7 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates,
         # Labelled either way, because an apex that was measured and
         # one that was placed are not the same claim and the picture
         # must not make them look alike.
-        _apex, _apex_from = _cone_apex_for(_al)
+        _origin, _origin_from = _cone_origin_for(_al)
 
         _f0 = _al.get("measured_impact_frame")
         _f_from = "the ball leaving"
@@ -25876,7 +25876,7 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates,
                 "no impact frame — %s"
                 % (_al.get("reason") or "stage 1 reported none"))
             return out
-        if _apex is None:
+        if _origin is None:
             out["why"] = (
                 "no apex to draw the cone from: the ball was not "
                 "measured (%s) and the swing check placed neither a "
@@ -25959,7 +25959,7 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates,
 
         _h, _w = im.shape[:2]
         im = (im.astype("float32") * 0.55).astype("uint8")
-        ax, ay = int(_apex[0]), int(_apex[1])
+        ax, ay = int(_origin[0]), int(_origin[1])
 
         # ── THE CONE, FROM THE BALL ─────────────────────────────────
         #
@@ -26122,6 +26122,12 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates,
         # is the thing an operator has to judge before trusting a
         # number.
         _ac = accum or {}
+        # DEFINED BEFORE THE BRANCH THAT FILLS IT, because the legend
+        # below reads it whether or not the accumulator ran. This is
+        # the same shape as the `_tilt` crash: a name assigned on one
+        # branch and read unconditionally further down.
+        _bcol = ((60, 230, 255) if _ac.get("convincing")
+                 else (120, 160, 190))
         if _ac.get("ok"):
             for _c in reversed((_ac.get("candidates") or [])[1:]):
                 _pp = _c.get("points") or []
@@ -26130,8 +26136,6 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates,
                              (_pp[_q]["x"], _pp[_q]["y"]),
                              (120, 90, 40), 1, cv2.LINE_AA)
             _bp = (_ac.get("best") or {}).get("points") or []
-            _bcol = ((60, 230, 255) if _ac.get("convincing")
-                     else (120, 160, 190))
             for _q in range(1, len(_bp)):
                 cv2.line(im, (_bp[_q - 1]["x"], _bp[_q - 1]["y"]),
                          (_bp[_q]["x"], _bp[_q]["y"]), _bcol, 2,
@@ -26152,6 +26156,33 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates,
                         (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                         _bcol, 1, cv2.LINE_AA)
 
+        # ── A LEGEND, BECAUSE SEVEN THINGS ARE DRAWN HERE ──────────
+        #
+        # Three of them were near-identical amber and the operator had
+        # to ask which line was which -- "what are the thin blue
+        # lines? what is the yellowish orange line with points?". A
+        # picture that needs a conversation to read is not a picture
+        # that explains anything, and the answer belongs ON it rather
+        # than in whichever message happened to describe it.
+        _leg = [
+            ("the ball — where the cone starts", (0, 220, 255)),
+            ("the launch cone", (90, 230, 90)),
+            ("the skyline — the band's floor", (80, 200, 255)),
+            ("detections in the cone", (170, 170, 170)),
+            ("a chain that survived every gate", (255, 255, 255)),
+        ]
+        if (accum or {}).get("ok"):
+            _leg.append(("the accumulator's best path", _bcol))
+            _leg.append(("...and its runners-up", (120, 90, 40)))
+        _ly = _h - 8 - 15 * len(_leg)
+        cv2.rectangle(im, (6, _ly - 14), (330, _h - 6), (20, 20, 20), -1)
+        for _i, (_txt, _col) in enumerate(_leg):
+            _yy = _ly + _i * 15
+            cv2.line(im, (12, _yy - 4), (34, _yy - 4), _col, 2,
+                     cv2.LINE_AA)
+            cv2.putText(im, _txt, (40, _yy), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.38, (225, 225, 225), 1, cv2.LINE_AA)
+
         # the ball last, so nothing is drawn over it
         cv2.circle(im, (ax, ay), 7, (0, 220, 255), 2, cv2.LINE_AA)
 
@@ -26169,7 +26200,7 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates,
                        else " — every %d labelled" % _lab_every),
                     (10, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                     (170, 170, 170), 1, cv2.LINE_AA)
-        cv2.putText(im, "apex: %s" % (_apex_from or "?"),
+        cv2.putText(im, "ball (cone origin): %s" % (_origin_from or "?"),
                     (10, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                     (0, 220, 255), 1, cv2.LINE_AA)
 
@@ -26184,8 +26215,8 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates,
             "window_frames": _win,
             "cone_from_deg": _lo,
             "cone_to_deg": _hi,
-            "apex": [ax, ay],
-            "apex_from": _apex_from,
+            "origin": [ax, ay],
+            "origin_from": _origin_from,
             "impact_from": _f_from,
             "n_in_window": len(_in_win),
             "clean_url": _clip_url_for(_clean_p.name),
@@ -27545,7 +27576,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # THE SAME APEX THE PICTURE WILL BE DRAWN FROM. `ascent_cone_below
     # _skyline` searches the wedge under the skyline, and the wedge is
     # anchored here -- so this is read once and handed to both.
-    _apex_for_cone, _ = _cone_apex_for(rep.get("ai_launch"))
+    _origin_for_cone, _ = _cone_origin_for(rep.get("ai_launch"))
     # AND WHICH TEE, so the per-zone cone the editor offers is the one
     # that runs. Without it `resolve_gates` could not see a `name@N`
     # override and a cone set for zone 3 arrived as -90..+90.
@@ -27558,7 +27589,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     sweep = _d3.sweep_ascents(src_path, fps, roi=_roi.get("roi"),
                               windows=_win,
                               gates=_gt,
-                              cone_apex=_apex_for_cone,
+                              cone_origin=_origin_for_cone,
                               zone=_zone_for_cone,
                               # ONLY ON A FIND. The cone picture draws
                               # them and the operator toggles them;
