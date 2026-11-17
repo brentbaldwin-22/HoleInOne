@@ -11072,6 +11072,36 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                       by the cone</>
                   )}
                 </div>
+                {/* THE RAW MATERIAL, which is the whole answer when no
+                    chain formed: "the detector saw nothing" and "the
+                    tracker linked nothing" need opposite fixes and
+                    read identically from a chain count alone. */}
+                <div className="tiny" style={{ marginTop: 2 }}>
+                  <b>{rep.cone_search.n_dets_in_window}</b> detection(s)
+                  in the window
+                  {rep.cone_search.n_dets_total != null && (
+                    <> · {rep.cone_search.n_dets_total} in the whole
+                      sweep</>
+                  )}
+                  {rep.cone_search.dets_labelled_every > 1 && (
+                    <> · every {rep.cone_search.dets_labelled_every}
+                      {"th"} labelled, to stay legible</>
+                  )}
+                  {rep.cone_search.dets_capped && (
+                    <> · the detection list was capped</>
+                  )}
+                </div>
+                {rep.cone_search.n_in_window === 0
+                  && rep.cone_search.n_dets_in_window > 0 && (
+                  <div className="tiny" style={{ color: "#b45309",
+                                                 marginTop: 2 }}>
+                    The detector saw these and the tracker linked none of
+                    them into a chain — so this is a tracking problem,
+                    not a detection one. The frame numbers say whether
+                    the specks are one thing climbing or several things
+                    at once.
+                  </div>
+                )}
                 {Object.keys(rep.cone_search.why_tally || {}).length > 0 && (
                   <div className="tiny muted" style={{ marginTop: 2 }}>
                     died on:{" "}

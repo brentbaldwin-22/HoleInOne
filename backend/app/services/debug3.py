@@ -4156,6 +4156,12 @@ NEAR_DETS_PAD_PX = 160
 NEAR_DETS_PAD_FRAMES = 12
 
 
+# How many raw detections a chainless run hands back for drawing.
+# Enough to show a whole clip's worth of specks at 5Hz, bounded so a
+# pathological band cannot put a megabyte of coordinates in a report.
+DETS_SAMPLE_CAP = 4000
+
+
 def _dets_near_chain(dets: list, chain: dict | None) -> list:
     """Every detection around one chain, in its frames and a pad either
     end. The raw material of that chain, so a picture can show whether
@@ -6625,6 +6631,28 @@ def sweep_ascents(
         _considered.sort(key=lambda z: (len(z["why"]), -z["n_points"]))
         out["near_dets"] = _dets_near_chain(
             dets, _considered[0] if _considered else None)
+        # ── AND WHAT IT WAS GIVEN WHEN IT ASSEMBLED NOTHING ─────────
+        #
+        # `near_dets` is a slice around the BEST CHAIN, so a run that
+        # built no chain at all reports no detections at all -- and
+        # "the detector saw nothing" and "the tracker linked nothing"
+        # then look identical from outside. Telling those two apart is
+        # the entire reason that slice exists, and it goes blank in
+        # the one case where the question is unavoidable. Reported
+        # from the field as "0 ascents, nothing produced" on a clip
+        # whose own report counted 276 detections.
+        #
+        # ONLY WHEN THERE IS NO CHAIN. With one, `near_dets` already
+        # answers it, and shipping every detection on every produce
+        # would put a megabyte of coordinates in a report nobody
+        # opened.
+        if not _considered:
+            out["dets_sample"] = [
+                {"frame": int(d["frame"]), "x": int(d["x"]),
+                 "y": int(d["y"]), "area": int(d.get("area") or 0)}
+                for d in dets[:DETS_SAMPLE_CAP]]
+            out["dets_sample_capped"] = len(dets) > DETS_SAMPLE_CAP
+            out["n_dets_total"] = len(dets)
         # WHAT SIZE THINGS ACTUALLY ARE here, so `ascent_prefer_area`
         # can be chosen off the footage rather than guessed. Computed
         # after the slice, which is where the sample lives.

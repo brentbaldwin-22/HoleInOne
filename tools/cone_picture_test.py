@@ -261,9 +261,68 @@ with tempfile.TemporaryDirectory() as td:
         {"considered": [], "cone_deg": [45.0, 77.0], "cone_on": True,
          "window_frames": 50},
         {"measured_ball": APEX, "measured_impact_frame": 60}, {}, 30.0)
-    check("no chains at all -> declines", o.get("ok"), False)
-    check("...and says the sweep weighed none",
-          "weighed no chains" in (o.get("why") or ""))
+    check("no chains AND no detections -> declines", o.get("ok"), False)
+    check("...and says the band contained nothing",
+          "nothing that moved" in (o.get("why") or ""))
+
+# ── NO CHAINS BUT DETECTIONS: THE CASE THAT MATTERS ──────────────────
+#
+# THE BUG THIS PREVENTS. The picture used to refuse the moment the
+# sweep built no chain -- which is backwards. A run that assembled
+# nothing is exactly the run whose raw detections decide what to fix,
+# because "the detector saw nothing" and "the tracker linked nothing"
+# need opposite fixes and read identically from outside. The operator
+# was left with neither answer on a clip whose own report counted 276
+# detections.
+print()
+print("no chains but detections -> draw them anyway:")
+
+
+def _dets_run(n_dets, first=60, considered=None, per_frame=1):
+    """`per_frame` > 1 packs several specks into each frame, which is
+    what a real band does -- one per frame caps a 51-frame window at
+    51 and the label-thinning never triggers."""
+    dets = [{"frame": first + (i // per_frame), "x": 300 + (i % 40),
+             "y": 380 - (i % 30), "area": 4}
+            for i in range(n_dets)]
+    sweep = {"considered": considered or [], "cone_deg": [45.0, 77.0],
+             "cone_on": True, "window_frames": 50, "why_colors": {},
+             "tee_line_y": 410, "dets_sample": dets,
+             "n_dets_total": n_dets}
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "t.mp4"
+        _clip(src, frames=200)
+        _was = admin.CLIPS_DIR
+        admin.CLIPS_DIR = Path(td)
+        try:
+            return admin._ascent_cone_image(
+                _R3(), src, sweep,
+                {"measured_ball": APEX, "measured_impact_frame": 60},
+                {}, 30.0)
+        finally:
+            admin.CLIPS_DIR = _was
+
+
+o = _dets_run(20)
+check("it draws with zero chains", o.get("ok"))
+check("  no chains counted", o.get("n_in_window"), 0)
+check("  but the detections are", o.get("n_dets_in_window"), 20)
+check("  and every one is labelled", o.get("dets_labelled_every"), 1)
+
+# only those IN the window
+o = _dets_run(20, first=500)
+check("detections outside the window are not drawn",
+      o.get("n_dets_in_window"), 0)
+
+# legibility: too many to label individually
+o = _dets_run(400, per_frame=8)
+check("400 detections still draw", o.get("ok"))
+check("  all of them are in the window",
+      o.get("n_dets_in_window"), 400)
+check("  but they are thinned to stay legible",
+      o.get("dets_labelled_every") > 1)
+check("  to roughly 150 labels",
+      120 <= 400 // o.get("dets_labelled_every", 1) <= 150)
 
 print()
 print("the page renders it, and is not behind a closed fold:")

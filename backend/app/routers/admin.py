@@ -25686,9 +25686,20 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
                 "teed ball sits on this hole"
                 % (_al.get("measured_why") or "no reason given"))
             return out
-        if not _con:
-            out["why"] = ("the sweep weighed no chains at all, so there "
-                          "is nothing for a cone to keep or refuse")
+        # NO CHAINS IS NOT NOTHING TO SHOW. This used to refuse here,
+        # which is backwards: a run that assembled nothing is exactly
+        # the run whose raw detections decide what to fix. "The
+        # detector saw nothing" and "the tracker linked nothing" need
+        # opposite fixes and read identically from outside, and
+        # refusing to draw left the operator with neither answer on a
+        # clip whose own report counted 276 detections.
+        _dets = list((sweep or {}).get("dets_sample")
+                     or (sweep or {}).get("near_dets") or [])
+        if not _con and not _dets:
+            out["why"] = (
+                "the sweep weighed no chains and reported no "
+                "detections either, so there is nothing to draw — "
+                "the band it searched contained nothing that moved")
             return out
 
         # FROM THE RUN, NOT FROM A SECOND RESOLUTION OF THE GATES.
@@ -25773,6 +25784,28 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
         if _ty:
             cv2.line(im, (0, _ty), (_w, _ty), (80, 200, 255), 1, cv2.LINE_AA)
 
+        # ── EVERY DETECTION IN THE WINDOW, WITH ITS FRAME NUMBER ────
+        #
+        # Under the chains, so a chain is never hidden by its own raw
+        # material, and labelled because "a speck at 420,300" answers
+        # nothing on its own -- WHEN it appeared is what says whether
+        # a column of specks is one ball climbing or six birds.
+        _dw = [d for d in _dets
+               if _f0 <= int(d.get("frame", -1)) <= _f1]
+        _lab_every = 1
+        if len(_dw) > 150:
+            # LEGIBLE BEATS COMPLETE when they conflict. Three hundred
+            # overlapping labels is a grey smear that hides the specks
+            # it describes; the caption says what was skipped.
+            _lab_every = (len(_dw) // 150) + 1
+        for _i, d in enumerate(sorted(_dw, key=lambda q: int(q["frame"]))):
+            _x, _y = int(d["x"]), int(d["y"])
+            cv2.circle(im, (_x, _y), 2, (170, 170, 170), -1, cv2.LINE_AA)
+            if _i % _lab_every == 0:
+                cv2.putText(im, str(int(d["frame"])), (_x + 4, _y - 3),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.3,
+                            (170, 170, 170), 1, cv2.LINE_AA)
+
         # ── THE CHAINS THAT START IN THE WINDOW ─────────────────────
         _cols = (sweep or {}).get("why_colors") or {}
 
@@ -25834,6 +25867,12 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
         # WHERE THE APEX CAME FROM, ON THE PICTURE. A cone drawn from a
         # placed apex and one drawn from a measured ball look
         # identical, and only one of them is a measurement.
+        cv2.putText(im,
+                    "%d detection(s) in the window%s"
+                    % (len(_dw), "" if _lab_every == 1
+                       else " — every %d labelled" % _lab_every),
+                    (10, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                    (170, 170, 170), 1, cv2.LINE_AA)
         cv2.putText(im, "apex: %s" % (_apex_from or "?"),
                     (10, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                     (0, 220, 255), 1, cv2.LINE_AA)
@@ -25853,6 +25892,11 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
             "apex_from": _apex_from,
             "impact_from": _f_from,
             "n_in_window": len(_in_win),
+            "n_dets_in_window": len(_dw),
+            "n_dets_total": ((sweep or {}).get("n_dets_total")
+                             or (sweep or {}).get("n_dets")),
+            "dets_labelled_every": _lab_every,
+            "dets_capped": bool((sweep or {}).get("dets_sample_capped")),
             "n_kept": _kept,
             "n_refused_by_cone": _coned_off,
             "why_tally": _why_tally,
