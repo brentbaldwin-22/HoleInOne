@@ -25697,6 +25697,102 @@ def _ascent_detection_zoom_image(row, src_path, sweep) -> None:
         log.warning("detection zoom image failed on %s: %s", row.id, exc)
 
 
+def _collapse_one_ball(ascents, fps, gates, zone=None):
+    """Two chains of one flight are one swing, and one clip.
+
+    ONE BALL LEAVES THE TEE ONCE. Everything downstream treats an
+    entry here as a shot -- it becomes a clip, gets a tracer drawn on
+    it and goes out -- so two pieces of one flight that both survive
+    the gates become two videos of the same swing. Reported from the
+    field the first time production ran end to end: "it produces an
+    extra clip because it kept 2 chains of the one swing".
+
+    NOT THE SAME TEST `stitch_ascent_chains` ALREADY DOES. That one
+    joins chains lying along a common axis, within `ascent_stitch_px`
+    of it, which is a question about SHAPE -- and it misses a pair
+    that is genuinely offset: the leading and trailing edge of one
+    smear, or two segments either side of a hole the fill could not
+    close. This asks a question about PHYSICS that no amount of
+    offset changes: did these two leave the same place at the same
+    moment? A golfer cannot strike two balls half a second apart from
+    the same spot.
+
+    The longest chain wins, because it is the one with the most of
+    the flight in it. Returns (kept, merged) -- merged says what went
+    and why, since a run that quietly halves its own answer is worse
+    than one that produces too much.
+    """
+    _a = list(ascents or [])
+    if len(_a) < 2:
+        return _a, []
+    try:
+        from ..services import debug3 as _cd3
+        _g = _cd3.resolve_gates(gates or {}, zone=zone)
+        _sec = float(_g["ascent_same_swing_sec"])
+        _px = float(_g["ascent_same_swing_px"])
+    except Exception as _cx:  # noqa: BLE001
+        log.debug("one-ball collapse: no gates (%s)", _cx)
+        return _a, []
+    _fps = float(fps or 30.0)
+
+    def _when(c):
+        # The back-run's instant when it has one, else the chain's own
+        # first frame -- which is later than the departure but moves
+        # with it, so two pieces of one flight stay close either way.
+        for k in ("from_frame", "first_frame"):
+            if c.get(k) is not None:
+                try:
+                    return float(c[k]) / max(_fps, 1.0)
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    def _where(c):
+        try:
+            if c.get("from_x") is not None and c.get("from_y") is not None:
+                return float(c["from_x"]), float(c["from_y"])
+        except (TypeError, ValueError):
+            pass
+        _p = c.get("points") or []
+        if _p:
+            return float(_p[0]["x"]), float(_p[0]["y"])
+        return None
+
+    _order = sorted(_a, key=lambda c: -int(c.get("n_points") or 0))
+    _kept, _merged = [], []
+    for c in _order:
+        _tc, _wc = _when(c), _where(c)
+        _onto = None
+        for k in _kept:
+            _tk, _wk = _when(k), _where(k)
+            if _tc is None or _tk is None or _wc is None or _wk is None:
+                continue
+            if abs(_tc - _tk) > _sec:
+                continue
+            if ((_wc[0] - _wk[0]) ** 2
+                    + (_wc[1] - _wk[1]) ** 2) ** 0.5 > _px:
+                continue
+            _onto = k
+            break
+        if _onto is None:
+            _kept.append(c)
+        else:
+            _merged.append({
+                "n_points": int(c.get("n_points") or 0),
+                "first_frame": c.get("first_frame"),
+                "kept_n_points": int(_onto.get("n_points") or 0),
+                "kept_first_frame": _onto.get("first_frame"),
+                "why": ("left the same spot within %.2fs and %.0fpx of "
+                        "a longer chain, so it is the same flight"
+                        % (_sec, _px)),
+            })
+    # BACK INTO THE ORDER THEY LEFT IN. The caller may already have
+    # sorted these by nearness to the measured ball, and swings are
+    # numbered downstream by when the ball went.
+    _kept.sort(key=lambda c: int(c.get("first_frame") or 0))
+    return _kept, _merged
+
+
 def _cone_origin_for(ai_launch):
     """Where the launch cone is anchored, and how sure we are of it.
 
@@ -27736,6 +27832,16 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                     "struck; the nearest is %dpx away"
                     % (len(_asc), int(_near_ball(_asc[0]) ** 0.5))),
         }
+    # ── TWO PIECES OF ONE FLIGHT ARE ONE SWING ─────────────────────
+    #
+    # Each entry below becomes a clip, so this is the last chance to
+    # notice that two of them are the same ball.
+    _asc, _merged_asc = _collapse_one_ball(_asc, fps, _gt,
+                                           zone=_zone_for_cone)
+    if _merged_asc:
+        rep["ascents_merged"] = _merged_asc
+        log.info("ascent: collapsed %d chain(s) into another of the "
+                 "same flight", len(_merged_asc))
     rep["ascents"] = _asc
     _stage(2, "The ascent — balls leaving the tee",
            ("THE ONE AND ONLY ASCENT SEARCH. One frame-difference "

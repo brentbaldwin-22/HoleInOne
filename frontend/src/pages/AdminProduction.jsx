@@ -11058,6 +11058,18 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             redrawn every morning, so "the zones" is not one thing --
             and producing an older swing against this morning's
             drawing judges it on grass nobody teed off from. */}
+        {/* A RUN THAT HALVES ITS OWN ANSWER MUST SAY SO. Each ascent
+            becomes a clip, so collapsing two into one is the
+            difference between one video of a shot and two -- and
+            between one shot and none, if it ever over-merges. */}
+        {Array.isArray(rep?.ascents_merged)
+          && rep.ascents_merged.length > 0 && (
+          <div className="tiny muted" style={{ margin: "6px 0" }}>
+            {rep.ascents_merged.length} chain(s) collapsed into another
+            of the same flight — {rep.ascents_merged[0].why}. Without
+            this each would have become its own clip of the same swing.
+          </div>
+        )}
         {rep?.zones_from && (
           <div className="tiny muted" style={{ margin: "6px 0" }}>
             Trigger zones: {rep.zones_from}

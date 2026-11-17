@@ -8996,6 +8996,19 @@ GATE_SPEC = {
     # It reports a confidence of its own (`margin_z`, in robust sigmas
     # above this clip's own median candidate), so it is worth looking
     # at before it is worth trusting.
+    # ONE BALL LEAVES THE TEE ONCE. Two kept chains that trace back to
+    # the same spot at the same instant are two pieces of one flight,
+    # however little they look alike -- and each one becomes a CLIP, so
+    # the operator gets two videos of one shot.
+    #
+    # `stitch_ascent_chains` already joins pieces that lie along one
+    # line, within `ascent_stitch_px` of each other's axis. That is a
+    # test of SHAPE and it misses a pair that is genuinely offset: the
+    # leading and trailing edge of the same smear, or two segments
+    # either side of a hole. This is a test of PHYSICS instead, and the
+    # two catch different things.
+    "ascent_same_swing_sec": (0.5, 0.0, 5.0, False),
+    "ascent_same_swing_px": (120.0, 0.0, 2000.0, False),
     "ascent_cone_accumulate": (0, 0, 1, True),
     # HOW SURE IS SURE ENOUGH. Below this the accumulator reports its
     # answer and marks it unconvincing rather than hiding it -- the
