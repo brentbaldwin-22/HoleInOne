@@ -167,3 +167,64 @@ if FAILED:
     print("FAILED: %s" % ", ".join(FAILED))
     sys.exit(1)
 print("all ok — and the flag is alive")
+
+# ── AND WHEN THE RIG HEARD NOTHING ──────────────────────────────────
+#
+# THE SECOND GATE, which was the one actually closing. The merge takes
+# a clip index from `_ascent_pin_rig_impact`, and that returns None on
+# every clip the rig did not hear -- a dwell trigger, or ANY manual
+# upload. So the merge attached nothing on those clips whatever the
+# flag above said, and the operator saw a correct f797 on the panel
+# beside an f824 on the clip.
+#
+# Stage 1 knows which swing it measured. It does not need the
+# microphone to say so.
+print()
+print("the swing is matched from the measurement when the rig is silent:")
+
+
+def _rep_multi(measured, frames):
+    return {"ai_launch": {"measured_impact_frame": measured,
+                          "rest": {"x": 605, "y": 727}, "points": []},
+            "clips": [{"impact_frame": f, "ball": [600, 720]}
+                      for f in frames],
+            "ascents": [{"points": []} for _ in frames]}
+
+
+r = _rep_multi(797, [824])
+i, why = admin._match_swing_to_measurement(r, 60.0)
+check("one swing, matched", i, 0)
+check("  and it says how", "27 frame(s)" in (why or ""))
+
+r = _rep_multi(797, [400, 824, 2000])
+i, _ = admin._match_swing_to_measurement(r, 60.0)
+check("the NEAREST swing in time wins", i, 1)
+
+# A swing ninety seconds away is still the nearest one. It is not this
+# swing, and "nearest" must not be allowed to say that it is.
+r = _rep_multi(797, [6000])
+i, why = admin._match_swing_to_measurement(r, 60.0)
+check("too far -> no match rather than the nearest", i, None)
+check("  and says why", "too far" in (why or ""))
+
+r = _rep_multi(None, [824])
+check("no measurement -> no match",
+      admin._match_swing_to_measurement(r, 60.0)[0], None)
+check("no swings -> no match",
+      admin._match_swing_to_measurement(
+          {"ai_launch": {"measured_impact_frame": 797}, "clips": []},
+          60.0)[0], None)
+
+print()
+print("and the produce path uses it when the rig gave nothing:")
+check("the rig's index is tried first",
+      '_ci = (_pin or {}).get("clip_index")' in src)
+check("  and the measurement is the fallback",
+      "_match_swing_to_measurement(rep, fps)" in src)
+check("  with how it matched recorded",
+      'rep["ai_launch_match"]' in src)
+
+if FAILED:
+    print("FAILED: %s" % ", ".join(FAILED))
+    sys.exit(1)
+print("all ok — the measurement finds its own swing")

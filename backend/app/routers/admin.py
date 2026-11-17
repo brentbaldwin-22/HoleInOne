@@ -27899,8 +27899,20 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # before there was a chain to attach it to; this is where its two
     # answers land -- the ball at address becomes the tee spot, and the
     # climb below the band goes on the front of the chain.
-    rep["ai_launch_merge"] = _ascent_apply_ai_launch(
-        rep, (_pin or {}).get("clip_index"))
+    # ── AND WHEN THE RIG HEARD NOTHING, MATCH IT OURSELVES ─────────
+    #
+    # The pin above is the rig's answer and it is None on every clip
+    # the rig did not hear -- a dwell trigger, or any manual upload.
+    # The merge needs an index and bails without one, so on those
+    # clips it attached nothing: not the measured impact frame, not
+    # the measured tee spot. Stage 1 knows which swing it measured;
+    # it does not need the microphone to say so.
+    _ci = (_pin or {}).get("clip_index")
+    _ci_why = "the swing the rig's heard strike was matched to"
+    if _ci is None:
+        _ci, _ci_why = _match_swing_to_measurement(rep, fps)
+    rep["ai_launch_match"] = {"clip_index": _ci, "why": _ci_why}
+    rep["ai_launch_merge"] = _ascent_apply_ai_launch(rep, _ci)
     _n_spot = sum(1 for c in rep["clips"] if c.get("ball"))
     _stage(3, "Tee spot and impact frame",
            "Each chain is run back along its own heading to the tee line. "
@@ -30863,6 +30875,58 @@ def _point_to_segment_px(px, py, ax, ay, bx, by) -> float:
         return math.hypot(px - ax, py - ay)
     _t = max(0.0, min(1.0, ((px - ax) * _dx + (py - ay) * _dy) / _len2))
     return math.hypot(px - (ax + _t * _dx), py - (ay + _t * _dy))
+
+
+def _match_swing_to_measurement(rep, fps, within_sec=1.5):
+    """Which swing stage 1's measurement belongs to, without the rig.
+
+    THE MERGE HAD ONE WAY IN AND IT CLOSED ON HALF THE CLIPS.
+    `_ascent_pin_rig_impact` matches the heard strike to a chain and
+    returns None when the rig heard nothing -- a dwell trigger, or any
+    manual upload. `_ascent_apply_ai_launch` takes that index and
+    bails without it, so on those clips it attached nothing at all:
+    not the measured impact frame, not the measured tee spot. The
+    operator saw a correct f797 on the panel and f824 on the clip.
+
+    But the rig is not the only thing that can say which swing this
+    is. Stage 1 measured a frame and a ball; the nearest chain in TIME
+    is the swing it measured, and no second opinion is needed to work
+    that out.
+
+    WITHIN A WINDOW, because "nearest" on a clip with one swing ninety
+    seconds away is still nearest. Outside it the answer is that the
+    measurement belongs to no chain here, which is what None means.
+
+    Returns (index, why) or (None, why).
+    """
+    _ai = rep.get("ai_launch") or {}
+    _f = _ai.get("measured_impact_frame")
+    if _f is None:
+        _f = _ai.get("impact_frame")
+    _clips = rep.get("clips") or []
+    if _f is None or not _clips:
+        return None, "stage 1 measured no frame to match a swing with"
+    _fps = float(fps or 60.0)
+    _best = _bestd = None
+    for _i, _c in enumerate(_clips):
+        for _k in ("impact_frame", "seen_frame"):
+            if _c.get(_k) is None:
+                continue
+            try:
+                _d = abs(int(_c[_k]) - int(_f))
+            except (TypeError, ValueError):
+                continue
+            if _bestd is None or _d < _bestd:
+                _best, _bestd = _i, _d
+            break
+    if _best is None:
+        return None, "no swing on this clip carries a frame to compare"
+    if _bestd > within_sec * _fps:
+        return None, ("the nearest swing is %.1fs from the measured "
+                      "strike, too far to be the same one"
+                      % (_bestd / max(_fps, 1.0)))
+    return _best, ("matched to swing %d, whose own frame is %d frame(s) "
+                   "from the measured strike" % (_best + 1, _bestd))
 
 
 def _ascent_apply_ai_launch(rep, clip_index) -> dict:

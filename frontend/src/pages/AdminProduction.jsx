@@ -11079,6 +11079,14 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                     {rep.ai_launch_merge.impact_moved_frames} frame(s)
                     onto it</>
                 )}
+                {rep.ai_launch_match?.why && (
+                  <div className="muted">
+                    {rep.ai_launch_match.clip_index == null
+                      ? "No swing was matched: "
+                      : "Attached to "}
+                    {rep.ai_launch_match.why}
+                  </div>
+                )}
                 {rep.ai_launch_merge && !rep.ai_launch_merge.applied && (
                   <div style={{ color: "#b45309" }}>
                     NOT applied to the clip:{" "}
