@@ -6079,7 +6079,8 @@ def stitch_ascent_chains(chains: list, tol_px: float = ASCENT_STITCH_PX,
 
 def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
                     min_samples=6, top_n=5, kernel_px=7, n_speeds=64,
-                    speed_lo=2.0, speed_hi=None, deg_step=None):
+                    speed_lo=2.0, speed_hi=None, deg_step=None,
+                    clear_y=None, clear_by_frac=0.6):
     """Find the ball's first climb by INTEGRATING along candidate
     trajectories instead of thresholding single frames.
 
@@ -6263,11 +6264,46 @@ def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
             _hit[_in] += (_vals >= _lit_floor).astype(_np.float32)
             _cnt[_in] += 1
 
+        # ── A STRUCK BALL CLEARS THE TREES, AND FAST ────────────────
+        #
+        # THE FAILURE THIS FIXES, and it was predicted in this file
+        # before it happened: "the longest tracks are the slow ones
+        # that loiter in the busiest part of the picture". Scoring by
+        # lit COUNT reintroduced exactly that bias -- a slow path
+        # never leaves the treeline, so it is lit on nearly every
+        # sample, and it beat the ball. On the clip that prompted
+        # this the winner came back at 3.6 px/frame on a 50 degree
+        # bearing: 2.3 px of climb per frame, which needs a hundred
+        # frames to reach the skyline inside a window of forty-four.
+        # Whatever that was, it was not a ball that had just been hit.
+        #
+        # The constraint is physical and free: the ball must get OUT.
+        # A candidate that cannot clear the band's floor within most
+        # of the window is not a candidate, whatever it is lit by, so
+        # it never competes rather than being argued with afterwards.
+        _slow = 0
+        _min_climb = None
+        if clear_y is not None:
+            _need = float(_ay) - float(clear_y)
+            _by = max(1.0, float(_n) * float(clear_by_frac))
+            if _need > 0:
+                _min_climb = _need / _by
+                _climb = _SP * _cos
+                _fast = _climb >= _min_climb
+                _slow = int((~_fast).sum())
+                _cnt = _np.where(_fast, _cnt, 0)
+        out["min_climb_px_per_frame"] = (round(_min_climb, 2)
+                                         if _min_climb else None)
+        out["n_too_slow"] = _slow
         _enough = _cnt >= int(min_samples)
         if not _enough.any():
-            out["why"] = ("no trajectory stays in the picture for %d "
-                          "frames — the cone leaves the frame too fast"
-                          % int(min_samples))
+            out["why"] = (
+                "no trajectory both stays in the picture for %d frames "
+                "and climbs fast enough to clear the band (%s px/frame) "
+                "— %d of %d candidates were too slow to be a struck ball"
+                % (int(min_samples),
+                   ("%.1f" % _min_climb) if _min_climb else "n/a",
+                   _slow, int(_C)))
             return out
         # ── CONSISTENCY, NOT BRIGHTNESS ─────────────────────────────
         #

@@ -25770,9 +25770,19 @@ def _ascent_cone_accumulate(row, src_path, sweep, ai_launch, gates,
             return out
         _win = int((sweep or {}).get("window_frames")
                    or _ad3.ASCENT_WINDOW_FRAMES)
+        # THE BAND'S FLOOR IS THE BAR THE BALL MUST CLEAR. The sweep
+        # already works out where the trees stop; a candidate that
+        # cannot get above it inside the window is not a struck ball,
+        # and letting it compete is how a path loitering in the
+        # treeline won.
+        _bandy = None
+        _bb2 = (sweep or {}).get("band")
+        if _bb2:
+            _bandy = int(_bb2[1]) + int(_bb2[3])
         _r = _ad3.cone_accumulate(
             src_path, apex=_apex, f0=int(_f0), n_frames=_win,
-            cone_lo=float(_cone[0]), cone_hi=float(_cone[1]))
+            cone_lo=float(_cone[0]), cone_hi=float(_cone[1]),
+            clear_y=_bandy)
         _r["ran"] = bool(_r.get("ok"))
         _r["apex_from"] = _apex_from
         _min_z = float(_g["ascent_cone_accum_min_z"])

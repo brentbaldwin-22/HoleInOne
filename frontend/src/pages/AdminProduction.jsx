@@ -11187,6 +11187,24 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                       the bright one it locked on, and if they point
                       all over the cone it did not.
                     </div>
+                    {/* THE PHYSICAL BAR. A path that cannot climb out
+                        of the trees inside the window is not a struck
+                        ball however consistently it is lit — and the
+                        paths lit most consistently are exactly the
+                        slow ones that stay in the treeline. */}
+                    {rep.cone_accum.min_climb_px_per_frame && (
+                      <div className="muted">
+                        Candidates had to climb at least{" "}
+                        {rep.cone_accum.min_climb_px_per_frame} px/frame
+                        to clear the skyline inside the window
+                        {rep.cone_accum.n_too_slow
+                          ? ` — ${rep.cone_accum.n_too_slow} were too`
+                            + " slow to be a struck ball and never"
+                            + " competed"
+                          : ""}
+                        .
+                      </div>
+                    )}
                   </div>
                 )}
                 {rep.cone_accum && !rep.cone_accum.ok

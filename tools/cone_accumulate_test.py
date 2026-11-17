@@ -161,6 +161,69 @@ print("all ok — integration finds what thresholding cannot")
 # this session has now demonstrated three separate ways: a picture
 # nothing rendered, a picture behind a closed fold, and a gate the
 # search resolved blind to its zone.
+# ── A LOITERER MUST NOT WIN ─────────────────────────────────────────
+#
+# THE FAILURE THIS PINS, from the field. Scoring by lit count rewards
+# a path for being lit on many samples, and the paths lit on the most
+# samples are the SLOW ones that never leave the treeline -- a clip
+# came back with a winner at 3.6 px/frame on a 50 degree bearing,
+# which is 2.3 px of climb per frame and needs a hundred frames to
+# reach a skyline forty-four frames away. A struck ball clears the
+# trees; that is physical, and free.
+print()
+print("a slow path through dense clutter must not beat the ball:")
+
+
+def clip_loiter(path, n=40):
+    """Thick clutter just above the apex, and a real ball leaving."""
+    rng = np.random.default_rng(3)
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"),
+                         60.0, (W, H))
+    for i in range(n + 4):
+        fr = np.full((H, W, 3), 38, dtype=np.uint8)
+        # a churning thicket right over the ball, where a slow path
+        # would sit and be lit on every single frame
+        for _ in range(300):
+            x = int(rng.integers(APEX[0] - 10, APEX[0] + 120))
+            y = int(rng.integers(APEX[1] - 130, APEX[1]))
+            cv2.circle(fr, (x, y), 3, (215, 215, 215), -1)
+        if 1 <= i <= n:
+            r = math.radians(TRUE_DEG)
+            x = int(round(APEX[0] + math.sin(r) * TRUE_V * i))
+            y = int(round(APEX[1] - math.cos(r) * TRUE_V * i))
+            if 0 <= x < W and 0 <= y < H:
+                cv2.circle(fr, (x, y), 2, (150, 150, 150), -1)
+        vw.write(fr)
+    vw.release()
+
+
+with tempfile.TemporaryDirectory() as td:
+    p2 = Path(td) / "loiter.mp4"
+    clip_loiter(p2)
+    # the band floor sits above the thicket: the ball clears it, a
+    # path that stays in the thicket cannot.
+    _SKY = APEX[1] - 160
+    loose = d3.cone_accumulate(p2, apex=APEX, f0=0, n_frames=40,
+                               cone_lo=35.0, cone_hi=77.0)
+    tight = d3.cone_accumulate(p2, apex=APEX, f0=0, n_frames=40,
+                               cone_lo=35.0, cone_hi=77.0, clear_y=_SKY)
+    print("     without the floor: %.1f px/frame · with it: %.1f"
+          % ((loose.get("best") or {}).get("speed_px_per_frame", 0),
+             (tight.get("best") or {}).get("speed_px_per_frame", 0)))
+    check("with the floor it still runs", tight.get("ok"), True)
+    check("  it reports the bar it applied",
+          (tight.get("min_climb_px_per_frame") or 0) > 0)
+    check("  it excluded the slow candidates",
+          (tight.get("n_too_slow") or 0) > 0)
+    check("  and the winner actually climbs out",
+          (tight.get("best") or {}).get("speed_px_per_frame", 0)
+          * math.cos(math.radians((tight.get("best") or {})
+                                  .get("bearing_deg", 0)))
+          >= tight.get("min_climb_px_per_frame", 0))
+    check("  which the unfloored winner did not",
+          (loose.get("best") or {}).get("speed_px_per_frame", 99)
+          < (tight.get("best") or {}).get("speed_px_per_frame", 0))
+
 print()
 print("it is reachable from the find, and gated:")
 from app.services.debug3 import GATE_DEFAULTS  # noqa: E402
