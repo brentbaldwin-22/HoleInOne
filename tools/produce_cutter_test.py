@@ -154,7 +154,18 @@ check("  judging, which is the point",
       True)
 check("  on the HOLE's gates, not the form's defaults",
       "audio_min_peak_ratio=" in _ftc, True)
-check("  and it never takes the run down", "return {}" in _ftc, True)
+# NOT THE LITERAL `return {}` ANY MORE. It returns {"_error": ...}
+# now, so a verification that THREW can be told apart from a clip
+# with nothing to judge -- which it could not when both came back as
+# an empty dict, and the operator's report of that was "I'm not
+# seeing any of the images we discussed". The claim here was never
+# about the spelling: it is that a second opinion must not take the
+# find down with it. So test that, and test the improvement too.
+check("  and it never takes the run down",
+      "except Exception" in _ftc and "raise" not in _ftc, True)
+check("  returning a dict on the way out",
+      "or {}" in _ftc, True)
+check("  and saying so when it failed", '"_error"' in _ftc, True)
 _ar = body("_ascent_run")
 check("a FIND judges its cuts", "_find_test_cut(db, row" in _ar, True)
 # A PRODUCE MUST NOT PAY FOR IT: each is a vision call on a clip the
