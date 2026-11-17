@@ -11192,6 +11192,22 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                         ball however consistently it is lit — and the
                         paths lit most consistently are exactly the
                         slow ones that stay in the treeline. */}
+                    {/* HOW MUCH OF THE PICTURE COUNTS AS EVIDENCE.
+                        Swaying foliage lights the same pixels every
+                        frame; a ball crosses each one once. Only the
+                        pixels that are not chronically lit can
+                        support a track, and if almost none of them
+                        are, the cone is pointing through a hedge. */}
+                    {rep.cone_accum.transient_frac != null && (
+                      <div className="muted">
+                        {Math.round(rep.cone_accum.transient_frac * 100)}%
+                        of the cone is quiet enough to count as
+                        evidence — the rest is lit in more than{" "}
+                        {Math.round(rep.cone_accum.chronic_max * 100)}%
+                        of frames, which is foliage returning to its
+                        own pixels rather than a ball crossing them.
+                      </div>
+                    )}
                     {rep.cone_accum.min_climb_px_per_frame && (
                       <div className="muted">
                         Candidates had to climb at least{" "}

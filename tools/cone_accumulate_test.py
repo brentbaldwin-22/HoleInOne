@@ -250,18 +250,34 @@ print("a ball visible for only its first frames is still found:")
 TRUE2_DEG, TRUE2_V, VISIBLE = 48.6, 28.0, 10
 
 
+_THICKET = None
+
+
 def clip_fading(path, n=44):
+    global _THICKET
     rng = np.random.default_rng(17)
+    # A DENSE COLUMN STANDING OVER THE BALL, like the trees and houses
+    # the real cone points through, plus foliage across the rest.
+    _THICKET = ([(int(rng.integers(APEX[0] - 10, APEX[0] + 90)),
+                  int(rng.integers(160, APEX[1])))
+                 for _ in range(180)]
+                + [(int(rng.integers(APEX[0], W)),
+                    int(rng.integers(160, APEX[1])))
+                   for _ in range(140)])
     vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"),
                          60.0, (W, H))
     for i in range(n + 2):
         fr = np.full((H, W, 3), 38, dtype=np.uint8)
-        # clutter EVERYWHERE in the cone, all window long, so a slow
-        # scattered path can rack up lit frames for the whole window
-        for _ in range(260):
-            x = int(rng.integers(APEX[0] - 20, W))
-            y = int(rng.integers(120, APEX[1]))
-            cv2.circle(fr, (x, y), 3, (210, 210, 210), -1)
+        # FOLIAGE THAT SWAYS AROUND FIXED POSITIONS, which is what a
+        # treeline does -- it lights the SAME pixels frame after
+        # frame. Clutter re-rolled at random every frame is a much
+        # easier problem and is not the one in the field: a path up a
+        # real treeline is lit consecutively the whole way, which is
+        # how it beat the ball on a run statistic.
+        for (lx, ly) in _THICKET:
+            jx = int(round(2.0 * math.sin(i * 0.8 + lx)))
+            jy = int(round(2.0 * math.cos(i * 1.3 + ly)))
+            cv2.circle(fr, (lx + jx, ly + jy), 3, (210, 210, 210), -1)
         # the ball: bright at first, gone after VISIBLE frames
         if 1 <= i <= VISIBLE:
             r = math.radians(TRUE2_DEG)

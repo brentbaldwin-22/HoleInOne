@@ -6084,7 +6084,7 @@ def stitch_ascent_chains(chains: list, tol_px: float = ASCENT_STITCH_PX,
 def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
                     min_samples=6, top_n=5, kernel_px=7, n_speeds=160,
                     speed_lo=2.0, speed_hi=None, deg_step=None,
-                    clear_y=None, clear_by_frac=0.6):
+                    clear_y=None, clear_by_frac=0.6, chronic_max=0.30):
     """Find the ball's first climb by INTEGRATING along candidate
     trajectories instead of thresholding single frames.
 
@@ -6210,6 +6210,42 @@ def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
             # zero on half its samples.
             _resp[_i] = cv2.dilate(_th, _d3x3)
 
+        # FROM THE NOISE, NOT FROM A PERCENTILE. A percentile is a
+        # statement about COVERAGE: in a busy treeline the clutter
+        # occupies more than a tenth of the picture, so the 90th
+        # percentile is a clutter brightness and the ball -- fainter
+        # than every leaf -- never reaches it. The floor should say
+        # "brighter than the sensor's own noise" and nothing more;
+        # the discrimination in this method comes from the line, not
+        # from brightness.
+        _mres = float(_np.median(_resp))
+        _madr = float(_np.median(_np.abs(_resp - _mres)))
+        _lit_floor = float(max(4.0, _mres + 3.0 * 1.4826 * _madr))
+
+        # ── A BALL IS A TRANSIENT; FOLIAGE IS NOT ───────────────────
+        #
+        # THE FAILURE THIS FIXES. Subtracting the temporal median
+        # removes what does not move, but swaying foliage DOES move --
+        # around a fixed position, lighting the same pixels over and
+        # over. So a path that runs up a dense treeline is lit on
+        # frame after consecutive frame and beats the ball on a run
+        # statistic as surely as it did on a count: the winner came
+        # back pinned at the cone's edge AND at the climb floor, which
+        # is what a score looks like when it rises toward "slow and
+        # vertical" and only the constraints are holding it back.
+        #
+        # The ball crosses each pixel ONCE. Foliage returns to its
+        # pixels every frame. So a hit is only evidence where the
+        # pixel is not lit chronically, and this is the map that says
+        # which is which -- the fraction of the window each pixel
+        # spends lit. It costs one pass and it is the difference
+        # between integrating a flight and integrating a hedge.
+        _chronic = (_resp >= _lit_floor).mean(axis=0)
+        out["lit_floor"] = round(_lit_floor, 2)
+        out["chronic_max"] = float(chronic_max)
+        _transient = _chronic <= float(chronic_max)
+        out["transient_frac"] = round(float(_transient.mean()), 3)
+
         _H, _W = _resp.shape[1], _resp.shape[2]
         _rx, _ry = _ax - _x0, _ay - _y0
 
@@ -6278,17 +6314,6 @@ def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
         # just above sensor noise a wrong track is lit on the few per
         # cent of samples where it crosses clutter, and the ball's
         # track is lit on all of them.
-        # FROM THE NOISE, NOT FROM A PERCENTILE. A percentile is a
-        # statement about COVERAGE: in a busy treeline the clutter
-        # occupies more than a tenth of the picture, so the 90th
-        # percentile is a clutter brightness and the ball -- fainter
-        # than every leaf -- never reaches it. The floor should say
-        # "brighter than the sensor's own noise" and nothing more;
-        # the discrimination in this method comes from the line, not
-        # from brightness.
-        _mres = float(_np.median(_resp))
-        _madr = float(_np.median(_np.abs(_resp - _mres)))
-        _lit_floor = float(max(4.0, _mres + 3.0 * 1.4826 * _madr))
 
         # ONE PASS PER FRAME OVER ALL CANDIDATES, not the other way
         # round: the frames are what is expensive to touch.
@@ -6304,7 +6329,9 @@ def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
             _vals = _resp[_f][_iy[_in], _ix[_in]]
             _tot[_in] += _vals
             _was = _np.zeros(_C, dtype=bool)
-            _was[_in] = _vals >= _lit_floor
+            # LIT, AND SOMEWHERE THAT IS NOT ALWAYS LIT.
+            _was[_in] = ((_vals >= _lit_floor)
+                         & _transient[_iy[_in], _ix[_in]])
             _hit += _was.astype(_np.float32)
             _cnt[_in] += 1
             # A FRAME OR TWO OF SLACK, because a ball crossing a bright
@@ -6374,7 +6401,6 @@ def cone_accumulate(input_path, *, apex, f0, n_frames, cone_lo, cone_hi,
         # finds empty sky in between. So the statistic is the fraction
         # of a track's samples that are lit at all, and brightness is
         # only the tie-break.
-        out["lit_floor"] = round(_lit_floor, 2)
         # THE COUNT, NOT THE FRACTION. A fraction was the second
         # mistake here: it lets a six-sample track that is lit all six
         # times tie a thirty-four-sample track that is lit all
