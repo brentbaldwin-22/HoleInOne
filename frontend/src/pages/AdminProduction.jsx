@@ -11049,11 +11049,20 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                                 marginTop: 6, display: "block" }} />
                 </a>
                 <div className="tiny muted" style={{ marginTop: 4 }}>
-                  The cone is drawn from the ball the stage measured at
-                  rest, in the run&apos;s own numbers. White is a chain
-                  that survived every gate; a dimmed chain is labelled
-                  with the gates it failed, so a real ascent one gate
-                  from being kept is visible as such.
+                  The cone is drawn in the run&apos;s own numbers. White
+                  is a chain that survived every gate; a dimmed chain is
+                  labelled with the gates it failed, so a real ascent one
+                  gate from being kept is visible as such.
+                </div>
+                {/* A PLACED APEX IS NOT A MEASURED ONE. The two cones
+                    look identical on the picture and only one of them
+                    is a measurement, so the difference is said in
+                    words rather than left to be inferred. */}
+                <div className="tiny muted" style={{ marginTop: 2 }}>
+                  apex: {rep.cone_search.apex_from}
+                  {rep.cone_search.impact_from
+                    ? ` · impact frame from ${rep.cone_search.impact_from}`
+                    : ""}
                 </div>
                 <div className="tiny" style={{ marginTop: 3 }}>
                   <b>{rep.cone_search.n_in_window}</b> chain(s) started in

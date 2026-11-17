@@ -166,6 +166,81 @@ check("...and says to set one",
       "ascent_cone_from_deg" in (out.get("why") or ""))
 
 
+print()
+print("a failed ball check must not cost the picture:")
+# THE BUG THIS PREVENTS. The cone apexes on the ball, and this used to
+# demand `measured_ball` and refuse outright without it -- so a clip
+# whose ball check missed got no cone picture at all, while the run
+# knew perfectly well where a teed ball sits: the swing check had
+# already placed a box around exactly that grass in order to search
+# it. Reported from the field as "we do have an impact frame and ball
+# at rest".
+
+
+class _R3:
+    id = 9003
+
+
+def _apex_run(al, considered=None):
+    sweep = {"considered": considered or [_chain(70, [(330, 390),
+                                                      (345, 350)])],
+             "cone_deg": [45.0, 77.0], "cone_on": True,
+             "window_frames": 50, "why_colors": {}, "tee_line_y": 410}
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "t.mp4"
+        _clip(src)
+        _was = admin.CLIPS_DIR
+        admin.CLIPS_DIR = Path(td)
+        try:
+            return admin._ascent_cone_image(_R3(), src, sweep, al, {},
+                                            30.0)
+        finally:
+            admin.CLIPS_DIR = _was
+
+
+o = _apex_run({"measured_ball": (320, 400),
+               "measured_impact_frame": 60})
+check("a measured ball is used, and said to be measured",
+      o.get("apex_from"), "measured at rest")
+check("  and it draws", o.get("ok"))
+
+# no measured ball at all -- only the box the swing check searched
+o = _apex_run({"impact_frame": 60, "measured_why": "no ball in 2 of 3",
+               "swing_check": {"ball_box": (300, 380, 40, 40)}})
+check("no measured ball -> still draws", o.get("ok"))
+check("  apexed on the searched box",
+      o.get("apex"), [320, 400])
+check("  and says the ball was NOT measured",
+      "not measured" in (o.get("apex_from") or ""))
+
+# box gone too -- the tee spot
+o = _apex_run({"impact_frame": 60,
+               "swing_check": {"tee_spot": [320, 400]}})
+check("no box either -> the tee spot", o.get("ok"))
+check("  and still says so",
+      "not measured" in (o.get("apex_from") or ""))
+
+# nothing at all
+o = _apex_run({"impact_frame": 60, "swing_check": {}})
+check("nothing says where a ball sits -> declines", o.get("ok"), False)
+check("  and names THAT, not the impact frame",
+      "teed ball sits" in (o.get("why") or ""))
+
+print()
+print("the two absences are named separately:")
+o = _apex_run({"measured_ball": (320, 400), "reason": "stage 1 declined"})
+check("no impact frame -> says so", o.get("ok"), False)
+check("  and does not blame the ball",
+      "no impact frame" in (o.get("why") or "")
+      and "apex" not in (o.get("why") or ""))
+
+print()
+print("the page distinguishes a placed apex from a measured one:")
+_prod = (ROOT / "frontend" / "src" / "pages"
+         / "AdminProduction.jsx").read_text()
+check("apex_from is rendered", "cone_search.apex_from" in _prod)
+
+
 class _R2:
     id = 9002
 

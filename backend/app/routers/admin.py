@@ -25628,20 +25628,63 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
         # foot. A cone drawn from anywhere else is a different cone
         # from the one the gate applied, and a picture that disagrees
         # with the gate it illustrates is worse than no picture.
-        _apex = _al.get("measured_ball")
-        if not _apex:
-            _r = _al.get("rest") or {}
-            _apex = ((_r.get("x"), _r.get("y"))
-                     if _r.get("x") is not None else None)
+        # ── THE APEX: MEASURED IF WE HAVE IT, PLACED IF WE DO NOT ───
+        #
+        # This used to require `measured_ball` and refuse outright
+        # without it, which threw away a picture the run could draw.
+        # The ball check failing is NOT the same as not knowing where
+        # a teed ball sits: the swing check already placed a box
+        # around exactly that grass in order to search it, and the
+        # cone apexes on the ball, not on the ball check's opinion of
+        # it. A cone drawn from the centre of that box is a few pixels
+        # off and shows every chain correctly; no cone at all shows
+        # nothing. Reported from the field as "we do have an impact
+        # frame and ball at rest".
+        #
+        # Labelled either way, because an apex that was measured and
+        # one that was placed are not the same claim and the picture
+        # must not make them look alike.
+        _chk = _al.get("swing_check") or {}
+        _apex = _apex_from = None
+        _r = _al.get("rest") or {}
+        _bb = _chk.get("ball_box")
+        for _cand, _lbl in (
+            (_al.get("measured_ball"), "measured at rest"),
+            (((_r.get("x"), _r.get("y")) if _r.get("x") is not None
+              else None), "measured at rest"),
+            (_al.get("address_ball"), "found at address"),
+            ((((int(_bb[0]) + int(_bb[2]) // 2),
+               (int(_bb[1]) + int(_bb[3]) // 2)) if _bb else None),
+             "the centre of the box the ball was searched for in "
+             "(the ball itself was not measured)"),
+            (_chk.get("tee_spot"),
+             "the tee spot (the ball itself was not measured)"),
+        ):
+            if _cand:
+                _apex, _apex_from = _cand, _lbl
+                break
+
         _f0 = _al.get("measured_impact_frame")
+        _f_from = "the ball leaving"
         if _f0 is None:
             _f0 = _al.get("impact_frame")
-        if _apex is None or _f0 is None:
+            _f_from = (_al.get("impact_from")
+                       or "the impact frame stage 1 zoomed at")
+        # NAMED SEPARATELY. These are two different absences with two
+        # different fixes, and one sentence covering both sent the
+        # operator looking for the wrong one.
+        if _f0 is None:
             out["why"] = (
-                "no impact frame or no ball at rest, so there is no "
-                "apex to draw a cone from — %s"
-                % (_al.get("reason") or _al.get("measured_why")
-                   or "stage 1 reported neither"))
+                "no impact frame — %s"
+                % (_al.get("reason") or "stage 1 reported none"))
+            return out
+        if _apex is None:
+            out["why"] = (
+                "no apex to draw the cone from: the ball was not "
+                "measured (%s) and the swing check placed neither a "
+                "ball box nor a tee spot, so nothing says where a "
+                "teed ball sits on this hole"
+                % (_al.get("measured_why") or "no reason given"))
             return out
         if not _con:
             out["why"] = ("the sweep weighed no chains at all, so there "
@@ -25788,6 +25831,12 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
                     % (_f0, _f1, _lo, _hi, len(_in_win), _kept),
                     (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     (255, 255, 255), 2, cv2.LINE_AA)
+        # WHERE THE APEX CAME FROM, ON THE PICTURE. A cone drawn from a
+        # placed apex and one drawn from a measured ball look
+        # identical, and only one of them is a measurement.
+        cv2.putText(im, "apex: %s" % (_apex_from or "?"),
+                    (10, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                    (0, 220, 255), 1, cv2.LINE_AA)
 
         _p = CLIPS_DIR / ("cone-%s-%s.jpg"
                           % (getattr(row, "id", 0), secrets.token_hex(3)))
@@ -25801,6 +25850,8 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
             "cone_from_deg": _lo,
             "cone_to_deg": _hi,
             "apex": [ax, ay],
+            "apex_from": _apex_from,
+            "impact_from": _f_from,
             "n_in_window": len(_in_win),
             "n_kept": _kept,
             "n_refused_by_cone": _coned_off,
