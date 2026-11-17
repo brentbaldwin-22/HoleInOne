@@ -235,6 +235,11 @@ def _migrate() -> None:
             statements.append(
                 "ALTER TABLE camera_events ADD COLUMN swing_analysis JSON"
             )
+        if "tee_box_roi_at_trigger" not in ce_cols:
+            statements.append(
+                "ALTER TABLE camera_events "
+                "ADD COLUMN tee_box_roi_at_trigger JSON"
+            )
         if "trigger_detail" not in ce_cols:
             statements.append(
                 "ALTER TABLE camera_events ADD COLUMN trigger_detail JSON"
@@ -261,6 +266,10 @@ def _migrate() -> None:
                 statements.append(
                     f"ALTER TABLE cameras ADD COLUMN {_c} FLOAT"
                 )
+        if "tee_box_roi_days" not in cam_cols:
+            statements.append(
+                "ALTER TABLE cameras ADD COLUMN tee_box_roi_days JSON"
+            )
         if "triggering_enabled" not in cam_cols:
             statements.append(
                 "ALTER TABLE cameras ADD COLUMN triggering_enabled BOOLEAN DEFAULT TRUE"

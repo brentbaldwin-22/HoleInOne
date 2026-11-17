@@ -11029,6 +11029,15 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             Always open, for the reason the stage 1 gallery is: the
             only thing that rendered these pictures used to be inside
             a <details> that starts closed. */}
+        {/* WHICH DRAWING OF THE TRIGGER ZONES THIS RUN USED. They are
+            redrawn every morning, so "the zones" is not one thing --
+            and producing an older swing against this morning's
+            drawing judges it on grass nobody teed off from. */}
+        {rep?.zones_from && (
+          <div className="tiny muted" style={{ margin: "6px 0" }}>
+            Trigger zones: {rep.zones_from}
+          </div>
+        )}
         {rep?.cone_search && (
           <div className="card" style={{ margin: "10px 0", padding: 10 }}>
             <div className="row" style={{ justifyContent: "space-between" }}>

@@ -431,6 +431,27 @@ class Camera(Base):
     # the bounding box the tee-side person detector treats as "on the
     # tee". Green cameras leave this null.
     tee_box_roi: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # THE SAME BOXES, DATED — {"2026-11-16": <tee_box_roi>, ...}.
+    #
+    # The markers move every morning, so the zones are redrawn every
+    # morning, and `tee_box_roi` above holds only the LATEST drawing.
+    # Producing yesterday's swings after drawing today's zones
+    # therefore judged them against grass nobody had teed off from:
+    # reported as "we can't have updated trigger zones for today
+    # affect production of swings from yesterday".
+    #
+    # Read as-of the clip's own capture day, never "today" — the same
+    # rule `Course.tee_boxes` already follows, through the same
+    # `_upload_day`. An operating record, not a history: a month is
+    # kept and the rest pruned on write.
+    #
+    # Second choice, not first: an event carries the exact geometry it
+    # fired on (`CameraEvent.tee_box_roi_at_trigger`), which a day key
+    # cannot match if somebody redraws at noon. This covers manual
+    # uploads, which have no event, and events recorded before that
+    # column existed.
+    tee_box_roi_days: Mapped[Optional[dict]] = mapped_column(
+        JSON, nullable=True)
     # WHERE THE NOISE STOPS, as a fraction of frame height (0..1): the
     # floor of the strip of sky the ascent sweep searches. Above it is
     # the ball and the odd bird; below it is the treeline, the houses
@@ -739,6 +760,19 @@ class CameraEvent(Base):
     # Null on every event recorded before the agent shipped this, and
     # on any event whose Pi could not describe itself -- the detail is
     # an annotation on a trigger and must never cost one.
+    # THE TRIGGER ZONES AS THEY WERE WHEN THIS FIRED.
+    #
+    # The exact geometry, snapshotted server-side when the event is
+    # created, so producing this swing months later judges it against
+    # the grass it was actually hit from rather than wherever the
+    # markers ended up since. A dated history on the camera answers
+    # the same question to within a day; this answers it exactly, and
+    # survives a redraw halfway through a round.
+    #
+    # Null on events recorded before this existed — the reader falls
+    # back to the camera's dated history and says which it used.
+    tee_box_roi_at_trigger: Mapped[Optional[dict]] = mapped_column(
+        JSON, nullable=True)
     trigger_detail: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # Set by the tee Pi's /event-stop call once the tee box has been
     # empty long enough. The green Pi polls /event-status looking for

@@ -2038,6 +2038,19 @@ async def event_trigger(
         course_id=cam.course_id,
         hole_number=cam.assigned_hole,
         status="triggered",
+        # ── THE ZONES THIS FIRED ON, AS THEY WERE ───────────────────
+        #
+        # The markers move every morning and the zones are redrawn to
+        # match, so by the time this swing is produced the camera's
+        # own `tee_box_roi` may describe a different piece of grass
+        # entirely. Snapshotting here makes the record exact rather
+        # than merely same-day, and it survives a redraw halfway
+        # through a round, which a date key cannot.
+        #
+        # SERVER-SIDE, so no rig change is needed and a Pi on old code
+        # records this as correctly as one on new code — the camera is
+        # already in hand here.
+        tee_box_roi_at_trigger=cam.tee_box_roi,
     )
     db.add(event)
     db.commit()

@@ -15364,6 +15364,39 @@ def delete_long_upload(upload_id: int, db: Session = Depends(get_db)):
 TESTCUTS_SUBDIR = "_testcuts"
 
 
+def _keep_tee_zone_day(cam, roi) -> str | None:
+    """File today's trigger zones under today's date on the camera.
+
+    ONE MONTH, THEN GONE, exactly as `Course.tee_boxes` does with the
+    hitting area: an operating record so that re-running an older clip
+    resolves the grass it was hit from, not a history of the course.
+
+    THE SAVE IS WHAT DATES IT. The read picks the day from the clip's
+    own capture time (`_upload_day`), so both halves agree on which
+    day a drawing belongs to -- the thing that matters far more than
+    the key being astronomically right.
+
+    Returns the day it filed under, or None when there was nothing to
+    file. Never raises: losing the history is bad, losing the SAVE
+    because the history could not be written is worse.
+    """
+    try:
+        if not roi:
+            return None
+        _day = _utcnow_naive().strftime("%Y-%m-%d")
+        _days = dict(getattr(cam, "tee_box_roi_days", None) or {})
+        _days[_day] = roi
+        for _old in sorted(_days)[:-30]:
+            _days.pop(_old, None)
+        # A fresh dict, so SQLAlchemy sees the assignment as dirty
+        # without an explicit flag_modified.
+        cam.tee_box_roi_days = _days
+        return _day
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not file today's trigger zones: %s", exc)
+        return None
+
+
 def _tee_trigger_zones(db, row):
     """The trigger boxes the tee rig measures motion inside, in pixels.
 
@@ -15377,16 +15410,80 @@ def _tee_trigger_zones(db, row):
     None when the camera has no boxes drawn, which the tracker reads as
     "measure the whole frame" exactly as it does in the field.
     """
+    _roi, _ = _tee_box_roi_asof(db, row)
+    return tee_roi.boxes(_roi) or None
+
+
+def _tee_box_roi_asof(db, row):
+    """The trigger zones AS THEY WERE when this clip was shot.
+
+    Returns (roi, where_it_came_from).
+
+    THE MARKERS MOVE EVERY MORNING and the zones are redrawn to match,
+    so `camera.tee_box_roi` describes today's grass and nothing else.
+    Reading it to produce an older swing judges that swing against a
+    tee box nobody had hit from -- which is a wrong answer that looks
+    exactly like a right one, since the zones are never printed beside
+    the verdict. Reported from the field as "we can't have updated
+    trigger zones for today affect production of swings from yesterday
+    or earlier".
+
+    Three sources, best first:
+
+      1. the EVENT'S OWN snapshot, taken server-side when the rig
+         fired. Exact, and the only one that survives a redraw halfway
+         through a round;
+      2. the camera's DATED history, resolved against the clip's own
+         capture day through `_upload_day` -- the same function and
+         the same rule `Course.tee_boxes` uses for the hitting area.
+         This covers every event recorded before the snapshot
+         column existed, which is all of them today;
+      3. the camera's CURRENT zones, which is where this started and
+         is right only for clips shot since the last redraw.
+
+    The caller is told which, because "the right box" and "the only
+    box left" must not read the same.
+    """
     ev = (
-        db.get(CameraEvent, row.camera_event_id)
+        db.get(CameraEvent, getattr(row, "camera_event_id", None))
         if getattr(row, "camera_event_id", None) else None
     )
+    if ev is not None:
+        _snap = getattr(ev, "tee_box_roi_at_trigger", None)
+        if tee_roi.boxes(_snap):
+            return _snap, "the zones this swing actually fired on"
+    # NO EVENT MEANS NO CAMERA, and so no zones -- a manual upload
+    # carries a course and a capture time but nothing that says which
+    # camera shot it. That is what this returned before any of this
+    # and it still does; a dated history cannot help a clip with no
+    # camera to look the history up on.
     if ev is None or not ev.tee_camera_id:
-        return None
+        return None, None
     cam = db.get(Camera, ev.tee_camera_id)
     if cam is None:
-        return None
-    return tee_roi.boxes(cam.tee_box_roi) or None
+        return None, None
+    _day = _upload_day(row)
+    _days = getattr(cam, "tee_box_roi_days", None) or {}
+    if _day and _day != "unknown":
+        _hit = _days.get(_day)
+        if tee_roi.boxes(_hit):
+            return _hit, "the zones drawn on %s, this clip's own day" % _day
+        # THE LAST DRAWING BEFORE IT, not the nearest one. Zones drawn
+        # after this clip was shot describe grass it was never hit
+        # from, however close the date; zones drawn before it were
+        # still up when it was shot unless somebody moved them, and
+        # the day they were moved would itself be a key here.
+        _prior = [d for d in sorted(_days) if d <= _day]
+        if _prior and tee_roi.boxes(_days.get(_prior[-1])):
+            return (_days[_prior[-1]],
+                    "the zones drawn on %s, the last before this clip's "
+                    "own day (%s)" % (_prior[-1], _day))
+    if tee_roi.boxes(cam.tee_box_roi):
+        return (cam.tee_box_roi,
+                "the camera's CURRENT zones — nothing was recorded for "
+                "this clip's day, so these may have been redrawn since "
+                "it was shot")
+    return None, None
 
 
 @router.post("/long-uploads/{upload_id}/test-cut")
@@ -22021,17 +22118,24 @@ def set_tee_zones(
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     cam.tee_box_roi = payload
+    # AND DATED, so producing an older clip still finds the zones that
+    # were up when it was shot.
+    _kept_day = _keep_tee_zone_day(cam, payload)
     db.add(AuditLog(
         actor="admin", action="camera_tee_zones",
         target=f"camera:{camera_id}",
-        detail=f"{len(payload['boxes'])} zone(s) on {frame_w}x{frame_h}",
+        detail=(f"{len(payload['boxes'])} zone(s) on {frame_w}x{frame_h}"
+                + (f", filed under {_kept_day}" if _kept_day else "")),
     ))
     db.commit()
     return {
         "ok": True,
         "boxes": payload["boxes"],
         "frame": payload["frame"],
-        "note": "saved — the camera picks this up on its next status poll",
+        "filed_under": _kept_day,
+        "note": ("saved — the camera picks this up on its next status "
+                 "poll. Clips captured before today keep the zones "
+                 "that were up when they were shot."),
     }
 
 
@@ -22615,6 +22719,7 @@ def update_camera(
             raise HTTPException(
                 400, "tee_box_roi must be an {x,y,w,h} box or {boxes:[...]}")
         cam.tee_box_roi = roi
+        _keep_tee_zone_day(cam, roi)
 
     # A CAMERA'S KIND CAN CHANGE UNDER IT. Camera #1 was born a Pi with
     # a ribbon-cable module and is now a Hanwha on an RTSP link: same
@@ -26793,6 +26898,13 @@ def _verify_crop(db, row):
     """
     try:
         _zs = _tee_trigger_zones(db, row) or []
+        # WHICH DRAWING OF THEM, because the zones move every morning
+        # and a report that does not say which set it used cannot be
+        # checked against the swing it describes.
+        try:
+            _, rep["zones_from"] = _tee_box_roi_asof(db, row)
+        except Exception as _zx:  # noqa: BLE001
+            log.debug("zones_from: %s", _zx)
         if not _zs:
             return None, None, None, None
         _x0 = min(int(z["x"]) for z in _zs)
