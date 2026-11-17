@@ -30633,6 +30633,74 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
         out["measured_ball"] = (_dep.get("spot")
                                 or (_addr or {}).get("spot"))
         out["measured_impact_frame"] = _dep.get("impact_frame")
+        # ── THE WINDOW IT WAS ALLOWED TO LOOK IN ────────────────────
+        #
+        # `ball_departure` searches `at_sec` minus `before_sec` to plus
+        # `after_sec`, and a departure outside that window cannot be
+        # found however clearly the ball goes. So the window is as much
+        # a part of the answer as the frame is: "f824" and "f824, out
+        # of a window that only reached f838" are different claims, and
+        # only the second one can be checked. It is also what says
+        # whether a frame that looks late is late because the ball was
+        # watched going late, or because the search could not see the
+        # moment it went.
+        # ── THE SIX TILES BRACKET IT; THE WATCH REFINES INSIDE ──────
+        #
+        # Two measurements of one instant, and they disagreed. The six
+        # tiles are 0.2s apart and coarse, but each is judged by the
+        # same detector through the same stance box, and on this swing
+        # they said the ball sat there at -0.20s and was gone by 0.00
+        # -- so the strike is inside that fifth of a second. The
+        # frame-by-frame watch said f824, which is two tiles LATER
+        # than the tile it was already gone on.
+        #
+        # That failure is documented in this file: "the tee, the divot
+        # and the shadow stay bright after the ball has gone, so the
+        # watch frequently never concluded and the impact frame came
+        # back later than the strike". The watch is the finer
+        # instrument and the tiles are the more robust one, so the
+        # tiles set the bound and the watch refines within it. It can
+        # only ever pull the frame EARLIER, which is the harmless
+        # direction -- it is where the tracer's line begins.
+        try:
+            _tiles = (_addr or {}).get("frames") or []
+            _seen_at = None
+            _gone_at = None
+            for _t in _tiles:
+                if _t.get("at") is None:
+                    continue
+                if _t.get("in_rule"):
+                    _seen_at = float(_t["at"])
+                elif _seen_at is not None and _gone_at is None:
+                    _gone_at = float(_t["at"])
+            if _gone_at is not None:
+                _bound = int((float(_rig["sec"]) + _gone_at)
+                             * float(_fps or 60.0))
+                out["measured_impact_bound"] = _bound
+                out["measured_impact_bound_why"] = (
+                    "the ball was still there at %+.2fs and gone by "
+                    "%+.2fs, so the strike is inside that"
+                    % (_seen_at, _gone_at))
+                _mif0 = out.get("measured_impact_frame")
+                if _mif0 is not None and int(_mif0) > _bound:
+                    out["measured_impact_unclamped"] = int(_mif0)
+                    out["measured_impact_frame"] = _bound
+                    log.info("ai launch: the departure watch said f%s, "
+                             "later than the tile the ball was already "
+                             "gone on (f%s) — clamped",
+                             int(_mif0), _bound)
+        except (TypeError, ValueError, KeyError) as _bx2:
+            log.debug("ai launch: no tile bracket (%s)", _bx2)
+        try:
+            _dw_fps = float(_fps or 60.0)
+            _dw_lo = int((float(_rig["sec"]) - 0.2) * _dw_fps)
+            _dw_hi = int((float(_rig["sec"]) + 0.5) * _dw_fps)
+            out["measured_window"] = [max(0, _dw_lo), _dw_hi]
+            out["measured_checked"] = _dep.get("checked")
+            out["measured_last_seen"] = _dep.get("last_seen")
+            out["measured_departure_why"] = _dep.get("why")
+        except (TypeError, ValueError, KeyError) as _dwx:
+            log.debug("ai launch: no departure window (%s)", _dwx)
         out["measured_why"] = (
             str((_addr or {}).get("why") or "")
             + ((" · " + str(_dep.get("why"))) if _dep.get("why") else ""))

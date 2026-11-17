@@ -11035,6 +11035,66 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                 )}
               </div>
             )}
+            {/* WHICH NUMBER THE CLIP IS CARRYING, AND WHY. Produce
+                takes the impact frame from the chain run backwards
+                unless stage 1 measured one, and whether that swap
+                happened was recorded in three places and shown in
+                none -- the merge's reason sits inside a <details>
+                that starts closed. "f824" and "f824, measured, out of
+                a window that only reached f838" are different claims
+                and only the second can be checked. */}
+            {rep.ai_launch.measured_impact_frame != null && (
+              <div className="tiny" style={{ marginTop: 4 }}>
+                <b>Impact frame measured:</b>{" "}
+                f{rep.ai_launch.measured_impact_frame}
+                {Array.isArray(rep.ai_launch.measured_window) && (
+                  <> · searched f{rep.ai_launch.measured_window[0]}–f
+                    {rep.ai_launch.measured_window[1]}</>
+                )}
+                {rep.ai_launch.measured_impact_unclamped != null && (
+                  <div style={{ color: "#b45309" }}>
+                    The frame-by-frame watch said f
+                    {rep.ai_launch.measured_impact_unclamped}, later
+                    than the tile the ball was already gone on —
+                    pulled back to f
+                    {rep.ai_launch.measured_impact_frame}.{" "}
+                    {rep.ai_launch.measured_impact_bound_why}
+                  </div>
+                )}
+                {rep.ai_launch.measured_last_seen != null && (
+                  <> · last seen f{rep.ai_launch.measured_last_seen}</>
+                )}
+                {/* THE WATCH'S OWN WORDS. Recorded the moment I added
+                    it and rendered nowhere, which the class test
+                    caught before it shipped -- the whole reason that
+                    test enumerates the fields instead of naming
+                    three by hand. */}
+                {rep.ai_launch.measured_departure_why && (
+                  <div className="muted">
+                    the departure watch: {rep.ai_launch.measured_departure_why}
+                  </div>
+                )}
+                {rep.ai_launch_merge?.impact_moved_frames != null && (
+                  <> · the clip&apos;s frame moved{" "}
+                    {rep.ai_launch_merge.impact_moved_frames} frame(s)
+                    onto it</>
+                )}
+                {rep.ai_launch_merge && !rep.ai_launch_merge.applied && (
+                  <div style={{ color: "#b45309" }}>
+                    NOT applied to the clip:{" "}
+                    {rep.ai_launch_merge.reason}
+                  </div>
+                )}
+              </div>
+            )}
+            {rep.ai_launch.measured_impact_frame == null
+              && rep.ai_launch.measured_why && (
+              <div className="tiny" style={{ color: "#b45309",
+                                             marginTop: 4 }}>
+                No impact frame was measured, so the clip keeps the
+                chain&apos;s run-back estimate: {rep.ai_launch.measured_why}
+              </div>
+            )}
             {rep.ai_launch.impact_from && (
               <div className="tiny muted" style={{ marginTop: 3 }}>
                 impact from: {rep.ai_launch.impact_from}
