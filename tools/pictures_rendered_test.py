@@ -113,7 +113,17 @@ check("at least one use is not inside a collapsed <details>",
 # so on the screen, or it reads exactly like a stage that found nothing.
 print()
 print("and the fields that explain an absence:")
-for k, where in [("reason", "ai_launch"), ("frames_why", "ai_launch")]:
+# EVERY REASON THE STAGE RECORDS, not a hand-kept list of three.
+# `address_why` was set by the backend and rendered by nothing, and it
+# is the one field that says why the ball -- which the launch cone is
+# anchored on -- was not measured. Fifth time this session a field has
+# been written for nobody.
+_i2 = adm.index("def _ascent_ai_launch")
+_j2 = adm.index("\ndef ", _i2 + 10)
+_whys = sorted(set(re.findall(r'out\[["\'](\w*(?:why|reason))["\']\]\s*=',
+                              adm[_i2:_j2])))
+print("   stage 1 records: %s" % ", ".join(_whys))
+for k, where in [(w, "ai_launch") for w in _whys]:
     check("%s.%s is rendered" % (where, k),
           bool(re.search(r'ai_launch(?:\s*\??\.\s*|\.)' + re.escape(k), fe)))
 

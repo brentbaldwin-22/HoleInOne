@@ -11010,6 +11010,31 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                      + "finding."}
               </div>
             )}
+            {/* WHY THE BALL WAS NOT MEASURED. The cone is anchored on
+                the ball, and when this check fails the anchor falls
+                back to the CENTRE OF A SEARCH BOX -- tens of pixels
+                away, which tilts every candidate line the
+                accumulator scores. So this is not a detail: it is
+                the largest error in the whole stage, and its reason
+                was being set by the backend and rendered by nothing.
+                Lowering the contrast bar to 25 changed the answer
+                not at all, and there was no way to see why. */}
+            {!rep.ai_launch.measured_ball && rep.ai_launch.address_why && (
+              <div className="tiny" style={{ color: "#b45309",
+                                             marginTop: 4 }}>
+                The ball was not measured: {rep.ai_launch.address_why}
+                {rep.ai_launch.address_min_contrast != null && (
+                  <> · contrast bar used:{" "}
+                    <b>{rep.ai_launch.address_min_contrast}</b></>
+                )}
+                {rep.ai_launch.address_balls != null && (
+                  <> · {rep.ai_launch.address_balls} candidate(s)</>
+                )}
+                {rep.ai_launch.address_state && (
+                  <> · {rep.ai_launch.address_state}</>
+                )}
+              </div>
+            )}
             {rep.ai_launch.impact_from && (
               <div className="tiny muted" style={{ marginTop: 3 }}>
                 impact from: {rep.ai_launch.impact_from}

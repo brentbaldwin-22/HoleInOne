@@ -30439,8 +30439,23 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
             out["address_min_contrast"] = _bmc1
             out["address_ball"] = _addr.get("spot")
             out["address_left"] = _addr.get("left")
-            out["address_why"] = _addr.get("why")
+            # BOTH WORDINGS. `region_why` is what comes back when it
+            # looked and placed no box; `why` is what the three early
+            # returns carry. Reading one of them printed "no reason
+            # given" for half the failures that have one.
+            out["address_why"] = (_addr.get("region_why")
+                                  or _addr.get("why"))
             out["address_balls"] = _addr.get("balls")
+            out["address_state"] = _addr.get("state")
+            out["address_frames"] = _addr.get("frames")
+        else:
+            # THE CALL NEVER HAPPENED, which is a different answer
+            # from "it looked and found nothing" and had the same
+            # blank space. Without a box there is nowhere to look.
+            out["address_why"] = (
+                "no search box was placed around the golfer, so the "
+                "ball was never looked for — the swing check placed "
+                "neither a crop nor a ball box on this clip")
     except Exception as _ax:  # noqa: BLE001
         log.debug("ai launch: the address check failed: %s", _ax)
     _lap("the ball at address")
