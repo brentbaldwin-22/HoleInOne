@@ -30406,10 +30406,37 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
             _anc1 = None
             if _heat.get("front_feet") and _heat.get("front_h"):
                 _anc1 = (_heat["front_feet"][1], _heat["front_h"])
+            # ── THE HOLE'S OWN CONTRAST BAR ─────────────────────
+            #
+            # `ball_min_contrast` is tunable, is shown as tuned, and
+            # reached this call through nothing at all: Test Cut
+            # resolved it and the find did not, so the two screens
+            # ran different bars on the same clip and the operator's
+            # setting moved only one of them.
+            #
+            # It matters more here than anywhere. When this check
+            # fails the cone falls back to the CENTRE OF THE SEARCH
+            # BOX for its origin, and a box centre sits tens of
+            # pixels from the ball -- which tilts every candidate
+            # line the accumulator scores. On the clip that prompted
+            # this the brightest rejected speck where a teed ball
+            # sits measured 28 against a bar of 30.
+            _bmc1 = None
+            try:
+                from ..services import debug3 as _bd1
+                _bt1, _, _ = _gate_tuning_for(db, row)
+                _bmc1 = float(_bd1.resolve_gates(
+                    _bt1, zone=_trigger_zone(db, row))
+                    ["ball_min_contrast"])
+            except Exception as _bx1:  # noqa: BLE001
+                log.debug("ai launch: no ball contrast gate (%s)", _bx1)
             _addr = _baa(src_path, float(_rig["sec"]), _AO1,
                          rect=(_rect[0], _rect[1],
                                _rect[0] + _rect[2], _rect[1] + _rect[3]),
-                         people=(_ppl0 or None), anchor=_anc1)
+                         people=(_ppl0 or None), anchor=_anc1,
+                         **({"min_contrast": _bmc1}
+                            if _bmc1 is not None else {}))
+            out["address_min_contrast"] = _bmc1
             out["address_ball"] = _addr.get("spot")
             out["address_left"] = _addr.get("left")
             out["address_why"] = _addr.get("why")

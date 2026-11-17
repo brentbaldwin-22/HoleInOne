@@ -115,6 +115,27 @@ for needle in ("_d3.sweep_ascents(", "_d3.find_ascents("):
           % (needle.strip("_d3.("), n_zoned, n_calls),
           n_calls > 0 and n_zoned == n_calls)
 
+# ── AND THE BALL'S OWN GATE REACHES THE BALL CHECK ──────────────────
+#
+# `ball_min_contrast` was resolved by Test Cut and by nothing on the
+# find, so the same clip was judged against two different bars and an
+# operator who raised or lowered it moved only one screen. It matters
+# most of all here: when the ball check fails, the launch cone falls
+# back to the CENTRE OF THE SEARCH BOX for its origin, and a box
+# centre sits tens of pixels from the ball -- which tilts every
+# candidate line the accumulator scores.
+print()
+print("the ball's contrast gate reaches the find's own ball check:")
+_adm2 = (ROOT / "backend" / "app" / "routers" / "admin.py").read_text()
+_i = _adm2.index("def _ascent_ai_launch")
+_j = _adm2.index("\ndef ", _i + 10)
+_stage1 = _adm2[_i:_j]
+check("stage 1 resolves ball_min_contrast",
+      "ball_min_contrast" in _stage1)
+check("  with the zone it is filed under", "zone=_trigger_zone" in _stage1)
+check("  and hands it to the ball check",
+      "min_contrast" in _stage1 and "_baa(" in _stage1)
+
 print()
 if FAILED:
     print("FAILED: %s" % ", ".join(FAILED))
