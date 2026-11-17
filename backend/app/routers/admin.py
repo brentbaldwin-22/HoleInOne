@@ -25846,13 +25846,30 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
         # a column of specks is one ball climbing or six birds.
         _dw = [d for d in _dets
                if _f0 <= int(d.get("frame", -1)) <= _f1]
+        # IN THE CONE AREA, which is what was asked for. The window
+        # alone still spans the whole band, and most of what is in it
+        # is nowhere a ball from this tee could be. Same bearing test
+        # the chains get, so the dots and the gate agree.
+        def _in_wedge(d):
+            _bx = math.degrees(math.atan2(float(d["x"]) - ax,
+                                          -(float(d["y"]) - ay)))
+            return _lo <= _bx <= _hi
+        _dcone = [d for d in _dw if _in_wedge(d)]
+        # THE CLEAN PICTURE IS WRITTEN FIRST, before a single dot, so
+        # the toggle has a real twin to swap to rather than a redraw
+        # that might differ. One extra imwrite per find.
+        _clean_p = CLIPS_DIR / ("cone-%s-%s-clean.jpg"
+                                % (getattr(row, "id", 0),
+                                   secrets.token_hex(3)))
+        cv2.imwrite(str(_clean_p), im)
         _lab_every = 1
-        if len(_dw) > 150:
+        if len(_dcone) > 150:
             # LEGIBLE BEATS COMPLETE when they conflict. Three hundred
             # overlapping labels is a grey smear that hides the specks
             # it describes; the caption says what was skipped.
-            _lab_every = (len(_dw) // 150) + 1
-        for _i, d in enumerate(sorted(_dw, key=lambda q: int(q["frame"]))):
+            _lab_every = (len(_dcone) // 150) + 1
+        for _i, d in enumerate(sorted(_dcone,
+                                      key=lambda q: int(q["frame"]))):
             _x, _y = int(d["x"]), int(d["y"])
             cv2.circle(im, (_x, _y), 2, (170, 170, 170), -1, cv2.LINE_AA)
             if _i % _lab_every == 0:
@@ -25922,8 +25939,8 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
         # placed apex and one drawn from a measured ball look
         # identical, and only one of them is a measurement.
         cv2.putText(im,
-                    "%d detection(s) in the window%s"
-                    % (len(_dw), "" if _lab_every == 1
+                    "%d detection(s) in the cone, %d in the window%s"
+                    % (len(_dcone), len(_dw), "" if _lab_every == 1
                        else " — every %d labelled" % _lab_every),
                     (10, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                     (170, 170, 170), 1, cv2.LINE_AA)
@@ -25946,7 +25963,9 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
             "apex_from": _apex_from,
             "impact_from": _f_from,
             "n_in_window": len(_in_win),
+            "clean_url": _clip_url_for(_clean_p.name),
             "n_dets_in_window": len(_dw),
+            "n_dets_in_cone": len(_dcone),
             "n_dets_total": ((sweep or {}).get("n_dets_total")
                              or (sweep or {}).get("n_dets")),
             "dets_labelled_every": _lab_every,
@@ -27309,6 +27328,11 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                               gates=_gt,
                               cone_apex=_apex_for_cone,
                               zone=_zone_for_cone,
+                              # ONLY ON A FIND. The cone picture draws
+                              # them and the operator toggles them;
+                              # a produce never looks, and they are a
+                              # megabyte of coordinates.
+                              keep_dets=not produce,
                               **_search_area_for(db, row)) or {}
     _sec_sweep = time.perf_counter() - _t_sub
     _t_sub = time.perf_counter()
@@ -27328,6 +27352,11 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # is drawn on this side of the line.
     rep["cone_search"] = _ascent_cone_image(
         row, src_path, sweep, rep.get("ai_launch"), _gt, fps)
+    # AND DROP THE RAW LIST ONCE IT HAS BEEN DRAWN. The picture is
+    # what the operator reads; shipping every coordinate to the
+    # browser as well is the same waste `_ascent_trim_considered`
+    # exists to avoid, one key over.
+    sweep.pop("dets_sample", None)
     _ascent_trim_considered(sweep)
     _sec_pics = time.perf_counter() - _t_sub
     rep["sweep"] = sweep

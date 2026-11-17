@@ -6154,6 +6154,13 @@ def sweep_ascents(
     # the cone and the audio gates. None means the hole's own
     # values, which is exactly how this behaved before.
     zone: int | None = None,
+    # HAND BACK THE RAW DETECTIONS EVEN WHEN CHAINS WERE BUILT.
+    # Off by default: a produce does not look at them and they are a
+    # megabyte of coordinates. The find turns it on, because "what
+    # was the tracker given" is the question the chains cannot
+    # answer -- and it went unanswerable the moment a chain existed,
+    # since the slice below was conditioned on there being none.
+    keep_dets: bool = False,
 ) -> dict:
     """Every ball leaving the tee in the WHOLE video, found from above.
 
@@ -6795,7 +6802,7 @@ def sweep_ascents(
         # answers it, and shipping every detection on every produce
         # would put a megabyte of coordinates in a report nobody
         # opened.
-        if not _considered:
+        if keep_dets or not _considered:
             out["dets_sample"] = [
                 {"frame": int(d["frame"]), "x": int(d["x"]),
                  "y": int(d["y"]), "area": int(d.get("area") or 0)}

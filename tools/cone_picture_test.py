@@ -282,8 +282,13 @@ def _dets_run(n_dets, first=60, considered=None, per_frame=1):
     """`per_frame` > 1 packs several specks into each frame, which is
     what a real band does -- one per frame caps a 51-frame window at
     51 and the label-thinning never triggers."""
-    dets = [{"frame": first + (i // per_frame), "x": 300 + (i % 40),
-             "y": 380 - (i % 30), "area": 4}
+    # INSIDE THE WEDGE, because the labels are thinned by how many
+    # are in the CONE, not how many are in the window. Laid along
+    # +61 degrees, the middle of the +45..+77 cone under test.
+    _s, _c = math.sin(math.radians(61.0)), math.cos(math.radians(61.0))
+    dets = [{"frame": first + (i // per_frame),
+             "x": int(APEX[0] + _s * (6 + (i % 60))),
+             "y": int(APEX[1] - _c * (6 + (i % 60))), "area": 4}
             for i in range(n_dets)]
     sweep = {"considered": considered or [], "cone_deg": [45.0, 77.0],
              "cone_on": True, "window_frames": 50, "why_colors": {},
@@ -323,6 +328,67 @@ check("  but they are thinned to stay legible",
       o.get("dets_labelled_every") > 1)
 check("  to roughly 150 labels",
       120 <= 400 // o.get("dets_labelled_every", 1) <= 150)
+
+print()
+print("detections come back even when chains were built:")
+# THE GAP THIS CLOSES. `dets_sample` was conditioned on there being NO
+# chains, so the moment the search started working the detections
+# disappeared from the picture -- 5 chains and "0 detection(s)".
+# "What was the tracker given" is exactly the question a chain that
+# died on a gate cannot answer.
+o = _dets_run(20, considered=[_chain(70, [(330, 390), (345, 350)])])
+check("chains and detections together", o.get("ok"))
+check("  the chain is counted", o.get("n_in_window"), 1)
+check("  and the detections are too",
+      (o.get("n_dets_in_window") or 0) > 0)
+
+print()
+print("the dots are filtered to the cone, not just the window:")
+# all 20 run up-and-right from (300,380), inside a +45..+77 cone
+o = _dets_run(20)
+check("in the cone is at most in the window",
+      (o.get("n_dets_in_cone") or 0) <= (o.get("n_dets_in_window") or 0))
+
+
+def _dets_run_at(dx, dy, n=12):
+    """Detections laid out in a chosen direction from the apex."""
+    dets = [{"frame": 60 + i, "x": APEX[0] + dx * (i + 1),
+             "y": APEX[1] + dy * (i + 1), "area": 4} for i in range(n)]
+    sweep = {"considered": [], "cone_deg": [45.0, 77.0], "cone_on": True,
+             "window_frames": 50, "why_colors": {}, "tee_line_y": 410,
+             "dets_sample": dets, "n_dets_total": n}
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "t.mp4"
+        _clip(src, frames=200)
+        _was = admin.CLIPS_DIR
+        admin.CLIPS_DIR = Path(td)
+        try:
+            return admin._ascent_cone_image(
+                _R3(), src, sweep,
+                {"measured_ball": APEX, "measured_impact_frame": 60},
+                {}, 30.0)
+        finally:
+            admin.CLIPS_DIR = _was
+
+
+o = _dets_run_at(6, -4)      # up and to the RIGHT: inside +45..+77
+check("up-and-right detections are in the cone",
+      o.get("n_dets_in_cone"), 12)
+o = _dets_run_at(-6, -4)     # up and to the LEFT: outside it
+check("up-and-left ones are in the window but not the cone",
+      (o.get("n_dets_in_window"), o.get("n_dets_in_cone")), (12, 0))
+
+print()
+print("a clean twin is written, so the dots can be switched off:")
+o = _dets_run(20)
+check("a dotted picture", bool(o.get("url")))
+check("and a clean one", bool(o.get("clean_url")))
+check("they are different files", o.get("url") != o.get("clean_url"))
+_prod2 = (ROOT / "frontend" / "src" / "pages"
+          / "AdminProduction.jsx").read_text()
+check("the page offers the toggle", "coneDots" in _prod2)
+check("  and swaps to the clean image",
+      "cone_search.clean_url" in _prod2)
 
 print()
 print("the page renders it, and is not behind a closed fold:")

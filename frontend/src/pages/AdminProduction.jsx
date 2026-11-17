@@ -10783,6 +10783,12 @@ function ImpactFrameSum({ rig }) {
 }
 
 function AscentProduceModal({ state, adminPassword, onClose }) {
+  // THE CONE PICTURE'S DOTS, ON OR OFF. Declared here with the other
+  // state and above every use of it: a `const` is hoisted but not
+  // initialised, so a reference from an earlier line is a
+  // ReferenceError at render, which blanks the whole app and which
+  // `vite build` compiles happily. That shipped once already.
+  const [coneDots, setConeDots] = useState(true);
   const rep = state?.report;
   const asc = rep?.ascents || [];
   const clips = rep?.clips || [];
@@ -11041,9 +11047,31 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             </div>
             {rep.cone_search.ok ? (
               <>
-                <a href={rep.cone_search.url} target="_blank"
-                   rel="noreferrer">
-                  <img src={rep.cone_search.url}
+                {/* ON AND OFF, because the dots are the answer to one
+                    question and clutter for the other: "did the
+                    detector see anything here" wants them, "is this
+                    chain the ball" does not. Two baked pictures
+                    rather than an overlay, so the full-size view the
+                    link opens matches whichever is on screen. */}
+                {rep.cone_search.clean_url && (
+                  <label className="tiny"
+                         style={{ display: "inline-flex", gap: 4,
+                                  alignItems: "center", marginTop: 4,
+                                  cursor: "pointer" }}>
+                    <input type="checkbox" checked={coneDots}
+                           onChange={(e) => setConeDots(e.target.checked)} />
+                    show the {rep.cone_search.n_dets_in_cone} detection(s)
+                    in the cone, f{rep.cone_search.impact_frame}–f
+                    {rep.cone_search.last_frame}
+                  </label>
+                )}
+                <a href={coneDots || !rep.cone_search.clean_url
+                         ? rep.cone_search.url
+                         : rep.cone_search.clean_url}
+                   target="_blank" rel="noreferrer">
+                  <img src={coneDots || !rep.cone_search.clean_url
+                            ? rep.cone_search.url
+                            : rep.cone_search.clean_url}
                        alt="the cone search"
                        style={{ width: "100%", borderRadius: 6,
                                 marginTop: 6, display: "block" }} />
@@ -11077,8 +11105,9 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                     tracker linked nothing" need opposite fixes and
                     read identically from a chain count alone. */}
                 <div className="tiny" style={{ marginTop: 2 }}>
-                  <b>{rep.cone_search.n_dets_in_window}</b> detection(s)
-                  in the window
+                  <b>{rep.cone_search.n_dets_in_cone}</b> detection(s)
+                  in the cone ·{" "}
+                  <b>{rep.cone_search.n_dets_in_window}</b> in the window
                   {rep.cone_search.n_dets_total != null && (
                     <> · {rep.cone_search.n_dets_total} in the whole
                       sweep</>
