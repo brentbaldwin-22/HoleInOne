@@ -30805,6 +30805,31 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
                           "x": int(out["measured_ball"][0]),
                           "y": int(out["measured_ball"][1])}]
         out["n_points"] = 1
+    # ── THIS STAGE PRODUCED SOMETHING, AND NOTHING SAID SO ──────────
+    #
+    # `out["ran"] = False` was set at the top and never set anywhere
+    # else, on any path. `_ascent_apply_ai_launch` opens with
+    #
+    #     if not _ai.get("ran"): return out
+    #
+    # so it has never applied anything: not the impact frame added
+    # yesterday, and not the tee spot that its own docstring
+    # describes as its main job -- "the ball at address is an
+    # OBSERVATION of the thing the chain's run back only estimates,
+    # so it becomes the tee spot". On this swing the stage measured
+    # the strike at f797, correctly, and the clip went out with the
+    # chain's f824 and a tracer that starts half a second late.
+    #
+    # The flag is a leftover. It meant "the model answered", from
+    # when a model was asked to plot the launch; see "THE MODEL IS NO
+    # LONGER ASKED" above. When the model went, the thing that set it
+    # went with it and the flag stayed, false forever, silently
+    # switching off everything downstream that depended on it.
+    #
+    # It means what the name says now: this stage got far enough to
+    # measure something worth handing on.
+    out["ran"] = bool(out.get("measured_ball")
+                      or out.get("measured_impact_frame") is not None)
     if _res.get("image"):
         _p = CLIPS_DIR / str(_res["image"])
         if _p.exists():
@@ -30862,8 +30887,16 @@ def _ascent_apply_ai_launch(rep, clip_index) -> dict:
     out: dict = {"applied": False, "n_merged": 0, "n_refused": 0,
                  "refused": [], "reason": None, "ball_moved_px": None}
     _ai = rep.get("ai_launch") or {}
-    if not _ai.get("ran"):
-        out["reason"] = _ai.get("reason") or "the AI launch plot did not run"
+    # WHAT IT NEEDS, NOT A FLAG THAT SAYS SO. `ran` was false on
+    # every run for months because the thing that set it was deleted
+    # with the model it described, and this gate turned the whole
+    # merge off without a word. A gate that asks for the values it is
+    # about to use cannot be switched off by a rename.
+    if not (_ai.get("rest") or _ai.get("measured_impact_frame") is not None
+            or _ai.get("points")):
+        out["reason"] = (_ai.get("reason")
+                         or _ai.get("measured_why")
+                         or "stage 1 measured nothing to attach")
         return out
     _clips = rep.get("clips") or []
     if clip_index is None or not (0 <= clip_index < len(_clips)):

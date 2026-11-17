@@ -51,10 +51,22 @@ def check(label, got, want=True):
         FAILED.append(label)
 
 
-def rep(measured=796, est=827, n_clips=1, ran=True):
+def rep(measured=796, est=827, n_clips=1, measured_anything=True):
+    """`measured_anything` False means stage 1 attached NOTHING --
+    no ball at rest, no frame, no points. That, and not a leftover
+    `ran` flag, is what must stop the merge: the flag was false on
+    every run for months because the model that set it was deleted,
+    and it silently switched the whole merge off."""
+    _ai = {"ran": measured_anything, "points": []}
+    if measured_anything:
+        _ai["rest"] = {"x": 605, "y": 727}
+        _ai["measured_impact_frame"] = measured
+    else:
+        _ai["rest"] = None
+        _ai["measured_impact_frame"] = None
+        _ai["reason"] = "stage 1 measured nothing"
     return {
-        "ai_launch": {"ran": ran, "rest": {"x": 605, "y": 727},
-                      "measured_impact_frame": measured, "points": []},
+        "ai_launch": _ai,
         "clips": [{"ball": [600, 720], "impact_frame": est}
                   for _ in range(n_clips)],
         "ascents": [{"points": []} for _ in range(n_clips)],
@@ -86,15 +98,25 @@ check("  and so does the one after",
 print()
 print("and it never invents one:")
 r = rep(measured=None)
+r["ai_launch"]["measured_impact_frame"] = None
 admin._ascent_apply_ai_launch(r, 0)
-check("no measurement -> the estimate stands",
+check("no FRAME measured -> the estimate stands",
       r["clips"][0]["impact_frame"], 827)
 check("  and nothing claims to be measured",
       r["clips"][0].get("impact_source"), None)
-r = rep(ran=False)
-admin._ascent_apply_ai_launch(r, 0)
-check("stage 1 did not run -> the estimate stands",
+r = rep(measured_anything=False)
+out = admin._ascent_apply_ai_launch(r, 0)
+check("stage 1 measured nothing -> the estimate stands",
       r["clips"][0]["impact_frame"], 827)
+check("  and it says so", out.get("applied"), False)
+
+# THE DEAD FLAG ITSELF. `ran` was false on every run while the stage
+# was measuring perfectly well, so the merge must not consult it.
+r = rep()
+r["ai_launch"]["ran"] = False
+admin._ascent_apply_ai_launch(r, 0)
+check("a false `ran` does NOT block a real measurement",
+      r["clips"][0]["impact_frame"], 796)
 r = rep()
 out = admin._ascent_apply_ai_launch(r, None)
 check("no swing matched -> nothing applied", out.get("applied"), False)
@@ -114,3 +136,34 @@ if FAILED:
     print("FAILED: %s" % ", ".join(FAILED))
     sys.exit(1)
 print("all ok — the watched frame wins over the extrapolated one")
+
+# ── THE FLAG THAT WAS NEVER SET ─────────────────────────────────────
+#
+# A dead flag is invisible: it does not raise, does not log, and reads
+# as "that stage had nothing to say". This one switched off a merge
+# that had been working, and the only symptom was a tracer starting
+# half a second late. So the flag is checked directly -- it must be
+# set by something, on some path, or it means nothing again.
+print()
+print("the `ran` flag is actually set, not just initialised:")
+_s1 = src[src.index("def _ascent_ai_launch"):]
+_s1 = _s1[:_s1.index("\ndef ", 10)]
+_sets = [ln.strip() for ln in _s1.split("\n")
+         if 'out["ran"]' in ln and "=" in ln]
+print("   assignments: %s" % " | ".join(_sets))
+check("it is assigned more than once", len(_sets) > 1)
+check("  and at least one sets it from a real measurement",
+      any("measured" in ln for ln in _sets))
+
+print()
+print("and the merge does not depend on the flag at all:")
+_m = src[src.index("def _ascent_apply_ai_launch"):]
+_m = _m[:_m.index("\ndef ", 10)]
+check("the gate asks for the values it uses",
+      'if not (_ai.get("rest")' in _m)
+check("  not for `ran`", 'not _ai.get("ran")' in _m, False)
+
+if FAILED:
+    print("FAILED: %s" % ", ".join(FAILED))
+    sys.exit(1)
+print("all ok — and the flag is alive")
