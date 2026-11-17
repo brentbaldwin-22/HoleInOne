@@ -6053,6 +6053,12 @@ def sweep_ascents(
     input_path: Path,
     fps: float,
     roi: dict | None = None,
+    # WHERE THE BALL SITS, for `ascent_cone_below_skyline`. The cone is
+    # anchored on it, so without one there is no wedge to search and
+    # the second pass simply does not run. Passed in rather than
+    # guessed here: the caller measured it, and a second guess would
+    # draw one cone and search another.
+    cone_apex: tuple | None = None,
     # THE DEEP LEVEL, ALWAYS -- not level 2 with a level 3 retry behind
     # it. The operator's map has climbed to "Scan harder" often enough
     # on ascents that the deep level is the one that works, and running
@@ -6252,7 +6258,93 @@ def sweep_ascents(
                                           cap=200000, three_frame=_three,
                                           ghost_px=_ghost, prefer_area=_prefer,
                                           merge_px=_merge, stats=_stats)
-        dets.sort(key=lambda d: getattr(d, "frame", 0))
+        # ── AND BELOW THE SKYLINE, INSIDE THE CONE ──────────────────
+        #
+        # A SECOND PASS WITH ITS OWN BUDGET, not a taller band. The
+        # per-frame cap is extremal: widen the one rectangle and a
+        # treeline lit by a pixel of camera shake competes with the
+        # ball for the same ten slots, which is how the ball gets
+        # crowded out of a search that was meant to find more of it.
+        # Two passes keep the band's budget exactly as it was.
+        out["cone_below"] = None
+        if (bool(int(_G["ascent_cone_below_skyline"])) and cone_apex
+                and (_CONE_LO > -180.0 or _CONE_HI < 180.0)):
+            try:
+                _ax, _ay = int(cone_apex[0]), int(cone_apex[1])
+                _top = int(band_h)
+                if _ay > _top:
+                    # The wedge's x-span between the skyline and the
+                    # ball, clamped to the frame: everything the cone
+                    # can reach down there and nothing else.
+                    _xs = [_ax]
+                    for _d in (_CONE_LO, _CONE_HI):
+                        _r = math.radians(_d)
+                        if abs(math.cos(_r)) > 1e-6:
+                            _t = (_ay - _top) / math.cos(_r)
+                            _xs.append(_ax + math.sin(_r) * _t)
+                        else:
+                            _xs.append(_ax + (1 if _d > 0 else -1)
+                                       * frame_w)
+                    _cx0 = max(0, int(min(_xs)))
+                    _cx1 = min(int(frame_w), int(max(_xs)) + 1)
+                    _below = []
+                    if _cx1 - _cx0 > 8:
+                        for _lo2, _hi2 in _spans:
+                            _below += detect_movers_by_diff(
+                                input_path, _lo2, _hi2, sens=int(sens),
+                                per_frame=_per_frame,
+                                roi=(_cx0, _top, _cx1 - _cx0,
+                                     _ay - _top),
+                                cap=200000, three_frame=_three,
+                                ghost_px=_ghost, prefer_area=_prefer,
+                                merge_px=_merge)
+                    # ONLY WHAT IS ACTUALLY IN THE WEDGE. The rectangle
+                    # is the wedge's bounding box and is mostly not the
+                    # wedge; the gate is the same bearing test the
+                    # chains get, so the two cannot disagree.
+                    _kept_b = []
+                    for _d2 in _below:
+                        # A DICT, not an object. `detect_movers_by_diff`
+                        # appends {"frame","x","y",...}; a getattr here
+                        # read the default for every one and put the
+                        # whole wedge at the origin, so the bearing
+                        # test refused all of it.
+                        _dx = float(_d2["x"]) - _ax
+                        _dy = float(_d2["y"]) - _ay
+                        _b2 = math.degrees(math.atan2(_dx, -_dy))
+                        if _CONE_LO <= _b2 <= _CONE_HI:
+                            _kept_b.append(_d2)
+                    dets += _kept_b
+                    out["cone_below"] = {
+                        "ran": True,
+                        "rect": [_cx0, _top, _cx1 - _cx0, _ay - _top],
+                        "apex": [_ax, _ay],
+                        "n_found": len(_below),
+                        "n_in_cone": len(_kept_b),
+                    }
+                else:
+                    out["cone_below"] = {
+                        "ran": False,
+                        "why": ("the ball sits above the skyline the "
+                                "band is already floored at, so there "
+                                "is nothing below it to search"),
+                    }
+            except Exception as _cx:  # noqa: BLE001
+                # NEVER FATAL, and never silent either.
+                log.warning("cone below-skyline pass failed: %s", _cx,
+                            exc_info=True)
+                out["cone_below"] = {"ran": False,
+                                     "why": "%s: %s" % (
+                                         type(_cx).__name__, _cx)}
+        # BY FRAME, AND IT WAS NOT. This read `getattr(d, "frame", 0)`
+        # on dicts, so every key was the default 0 and the sort was a
+        # no-op. It went unnoticed while there was exactly one pass
+        # appending in frame order already -- the sort had nothing to
+        # do. The cone's below-skyline pass appends a SECOND run after
+        # the first, so from here on the order is genuinely wrong
+        # without this, and `build_tracks` walks detections expecting
+        # time to move forwards.
+        dets.sort(key=lambda d: int(d["frame"]))
         out["n_dets"] = len(dets)
         # THE ANSWER TO "WHY IS THE BALL NOT IN HERE AT ALL". When the
         # cap binds on most frames the ball is not losing a gate, it is
@@ -8413,6 +8505,26 @@ GATE_SPEC = {
     # frames; the operator asked for 30 on a 60fps rig, which is half
     # a second and plenty for a ball to clear the band.
     "ascent_window_frames": (ASCENT_WINDOW_FRAMES, 8, 240, True),
+    # SEARCH BELOW THE SKYLINE, INSIDE THE CONE. Off by default.
+    #
+    # The band is floored at the skyline because below it everything
+    # moves: a tee full of people, a club, a divot, a shadow, carts,
+    # branches. That floor is why the climb from the tee INTO the band
+    # is never observed and has to be recovered by running the chain
+    # backwards down its own heading.
+    #
+    # A cone changes the arithmetic. It is anchored on the ball and it
+    # is narrow, so "below the skyline" and "inside the cone" are a far
+    # smaller piece of grass than "below the skyline" -- the golfers
+    # are AT the apex and the wedge opens away from them. Where a hole
+    # has one, this searches that wedge as a SECOND pass with its own
+    # per-frame budget, so the trees in it cannot crowd the ball out of
+    # the band's.
+    #
+    # Off by default because it is still the part of the frame where
+    # everything moves, and a surplus chain the cone lets through is a
+    # tracer drawn on a branch.
+    "ascent_cone_below_skyline": (0, 0, 1, True),
     # key                        default                  lo     hi   int
     # NOT A FILTER ON CHAINS, unlike everything else here: this one is
     # the DETECTOR's per-frame keep. Every other gate can only refuse a

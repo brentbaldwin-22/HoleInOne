@@ -11091,6 +11091,34 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                     <> · the detection list was capped</>
                   )}
                 </div>
+                {/* THE HALF OF THE CONE NOBODY SEARCHED. The band is
+                    floored at the skyline, so most of the wedge on the
+                    picture is drawn over grass no detector ran on --
+                    and a cone full of nothing then reads as "the ball
+                    was not there" when it means "nobody looked here".
+                    Naming the knob, because this one is off by
+                    default and the picture cannot say so itself. */}
+                {!rep.cone_search.cone_below?.ran && (
+                  <div className="tiny muted" style={{ marginTop: 2 }}>
+                    Only the band ABOVE the skyline was searched
+                    {rep.cone_search.band_floor_source
+                      ? ` (floor: ${rep.cone_search.band_floor_source})`
+                      : ""}
+                    . The part of the cone below it was not looked at —
+                    set <b>ascent_cone_below_skyline</b> to 1 to search
+                    the wedge down to the ball as well.
+                    {rep.cone_search.cone_below?.why
+                      ? ` ${rep.cone_search.cone_below.why}` : ""}
+                  </div>
+                )}
+                {rep.cone_search.cone_below?.ran && (
+                  <div className="tiny muted" style={{ marginTop: 2 }}>
+                    Below the skyline, inside the cone:{" "}
+                    <b>{rep.cone_search.cone_below.n_found}</b> found,{" "}
+                    <b>{rep.cone_search.cone_below.n_in_cone}</b> of them
+                    in the wedge.
+                  </div>
+                )}
                 {rep.cone_search.n_in_window === 0
                   && rep.cone_search.n_dets_in_window > 0 && (
                   <div className="tiny" style={{ color: "#b45309",

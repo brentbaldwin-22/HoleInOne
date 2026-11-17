@@ -25592,6 +25592,40 @@ def _ascent_detection_zoom_image(row, src_path, sweep) -> None:
         log.warning("detection zoom image failed on %s: %s", row.id, exc)
 
 
+def _cone_apex_for(ai_launch):
+    """Where the launch cone is anchored, and how sure we are of it.
+
+    ONE DEFINITION, because two things need it and they must not
+    disagree: the cone SEARCH below the skyline and the cone PICTURE.
+    A search run from one apex and a picture drawn from another is the
+    worst kind of disagreement -- the picture looks like the evidence
+    for the search and is evidence of something else.
+
+    Returns (apex, how) or (None, None). `how` says whether the ball
+    was measured or the point was placed, because the two draw an
+    identical cone and only one of them is a measurement.
+    """
+    _al = ai_launch or {}
+    _chk = _al.get("swing_check") or {}
+    _r = _al.get("rest") or {}
+    _bb = _chk.get("ball_box")
+    for _cand, _lbl in (
+        (_al.get("measured_ball"), "measured at rest"),
+        (((_r.get("x"), _r.get("y")) if _r.get("x") is not None
+          else None), "measured at rest"),
+        (_al.get("address_ball"), "found at address"),
+        ((((int(_bb[0]) + int(_bb[2]) // 2),
+           (int(_bb[1]) + int(_bb[3]) // 2)) if _bb else None),
+         "the centre of the box the ball was searched for in "
+         "(the ball itself was not measured)"),
+        (_chk.get("tee_spot"),
+         "the tee spot (the ball itself was not measured)"),
+    ):
+        if _cand:
+            return (int(_cand[0]), int(_cand[1])), _lbl
+    return None, None
+
+
 def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
     """The cone search: what the sweep found between the impact frame
     and `ascent_window_frames` after it, and which of it the cone kept.
@@ -25644,25 +25678,7 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
         # Labelled either way, because an apex that was measured and
         # one that was placed are not the same claim and the picture
         # must not make them look alike.
-        _chk = _al.get("swing_check") or {}
-        _apex = _apex_from = None
-        _r = _al.get("rest") or {}
-        _bb = _chk.get("ball_box")
-        for _cand, _lbl in (
-            (_al.get("measured_ball"), "measured at rest"),
-            (((_r.get("x"), _r.get("y")) if _r.get("x") is not None
-              else None), "measured at rest"),
-            (_al.get("address_ball"), "found at address"),
-            ((((int(_bb[0]) + int(_bb[2]) // 2),
-               (int(_bb[1]) + int(_bb[3]) // 2)) if _bb else None),
-             "the centre of the box the ball was searched for in "
-             "(the ball itself was not measured)"),
-            (_chk.get("tee_spot"),
-             "the tee spot (the ball itself was not measured)"),
-        ):
-            if _cand:
-                _apex, _apex_from = _cand, _lbl
-                break
+        _apex, _apex_from = _cone_apex_for(_al)
 
         _f0 = _al.get("measured_impact_frame")
         _f_from = "the ball leaving"
@@ -25783,6 +25799,32 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
         _ty = int((sweep or {}).get("tee_line_y") or 0)
         if _ty:
             cv2.line(im, (0, _ty), (_w, _ty), (80, 200, 255), 1, cv2.LINE_AA)
+        # ── WHERE THE SEARCH ACTUALLY LOOKED ────────────────────────
+        #
+        # The band's floor is the skyline, and the cone goes on down to
+        # the ball -- so most of the wedge on this picture is drawn
+        # over grass nothing searched. Without the floor marked, a
+        # cone full of nothing reads as "the ball was not there" when
+        # it means "nobody looked here".
+        _bandh = 0
+        _b = (sweep or {}).get("band")
+        if _b:
+            _bandh = int(_b[1]) + int(_b[3])
+            cv2.line(im, (0, _bandh), (_w, _bandh), (80, 200, 255), 1,
+                     cv2.LINE_AA)
+            cv2.putText(im, "skyline — the band's floor", (8, _bandh - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (80, 200, 255), 1,
+                        cv2.LINE_AA)
+        _cb = (sweep or {}).get("cone_below") or {}
+        if _cb.get("ran") and _cb.get("rect"):
+            _r4 = [int(v) for v in _cb["rect"]]
+            cv2.rectangle(im, (_r4[0], _r4[1]),
+                          (_r4[0] + _r4[2], _r4[1] + _r4[3]),
+                          (90, 230, 90), 1)
+            cv2.putText(im, "also searched below the skyline",
+                        (_r4[0] + 4, _r4[1] + 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (90, 230, 90), 1,
+                        cv2.LINE_AA)
 
         # ── EVERY DETECTION IN THE WINDOW, WITH ITS FRAME NUMBER ────
         #
@@ -25897,6 +25939,9 @@ def _ascent_cone_image(row, src_path, sweep, ai_launch, gates, fps):
                              or (sweep or {}).get("n_dets")),
             "dets_labelled_every": _lab_every,
             "dets_capped": bool((sweep or {}).get("dets_sample_capped")),
+            "cone_below": (sweep or {}).get("cone_below"),
+            "band_floor_y": _bandh or None,
+            "band_floor_source": (sweep or {}).get("band_floor_source"),
             "n_kept": _kept,
             "n_refused_by_cone": _coned_off,
             "why_tally": _why_tally,
@@ -27214,9 +27259,14 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # measured ball's job is to say which of its chains is this
     # swing.
     _t_sub = time.perf_counter()
+    # THE SAME APEX THE PICTURE WILL BE DRAWN FROM. `ascent_cone_below
+    # _skyline` searches the wedge under the skyline, and the wedge is
+    # anchored here -- so this is read once and handed to both.
+    _apex_for_cone, _ = _cone_apex_for(rep.get("ai_launch"))
     sweep = _d3.sweep_ascents(src_path, fps, roi=_roi.get("roi"),
                               windows=_win,
                               gates=_gt,
+                              cone_apex=_apex_for_cone,
                               **_search_area_for(db, row)) or {}
     _sec_sweep = time.perf_counter() - _t_sub
     _t_sub = time.perf_counter()
