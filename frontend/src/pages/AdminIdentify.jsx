@@ -51,6 +51,63 @@ function clipLabel(c) {
   return `Hole ${c.hole_number} · ${where}`;
 }
 
+/* ONE TILE, TWO GRIDS. The hole grid and the whole-day grid show the
+ * same thing and must keep showing the same thing -- two copies of
+ * fifty lines of tile would drift the first time either was touched.
+ */
+function ClipTile({ c, playerId, still, busy, onPick, onWatch }) {
+  const mine = c.participant_id === playerId;
+  const taken = c.participant_id != null && !mine;
+  return (
+    <div className="pick-cell">
+      <button
+        type="button"
+        className={`pick-tile${mine ? " on" : ""}`}
+        onClick={() => onPick(c)}
+        disabled={busy === c.id}
+        style={taken ? { opacity: 0.55 } : undefined}
+        title={[
+          taken ? `Currently ${c.participant_name}'s` : clipLabel(c),
+          still && aimNote(still),
+        ].filter(Boolean).join("  ·  ")}
+      >
+        {/* NO VIDEO ON THIS GRID AT ALL. A <video> here decodes, seeks
+            and repaints while the operator is trying to compare eleven
+            outfits -- the tiles flickered. A still cannot flicker.
+            Until one arrives the tile is simply empty. */}
+        {still ? (
+          <img src={still.still_url} alt={`Shot at ${clipLabel(c)}`} />
+        ) : (
+          <span className="pick-empty">…</span>
+        )}
+        <span className="pick-time">
+          {fmtDateTime(c.captured_at, undefined, { timeStyle: "short" })}
+          {" · "}
+          {clipLabel(c)}
+          {taken ? ` · ${c.participant_name}` : ""}
+        </span>
+        {mine && (
+          <span className="pick-check"><Icon name="check" size={16} /></span>
+        )}
+      </button>
+      {/* A SEPARATE BUTTON, not nested inside the tile: a button within
+          a button is invalid, and a click meant for "watch" must never
+          land on "give this shot to Alex". */}
+      <button
+        type="button"
+        className="tile-watch"
+        onClick={() => onWatch(c)}
+        title="Watch the full clip"
+        aria-label={`Watch the full clip from ${clipLabel(c)}`}
+      >
+        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+          <path d="M4 2.5 L13 8 L4 13.5 Z" fill="currentColor" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
 /**
  * PLAYER IDENTIFICATION — putting a name on a shot by hand.
  *
@@ -86,6 +143,10 @@ export default function AdminIdentify() {
   // every hole and player change below, so revealing everything once
   // does not quietly stay on for the rest of the round.
   const [showAllClips, setShowAllClips] = useState(false);
+  // The whole-day backstop below the hole grid. Deliberately NOT reset
+  // on hole change: an operator who has opened it is hunting, and
+  // closing it under them on every Next is the opposite of helpful.
+  const [showDayAll, setShowDayAll] = useState(false);
   const [watch, setWatch] = useState(null);     // clip being played full-size
   // Bumped whenever the course or day changes, so stills still in
   // flight for the day you just left cannot land on the new grid.
@@ -198,6 +259,9 @@ export default function AdminIdentify() {
   // shown + hidden accounts for every clip in every mode.
   const { shown: holeClips, hidden: hiddenCount, windowed } =
     visibleClips(allHoleClips, win, current?.id, showAllClips);
+  // Every clip of the day, no hole filter and no window. `day()`
+  // already returns them in captured_at order.
+  const dayClips = data?.clips || [];
 
   // A reveal belongs to one hole and one golfer. Leaving it on would
   // quietly undo the narrowing for the rest of the round, which is the
@@ -406,60 +470,13 @@ export default function AdminIdentify() {
             </p>
           ) : (
             <div className="pick-grid">
-              {holeClips.map((c) => {
-                const mine = c.participant_id === current.id;
-                const taken = c.participant_id != null && !mine;
-                return (
-                  <div key={c.id} className="pick-cell">
-                  <button
-                    type="button"
-                    className={`pick-tile${mine ? " on" : ""}`}
-                    onClick={() => pair(c)}
-                    disabled={busy === c.id}
-                    style={taken ? { opacity: 0.55 } : undefined}
-                    title={[
-                      taken ? `Currently ${c.participant_name}'s` : clipLabel(c),
-                      stills[c.id] && aimNote(stills[c.id]),
-                    ].filter(Boolean).join("  ·  ")}
-                  >
-                    {/* NO VIDEO ON THIS GRID AT ALL. A <video> here
-                        decodes, seeks and repaints while the operator is
-                        trying to compare eleven outfits -- the tiles
-                        flickered. A still cannot flicker. Until one
-                        arrives the tile is simply empty. */}
-                    {stills[c.id] ? (
-                      <img src={stills[c.id].still_url} alt={`Shot at ${clipLabel(c)}`} />
-                    ) : (
-                      <span className="pick-empty">…</span>
-                    )}
-                    <span className="pick-time">
-                      {fmtDateTime(c.captured_at, undefined, { timeStyle: "short" })}
-                      {" · "}
-                      {clipLabel(c)}
-                      {taken ? ` · ${c.participant_name}` : ""}
-                    </span>
-                    {mine && (
-                      <span className="pick-check"><Icon name="check" size={16} /></span>
-                    )}
-                  </button>
-                  {/* A SEPARATE BUTTON, not nested inside the tile: a
-                      button within a button is invalid, and a click
-                      meant for "watch" must never land on "give this
-                      shot to Alex". */}
-                  <button
-                    type="button"
-                    className="tile-watch"
-                    onClick={() => setWatch(c)}
-                    title="Watch the full clip"
-                    aria-label={`Watch the full clip from ${clipLabel(c)}`}
-                  >
-                    <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
-                      <path d="M4 2.5 L13 8 L4 13.5 Z" fill="currentColor" />
-                    </svg>
-                  </button>
-                  </div>
-                );
-              })}
+              {holeClips.map((c) => (
+                <ClipTile
+                  key={c.id} c={c} playerId={current.id}
+                  still={stills[c.id]} busy={busy}
+                  onPick={pair} onWatch={setWatch}
+                />
+              ))}
             </div>
           )}
 
@@ -484,6 +501,51 @@ export default function AdminIdentify() {
               <button type="button" onClick={() => setHoleIdx((i) => i + 1)}>
                 Next · Hole {holes[holeIdx + 1]} →
               </button>
+            )}
+          </div>
+
+          {/* EVERY SHOT OF THE DAY, UNDERNEATH. The grid above is
+              narrowed twice over -- to one hole, and to the window the
+              tee time accounts for -- and both of those are guesses
+              about where a shot should be. This is the place where no
+              guess is applied at all: every produced clip from the
+              day, every hole, every hour, tappable exactly like the
+              ones above.
+              Collapsed, because it is the backstop and not the
+              workflow -- but the count is on the button, so an
+              operator who cannot find a shot can see at a glance that
+              there is somewhere else to look. */}
+          <div style={{ marginTop: 18, borderTop: "1px solid var(--rule)",
+                        paddingTop: 14 }}>
+            <button
+              type="button"
+              className="ghost small"
+              onClick={() => setShowDayAll((v) => !v)}
+            >
+              {showDayAll ? "▾" : "▸"} All clips from this day
+              {" "}({dayClips.length})
+            </button>
+            {showDayAll && (
+              <>
+                <p className="small muted" style={{ marginTop: 8 }}>
+                  Every produced clip on {data.course?.name} that day, in
+                  the order they were shot — no hole filter, no tee-time
+                  window. Tap one to give it to {current.name}.
+                </p>
+                {dayClips.length === 0 ? (
+                  <p className="small muted">No clips at all that day.</p>
+                ) : (
+                  <div className="pick-grid">
+                    {dayClips.map((c) => (
+                      <ClipTile
+                        key={`all-${c.id}`} c={c} playerId={current.id}
+                        still={stills[c.id]} busy={busy}
+                        onPick={pair} onWatch={setWatch}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
