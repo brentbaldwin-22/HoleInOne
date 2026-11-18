@@ -492,11 +492,40 @@ function StorageCard({ adminPassword, onToast }) {
                 <b>{((plan.result.bytes || 0) / 1e9).toFixed(2)} GB</b>.
               </div>
               <div className="tiny muted" style={{ marginBottom: 10 }}>
-                {(plan.result.sample || []).join(", ")}
+                {/* The image sweep samples filenames; the two footage
+                    sweeps sample {name, mb, modified}. join() turned
+                    the latter into "[object Object]", which is what
+                    was on screen the one time the plan needed
+                    reading. */}
+                {(plan.result.sample || [])
+                  .map((f) => (typeof f === "string"
+                    ? f
+                    : `${f.name} (${f.mb} MB, ${f.modified})`))
+                  .join(", ")}
                 {plan.result.candidates > (plan.result.sample || []).length
                   ? ` … and ${plan.result.candidates
                       - plan.result.sample.length} more` : ""}
               </div>
+              {/* WHY IT FOUND SO FEW. "1 file, 0.00 GB" on a disk at
+                  99% reads as a broken button; it is almost always the
+                  guards doing their job, and the counts that say so
+                  were in the report all along. */}
+              {(plan.result.protected_hits != null
+                || plan.result.too_young != null) && (
+                <div className="tiny muted" style={{ marginBottom: 10 }}>
+                  {plan.result.protected_hits != null
+                    ? `${plan.result.protected_hits} protected (still `
+                      + `referenced, or raw halves of a produced clip)`
+                    : ""}
+                  {plan.result.too_young != null
+                    ? ` · ${plan.result.too_young} too young`
+                      + (plan.result.min_age_hours != null
+                        ? ` (<${plan.result.min_age_hours}h)` : "")
+                    : ""}
+                  {plan.result.min_free_gb != null
+                    ? ` · floor ${plan.result.min_free_gb} GB` : ""}
+                </div>
+              )}
               <button className={`small ${SWEEPS[plan.kind].tone}`}
                       onClick={() => commit(plan.kind)} disabled={busy}>
                 Delete them
@@ -508,7 +537,12 @@ function StorageCard({ adminPassword, onToast }) {
             </>
           ) : (
             <div className="small">
-              Nothing old enough to remove.
+              {/* `skipped` carries the real reason -- already above the
+                  floor, or an empty protected set, which is a refusal
+                  rather than an absence of candidates. */}
+              {plan.result && plan.result.skipped
+                ? plan.result.skipped
+                : "Nothing old enough to remove."}
               {" "}
               <button className="ghost small" onClick={() => setPlan(null)}>
                 Close
