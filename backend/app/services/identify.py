@@ -34,7 +34,7 @@ are none.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
@@ -133,7 +133,63 @@ def pending_total(db: Session, start: datetime, end: datetime) -> dict:
     }
 
 
-def _player_row(p: Participant, assigned: int) -> dict:
+# WHEN A GROUP PLAUSIBLY PLAYED A GIVEN HOLE, from its tee time.
+#
+# A foursome leaves the first tee and arrives at hole N about
+# (N-1) * PACE minutes later. That is enough to cut a day's footage
+# down hard: a noon tee time has no business being shown 9am clips on
+# hole 2. But the error ACCUMULATES -- every hole played is another
+# hole the group could have been quick or slow on -- so a window that
+# is right for hole 2 is far too tight for hole 17, and a fixed +/- 30
+# minutes would quietly hide the very clip being looked for.
+#
+# So the spread grows with the hole: a per-hole tolerance that
+# compounds, plus a fixed allowance for the things that happen once --
+# starting late off the first tee, waiting on a backed-up par 3, the
+# turn.
+#
+# Measured against Rivertowne's par 3s from a noon tee time:
+#
+#   hole 2    12:14 +/- 29m     11:45 - 12:43
+#   hole 8    13:38 +/- 53m     12:45 - 14:31
+#   hole 14   15:02 +/- 77m     13:45 - 16:19
+#   hole 17   15:44 +/- 89m     14:15 - 17:13
+#
+# Wide by hole 17, and honestly so: we do not know when they got
+# there. It is still a fraction of an eleven-hour day of footage.
+PACE_NOMINAL_MIN = 14.0
+PACE_TOLERANCE_MIN = 4.0
+FIXED_SLACK_MIN = 25.0
+
+
+def shot_window(tee_time, hole_number):
+    """[start, end] when this group could have played `hole_number`.
+
+    Returns None when there is nothing to reason from -- no tee time,
+    or a hole number that is not a hole. A caller that gets None must
+    show every clip rather than none: the window is an aid to looking,
+    and no window means look at everything.
+    """
+    if tee_time is None:
+        return None
+    try:
+        hole = int(hole_number)
+    except (TypeError, ValueError):
+        return None
+    if hole < 1:
+        return None
+
+    # Hole 1 is played at the tee time itself, so it is the GAPS that
+    # count, not the holes.
+    gaps = hole - 1
+    centre = tee_time + timedelta(minutes=gaps * PACE_NOMINAL_MIN)
+    spread = timedelta(
+        minutes=gaps * PACE_TOLERANCE_MIN + FIXED_SLACK_MIN,
+    )
+    return centre - spread, centre + spread
+
+
+def _player_row(p: Participant, assigned: int, par3s=()) -> dict:
     return {
         "id": p.id,
         "name": p.name,
@@ -144,6 +200,17 @@ def _player_row(p: Participant, assigned: int) -> dict:
         "email": p.email,
         "tee_time": p.tee_time.starts_at if p.tee_time else None,
         "assigned": assigned,
+        # One window per par 3, so the console can narrow the grid the
+        # moment a player is picked without a round trip per hole.
+        # Absent when there is no tee time to reason from, which the
+        # console reads as "show everything".
+        "windows": {
+            str(h): list(w)
+            for h in par3s
+            if (w := shot_window(
+                p.tee_time.starts_at if p.tee_time else None, h,
+            )) is not None
+        },
     }
 
 
@@ -207,11 +274,6 @@ def day(db: Session, course_id: int, start: datetime, end: datetime) -> dict:
         .order_by(TeeTime.starts_at)
         .all()
     )
-    players = []
-    for tt in tee_times:
-        for p in tt.participants:
-            players.append(_player_row(p, tally.get(p.id, 0)))
-
     # THE PAR 3s, IN PLAY ORDER. The operator works a golfer one hole at
     # a time, and which holes those are is a property of the course --
     # Rivertowne's are 2, 8, 14 and 17. Sorted here rather than trusted:
@@ -222,6 +284,12 @@ def day(db: Session, course_id: int, start: datetime, end: datetime) -> dict:
         par3s = sorted({int(h) for h in (course.par3_holes or [])})
     except (TypeError, ValueError):
         par3s = []
+
+    # AFTER the par 3s are known: each row carries a window per hole.
+    players = []
+    for tt in tee_times:
+        for p in tt.participants:
+            players.append(_player_row(p, tally.get(p.id, 0), par3s))
 
     return {
         "course": {"id": course.id, "name": course.name, "par3_holes": par3s},

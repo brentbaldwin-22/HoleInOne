@@ -5,6 +5,7 @@ import PlayerIdLink, { IDENTIFY_CHANGED } from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
 import { Brand, Icon } from "../components/Brand.jsx";
 import { fmtDateTime } from "../time.js";
+import { visibleClips } from "./identifyWindow.js";
 
 const ADMIN_PW_STORAGE = "golfreelz.adminPassword";
 const LEGACY_ADMIN_PW_STORAGE = "parone.adminPassword";
@@ -81,6 +82,10 @@ export default function AdminIdentify() {
   const [busy, setBusy] = useState(null);       // clip id mid-request
   const [stills, setStills] = useState({});     // {clip_id: url}
   const [holeIdx, setHoleIdx] = useState(0);    // where in the par-3s we are
+  // Set by the operator to see past the tee-time window. Reset on
+  // every hole and player change below, so revealing everything once
+  // does not quietly stay on for the rest of the round.
+  const [showAllClips, setShowAllClips] = useState(false);
   const [watch, setWatch] = useState(null);     // clip being played full-size
   // Bumped whenever the course or day changes, so stills still in
   // flight for the day you just left cannot land on the new grid.
@@ -165,8 +170,39 @@ export default function AdminIdentify() {
     ? data.course.par3_holes
     : [...new Set((data?.clips || []).map((c) => c.hole_number))].sort((a, b) => a - b));
   const hole = holes[Math.min(holeIdx, Math.max(0, holes.length - 1))];
-  const holeClips = (data?.clips || []).filter((c) => c.hole_number === hole);
+  const allHoleClips = (data?.clips || []).filter((c) => c.hole_number === hole);
   const onLastHole = holeIdx >= holes.length - 1;
+
+  /* NARROW BY THE CLOCK. A group that tees off at noon reaches hole 2
+   * about a quarter of an hour later, so the 9am and 3pm shots on that
+   * camera are not theirs and are only there to be scrolled past. The
+   * backend works the window out from the tee time (see
+   * identify.shot_window) and widens it hole by hole, because pace
+   * error accumulates: tight on hole 2, deliberately loose by hole 17.
+   *
+   * THREE RULES, ALL OF THEM ABOUT NOT LOSING A SHOT:
+   *
+   *   no window          -> show everything. A player with no tee time
+   *                         is not a reason to show an empty grid.
+   *   window hides all   -> show everything. If nothing at all falls in
+   *                         it the model is wrong for this round -- a
+   *                         shotgun start, a corrected clock -- and the
+   *                         operator needs the footage, not our theory.
+   *   anything hidden    -> say how many, one click to reveal.
+   *
+   * Narrowing is a convenience. Being complete is the job.
+   */
+  const win = current?.windows?.[String(hole)] || null;
+  // The rule lives in identifyWindow.js, where it can be exercised
+  // without a browser -- tools/identify_window_test.js asserts that
+  // shown + hidden accounts for every clip in every mode.
+  const { shown: holeClips, hidden: hiddenCount, windowed } =
+    visibleClips(allHoleClips, win, current?.id, showAllClips);
+
+  // A reveal belongs to one hole and one golfer. Leaving it on would
+  // quietly undo the narrowing for the rest of the round, which is the
+  // sort of thing nobody notices until they are scrolling again.
+  useEffect(() => { setShowAllClips(false); }, [hole, current?.id]);
 
   async function pair(clip) {
     if (!current) return;
@@ -326,6 +362,36 @@ export default function AdminIdentify() {
               Par 3 {Math.min(holeIdx + 1, holes.length)} of {holes.length}
               {" · "}
               {holeClips.length} shot{holeClips.length === 1 ? "" : "s"}
+              {/* WHAT IS BEING HELD BACK, AND THE WAY TO IT. A filter
+                  the operator cannot see is a filter they will not
+                  trust the moment a shot seems to be missing -- so the
+                  count and the window are both on screen, and one tap
+                  undoes it. */}
+              {windowed && hiddenCount > 0 && (
+                <>
+                  {" · "}
+                  <button
+                    type="button"
+                    className="ghost small"
+                    onClick={() => setShowAllClips(true)}
+                    title={`Showing ${fmtDateTime(win[0], undefined, { timeStyle: "short" })}`
+                      + `–${fmtDateTime(win[1], undefined, { timeStyle: "short" })},`
+                      + " worked out from this golfer's tee time. The window"
+                      + " widens on later holes because pace drifts."}
+                  >
+                    {hiddenCount} outside this tee time — show all
+                  </button>
+                </>
+              )}
+              {showAllClips && win && (
+                <>
+                  {" · "}
+                  <button type="button" className="ghost small"
+                          onClick={() => setShowAllClips(false)}>
+                    narrow to tee time
+                  </button>
+                </>
+              )}
             </span>
           </div>
           <p className="small muted">
