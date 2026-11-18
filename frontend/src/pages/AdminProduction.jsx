@@ -11043,13 +11043,24 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                 that starts closed. "f824" and "f824, measured, out of
                 a window that only reached f838" are different claims
                 and only the second can be checked. */}
-            {rep.ai_launch.measured_impact_frame != null && (
+            {(rep.ai_launch.measured_impact_frame != null
+              || rep.ai_launch.measured_impact_how) && (
               <div className="tiny" style={{ marginTop: 4 }}>
                 <b>Impact frame measured:</b>{" "}
-                f{rep.ai_launch.measured_impact_frame}
+                {rep.ai_launch.measured_impact_frame != null
+                  ? `f${rep.ai_launch.measured_impact_frame}`
+                  : "no"}
                 {Array.isArray(rep.ai_launch.measured_window) && (
                   <> · searched f{rep.ai_launch.measured_window[0]}–f
                     {rep.ai_launch.measured_window[1]}</>
+                )}
+                {rep.ai_launch.measured_impact_how && (
+                  <div className={rep.ai_launch.measured_impact_frame == null
+                                  ? "" : "muted"}
+                       style={rep.ai_launch.measured_impact_frame == null
+                              ? { color: "#b45309" } : undefined}>
+                    {rep.ai_launch.measured_impact_how}
+                  </div>
                 )}
                 {rep.ai_launch.measured_impact_unclamped != null && (
                   <div style={{ color: "#b45309" }}>

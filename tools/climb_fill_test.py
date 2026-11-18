@@ -81,7 +81,11 @@ print("it asks about the gap between the ball and the chain:")
 r = rep()
 out, fake = run(r, [])
 check("it ran", out.get("ran"), True)
-check("  seeded from the strike", fake.seen["first"], 797)
+# A WINDOW, NOT THE GAP. Seeding at the strike assumed the strike was
+# right; it was eight frames late, so the search began after the ball
+# had already left and the flight it exists to find was outside it.
+check("  seeded 40 frames back from the chain's foot",
+      fake.seen["first"], 824 - 40)
 check("  up to the chain", fake.seen["last"], 828)
 check("  asking for a hole at least as big as the gap",
       fake.seen["max_hole"] >= 824 - 797)
@@ -106,10 +110,15 @@ print("ONLY what lies in the gap — not the chain it was seeded with:")
 r = rep()
 out, _ = run(r, [{"frame": 824, "x": 700, "y": 600},
                  {"frame": 900, "x": 900, "y": 400},
-                 {"frame": 797, "x": 669, "y": 727}])
-check("the chain's own foot is not re-added", out.get("n_found"), 0)
-check("  nor anything above it",
-      [int(q["frame"]) for q in r["ai_launch"]["points"]], [797])
+                 {"frame": 784, "x": 669, "y": 727},
+                 {"frame": 790, "x": 672, "y": 724}])
+check("the chain's own foot is not re-added", out.get("n_found"), 1)
+check("  nor anything above it, nor the seed itself",
+      [int(q["frame"]) for q in r["ai_launch"]["points"]], [797, 790])
+# THE POINT OF THE WIDER WINDOW: frames BEFORE the estimated strike
+# are now reachable, which is where this swing's flight actually was.
+check("  and a frame before the estimated strike is kept",
+      790 in [int(q["frame"]) for q in r["ai_launch"]["points"]])
 
 print()
 print("and it declines rather than drawing between two things:")

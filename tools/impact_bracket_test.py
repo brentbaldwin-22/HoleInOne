@@ -92,3 +92,53 @@ if FAILED:
     print("FAILED: %s" % ", ".join(FAILED))
     sys.exit(1)
 print("all ok — the tiles bound it, the watch refines it")
+
+# ── THE WINDOW MUST START BEFORE THE BALL GOES ──────────────────────
+#
+# THE EIGHT-FRAME ERROR. The departure watch looked from `at_sec`
+# minus 0.2s, which on the reported swing is f796 -- and the ball left
+# at f789. So it never saw the ball PRESENT ("last seen fNone" on the
+# panel), found the spot empty on the first frame it looked at, and
+# reported that frame as the impact. f797 was not a measurement; it
+# was where we started looking. And `at_sec` is itself the audio peak
+# less a guessed lag, so a fifth of a second was never enough margin
+# for the thing it is meant to bracket.
+print()
+print("the departure watch starts well before the strike:")
+check("the margin is a named constant",
+      "ASCENT_DEPART_BEFORE_SEC" in src)
+check("  wide enough to see the ball still there",
+      float(re.search(r"ASCENT_DEPART_BEFORE_SEC = ([\d.]+)",
+                      src).group(1)) >= 0.5)
+check("  and the watch is given it",
+      "before_sec=ASCENT_DEPART_BEFORE_SEC" in src)
+check("  and the window reported matches the one searched",
+      "- ASCENT_DEPART_BEFORE_SEC) * _dw_fps" in src)
+
+print()
+print("the strike is split between seen and gone, as asked:")
+_s1b = src[src.index("def _ascent_ai_launch"):]
+_s1b = _s1b[:_s1b.index("\ndef ", 10)]
+check("it takes the midpoint", "(int(_last) + int(_gone))" in _s1b)
+check("  recording both bounds",
+      '"measured_impact_seen"' in _s1b
+      and '"measured_impact_gone"' in _s1b)
+
+print()
+print("and NOTHING SEEN means NOTHING MEASURED:")
+# The failure that made f797 beat a correct estimate: a window that
+# began after the ball had gone still produced a number, and the
+# number was the window's own first frame.
+check("a watch that never saw the ball reports no frame",
+      'out["measured_impact_frame"] = None' in _s1b)
+# A CONTIGUOUS fragment: the sentence is split across a line
+# continuation in the source, so the whole phrase never appears.
+check("  and says it is not a measurement",
+      "NOT measured:" in _s1b)
+check("  naming the frame it refused to use",
+      "started looking" in _s1b)
+
+if FAILED:
+    print("FAILED: %s" % ", ".join(FAILED))
+    sys.exit(1)
+print("all ok — and the window brackets what it measures")

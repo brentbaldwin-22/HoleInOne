@@ -30648,10 +30648,60 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
                    _rect[1] + _rect[3])),
             anchor=(None if not out.get("golfer_box") else
                     (out["golfer_box"][1] + out["golfer_box"][3],
-                     out["golfer_box"][3])))
+                     out["golfer_box"][3])),
+            # ── START LOOKING BEFORE THE BALL IS GONE ───────────────
+            #
+            # THE WHOLE EIGHT-FRAME ERROR WAS HERE. The default looks
+            # from `at_sec` minus 0.2s, which on this swing is f796 --
+            # and the ball left at f789. So the watch never saw the
+            # ball present at all (`last seen fNone` on the panel),
+            # found the spot empty on the FIRST frame it looked at,
+            # and reported that frame as the impact. f797 was not a
+            # measurement of anything; it was where we started
+            # looking.
+            #
+            # And the instant it is measured from is itself the audio
+            # peak less a guessed lag, so "a fifth of a second before
+            # it" was never enough margin for the thing it is meant
+            # to bracket.
+            before_sec=ASCENT_DEPART_BEFORE_SEC)
         out["measured_ball"] = (_dep.get("spot")
                                 or (_addr or {}).get("spot"))
-        out["measured_impact_frame"] = _dep.get("impact_frame")
+        # ── SPLIT THE DIFFERENCE, AND ONLY WHEN WE SAW BOTH ─────────
+        #
+        # The watch reports the first frame the ball's pixel is EMPTY,
+        # which is the first frame we can prove it had gone -- not the
+        # frame it went. The last frame it was still there is the
+        # other bound, and the strike is between them. The midpoint is
+        # the conservative reading and it is what the operator asked
+        # for: "split the difference between the last frame the ball
+        # is present and the first frame the ball is gone".
+        #
+        # NOTHING SEEN MEANS NOTHING MEASURED. If the watch never saw
+        # the ball present, its "gone at" is the first frame of its
+        # own window and says nothing about the strike. Reporting it
+        # as a measurement is how f797 came to beat a correct
+        # estimate -- so it is refused, with the reason, and the
+        # chain's own run back stands instead.
+        _gone = _dep.get("impact_frame")
+        _last = _dep.get("last_seen")
+        if _gone is not None and _last is not None and _last < _gone:
+            out["measured_impact_frame"] = int((int(_last) + int(_gone))
+                                               // 2)
+            out["measured_impact_seen"] = int(_last)
+            out["measured_impact_gone"] = int(_gone)
+            out["measured_impact_how"] = (
+                "halfway between the last frame the ball was there "
+                "(f%d) and the first frame it was gone (f%d)"
+                % (int(_last), int(_gone)))
+        elif _gone is not None and _last is None:
+            out["measured_impact_frame"] = None
+            out["measured_impact_how"] = (
+                "NOT measured: the watch never saw the ball present, "
+                "so its first empty frame (f%d) is only where it "
+                "started looking" % int(_gone))
+        else:
+            out["measured_impact_frame"] = _gone
         # ── THE WINDOW IT WAS ALLOWED TO LOOK IN ────────────────────
         #
         # `ball_departure` searches `at_sec` minus `before_sec` to plus
@@ -30712,7 +30762,8 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
             log.debug("ai launch: no tile bracket (%s)", _bx2)
         try:
             _dw_fps = float(_fps or 60.0)
-            _dw_lo = int((float(_rig["sec"]) - 0.2) * _dw_fps)
+            _dw_lo = int((float(_rig["sec"])
+                          - ASCENT_DEPART_BEFORE_SEC) * _dw_fps)
             _dw_hi = int((float(_rig["sec"]) + 0.5) * _dw_fps)
             out["measured_window"] = [max(0, _dw_lo), _dw_hi]
             out["measured_checked"] = _dep.get("checked")
@@ -30884,6 +30935,17 @@ def _point_to_segment_px(px, py, ax, ay, bx, by) -> float:
     return math.hypot(px - (ax + _t * _dx), py - (ay + _t * _dy))
 
 
+# How far before the strike the departure watch starts.
+# Wide enough to see the ball STILL THERE first: without
+# that there is no 'last seen' to split the difference
+# with, and its answer is just where it began.
+ASCENT_DEPART_BEFORE_SEC = 0.6
+
+# How many frames before the chain's foot to search for the
+# climb. A WINDOW, not the gap to the strike: it must not
+# depend on the number it is helping to correct.
+ASCENT_CLIMB_FILL_FRAMES = 40
+
 ASCENT_CLIMB_FILL_MAX_FRAMES = 60
 
 
@@ -30935,6 +30997,19 @@ def _fill_climb_to_ball(rep, src_path, sweep, clip_index, fps):
             out["why"] = "the chain has no points"
             return out
         _foot = min(_pts, key=lambda q: int(q["frame"]))
+        # ── HOW FAR BACK TO LOOK ────────────────────────────────
+        #
+        # Was exactly the gap between the strike and the chain's
+        # foot, which assumed the strike was right. It was eight
+        # frames late, so the search began eight frames after the
+        # ball had already left and the first part of the flight --
+        # the part this exists to find -- was outside it before it
+        # started. The operator asked for 40 frames rather than 26,
+        # and the reason it is a window rather than a gap is that it
+        # must not depend on the number it is helping to correct.
+        _look_from = min(int(_imp),
+                         int(_foot["frame"]) - ASCENT_CLIMB_FILL_FRAMES)
+        _look_from = max(0, _look_from)
         _gap = int(_foot["frame"]) - int(_imp)
         if _gap <= 1:
             out["why"] = ("the chain already starts at the strike, so "
@@ -30948,19 +31023,25 @@ def _fill_climb_to_ball(rep, src_path, sweep, clip_index, fps):
                           "too far to treat as one flight" % _gap)
             return out
         from ..services import debug3 as _fd3
-        _seed = [{"frame": int(_imp), "x": int(_rest["x"]),
+        # SEEDED AT THE START OF THE WINDOW, not at the strike. The
+        # ball is sitting still before it is hit, so anchoring the
+        # segment a little earlier costs nothing and lets the search
+        # cover frames the strike estimate had excluded.
+        _seed = [{"frame": int(_look_from), "x": int(_rest["x"]),
                   "y": int(_rest["y"])}] + sorted(
                       _pts, key=lambda q: int(q["frame"]))
+        _span = int(_foot["frame"]) - int(_look_from)
         _budget = [int(_fd3.ASCENT_FILL_MAX_HOLES)]
         _got = _fd3.fill_chain_holes(
-            src_path, _seed, _gap + 2,
+            src_path, _seed, _span + 2,
             sens=int((sweep or {}).get("sens") or 3),
             budget=_budget) or []
         # ONLY WHAT IS IN THE GAP. `fill_chain_holes` is handed the
         # whole chain so it can see both sides of the hole, and it
         # returns the chain's own points along with anything new.
         _new = [q for q in _got
-                if int(_imp) < int(q["frame"]) < int(_foot["frame"])]
+                if int(_look_from) <= int(q["frame"]) < int(_foot["frame"])
+                and int(q["frame"]) != int(_look_from)]
         # Handed to the corridor merge as the climb, with the ball
         # itself still first so the line is anchored on it.
         _ai["points"] = ([{"frame": int(_imp), "x": int(_rest["x"]),
@@ -30971,10 +31052,12 @@ def _fill_climb_to_ball(rep, src_path, sweep, clip_index, fps):
                     "gap_frames": _gap,
                     "from_frame": int(_imp),
                     "to_frame": int(_foot["frame"]),
+                    "looked_from": int(_look_from),
                     "why": ("looked for the ball in the %d frame(s) "
-                            "between the strike and the chain's first "
-                            "point, and found %d"
-                            % (_gap - 1, len(_new)))})
+                            "before the chain's first point (from f%d, "
+                            "with the strike put at f%d), and found %d"
+                            % (int(_foot["frame"]) - int(_look_from),
+                               int(_look_from), int(_imp), len(_new)))})
         log.info("climb fill: f%d..f%d, %d point(s) found",
                  int(_imp), int(_foot["frame"]), len(_new))
         return out
