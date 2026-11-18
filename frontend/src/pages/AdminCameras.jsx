@@ -241,7 +241,25 @@ export default function AdminCameras() {
     try {
       setCams(await api.listCameras(adminPassword));
     } catch (e) {
-      setErr(e?.message || String(e));
+      const msg = e?.message || String(e);
+      // A REJECTED PASSWORD HAS TO DROP BACK TO THE PROMPT. The form
+      // below is shown only when `adminPassword` is empty, and a
+      // stored-but-wrong password is not empty -- so a 401 left this
+      // page showing the error over a "Loading…" that never resolved,
+      // with no way to type a new one. sessionStorage survives reload
+      // and navigation, so it could not be escaped except by closing
+      // the tab.
+      //
+      // ONLY a 401, for the reason Admin.jsx records: a cold start, a
+      // timeout and a 502 all land here too, and signing out on those
+      // is what "it keeps logging me out" was.
+      if (/(^|\D)401(\D|$)/.test(msg)) {
+        sessionStorage.removeItem("adminPassword");
+        setAdminPassword("");
+        setErr("That admin password was rejected — try again.");
+        return;
+      }
+      setErr(msg);
     }
   }, [adminPassword]);
 
@@ -298,6 +316,12 @@ export default function AdminCameras() {
       <div className="wrap">
         <Brand />
         <h2>Cameras</h2>
+        {err && <p className="small err-text">{err}</p>}
+        {/* This page keeps its own password, in sessionStorage under
+            "adminPassword" -- NOT the dashboard's localStorage
+            "golfreelz.adminPassword". Signing in on /admin therefore
+            does nothing here, which is worth knowing before concluding
+            the page is broken. */}
         <form onSubmit={(e) => {
           e.preventDefault();
           const v = new FormData(e.target).get("pw");
@@ -338,7 +362,7 @@ export default function AdminCameras() {
       {err && <div className="err-text" style={{ marginTop: 8 }}>{err}</div>}
       {note && <div className="tiny" style={{ marginTop: 8 }}>{note}</div>}
 
-      {cams === null && <p className="muted">Loading…</p>}
+      {cams === null && !err && <p className="muted">Loading…</p>}
       {cams !== null && rows.length === 0 && (
         <p className="muted">
           {q ? "No camera matches that." : "No cameras registered yet."}
