@@ -11062,6 +11062,20 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                     {rep.ai_launch.measured_impact_how}
                   </div>
                 )}
+                {/* WHAT BRACKETED IT. The window the watch is allowed
+                    to look in comes from these two tiles, and when no
+                    bracket forms the watch falls back to a default
+                    fifth of a second -- which is the window that
+                    reported f797. So whether there was a bracket at
+                    all is the first thing to read here. */}
+                {rep.ai_launch.tile_bracket_why && (
+                  <div className="muted" style={{ marginTop: 2 }}>
+                    bracket: {rep.ai_launch.tile_bracket_why}
+                    {!rep.ai_launch.tile_bracket && (
+                      <> — so the watch used its default window</>
+                    )}
+                  </div>
+                )}
                 {rep.ai_launch.measured_impact_unclamped != null && (
                   <div style={{ color: "#b45309" }}>
                     The frame-by-frame watch said f
@@ -11100,6 +11114,20 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                     the climb below the skyline: {rep.climb_fill.why}
                     {" "}(f{rep.climb_fill.from_frame}–f
                     {rep.climb_fill.to_frame})
+                    {/* WHERE THE SEARCH STARTED decides whether what
+                        comes back is flight or downswing: a frame too
+                        early and the only moving thing near the ball
+                        is the club. Twice now the plotted path has
+                        been wrong because of this one number and it
+                        was not on the panel either time. */}
+                    {rep.climb_fill.look_floor != null && (
+                      <div style={{ marginTop: 2 }}>
+                        looked back no further than f
+                        {rep.climb_fill.look_floor}
+                        {rep.climb_fill.look_floor_from
+                          && <> — {rep.climb_fill.look_floor_from}</>}
+                      </div>
+                    )}
                   </div>
                 )}
                 {rep.climb_fill && !rep.climb_fill.ran

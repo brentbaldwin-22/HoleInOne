@@ -30059,6 +30059,123 @@ def _kept_swing_analysis(db, row) -> dict | None:
         return None
 
 
+# How far apart a tile's detection may sit from the ball's
+# address spot and still count as the same ball. The address
+# check itself clusters within ADDRESS_JITTER_PX (4px); a tile
+# is a fifth of a second away, so it gets more room -- but not
+# so much that a divot or a shoe two feet away counts.
+ASCENT_TILE_SAME_BALL_PX = 24.0
+
+
+def _tile_bracket(addr):
+    """The last tile the ball was ON and the first it was GONE from.
+
+    THE SERVICE ALREADY ANSWERS THIS, and better than re-deriving it
+    here. `ball_at_address` clusters the detections, hands them to
+    `classify_balls` to find the one that actually LEFT -- which is
+    the whole difficulty, since the tee, the divot and the shadow
+    stay bright after the ball has gone -- and then `_lag_from` takes
+    "the last tile holding it and the first tile without it", in its
+    own words, and publishes the tiles it was seen on as `seen_at`.
+
+    So the bracket is read off `seen_at`, not recomputed. The first
+    tile AFTER the last sighting that could be READ is the gone bound.
+
+    WHY NOT `in_rule`, which reads like the field for exactly this:
+    the service sets it to `_d is not None and _role != "strike"`, so
+    it means "did this frame get a vote in the two-of-three rule". It
+    is True on every readable non-strike tile whether the ball was
+    there or not, and False on the strike tile for a structural
+    reason. On the six usual offsets that is True True True False
+    True True -- a bracket built on it lands on the strike tile by
+    luck, or never closes, and then the watch falls back to its
+    default fifth of a second. That window is where f797 came from: a
+    frame that was only where we began looking.
+
+    AN UNREADABLE TILE IS UNKNOWN, NOT EMPTY. A frame nobody could
+    decode is no evidence the ball had left, so it cannot be the
+    `gone` bound, though a readable tile after it still can.
+
+    A BALL THAT NEVER LEFT HAS NO BRACKET. `state` says which
+    happened; only a disappearance brackets a strike.
+
+    Returns (seen_at, gone_at, why) in seconds relative to the same
+    instant the offsets are, with either bound None when there isn't
+    one, and `why` a sentence for the panel.
+    """
+    _a = addr or {}
+    _st = _a.get("state")
+    if _st and _st != "BALL_PRESENT_DISAPPEARED":
+        return (None, None,
+                "no tile brackets the strike: the address check came "
+                "back %s" % _st)
+    try:
+        _tiles = sorted(
+            (_t for _t in (_a.get("frames") or [])
+             if _t.get("at") is not None),
+            key=lambda _t: float(_t["at"]))
+    except (TypeError, ValueError, KeyError) as _exc:
+        return None, None, "the tiles could not be read (%s)" % (_exc,)
+    if not _tiles:
+        return None, None, "no tiles were judged"
+
+    # ── THE SIGHTINGS THE SERVICE ALREADY FOUND ─────────────────────
+    _seen = None
+    _how = "the tiles the address check saw the ball on"
+    try:
+        _sa = [float(_v) for _v in (_a.get("seen_at") or [])]
+        if _sa:
+            _seen = max(_sa)
+    except (TypeError, ValueError):
+        _seen = None
+    if _seen is None:
+        # FALLBACK: ask the tiles directly whether a detection sat at
+        # the ball's spot. Only needed when the service could not
+        # imply a lag -- no offsets, or nothing readable after the
+        # last sighting.
+        _spot = _a.get("spot")
+        if not _spot or len(_spot) < 2:
+            return (None, None,
+                    "no address spot and no sightings, so no tile can "
+                    "be asked whether the ball was on it")
+        _how = "the tiles with a detection at the ball's own spot"
+        for _t in _tiles:
+            if not _t.get("read"):
+                continue
+            for _s in (_t.get("spots") or []):
+                try:
+                    if ((float(_s[0]) - float(_spot[0])) ** 2
+                            + (float(_s[1]) - float(_spot[1])) ** 2
+                            <= ASCENT_TILE_SAME_BALL_PX ** 2):
+                        _seen = float(_t["at"])
+                        break
+                except (TypeError, ValueError, IndexError):
+                    continue
+    if _seen is None:
+        return (None, None,
+                "the ball was not found at its own spot on any tile")
+
+    # ── THE FIRST READABLE TILE AFTER IT ────────────────────────────
+    _gone = None
+    for _t in _tiles:
+        try:
+            if float(_t["at"]) <= _seen:
+                continue
+        except (TypeError, ValueError):
+            continue
+        if not _t.get("read"):
+            continue             # unknown, not empty
+        _gone = float(_t["at"])
+        break
+    if _gone is None:
+        return (_seen, None,
+                "the ball was still at its spot on the last readable "
+                "tile (%+.2fs), so no tile brackets it" % _seen)
+    return (_seen, _gone,
+            "the ball was there at %+.2fs and gone by %+.2fs, from %s"
+            % (_seen, _gone, _how))
+
+
 def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
     """The golfer, the ball at their feet, and the frame it left.
 
@@ -30634,6 +30751,48 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
     _lap("the ball at address")
     try:
         from ..services.ball_vanish import ball_departure
+        # ── THE TILES BRACKET THE STRIKE; THE WATCH LOOKS INSIDE ────
+        #
+        # THE REGRESSION THIS FIXES, and it was mine. Widening the
+        # watch to 0.6s before the strike was meant to let it see the
+        # ball still sitting there. It also let it see the DOWNSWING:
+        # `ball_departure` reports the first frame the ball's pixel is
+        # EMPTY, and a club crossing that pixel empties it. So the
+        # watch fired on the club and produce came back with f773
+        # against a real strike at f789 -- sixteen frames, which is
+        # about a downswing.
+        #
+        # The six tiles already bracket it and cannot be fooled this
+        # way: the ball is THERE on one tile and GONE on the next, and
+        # the strike is between them. So the watch is given that
+        # interval and nothing outside it. Before the first tile is
+        # the swing; after the second the ball is long gone.
+        _tile_seen, _tile_gone, _tile_why = _tile_bracket(_addr)
+        out["tile_bracket"] = (None if _tile_seen is None
+                               or _tile_gone is None else
+                               [_tile_seen, _tile_gone])
+        out["tile_bracket_why"] = _tile_why
+        # ONE ANSWER TO "IS THERE A BRACKET", so the window searched
+        # and the fallback midpoint can never disagree about it.
+        _braced = (_tile_seen is not None and _tile_gone is not None
+                   and _tile_gone > _tile_seen)
+        if _braced:
+            _dep_before = max(0.0, -float(_tile_seen))
+            # A LITTLE PAST THE GONE TILE, because the watch needs a
+            # frame or two of empty to call it empty at all.
+            #
+            # THIS IS OFTEN NEGATIVE, and that is correct. The strike
+            # is usually BEFORE the audio peak the offsets are
+            # measured from -- on the swing this was built for the
+            # ball is gone by -0.20s -- so the window ends before the
+            # instant it is anchored to. `ball_departure` takes
+            # `at_sec + after_sec` as its last frame, so a negative
+            # value simply puts the end earlier, and the window is
+            # still non-empty because `_braced` guarantees
+            # `_tile_gone > _tile_seen` and so `f_hi > f_lo`.
+            _dep_after = float(_tile_gone) + 0.10
+        else:
+            _dep_before, _dep_after = 0.2, 0.5
         _dep = ball_departure(
             src_path, float(_rig["sec"]),
             # HANDED THE SPOT, so it skips finding one. That half of
@@ -30664,7 +30823,7 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
             # peak less a guessed lag, so "a fifth of a second before
             # it" was never enough margin for the thing it is meant
             # to bracket.
-            before_sec=ASCENT_DEPART_BEFORE_SEC)
+            before_sec=_dep_before, after_sec=_dep_after)
         out["measured_ball"] = (_dep.get("spot")
                                 or (_addr or {}).get("spot"))
         # ── SPLIT THE DIFFERENCE, AND ONLY WHEN WE SAW BOTH ─────────
@@ -30694,6 +30853,21 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
                 "halfway between the last frame the ball was there "
                 "(f%d) and the first frame it was gone (f%d)"
                 % (int(_last), int(_gone)))
+        elif _braced:
+            # THE TILES ALONE, WHICH IS STILL A MEASUREMENT. Coarser
+            # -- they are 0.2s apart -- but they are two frames the
+            # ball was observed on either side of, which is exactly
+            # what the midpoint asks for.
+            _fs = int((float(_rig["sec"]) + _tile_seen) * float(_fps))
+            _fg = int((float(_rig["sec"]) + _tile_gone) * float(_fps))
+            out["measured_impact_frame"] = int((_fs + _fg) // 2)
+            out["measured_impact_seen"] = _fs
+            out["measured_impact_gone"] = _fg
+            out["measured_impact_how"] = (
+                "halfway between the last tile the ball was on (f%d) "
+                "and the first it was gone from (f%d) — the "
+                "frame-by-frame watch could not refine it"
+                % (_fs, _fg))
         elif _gone is not None and _last is None:
             out["measured_impact_frame"] = None
             out["measured_impact_how"] = (
@@ -30731,18 +30905,16 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
         # tiles set the bound and the watch refines within it. It can
         # only ever pull the frame EARLIER, which is the harmless
         # direction -- it is where the tracer's line begins.
+        #
+        # THE SAME BRACKET THE WINDOW WAS BUILT FROM. This was a
+        # second copy of the loop, and like the first it asked
+        # `in_rule` -- so the sentence it put on the panel, "the ball
+        # was still there at X and gone by Y", was not what it had
+        # measured. Two brackets that can disagree about one instant
+        # is one bracket too many.
         try:
-            _tiles = (_addr or {}).get("frames") or []
-            _seen_at = None
-            _gone_at = None
-            for _t in _tiles:
-                if _t.get("at") is None:
-                    continue
-                if _t.get("in_rule"):
-                    _seen_at = float(_t["at"])
-                elif _seen_at is not None and _gone_at is None:
-                    _gone_at = float(_t["at"])
-            if _gone_at is not None:
+            _seen_at, _gone_at = _tile_seen, _tile_gone
+            if _gone_at is not None and _seen_at is not None:
                 _bound = int((float(_rig["sec"]) + _gone_at)
                              * float(_fps or 60.0))
                 out["measured_impact_bound"] = _bound
@@ -30762,9 +30934,8 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
             log.debug("ai launch: no tile bracket (%s)", _bx2)
         try:
             _dw_fps = float(_fps or 60.0)
-            _dw_lo = int((float(_rig["sec"])
-                          - ASCENT_DEPART_BEFORE_SEC) * _dw_fps)
-            _dw_hi = int((float(_rig["sec"]) + 0.5) * _dw_fps)
+            _dw_lo = int((float(_rig["sec"]) - _dep_before) * _dw_fps)
+            _dw_hi = int((float(_rig["sec"]) + _dep_after) * _dw_fps)
             out["measured_window"] = [max(0, _dw_lo), _dw_hi]
             out["measured_checked"] = _dep.get("checked")
             out["measured_last_seen"] = _dep.get("last_seen")
@@ -30935,12 +31106,6 @@ def _point_to_segment_px(px, py, ax, ay, bx, by) -> float:
     return math.hypot(px - (ax + _t * _dx), py - (ay + _t * _dy))
 
 
-# How far before the strike the departure watch starts.
-# Wide enough to see the ball STILL THERE first: without
-# that there is no 'last seen' to split the difference
-# with, and its answer is just where it began.
-ASCENT_DEPART_BEFORE_SEC = 0.6
-
 # How many frames before the chain's foot to search for the
 # climb. A WINDOW, not the gap to the strike: it must not
 # depend on the number it is helping to correct.
@@ -31007,7 +31172,36 @@ def _fill_climb_to_ball(rep, src_path, sweep, clip_index, fps):
         # started. The operator asked for 40 frames rather than 26,
         # and the reason it is a window rather than a gap is that it
         # must not depend on the number it is helping to correct.
-        _look_from = min(int(_imp),
+        # NEVER BEFORE THE BALL WAS LAST SEEN SITTING THERE. Earlier
+        # than that the ball has not moved and the only thing crossing
+        # it is the club, so a two-frame pass there returns the
+        # DOWNSWING -- which is what put twenty points on the last
+        # produce and made the path "all over the place".
+        #
+        # But the floor is not the strike estimate either. That
+        # estimate is a MIDPOINT between the last frame the ball was
+        # there and the first it was gone, so by construction it can
+        # sit after the ball actually left -- and flooring the search
+        # at it would exclude the earliest flight frames all over
+        # again, which is the eight-frame error this exists to
+        # correct. `measured_impact_seen` is the frame the ball was
+        # OBSERVED still at rest: the ball cannot have left before it,
+        # and the club has not reached it yet. That is the one bound
+        # that is wrong in neither direction.
+        #
+        # 40 frames is a CEILING on how far back to look, not a
+        # licence to look before the ball moved.
+        _floor = _ai.get("measured_impact_seen")
+        if _floor is None:
+            _floor = _imp
+        out["look_floor"] = int(_floor)
+        out["look_floor_from"] = ("the frame the ball was last seen at rest"
+                                  if _ai.get("measured_impact_seen")
+                                  is not None else
+                                  "the strike estimate (the ball was never "
+                                  "seen at rest, so there is no better "
+                                  "floor)")
+        _look_from = max(int(_floor),
                          int(_foot["frame"]) - ASCENT_CLIMB_FILL_FRAMES)
         _look_from = max(0, _look_from)
         _gap = int(_foot["frame"]) - int(_imp)

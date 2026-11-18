@@ -42,9 +42,20 @@ _j = src.index("\ndef ", _i + 10)
 stage1 = src[_i:_j]
 
 print("stage 1 derives a bound from the tiles:")
-check("it reads the per-tile results", '"frames") or []' in stage1)
-check("  using whether the ball was in the rule on each",
-      '_t.get("in_rule")' in stage1)
+# THIS TEST HELD THE BUG IN PLACE. It used to require the clamp to
+# read `_t.get("in_rule")` -- which is not "the ball was on this
+# tile" but "this tile got a vote in the two-of-three rule", True on
+# every readable non-strike tile. So the sentence the clamp put on
+# the panel, "the ball was still there at X and gone by Y", was not
+# what it had measured, and a test asserted that it stay that way.
+#
+# A second copy of the same loop lived here too, so two brackets
+# could disagree about one instant. Both now come from _tile_bracket,
+# which is tested on its own behaviour in tools/tile_bracket_test.py.
+check("the clamp uses the one bracket, not its own copy",
+      "_seen_at, _gone_at = _tile_seen, _tile_gone" in stage1)
+check("  so there is no second loop over the tiles",
+      '"frames") or []' in stage1, False)
 check("  and records the bound it derived",
       '"measured_impact_bound"' in stage1)
 check("  with the two tiles it came from",
@@ -104,16 +115,46 @@ print("all ok — the tiles bound it, the watch refines it")
 # less a guessed lag, so a fifth of a second was never enough margin
 # for the thing it is meant to bracket.
 print()
-print("the departure watch starts well before the strike:")
-check("the margin is a named constant",
-      "ASCENT_DEPART_BEFORE_SEC" in src)
-check("  wide enough to see the ball still there",
-      float(re.search(r"ASCENT_DEPART_BEFORE_SEC = ([\d.]+)",
-                      src).group(1)) >= 0.5)
+print("the watch is bounded by the tiles, not by a fixed margin:")
+# A FIXED MARGIN CANNOT WORK IN EITHER DIRECTION. Too narrow and the
+# window starts after the ball has gone, so the first frame it looks
+# at reads as the impact (f797 against a real f789). Too wide and it
+# reaches into the DOWNSWING, where the club crossing the ball's pixel
+# empties it just as leaving does (f773 against the same f789). Only
+# the tiles bracket the strike without being fooled by either.
+check("the window comes from the tile bracket",
+      "_dep_before = max(0.0, -float(_tile_seen))" in src)
 check("  and the watch is given it",
-      "before_sec=ASCENT_DEPART_BEFORE_SEC" in src)
-check("  and the window reported matches the one searched",
-      "- ASCENT_DEPART_BEFORE_SEC) * _dw_fps" in src)
+      "before_sec=_dep_before, after_sec=_dep_after" in src)
+check("  with a fallback when there is no bracket",
+      "_dep_before, _dep_after = 0.2, 0.5" in src)
+check("  and the window reported is the one searched",
+      "- _dep_before) * _dw_fps" in src)
+check("no fixed pre-strike margin survives",
+      "ASCENT_DEPART_BEFORE_SEC" in src, False)
+
+print()
+print("the bracket is a named thing, tested on its own:")
+# WHAT IT IS BUILT ON is the whole question -- `in_rule` reads like
+# "this tile saw the ball" and means "this tile got a vote in the
+# two-of-three rule", True on every readable non-strike tile. A
+# bracket on that never closes, the watch falls back to its default
+# fifth of a second, and that window is where f797 came from.
+#
+# That is a behaviour, not a string, so it lives in its own test:
+#   python3 tools/tile_bracket_test.py
+check("the bracket is its own function, so it can be tested",
+      "def _tile_bracket(addr):" in src)
+check("  and it is not built on `in_rule`",
+      '_t.get("in_rule")' in src, False)
+check("  it asks whether a detection sat at the ball's spot",
+      "ASCENT_TILE_SAME_BALL_PX" in src)
+check("  gone must come after seen",
+      "_tile_gone > _tile_seen" in src)
+check("  decided once, so window and fallback agree",
+      src.count("_braced") >= 3)
+check("  and its reasoning reaches the report",
+      'out["tile_bracket_why"]' in src)
 
 print()
 print("the strike is split between seen and gone, as asked:")
