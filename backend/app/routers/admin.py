@@ -27912,6 +27912,13 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     if _ci is None:
         _ci, _ci_why = _match_swing_to_measurement(rep, fps)
     rep["ai_launch_match"] = {"clip_index": _ci, "why": _ci_why}
+    # ── AND THE CLIMB NOTHING SEARCHED ─────────────────────────────
+    #
+    # Between the strike and the chain's first point is the part of
+    # the flight below the skyline, where the band does not look. The
+    # merge below can only place points it is given, and stage 1 gives
+    # it one -- the ball. This goes and finds the rest.
+    rep["climb_fill"] = _fill_climb_to_ball(rep, src_path, sweep, _ci, fps)
     rep["ai_launch_merge"] = _ascent_apply_ai_launch(rep, _ci)
     _n_spot = sum(1 for c in rep["clips"] if c.get("ball"))
     _stage(3, "Tee spot and impact frame",
@@ -30875,6 +30882,106 @@ def _point_to_segment_px(px, py, ax, ay, bx, by) -> float:
         return math.hypot(px - ax, py - ay)
     _t = max(0.0, min(1.0, ((px - ax) * _dx + (py - ay) * _dy) / _len2))
     return math.hypot(px - (ax + _t * _dx), py - (ay + _t * _dy))
+
+
+ASCENT_CLIMB_FILL_MAX_FRAMES = 60
+
+
+def _fill_climb_to_ball(rep, src_path, sweep, clip_index, fps):
+    """Look for the ball between where it was struck and where the
+    chain picks it up.
+
+    THE HOLE THE TRACER DRAWS THROUGH. The band is floored at the
+    skyline, so the first part of every flight happens where nothing
+    is searched -- and on the swing that prompted this the ball is
+    struck at f797, crosses the skyline around f800, and the chain's
+    own first point is f824. The produce drew five points: the ball
+    at f797, then 824, 825, 827, 832. Twenty-seven frames with
+    nothing in them, which the tracer crosses in one straight jump
+    and which reads as a delay. Plotted by hand the same flight gives
+    six points between f792 and f798 -- they are there, nothing had
+    looked.
+
+    `fill_chain_holes` already does exactly this job for holes INSIDE
+    a chain: take the two points either side, crop to the segment
+    between them plus a pad, and run a two-frame pass over just those
+    frames. The ball at rest and the chain's foot ARE two points
+    either side of a hole; it has simply never been asked.
+
+    So this asks it, and hands what comes back to the corridor merge
+    that already exists -- which keeps only what lies on the line
+    from the ball to the chain's foot, and records every refusal with
+    its distance.
+
+    Never raises: a tracer that starts late is worse than one that
+    starts late and had a go at not doing so.
+    """
+    out = {"ran": False, "n_found": 0, "why": None}
+    try:
+        _ai = rep.get("ai_launch") or {}
+        _rest = _ai.get("rest")
+        _imp = _ai.get("measured_impact_frame")
+        if _imp is None:
+            _imp = _ai.get("impact_frame")
+        _asc = rep.get("ascents") or []
+        if not _rest or _imp is None or clip_index is None:
+            out["why"] = "no measured ball and impact frame to climb from"
+            return out
+        if not (0 <= clip_index < len(_asc)):
+            out["why"] = "no chain on this swing to climb up to"
+            return out
+        _pts = list(_asc[clip_index].get("points") or [])
+        if not _pts:
+            out["why"] = "the chain has no points"
+            return out
+        _foot = min(_pts, key=lambda q: int(q["frame"]))
+        _gap = int(_foot["frame"]) - int(_imp)
+        if _gap <= 1:
+            out["why"] = ("the chain already starts at the strike, so "
+                          "there is no climb to fill")
+            return out
+        if _gap > ASCENT_CLIMB_FILL_MAX_FRAMES:
+            # A HOLE THIS BIG IS NOT A HOLE. Past a second the chain
+            # is most likely not this ball at all, and filling toward
+            # it would draw a line between two different things.
+            out["why"] = ("the chain starts %d frames after the strike, "
+                          "too far to treat as one flight" % _gap)
+            return out
+        from ..services import debug3 as _fd3
+        _seed = [{"frame": int(_imp), "x": int(_rest["x"]),
+                  "y": int(_rest["y"])}] + sorted(
+                      _pts, key=lambda q: int(q["frame"]))
+        _budget = [int(_fd3.ASCENT_FILL_MAX_HOLES)]
+        _got = _fd3.fill_chain_holes(
+            src_path, _seed, _gap + 2,
+            sens=int((sweep or {}).get("sens") or 3),
+            budget=_budget) or []
+        # ONLY WHAT IS IN THE GAP. `fill_chain_holes` is handed the
+        # whole chain so it can see both sides of the hole, and it
+        # returns the chain's own points along with anything new.
+        _new = [q for q in _got
+                if int(_imp) < int(q["frame"]) < int(_foot["frame"])]
+        # Handed to the corridor merge as the climb, with the ball
+        # itself still first so the line is anchored on it.
+        _ai["points"] = ([{"frame": int(_imp), "x": int(_rest["x"]),
+                           "y": int(_rest["y"])}]
+                         + sorted(_new, key=lambda q: int(q["frame"])))
+        _ai["n_points"] = len(_ai["points"])
+        out.update({"ran": True, "n_found": len(_new),
+                    "gap_frames": _gap,
+                    "from_frame": int(_imp),
+                    "to_frame": int(_foot["frame"]),
+                    "why": ("looked for the ball in the %d frame(s) "
+                            "between the strike and the chain's first "
+                            "point, and found %d"
+                            % (_gap - 1, len(_new)))})
+        log.info("climb fill: f%d..f%d, %d point(s) found",
+                 int(_imp), int(_foot["frame"]), len(_new))
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.warning("climb fill failed: %s", exc, exc_info=True)
+        out["why"] = "%s: %s" % (type(exc).__name__, exc)
+        return out
 
 
 def _match_swing_to_measurement(rep, fps, within_sec=1.5):

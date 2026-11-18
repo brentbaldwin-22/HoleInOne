@@ -11079,6 +11079,25 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
                     {rep.ai_launch_merge.impact_moved_frames} frame(s)
                     onto it</>
                 )}
+                {/* THE CLIMB BELOW THE BAND. The tracer jumping from
+                    the ball to the chain's first point is the whole
+                    visible symptom, so how many frames that jump
+                    spans -- and how many of them were filled -- is
+                    the number to read. */}
+                {rep.climb_fill?.ran && (
+                  <div className="muted">
+                    the climb below the skyline: {rep.climb_fill.why}
+                    {" "}(f{rep.climb_fill.from_frame}–f
+                    {rep.climb_fill.to_frame})
+                  </div>
+                )}
+                {rep.climb_fill && !rep.climb_fill.ran
+                  && rep.climb_fill.why && (
+                  <div className="muted">
+                    the climb below the skyline was not filled:{" "}
+                    {rep.climb_fill.why}
+                  </div>
+                )}
                 {rep.ai_launch_match?.why && (
                   <div className="muted">
                     {rep.ai_launch_match.clip_index == null
