@@ -189,6 +189,32 @@ def shot_window(tee_time, hole_number):
     return centre - spread, centre + spread
 
 
+# The shirt read off a registration selfie, keyed by its path.
+#
+# MEMOISED IN PROCESS, not stored. Building a Pose costs about a second
+# and a day's roster is a handful of photos, so recomputing on every
+# page load would be felt; but a selfie never changes, so a restart
+# losing the cache costs one slow load and nothing else. That is a
+# better trade than a migration for a column whose value can always be
+# derived again.
+_SELFIE_SHIRT: dict = {}
+
+
+def selfie_shirt(selfie_path):
+    """(family, confidence) for a registration photo."""
+    if not selfie_path:
+        return None, 0.0
+    key = str(selfie_path)
+    if key not in _SELFIE_SHIRT:
+        from pathlib import Path
+
+        from ..config import settings
+        from . import torso
+        root = Path(__file__).resolve().parents[2] / settings.upload_dir
+        _SELFIE_SHIRT[key] = torso.shirt_of_file(root / key)
+    return _SELFIE_SHIRT[key]
+
+
 def _player_row(p: Participant, assigned: int, par3s=()) -> dict:
     return {
         "id": p.id,
@@ -200,6 +226,11 @@ def _player_row(p: Participant, assigned: int, par3s=()) -> dict:
         "email": p.email,
         "tee_time": p.tee_time.starts_at if p.tee_time else None,
         "assigned": assigned,
+        # The shirt in their registration photo, for narrowing the grid
+        # further. None when pose found no clear torso, which the
+        # console must read as "no opinion" rather than "no match".
+        "shirt": (_sh := selfie_shirt(p.selfie_path))[0],
+        "shirt_conf": round(_sh[1], 3) if _sh[0] else None,
         # One window per par 3, so the console can narrow the grid the
         # moment a player is picked without a round trip per hole.
         # Absent when there is no tee time to reason from, which the

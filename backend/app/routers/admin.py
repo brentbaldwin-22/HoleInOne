@@ -1344,12 +1344,41 @@ def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_
         raise HTTPException(404, f"source file {src_name} not found")
     src_path = CLIPS_DIR / src_name
 
+    # THE SHIRT IS READ ONCE AND KEPT. Player ID narrows the grid by
+    # it, so it has to come back on a cache hit as well -- and a cache
+    # hit is the common case, the whole point of the file being there.
+    # Re-reading would mean decoding the video again for a colour we
+    # already knew. It lives on tracer_diagnostics, the JSON column
+    # that already carries the per-clip vision findings.
+    _shirt = ((clip.tracer_diagnostics or {}).get("shirt") or {})
+
     out_path = CLIPS_DIR / shot_still.still_name(src_path.stem)
+    # A STILL FROM BEFORE THE SHIRT WAS READ. Every one on disk predates
+    # this, and falling through to a re-render would decode the video
+    # and re-scan the tracer for all of them -- minutes of work for a
+    # colour. The still itself is already the crop that reading wants,
+    # so read it off the JPEG and keep it.
+    if out_path.exists() and not force and not _shirt:
+        try:
+            from ..services import torso as _torso
+            _f, _c = _torso.shirt_of_file(out_path)
+            if _f:
+                clip.tracer_diagnostics = {
+                    **(clip.tracer_diagnostics or {}),
+                    "shirt": {"family": _f, "conf": round(float(_c), 3)},
+                }
+                db.commit()
+                _shirt = {"family": _f, "conf": round(float(_c), 3)}
+        except Exception as _exc:  # noqa: BLE001
+            log.warning("clip %s: shirt backfill failed: %s", clip.id, _exc)
+
     if out_path.exists() and not force:
         return {
             "clip_id": clip.id,
             "still_url": f"{settings.app_base_url}/uploads/clips/{out_path.name}"
                          f"?v={int(out_path.stat().st_mtime)}",
+            "shirt": _shirt.get("family"),
+            "shirt_conf": _shirt.get("conf"),
             "cached": True,
         }
 
@@ -1440,6 +1469,26 @@ def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_
     fh, fw = frame.shape[:2]
     x, y, w, h = shot_still.crop_box(fw, fh, focus, focus_y)
     crop = frame[y:y + h, x:x + w]
+
+    # WHAT COLOUR SHIRT, off this crop rather than the whole frame.
+    # Pose wants the person to be most of the picture; on a 1920 tee
+    # view the golfer is a figure a hundred pixels tall and the
+    # landmarks are a coin toss. This crop is already centred on them
+    # at the moment the tracer leaves the ground, which is the one
+    # frame where they are certainly in it and certainly standing.
+    # Read BEFORE the downscale below: more pixels, same cost.
+    try:
+        from ..services import torso as _torso
+        _fam, _conf = _torso.shirt_of(crop)
+    except Exception as _exc:  # noqa: BLE001
+        log.warning("clip %s: shirt read failed: %s", clip.id, _exc)
+        _fam, _conf = None, 0.0
+    if _fam:
+        clip.tracer_diagnostics = {
+            **(clip.tracer_diagnostics or {}),
+            "shirt": {"family": _fam, "conf": round(float(_conf), 3)},
+        }
+        db.commit()
     # Tile-sized. A 132px column does not need a 608px JPEG, and eleven
     # of them do.
     if crop.shape[1] > 540:
@@ -1464,6 +1513,8 @@ def identify_still(clip_id: int, force: bool = False, db: Session = Depends(get_
         "focus_src": focus_src,
         "tracer_why": tsx.get("why"),
         "src_kind": "clean" if scan_src is not src_path else "stamped",
+        "shirt": _fam,
+        "shirt_conf": round(float(_conf), 3) if _fam else None,
         "cached": False,
     }
 

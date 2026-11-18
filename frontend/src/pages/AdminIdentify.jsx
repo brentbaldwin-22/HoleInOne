@@ -231,7 +231,17 @@ export default function AdminIdentify() {
     ? data.course.par3_holes
     : [...new Set((data?.clips || []).map((c) => c.hole_number))].sort((a, b) => a - b));
   const hole = holes[Math.min(holeIdx, Math.max(0, holes.length - 1))];
-  const allHoleClips = (data?.clips || []).filter((c) => c.hole_number === hole);
+  // The shirt is read per clip by the still route, so it arrives with
+  // the stills rather than with the roster. Merged in here, which
+  // means the grid TIGHTENS as the stills land -- tiles only ever
+  // leave as evidence arrives, never appear, and the count below
+  // keeps up.
+  const allHoleClips = (data?.clips || [])
+    .filter((c) => c.hole_number === hole)
+    .map((c) => (stills[c.id]?.shirt
+      ? { ...c, shirt: stills[c.id].shirt,
+          shirt_conf: stills[c.id].shirt_conf }
+      : c));
   const onLastHole = holeIdx >= holes.length - 1;
 
   /* NARROW BY THE CLOCK. A group that tees off at noon reaches hole 2
@@ -258,7 +268,8 @@ export default function AdminIdentify() {
   // without a browser -- tools/identify_window_test.js asserts that
   // shown + hidden accounts for every clip in every mode.
   const { shown: holeClips, hidden: hiddenCount, windowed } =
-    visibleClips(allHoleClips, win, current?.id, showAllClips);
+    visibleClips(allHoleClips, win, current?.id, showAllClips,
+                 current ? { family: current.shirt, conf: current.shirt_conf } : null);
   // Every clip of the day, no hole filter and no window. `day()`
   // already returns them in captured_at order.
   const dayClips = data?.clips || [];
@@ -410,6 +421,7 @@ export default function AdminIdentify() {
                 <h3 style={{ margin: 0 }}>{current.name}</h3>
                 <span className="small muted">
                   {current.tee_time ? `Teed off ${fmtDateTime(current.tee_time)}` : "No tee time"}
+                  {current.shirt ? ` · ${current.shirt} shirt` : ""}
                   {" · "}
                   {current.assigned} shot{current.assigned === 1 ? "" : "s"} paired
                 </span>
@@ -440,10 +452,13 @@ export default function AdminIdentify() {
                     onClick={() => setShowAllClips(true)}
                     title={`Showing ${fmtDateTime(win[0], undefined, { timeStyle: "short" })}`
                       + `–${fmtDateTime(win[1], undefined, { timeStyle: "short" })},`
-                      + " worked out from this golfer's tee time. The window"
-                      + " widens on later holes because pace drifts."}
+                      + " worked out from this golfer's tee time — the window"
+                      + " widens on later holes because pace drifts."
+                      + (current.shirt
+                        ? ` Also hiding shirts that are not ${current.shirt}.`
+                        : "")}
                   >
-                    {hiddenCount} outside this tee time — show all
+                    {hiddenCount} don't match — show all
                   </button>
                 </>
               )}
