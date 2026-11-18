@@ -15,7 +15,22 @@ services:
     disk:
       name: golfreelz-media
       mountPath: /var/data
-      sizeGB: 20
+      # 20 -> 40 on 2026-11-18. The disk hit 100% on 24 Oct, 27 Oct and
+      # again on the 18th, each time surfacing as "produce failed"
+      # several layers from the cause. A disk can only ever be grown on
+      # Render, never shrunk, so this number is one-way.
+      #
+      # IT BUYS TIME, IT DOES NOT FIX IT. Raw footage arrives at about
+      # 0.5 GB/day and `clip_retention_keep_produced` holds the raw
+      # halves of every produced upload REGARDLESS OF AGE -- a margin
+      # on top of the age rule, not part of it -- so the 30-day sweep
+      # can never reach them and the floor sweep finds nothing to take.
+      # On 18 Nov that was 1769 of 1983 files protected. Growth is
+      # unbounded under that policy and no size survives it; the exits
+      # are object storage (storage.enabled() is False here: the mirror
+      # points at a bucket this deployment does not have) or capping
+      # keep_produced by age.
+      sizeGB: 40
     envVars:
       - key: UPLOAD_DIR
         value: /var/data/uploads
