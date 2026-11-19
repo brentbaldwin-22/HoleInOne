@@ -37,6 +37,12 @@ def check(label, got, want=True):
 
 
 src = (ROOT / "backend" / "app" / "routers" / "admin.py").read_text()
+
+
+def _ascent_hold():
+    """The frames the ball's spot must stay empty, as configured."""
+    m = re.search(r"ASCENT_GONE_HOLD_FRAMES = (\d+)", src)
+    return int(m.group(1)) if m else 0
 _i = src.index("def _ascent_ai_launch")
 _j = src.index("\ndef ", _i + 10)
 stage1 = src[_i:_j]
@@ -122,8 +128,25 @@ print("the watch is bounded by the tiles, not by a fixed margin:")
 # reaches into the DOWNSWING, where the club crossing the ball's pixel
 # empties it just as leaving does (f773 against the same f789). Only
 # the tiles bracket the strike without being fooled by either.
-check("the window comes from the tile bracket",
-      "_dep_before = max(0.0, -float(_tile_seen))" in src)
+# ── IT STARTS AT THE FIRST TILE, NOT THE LAST SIGHTING ─────────────
+#
+# Starting at the last tile the ball was ON is the tightest window
+# that can still bracket the strike, and on a clip where the tiles
+# were themselves late EVERY frame it looked at read "gone". A watch
+# that never sees the ball present has no `last_seen` to split the
+# difference with, so it refuses and the frame falls back to the peak
+# less the lag — and the card's two strips then showed different
+# windows, which is why they could not be compared.
+check("the window starts at the FIRST of the six tiles",
+      "_tile_first if _tile_first is not None else _tile_seen" in src)
+# REACHING BACK THAT FAR IS WHAT PRODUCED f773, and `gone_hold_frames`
+# is what makes it safe: a club crossing the ball's pixel empties it
+# for a frame or three exactly as leaving does, and the ball being
+# there again straight after is the only thing that tells them apart.
+check("  and the spot must STAY empty to count as gone",
+      "gone_hold_frames=ASCENT_GONE_HOLD_FRAMES" in src)
+check("  by more than the frame or two a club takes to cross it",
+      _ascent_hold() >= 4)
 check("  and the watch is given it",
       "before_sec=_dep_before, after_sec=_dep_after" in src)
 check("  with a fallback when there is no bracket",

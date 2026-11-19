@@ -1973,6 +1973,22 @@ def ball_departure(video_path, at_sec: float, *, rect=None, people=None,
                    anchor=None, spot=None,
                    before_sec: float = DEPART_BEFORE_SEC,
                    after_sec: float = DEPART_AFTER_SEC,
+                   # HOW LONG THE SPOT MUST STAY EMPTY to count as gone.
+                   #
+                   # ONE FRAME'S CORROBORATION IS NOT ENOUGH ONCE THE
+                   # WINDOW REACHES BACK PAST THE TAKEAWAY. A club head
+                   # crossing the ball's pixel empties it for two or
+                   # three frames exactly as leaving does, and at the
+                   # default of 1 that is already a departure -- which
+                   # is how a watch given 0.6s of lead returned f773
+                   # against a real strike at f789.
+                   #
+                   # The ball coming BACK resets the count (see `here`
+                   # above), so this is the whole discriminator: after a
+                   # club passes, the ball is there again; after a
+                   # strike, it never is. Left at 1 for existing callers,
+                   # raised by the ones that look a long way back.
+                   gone_hold_frames: int = 1,
                    jitter_px: float = ADDRESS_JITTER_PX) -> dict:
     """Where the ball sat, and the frame it left. Never raises.
 
@@ -2084,7 +2100,7 @@ def ball_departure(video_path, at_sec: float, *, rect=None, people=None,
                 continue
             if gone_at is None:
                 gone_at = int(f)
-            elif f - gone_at >= 1:
+            elif f - gone_at >= int(gone_hold_frames):
                 out["impact_frame"] = gone_at
                 out["impact_sec"] = round(gone_at / fps, 3)
                 out["why"] = (

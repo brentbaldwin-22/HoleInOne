@@ -9500,6 +9500,15 @@ ASCENT_DESCENT_LEAD_SEC = 2.0
 # after the clip stops is exactly the case worth seeing, and
 # the operator judging the picture and the run judging the
 # frames must be looking at the same seconds.
+# How many frames the ball's spot must STAY empty before the
+# departure watch calls it gone. The watch now starts at the
+# first of the six tiles, which reaches back through the
+# takeaway -- and a club head crossing the ball empties its
+# pixel for a frame or three exactly as leaving does. The ball
+# being there again is what tells them apart, so the test is
+# persistence rather than corroboration by one frame.
+ASCENT_GONE_HOLD_FRAMES = 6
+
 GREEN_SCAN_PAD_SEC = 2.0
 
 # How near a descent chain must finish to the ball the green's
@@ -31786,8 +31795,32 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi, anchor=None) -> dict:
         # and the fallback midpoint can never disagree about it.
         _braced = (_tile_seen is not None and _tile_gone is not None
                    and _tile_gone > _tile_seen)
+        # ── THE WATCH STARTS WHERE THE TILES START ──────────────────
+        #
+        # IT USED TO START AT THE LAST TILE THE BALL WAS ON, which is
+        # the tightest window that can still bracket the strike -- and
+        # on a clip where the tiles themselves were late, every frame
+        # it looked at read "gone". A watch that never sees the ball
+        # present has no `last_seen` to split the difference with, so
+        # it refuses, and the frame falls back to the peak less the
+        # lag. The two strips on the card then showed different
+        # windows, which is also why they could not be compared.
+        #
+        # So it starts at the FIRST tile. Reaching back that far is
+        # what produced f773 once; `gone_hold_frames` is what makes it
+        # safe now -- the spot must stay empty, and a club crossing it
+        # is followed by the ball being there again.
+        _tile_first = None
+        try:
+            _ats = [float(_t["at"]) for _t in ((_addr or {}).get("frames")
+                                               or []) if _t.get("at")
+                    is not None]
+            _tile_first = min(_ats) if _ats else None
+        except (TypeError, ValueError):
+            _tile_first = None
         if _braced:
-            _dep_before = max(0.0, -float(_tile_seen))
+            _dep_before = max(0.0, -float(
+                _tile_first if _tile_first is not None else _tile_seen))
             # A LITTLE PAST THE GONE TILE, because the watch needs a
             # frame or two of empty to call it empty at all.
             #
@@ -31833,7 +31866,13 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi, anchor=None) -> dict:
             # peak less a guessed lag, so "a fifth of a second before
             # it" was never enough margin for the thing it is meant
             # to bracket.
-            before_sec=_dep_before, after_sec=_dep_after)
+            before_sec=_dep_before, after_sec=_dep_after,
+            # LONG ENOUGH THAT A CLUB CANNOT BE A DEPARTURE. The window
+            # now reaches back through the takeaway, where the club
+            # crosses the ball's pixel for a frame or three; the ball
+            # is there again straight after, and a strike is the only
+            # thing that empties the spot and keeps it empty.
+            gone_hold_frames=ASCENT_GONE_HOLD_FRAMES)
         out["measured_ball"] = (_dep.get("spot")
                                 or (_addr or {}).get("spot"))
         # ── SPLIT THE DIFFERENCE, AND ONLY WHEN WE SAW BOTH ─────────
