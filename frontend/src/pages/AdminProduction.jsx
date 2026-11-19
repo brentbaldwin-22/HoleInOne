@@ -18586,6 +18586,10 @@ export default function AdminProduction() {
   // the rows already loaded would answer "audio" with however many of
   // those twenty-five happened to be audio.
   const [triggerKind, setTriggerKind] = useState("");
+  // WHICH ZONE FIRED IT, as the stored zero-based index ("" = any).
+  // Answered in SQL like `triggerKind`, not in the browser, because
+  // the list is paginated -- see narrow_uploads in admin.py.
+  const [zoneFilter, setZoneFilter] = useState("");
   useEffect(() => {
     const t = setTimeout(() => setCourseQuery(courseSearch.trim()), 350);
     return () => clearTimeout(t);
@@ -18606,8 +18610,10 @@ export default function AdminProduction() {
         sort: sortField,
         order: sortOrder,
         trigger: triggerKind,
+        zone: zoneFilter,
       }),
-    [adminPassword, courseQuery, sortField, sortOrder, triggerKind],
+    [adminPassword, courseQuery, sortField, sortOrder, triggerKind,
+     zoneFilter],
   );
   const fetchEvents = useCallback(
     (limit, offset) => api.listCameraEvents(adminPassword, limit, offset),
@@ -18618,7 +18624,8 @@ export default function AdminProduction() {
     // IN THE DEPS OR THE LIST KEEPS THE OLD ROWS. fetchUploads already
     // closes over the kind; without it here the hook does not know the
     // question changed and never refetches.
-    deps: [adminPassword, courseQuery, sortField, sortOrder, triggerKind],
+    deps: [adminPassword, courseQuery, sortField, sortOrder, triggerKind,
+           zoneFilter],
   });
   const eventsList = useInfiniteList(fetchEvents, {
     pageSize: 25,
@@ -18628,6 +18635,41 @@ export default function AdminProduction() {
   // untouched. Both come from the hook so they share the same null →
   // [...] lifecycle.
   const rows = uploadsList.items;
+
+  // ── THE ZONES TO OFFER, ACCUMULATED ───────────────────────────────
+  //
+  // THEY CANNOT COME FROM THE LOADED ROWS. The zone filter runs in
+  // SQL, so choosing "middle left" collapses the list to middle-left
+  // rows -- and a dropdown built from those rows would collapse with
+  // them, leaving the only option the one already chosen and no way
+  // back to the zone you came from.
+  //
+  // So the options only ever GROW: every zone seen since the page
+  // opened stays on offer. A label arriving later for an index first
+  // seen unlabelled replaces the blank.
+  const zonesSeenRef = useRef(new Map());
+  const [zoneOpts, setZoneOpts] = useState([]);
+  useEffect(() => {
+    if (!Array.isArray(rows)) return;
+    let grew = false;
+    for (const r of rows) {
+      const d = r?.source?.trigger_detail;
+      // ZONE 0 IS A ZONE; `if (!d?.zone)` would drop it.
+      if (!d || d.zone == null) continue;
+      const k = String(d.zone);
+      const label = d.zone_label || "";
+      const prev = zonesSeenRef.current.get(k);
+      if (prev === undefined || (!prev && label)) {
+        zonesSeenRef.current.set(k, label);
+        grew = true;
+      }
+    }
+    if (grew) {
+      setZoneOpts(
+        Array.from(zonesSeenRef.current.entries())
+          .sort((a, b) => Number(a[0]) - Number(b[0])));
+    }
+  }, [rows]);
   const events = eventsList.items;
   // Hide uploads whose raw source is gone (e.g. a dev deployment that
   // lost its ephemeral files) — a "File missing" card can't be edited,
@@ -19574,6 +19616,34 @@ export default function AdminProduction() {
             <option value="manual">Manual trigger</option>
           </select>
         </label>
+        {/* ZONE, beside the trigger it belongs with. Narrowed in SQL
+            for the same reason: the list is paginated, so a filter
+            over the loaded twenty-five would answer "middle left"
+            with however many of THOSE were middle left. */}
+        {zoneOpts.length > 0 && (
+          <label style={{ display: "inline-flex", alignItems: "center",
+                          gap: 6 }}>
+            <span className="tiny upper muted">Zone</span>
+            <select
+              value={zoneFilter}
+              onChange={(e) => setZoneFilter(e.target.value)}
+              className="small"
+              style={{ width: "auto" }}
+              title="Which trigger zone fired this clip"
+            >
+              <option value="">All zones</option>
+              {zoneOpts.map(([idx, label]) => (
+                // THE NUMBER ON THE OPERATOR'S SCREEN, not the stored
+                // index. The rig counts zones from 0 and the editor
+                // labels them from 1; the value sent stays zero-based.
+                <option key={idx} value={idx}>
+                  {label ? `${label} (Zone ${Number(idx) + 1})`
+                         : `Zone ${Number(idx) + 1}`}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         {/* THE OLD DIAGNOSTIC BUTTONS, ON DEMAND. Debug and Debug2 were
             retired when Debug3's pipeline became the thing that ships,
             and the code and endpoints were left in place so a swing
@@ -19607,6 +19677,12 @@ export default function AdminProduction() {
           <span className="tiny muted">
             only {triggerKind}-triggered clips — uploads with no recorded
             trigger are hidden
+          </span>
+        ) : null}
+        {zoneFilter !== "" ? (
+          <span className="tiny muted">
+            only Zone {Number(zoneFilter) + 1} — clips with no recorded
+            zone are hidden
           </span>
         ) : null}
       </div>

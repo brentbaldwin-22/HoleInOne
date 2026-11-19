@@ -7855,6 +7855,61 @@ def upload_long_video(
 _TRIGGER_KINDS = ("audio", "dwell", "capture", "manual")
 
 
+def narrow_uploads(q, trigger: str = "", zone: str = ""):
+    """Apply the production list's trigger and zone filters to a query.
+
+    ONE COPY, BECAUSE THE TEST USED TO HOLD THE OTHER. `trigger_filter_test`
+    rebuilt this predicate itself -- "the endpoint's own narrowing, lifted
+    exactly" -- against a real SQLite database, which proved the JSON
+    operator worked on this dialect and proved nothing about the endpoint
+    still doing the same thing. A filter that feeds a select-all and then
+    a bulk delete is the wrong place for a copy that can drift, so the
+    endpoint and the test now call this.
+
+    IT RUNS IN SQL, NOT IN THE BROWSER, because the list is paginated: a
+    filter over the twenty-five rows already loaded answers "zone 3" with
+    however many of THOSE were zone 3, and "load more" then fetches
+    twenty-five more of everything. The question is about the whole table.
+
+    `zone` IS THE INDEX THE CONFIG COUNTS FROM 0, not the number on the
+    operator's screen. The rig indexes zones from 0 and the zone editor
+    labels them from 1 -- it writes both on every startup, `zone 2
+    ("Zone 3" on screen, middle left)` -- so the browser converts for
+    display and this stays in the numbering the column is actually
+    stored in. A conversion in here would be invisible to anyone reading
+    the stored value back.
+
+    An unrecognised value for either narrows NOTHING. A filter that
+    silently empties the page reads as lost footage, and a junk value's
+    one source is a URL somebody typed.
+    """
+    trig = (trigger or "").strip().lower()
+    want_trig = trig in _TRIGGER_KINDS
+    zq = (zone or "").strip()
+    # `isdigit` and not int(): "-1", "1.5" and "1e3" are not zone
+    # indexes, and int() would accept the first two of them.
+    want_zone = zq.isdigit()
+    if not (want_trig or want_zone):
+        return q
+    # ONE JOIN FOR BOTH. Joining CameraEvent twice is an error, and an
+    # upload has exactly one event, so a second join could only ever
+    # duplicate rows.
+    q = q.join(CameraEvent,
+               CameraEvent.id == LongVideoUpload.camera_event_id)
+    if want_trig:
+        q = q.filter(CameraEvent.trigger_detail["kind"].as_string() == trig)
+    if want_zone:
+        # as_integer, NOT as_string -- and that is not a style choice.
+        # `kind` above is a JSON string and `zone` is a JSON NUMBER, and
+        # on SQLite as_string over a number matches nothing at all, so
+        # the obvious copy of the line above returns an empty page.
+        # `trigger_filter_test` runs this against a real database for
+        # exactly this reason.
+        q = q.filter(
+            CameraEvent.trigger_detail["zone"].as_integer() == int(zq))
+    return q
+
+
 @router.get("/long-uploads")
 def list_long_uploads(
     limit: int = 100,
@@ -7870,6 +7925,10 @@ def list_long_uploads(
     # audio, and "load more" would then fetch twenty-five more of
     # everything. The question is about the whole table.
     trigger: str = "",
+    # WHICH ZONE FIRED IT, as the index the config counts from 0 --
+    # "2" is the box labelled "Zone 3" in the editor. Same reason as
+    # `trigger` for being answered in SQL rather than the browser.
+    zone: str = "",
     db: Session = Depends(get_db),
 ):
     """List previously-uploaded long videos so the operator can re-edit /
@@ -7891,16 +7950,13 @@ def list_long_uploads(
             Course.name.ilike(f"%{course_q}%")
         )
 
-    # ONE KIND OF TRIGGER. The kind lives in the camera event's
-    # trigger_detail, so this needs the join; an upload with no camera
-    # event behind it (a manual upload, or a Pi from before the
-    # trigger was described) has no kind and belongs in neither
-    # bucket, which the inner join gives for free.
-    trig = (trigger or "").strip().lower()
-    if trig in _TRIGGER_KINDS:
-        q = q.join(CameraEvent,
-                   CameraEvent.id == LongVideoUpload.camera_event_id).filter(
-            CameraEvent.trigger_detail["kind"].as_string() == trig)
+    # ONE KIND OF TRIGGER, AND ONE ZONE. Both live in the camera event's
+    # trigger_detail, so both need the join; an upload with no camera
+    # event behind it (a manual upload, or a Pi from before the trigger
+    # was described) has neither and belongs in no bucket, which the
+    # inner join gives for free. See `narrow_uploads`, which the test
+    # calls too so the two cannot drift.
+    q = narrow_uploads(q, trigger, zone)
 
     descending = (order or "desc").lower() != "asc"
     if sort == "course":

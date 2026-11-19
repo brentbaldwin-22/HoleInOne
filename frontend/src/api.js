@@ -478,6 +478,13 @@ export const api = {
     if (opts.order) params.set("order", opts.order);
     // "" means every trigger, so only send a real one.
     if (opts.trigger) params.set("trigger", opts.trigger);
+    // ZONE 0 IS A ZONE. `if (opts.zone)` drops index 0 — the box
+    // labelled "Zone 1" on screen — and silently widens the filter to
+    // everything, which is then what Select-all-loaded selects. The
+    // stored index is zero-based; the UI converts for display.
+    if (opts.zone != null && opts.zone !== "") {
+      params.set("zone", String(opts.zone));
+    }
     return request(
       `/api/admin/long-uploads?${params.toString()}`,
       { adminPassword: key },
