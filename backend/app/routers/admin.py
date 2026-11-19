@@ -27461,6 +27461,133 @@ def _ascent_find_run(row, src_path, db, progress=None) -> dict:
     return _ascent_run(row, src_path, db, progress=progress, produce=False)
 
 
+def _ascent_cutter_swings(db, row, src_path, fps, rep,
+                          hole_number=None) -> dict:
+    """STEP 1. The cutter finds the swings; each gets an impact frame.
+
+    THE CUTTER IS THE THING THAT KNOWS WHERE THE SWINGS ARE, and until
+    now the run did not ask it that question. It asked for a WINDOW --
+    `_ascent_windows` narrowed the sweep to the seconds worth
+    searching -- and then swept, chained, and worked backwards from
+    the chains to how many balls had left. A clip of a fourball gave
+    one answer because `_ascent_ai_launch` took `_ct[0]`, the first
+    strike, and nothing downstream asked about the rest.
+
+    So the order is inverted: swings first, and everything after runs
+    once per swing.
+
+    THE PEAK IS NOT THE IMPACT. `_cutter_times` reports
+    `peak_time_sec` -- the microphone's peak, which is the strike plus
+    whatever the mic, the encoder and the ring buffer add. Measured on
+    this course that is about nineteen frames at 60fps, and a tracer
+    begun there starts after the ball has gone. So each peak is only
+    an ANCHOR, and the real frame is measured from the ball:
+
+      1. the six tiles bracket the strike -- the ball is at its spot
+         on one and gone from the next
+      2. the departure watch refines inside that bracket, and the
+         strike is the midpoint of the last frame it was there and
+         the first it was gone
+
+      ...and when that cannot conclude -- no ball found at address,
+      a watch that never saw it sitting -- the peak less the hole's
+      configured `audio_lag_sec` stands in. A measured frame beats a
+      subtracted one; a subtracted one beats the raw peak.
+    """
+    out = {"cutter": None, "why": None, "swings": [], "lag_sec": 0.0,
+           "peaks": []}
+    _cut, _cut_why = _cutter_for(db, row, hole_number)
+    if _cut == "auto":
+        _cut = "audio"
+    out["cutter"] = _cut
+    if _cut == "none":
+        out["why"] = ("no cutter is set for this hole (%s), so there are "
+                      "no swings to work from" % _cut_why)
+        return out
+
+    from ..services import debug3 as _ld3
+    _lag = 0.0
+    try:
+        _lg, _, _ = _gate_tuning_for(db, row, hole_number)
+        _lag = float(_ld3.resolve_gates(
+            _lg, zone=_trigger_zone(db, row))["audio_lag_sec"])
+    except Exception as _lx:  # noqa: BLE001
+        log.debug("step 1: no audio lag for upload %s (%s)",
+                  getattr(row, "id", None), _lx)
+    out["lag_sec"] = round(_lag, 3)
+
+    _dbg: dict = {}
+    try:
+        _times = _cutter_times(_cut, db, row, src_path, fps, _dbg) or []
+    except Exception as _cx:  # noqa: BLE001
+        log.warning("step 1: the %s cutter failed on upload %s: %s",
+                    _cut, getattr(row, "id", None), _cx)
+        out["why"] = "the %s cutter failed: %s" % (_cut, _cx)
+        return out
+    out["cutter_debug"] = _dbg
+    out["peaks"] = [round(float(t), 3) for t in _times]
+    if not _times:
+        out["why"] = ("the %s cutter heard no strike in this clip (%s)"
+                      % (_cut, _cut_why))
+        return out
+
+    for _i, _t in enumerate(sorted(float(x) for x in _times)):
+        _heard = float(_t)
+        _sec = max(0.0, _heard - _lag)
+        sw = {
+            "n": _i + 1,
+            "peak_sec": round(_heard, 3),
+            "lag_sec": round(_lag, 3),
+            "anchor_sec": round(_sec, 3),
+            "impact_frame": None,
+            "impact_from": None,
+            "measured": False,
+            "seconds": 0.0,
+        }
+        _t0 = time.perf_counter()
+        _ai = {}
+        try:
+            _ai = _ascent_ai_launch(
+                db, row, src_path, fps, rep, rep.get("_roi_full"),
+                anchor={"sec": _sec, "heard_sec": _heard,
+                        "lead_sec": _lag, "event_id": None,
+                        "hole_number": hole_number,
+                        "why": ("the %s cutter's strike %d of %d at %.2fs"
+                                % (_cut, _i + 1, len(_times), _heard))},
+            ) or {}
+        except Exception as _ax:  # noqa: BLE001
+            log.warning("step 1: measuring swing %d of upload %s failed: %s",
+                        _i + 1, getattr(row, "id", None), _ax)
+            _ai = {"reason": "measuring the ball failed: %s" % _ax}
+        _mf = _ai.get("measured_impact_frame")
+        if _mf is not None:
+            sw["impact_frame"] = int(_mf)
+            sw["measured"] = True
+            sw["impact_from"] = (
+                _ai.get("measured_impact_how")
+                or "measured from the ball leaving its spot")
+        else:
+            # BLOCKED, SO SUBTRACT. The ball was never found at address,
+            # or the watch never saw it sitting there -- see `why`.
+            sw["impact_frame"] = int(round(_sec * float(fps)))
+            sw["impact_from"] = (
+                "the %s cutter's peak at %.2fs less the %.2fs audio lag "
+                "— the ball's own departure could not be measured%s"
+                % (_cut, _heard, _lag,
+                   (": " + _ai["reason"]) if _ai.get("reason") else ""))
+        sw["seconds"] = round(time.perf_counter() - _t0, 2)
+        sw["ai_launch"] = _ai
+        out["swings"].append(sw)
+
+    _n_meas = sum(1 for w in out["swings"] if w["measured"])
+    out["why"] = (
+        "the %s cutter found %d swing(s); %d impact frame(s) measured "
+        "from the ball, %d fell back to the peak less %.2fs"
+        % (_cut, len(out["swings"]), _n_meas,
+           len(out["swings"]) - _n_meas, _lag))
+    return out
+
+
 def _ascent_run(row, src_path, db, progress=None, produce=True,
                 hole_number=None) -> dict:
     """Find every ball leaving, and optionally produce a clip for each.
@@ -30283,7 +30410,7 @@ def _tile_bracket(addr):
             % (_seen, _gone, _how))
 
 
-def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
+def _ascent_ai_launch(db, row, src_path, fps, rep, roi, anchor=None) -> dict:
     """The golfer, the ball at their feet, and the frame it left.
 
     NO MODEL IS ASKED ANY MORE, and the name is kept because the
@@ -30342,8 +30469,25 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi) -> dict:
         out["reason"] = ("the AI launch plot is switched off for this "
                          "deployment (ASCENT_AI_LAUNCH=0)")
         return out
-    _rig = _rig_impact_sec(db, row, getattr(row, "id", None))
-    out["impact_from"] = "the rig's own impact" if _rig else None
+    # ── AN INSTANT HANDED IN BEATS ONE LOOKED UP ───────────────────
+    #
+    # ONE SWING PER CLIP WAS THE OLD SHAPE, and it is why this looked
+    # the instant up itself: the rig's impact, or failing that the
+    # cutter's FIRST strike, `_ct[0]`. A clip holding four swings got
+    # one measurement, of the first of them.
+    #
+    # Step 1 now runs the cutter once and hands each strike here in
+    # turn, so the measurement below -- the six tiles bracketing the
+    # strike, the departure watch refining inside that bracket --
+    # happens per swing instead of once per clip. What it measures is
+    # unchanged; only how many times it is asked.
+    if anchor is not None:
+        _rig = dict(anchor)
+        out["impact_from"] = anchor.get("why") or "handed in by the cutter"
+        out["anchor_sec"] = float(anchor.get("sec") or 0.0)
+    else:
+        _rig = _rig_impact_sec(db, row, getattr(row, "id", None))
+        out["impact_from"] = "the rig's own impact" if _rig else None
     if _rig is None:
         # ── NO CAMERA EVENT IS NOT NO IMPACT ────────────────────────
         #
