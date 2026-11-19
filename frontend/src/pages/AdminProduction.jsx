@@ -3295,6 +3295,9 @@ function ClickToPlotModal({
               // succeeds and reports success.
               idx: newIdx,
               impact_frame: impactFrame ?? s.impact_frame,
+              // Same rule as the produce call above: a pin is a claim
+              // that a person moved this, so only a move makes one.
+              impact_manual: movedImpact || !!s.impact_manual,
               // The landing, and the descent found from it. Kept on the
               // swing so a later produce and a later re-open both start
               // from what was marked here.
@@ -3488,6 +3491,17 @@ function ClickToPlotModal({
             : (plotted.length ? [plotted[0].x, plotted[0].y] : null)),
         impact_frame: impactFrame ?? swing.impact_frame
           ?? (plotted.length ? plotted[0].frame : null),
+        // ONLY A PERSON CAN PIN THIS. `impact_manual` stops every later
+        // produce re-measuring the impact frame, and it used to be set
+        // by the mere act of saving -- so producing once from this
+        // screen pinned whatever number happened to be on it, for good.
+        // #1780 sat at f1446 that way for days while the step panel
+        // kept reporting the f1286 it measured, and nobody had ever
+        // typed 1446. `movedImpact` is the honest signal: it is true
+        // only when this screen's frame differs from the stored one.
+        // The `||` keeps an existing pin alive through a save that did
+        // not touch it.
+        impact_manual: movedImpact || !!swing.impact_manual,
         landing_frame: landing?.frame ?? null,
         landing_spot: landing ? [landing.x, landing.y] : null,
         hole_number: holeNumber,
@@ -4786,6 +4800,14 @@ function EditWizard({
       cutFrame: s.cut_frame ?? null,
       ball: s.ball || null,
       ballManual: !!s.ball_manual,
+      // THE PIN, AND WHAT IT IS OVERRULING. `impact_manual` makes the
+      // frame outrank every later measurement; `impact_measured` is
+      // what the last produce measured and was not allowed to use. The
+      // wizard shows both, because this screen is where a pinned
+      // number stares back at the operator and where they will notice
+      // it disagreeing with the step panel.
+      impactManual: !!s.impact_manual,
+      impactMeasured: s.impact_measured ?? null,
       landingFrame: s.landing_frame ?? null,
       landingSpot: s.landing_spot || null,
       roi: s.roi || null,
@@ -5025,6 +5047,40 @@ function EditWizard({
       ? [Math.round(Number(e[0])), Math.round(Number(e[1]))] : null;
   })();
 
+  // THE IMPACT PIN, WRITTEN WHERE PRODUCE READS IT.
+  //
+  // NOT `persistPatch`. On a single-swing row that writes at the TOP
+  // LEVEL of edit_metrics, and produce reads `impact_manual` from
+  // `swings[i]` and nowhere else -- a top-level write would report
+  // success and pin nothing. Same trap `clearSavedAim` documents below.
+  //
+  // `on` false CLEARS the pin, which is the way back out for a swing
+  // whose frame got pinned by a produce back when merely saving set the
+  // flag. The frame itself is left where it is; the next produce
+  // measures it afresh.
+  async function setImpactPin(on, frame) {
+    const idx = isMulti ? selectedSwing : 0;
+    try {
+      const next = swings.map((sw, i) => (
+        i === idx
+          ? {
+            ...sw,
+            ...(frame == null ? {} : { impact_frame: frame }),
+            impact_manual: !!on,
+            // What the last run measured is only interesting while a
+            // pin is overruling it.
+            ...(on ? {} : { impact_measured: null }),
+          }
+          : sw));
+      setSwings(next);
+      const r = await api.saveEditMetrics(
+        adminPassword, row.id, { swings: next });
+      onSaved?.(r);
+    } catch (e) {
+      console.warn("could not change the impact pin", e);
+    }
+  }
+
   async function clearSavedAim() {
     setClearingAim(true);
     try {
@@ -5216,6 +5272,12 @@ function EditWizard({
     const payload = {
       ball: [draft.ball.x, draft.ball.y],
       impact_frame: draft.impactFrame,
+      // NOT AN ENDORSEMENT, unlike the ball below. Produce MEASURES the
+      // impact frame on every run, so letting the act of producing pin
+      // it meant one press froze the number forever -- the bug behind
+      // #1780's f1446. The draft carries the stored pin, so this keeps
+      // a real one and asserts nothing otherwise.
+      impact_manual: !!draft.impactManual,
       // The landing, on the GREEN camera. The clip ends a beat after
       // it, and the tracer is drawn to arrive at the spot — so these
       // two travel together and neither is much use alone.
@@ -6567,7 +6629,8 @@ function WizardBody({
       >
         <EditableRow
           label="Impact frame"
-          value={`Frame ${draft.impactFrame}`}
+          value={`Frame ${draft.impactFrame}`
+                 + (draft.impactManual ? " (pinned by hand)" : "")}
           active={editing === "impact"}
           onActivate={() => setEditing(editing === "impact" ? null : "impact")}
         >
@@ -6579,12 +6642,50 @@ function WizardBody({
             onJump={(n) => loadFrame(clampedJump(n))}
             onApply={() => {
               if (navFrame == null) return;
-              setDraft((d) => ({ ...d, impactFrame: navFrame }));
-              persistPatch({ impact_frame: navFrame });
+              // A PERSON JUST MOVED IT: this, and only this, is what
+              // pins the frame against later produces.
+              setDraft((d) => ({ ...d, impactFrame: navFrame,
+                                 impactManual: true }));
+              setImpactPin(true, navFrame);
               setEditing(null);
             }}
           />
         </EditableRow>
+
+        {/* WHY THE WIZARD AND THE STEP PANEL DISAGREE, said here rather
+            than left for the operator to work out. A pinned frame beats
+            whatever the last run measured, which is right -- and used
+            to be invisible, so the panel showed f1286, this screen
+            showed f1446, and nothing anywhere connected the two. */}
+        {draft.impactManual ? (
+          <div style={{
+            marginTop: -4, fontSize: 12, lineHeight: 1.5,
+            color: "#9aa4b2", display: "flex", alignItems: "center",
+            gap: 8, flexWrap: "wrap",
+          }}>
+            <span>
+              Pinned by hand — produce will not re-measure it.
+              {draft.impactMeasured != null
+                ? ` The last run measured f${draft.impactMeasured}.`
+                : ""}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setDraft((d) => ({ ...d, impactManual: false,
+                                   impactMeasured: null }));
+                setImpactPin(false, null);
+              }}
+              style={{
+                background: "transparent", color: "#7cc4ff",
+                border: "1px solid #39506b", borderRadius: 6,
+                padding: "2px 8px", fontSize: 12, cursor: "pointer",
+              }}
+            >
+              Unpin · let produce measure it
+            </button>
+          </div>
+        ) : null}
 
         <EditableRow
           label="Ball at rest"

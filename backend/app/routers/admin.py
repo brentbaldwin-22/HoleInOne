@@ -15289,10 +15289,13 @@ def wizard_produce(
         # the impact frame, saving, and reopening showed the detector's
         # answer again and read as a save that did nothing.
         #
-        # `impact_manual` is the same flag `ball_manual` has been for
-        # the resting ball, and for the same reason: a number a person
-        # set by eye outranks one a fit produced, and every later run
-        # has to be told so rather than discovering it.
+        # `impact_manual` plays the part `ball_manual` plays for the
+        # resting ball: a number a person set by eye outranks one a fit
+        # produced, and every later run has to be told so rather than
+        # discovering it. NOT on the same terms, though — see below.
+        # Pressing Produce endorses the BALL, because produce does not
+        # re-detect a ball it was handed; it must not endorse the impact
+        # FRAME, because produce measures that one on every run.
         _sw_list = [_s for _s in (saved.get("swings") or [])
                     if isinstance(_s, dict)]
         _mine = next((_s for _s in _sw_list
@@ -15300,8 +15303,34 @@ def wizard_produce(
         if _mine is None:
             _mine = {"idx": swing_idx}
             _sw_list.append(_mine)
+        # ── THE CALLER SAYS WHETHER A PERSON MOVED IT ───────────────
+        #
+        # THIS FLAG IS A CLAIM ABOUT A PERSON, and it was being set by
+        # the mere act of saving. Every path into this endpoint stamped
+        # it — the wizard's Produce button, the click-to-plot save — so
+        # opening the wizard to LOOK at a clip and pressing Produce
+        # pinned whatever frame happened to be on screen as "a number a
+        # person set by eye", permanently and invisibly.
+        #
+        # What that cost: an early run produced #1780 at f1446, the
+        # operator produced once from the wizard, and every later run
+        # kept 1446 — including the ones that measured f1286 off the
+        # ball. The step panel showed the measurement, the wizard showed
+        # the pin, and the operator was certain they had never typed
+        # 1446. They had not. Nobody had.
+        #
+        # Only the wizard knows whether the impact control was touched,
+        # so only the wizard may assert it:
+        #   True  — the operator applied a frame; pin it.
+        #   False — the operator cleared the pin ("use measured").
+        #   absent — say nothing; leave whatever is stored alone. An
+        #            ordinary produce lands here, which is the point.
+        _im = payload.get("impact_manual")
         _mine["impact_frame"] = int(impact_frame)
-        _mine["impact_manual"] = True
+        if _im is True:
+            _mine["impact_manual"] = True
+        elif _im is False:
+            _mine.pop("impact_manual", None)
         _sw_list.sort(key=lambda _s: int(_s.get("idx", 0)))
         saved["swings"] = _sw_list
         # THE TOP-LEVEL LANDING IS A SINGLE-SWING ROW'S SLOT, and only
@@ -35762,7 +35791,14 @@ def run_wizard_produce_job(
                             "idx": 0,
                             "ball": {"x": int(round(_bx)),
                                      "y": int(round(_by))},
-                            "ball_manual": True,
+                            # NOT `ball_manual`. This is produce
+                            # saving its own fallback so the operator
+                            # can plot by hand FROM it — nobody has
+                            # placed anything yet, and claiming they
+                            # have stops every later run correcting
+                            # the ball. Same lie as the impact flag
+                            # above, one field over.
+                            "ball_from_failed_produce": True,
                             "impact_frame": _imp,
                             "track_frame_width": _fw,
                             "track_frame_height": _fh,
@@ -36473,16 +36509,26 @@ def _d3_save_swing(db, upload_id: int, idx: int, rec: dict,
             # right, but after production the wizard has a different
             # impact frame and a different chain" — which is exactly
             # what this line does, silently.
-            if (kept_out is not None
-                    and rec.get("impact_frame") is not None
+            if (rec.get("impact_frame") is not None
                     and int(prior.get("impact_frame", -1))
                     != int(rec["impact_frame"])):
-                kept_out["impact_frame"] = {
-                    "kept": int(prior.get("impact_frame", -1)),
-                    "measured": int(rec["impact_frame"]),
-                    "why": "an operator set this frame by hand, and a "
-                           "produce does not overrule that",
-                }
+                # ON THE RECORD, so the WIZARD can say it too. The step
+                # panel is not where the operator notices the
+                # disagreement -- the wizard is, because that is where
+                # the pinned number is staring back at them. Carrying
+                # the measurement here is what lets that screen explain
+                # itself instead of just differing.
+                merged["impact_measured"] = int(rec["impact_frame"])
+                if kept_out is not None:
+                    kept_out["impact_frame"] = {
+                        "kept": int(prior.get("impact_frame", -1)),
+                        "measured": int(rec["impact_frame"]),
+                        "why": "this frame is pinned by hand on the "
+                               "swing, and a produce does not "
+                               "overrule a pin",
+                    }
+            else:
+                merged.pop("impact_measured", None)
         # The landing is the operator's too, and produce has nothing to
         # say about it -- a run that does not know about one must not
         # erase it from under the wizard.
