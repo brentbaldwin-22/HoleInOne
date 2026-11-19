@@ -321,6 +321,30 @@ check("  and the bare frame is dropped when the dots carry it",
       True)
 
 print()
+print("the reverse walk from the ball is reported under step 3:")
+# ON A CLEAN GREEN THE DOT MAP MAKES THE DESCENT OBVIOUS TO A PERSON:
+# a short near-vertical run arriving at the ring, with the treeline's
+# foliage everywhere else. `track_descent_back` is the machine reading
+# it the same way -- start ON the ball at rest and climb, zooming each
+# window so a three-pixel ball is something a detector can see.
+#
+# Its report lived in a card beside the step list, which is the one
+# place an operator reading step 3 does not look.
+check("step 3 carries the walk's result",
+      'desc.get("descents_back")' in SRC, True)
+check("  how many points it got, and how many it missed",
+      '"%s point(s), %s missed, fell %spx "' in SRC, True)
+check("  the zoom it climbed at", '"label": "zoom"' in SRC, True)
+check("  where the ball first moved and where it was lost",
+      '"ball first moved"' in SRC and '"lost it at"' in SRC, True)
+check("  and the picture of the windows it walked",
+      '(_wk or {}).get("image_url")' in SRC, True)
+# IT IS MATCHED BY SWING, not by position: `descents_back` only holds
+# rows for swings that had a rest spot, so index i is not swing i.
+check("matched to its swing by number, not by position",
+      'int(w.get("swing") or 0) == int(v.get("swing") or -1)' in SRC, True)
+
+print()
 print("and the page renders it, collapsed, on the step's own row:")
 check("there is one generic renderer",
       "function StepWork({ work })" in JSX, True)

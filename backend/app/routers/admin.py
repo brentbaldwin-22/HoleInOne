@@ -27596,6 +27596,40 @@ def _ascent_step3_work(desc, rep):
         rows.append({"label": "outcome",
                      "value": ("a descent was taken" if v.get("chosen")
                                else str(v.get("reason") or "nothing taken"))})
+        # ── THE REVERSE WALK, WHICH IS THE ANSWER ON A CLEAN GREEN ──
+        #
+        # The dot map makes the descent obvious to a person: a short
+        # near-vertical run arriving at the cyan ring, with the whole
+        # treeline's worth of foliage elsewhere. `track_descent_back`
+        # is the machine's version of reading it that way -- start ON
+        # the ball at rest and climb, zooming each window so a
+        # three-pixel ball is something a detector can see.
+        #
+        # Its report lived in a card beside the step list, which is
+        # the one place an operator reading step 3 does not look.
+        _wk = next((w for w in (desc.get("descents_back") or [])
+                    if int(w.get("swing") or 0) == int(v.get("swing") or -1)),
+                   None)
+        if _wk:
+            rows.append({"label": "walked back from the ball",
+                         "value": ("%s point(s), %s missed, fell %spx "
+                                   "(f%s–f%s)"
+                                   % (_wk.get("n_points"),
+                                      _wk.get("n_missed"),
+                                      _wk.get("fall_px"),
+                                      _wk.get("first_frame"),
+                                      _wk.get("last_frame")))
+                                  if _wk.get("ok") else
+                                  str(_wk.get("why") or "did not run")})
+            _det = _wk.get("detector") or {}
+            if _det.get("zoom"):
+                rows.append({"label": "zoom", "value": str(_det["zoom"])})
+            if _wk.get("moved_at_frame") is not None:
+                rows.append({"label": "ball first moved",
+                             "value": "f%s" % _wk["moved_at_frame"]})
+            if _wk.get("lost_at") is not None:
+                rows.append({"label": "lost it at",
+                             "value": "f%s" % _wk["lost_at"]})
         groups.append({
             "title": "Swing %s" % v.get("swing"),
             "note": str(v.get("reason") or ""),
@@ -27610,6 +27644,11 @@ def _ascent_step3_work(desc, rep):
                 ("the green before the shot", _rest_imgs(rep, v, "before")),
                 ("...and after it settled — the cyan ring is what was "
                  "not there before", _rest_imgs(rep, v, "after")),
+                # THE WALK'S OWN PICTURE: the zoomed windows it climbed
+                # through, which is where "how many detections do we
+                # get when we zoom in" is actually answered.
+                ("walked back from the ball at rest, window by zoomed "
+                 "window", (_wk or {}).get("image_url")),
             ) if u],
             "table": _descent_chain_table(v.get("chains")),
             # ── THE WIZARD'S OWN PICTURE ────────────────────────────
