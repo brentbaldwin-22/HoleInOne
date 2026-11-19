@@ -32,8 +32,10 @@ function grab(name) {
 
 const mod = await import(
   "data:text/javascript," + encodeURIComponent(
-    `${grab("rigTrigger")}\nexport { rigTrigger };`));
+    `${grab("zoneWords")}\n${grab("rigTrigger")}\n`
+    + `export { rigTrigger, zoneWords };`));
 
+const zoneWordsOf = (d) => mod.zoneWords(d);
 const failed = [];
 function check(label, got, want) {
   const ok = JSON.stringify(got) === JSON.stringify(want);
@@ -41,6 +43,58 @@ function check(label, got, want) {
   if (!ok) failed.push(label);
 }
 
+console.log("A ZONE INDEX IS NOT THE NUMBER ON THE OPERATOR'S SCREEN:");
+// THE OFF-BY-ONE THAT SENDS SOMEBODY TO THE WRONG BOX. The rig counts
+// zones from 0 and the zone editor labels them from 1, and the agent
+// writes both on every startup:
+//
+//   zone 2 ("Zone 3" on screen, middle left): dwell fires
+//
+// An event that reads "middle left (zone 2)" is naming the index, so
+// an operator goes and looks at Zone 2 -- a different piece of grass.
+// Only the on-screen number belongs on this card.
+check("index 2 is Zone 3 on screen",
+      zoneWordsOf({ zone: 2, zone_label: "middle left" }),
+      "middle left (Zone 3)");
+check("index 0 is Zone 1, not absent",
+      zoneWordsOf({ zone: 0, zone_label: "Back" }), "Back (Zone 1)");
+// ZONE 0 IS A ZONE. `if (detail.zone)` drops it, which is the same
+// class of bug the audio verdict case below guards against.
+check("  so zone 0 is never treated as no zone",
+      zoneWordsOf({ zone: 0, zone_label: "Back" }) === null, false);
+check("an unlabelled zone still gets its number",
+      zoneWordsOf({ zone: 1 }), "Zone 2");
+check("a label with no index stands alone",
+      zoneWordsOf({ zone_label: "middle left" }), "middle left");
+check("nothing in, nothing out", zoneWordsOf({}), null);
+
+console.log();
+console.log("the dwell pill names the zone that fired it:");
+// A dwell clip with no golfer in it is nearly always a zone catching
+// traffic rather than golf. The operator cannot redraw the offending
+// box without being told which one it was, and the pill used to say
+// "Motion dwell" and stop.
+const dwell = mod.rigTrigger({
+  kind: "dwell", zone: 2, zone_label: "middle left",
+  stood_sec: 7.2, dwell_sec: 7, restarts_total: 67 });
+check("  it names the box", dwell.label.includes("middle left (Zone 3)"),
+      true);
+check("  and how long they stood", dwell.label.includes("stood 7.2s"),
+      true);
+check("  and still says why it was not judged",
+      dwell.label.includes("not judged (no impact to judge)"), true);
+check("  the threshold rides in the tooltip",
+      dwell.title.includes("Dwell threshold 7s"), true);
+check("  with the crossing count",
+      dwell.title.includes("67 zone crossings"), true);
+// A PI THAT SENT NO ZONE MUST NOT RENDER "undefined".
+const bare = mod.rigTrigger({ kind: "dwell" });
+check("a dwell with no zone still reads cleanly", bare.label,
+      "Motion dwell · not judged (no impact to judge)");
+check("  and invents no tooltip numbers",
+      bare.title.includes("threshold"), false);
+
+console.log();
 console.log("an audio cut carries the rig's own verdict:");
 check("a yes", mod.rigTrigger({ kind: "audio", ratio: 5.4, verdict: true })
   .label, "Audio ×5.4 · judge: swing");

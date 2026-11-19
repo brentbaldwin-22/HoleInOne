@@ -9751,9 +9751,31 @@ function DistanceToPinModal({ row, slot, adminPassword, onClose, onSaved }) {
  * uploads unjudged by design. Nothing on this card said so, which
  * makes every unjudged dwell clip look like the judge failing.
  */
+/** A zone as the operator refers to it, NOT as the config counts it.
+ *
+ * THESE ARE TWO DIFFERENT NUMBERS AND THEY ARE OFF BY ONE. The rig
+ * indexes zones from 0; the zone editor labels them from 1. The agent
+ * writes both on every startup --
+ *
+ *   zone 2 ("Zone 3" on screen, middle left): dwell fires
+ *
+ * -- and an event that says "middle left (zone 2)" is naming the
+ * index, so an operator reading it goes and looks at Zone 2, which is
+ * a different piece of grass. Only the on-screen number is any use
+ * here, because it is the one printed on the box they drew.
+ */
+function zoneWords(detail) {
+  if (!detail) return null;
+  const { zone, zone_label: label } = detail;
+  const onScreen = zone == null ? null : `Zone ${Number(zone) + 1}`;
+  if (label && onScreen) return `${label} (${onScreen})`;
+  return label || onScreen || null;
+}
+
 function rigTrigger(detail) {
   if (!detail || typeof detail !== "object") return null;
   const kind = detail.kind;
+  const zone = zoneWords(detail);
   if (kind === "audio") {
     let judge = "judge: not asked";
     let tone = "warn";
@@ -9765,7 +9787,7 @@ function rigTrigger(detail) {
         detail.verdict_why ? ` — ${detail.verdict_why}` : ""}`;
     }
     return { label: `Audio${detail.ratio != null
-      ? ` ×${detail.ratio}` : ""} · ${judge}${
+      ? ` ×${detail.ratio}` : ""}${zone ? ` · ${zone}` : ""} · ${judge}${
       detail.verdict_at_sec != null
         ? ` @ ${detail.verdict_at_sec}s` : ""}`, tone,
       title: detail.verdict_reason || undefined };
@@ -9773,11 +9795,25 @@ function rigTrigger(detail) {
   if (kind === "dwell") {
     // NOT A FAILURE, AND IT MUST NOT READ AS ONE. The judge cannot be
     // asked about a clip that was never cut around an impact.
-    return { label: "Motion dwell · not judged (no impact to judge)",
+    //
+    // WHICH ZONE, because that is the actionable half. A dwell clip
+    // with no golfer in it is nearly always a zone catching traffic
+    // rather than golf -- somebody crossing it on the way to a cart --
+    // and the operator cannot redraw the offending box without being
+    // told which one it was. The pill said "Motion dwell" and stopped.
+    return { label: `Motion dwell${zone ? ` · ${zone}` : ""}`
+                  + `${detail.stood_sec != null
+                      ? ` · stood ${detail.stood_sec}s` : ""}`
+                  + " · not judged (no impact to judge)",
              tone: "warn",
              title: "The swing judge runs on audio-triggered cuts only: "
                   + "a dwell clip has no impact instant to build a "
-                  + "composite around." };
+                  + "composite around."
+                  + (detail.dwell_sec != null
+                      ? ` Dwell threshold ${detail.dwell_sec}s.` : "")
+                  + (detail.restarts_total != null
+                      ? ` ${detail.restarts_total} zone crossings since the`
+                        + " agent started." : "") };
   }
   if (kind === "capture") return { label: "Operator capture", tone: "info" };
   if (kind === "manual") return { label: "Manual trigger", tone: "info" };
@@ -18438,6 +18474,39 @@ function readShowDebug() {
   }
 }
 
+/** Narrow a list of uploads by how long the TEE clip runs.
+ *
+ * WHY LENGTH IS THE HANDLE. A dwell clip with nobody in it is short,
+ * and its length is the only thing about it a machine can read: the
+ * trigger fired, the tee box was empty from the first frame, and the
+ * recorder stopped as soon as the no-person timeout ran out. A wall of
+ * 18-second clips is a wall of surplus.
+ *
+ * AN UNMEASURED LENGTH IS NOT A SHORT ONE. What this returns feeds
+ * "Select all loaded" and then a bulk DELETE, so a row whose duration
+ * never probed must not match "under 20s" -- that is the difference
+ * between clearing out surplus and destroying a clip whose metadata
+ * failed to read. Unknown is excluded from BOTH directions, because
+ * the honest answer to "is it under 20?" is that we do not know.
+ */
+export function filterByTeeLength(rows, { on, op, sec }) {
+  if (!Array.isArray(rows) || !on) return rows;
+  // AN EMPTY BOX IS NOT ZERO, though `Number("")` is. Mid-type, the
+  // input is "" for a keystroke, and a zero threshold is not a
+  // harmless no-op in either direction: "under 0" blanks the page,
+  // and "over 0" matches EVERY measured row -- which is the list
+  // "Select all loaded" then hands to the Delete button. So a blank
+  // box means no filter, not a filter on nothing.
+  if (typeof sec === "string" && sec.trim() === "") return rows;
+  const n = Number(sec);
+  if (!Number.isFinite(n)) return rows;
+  return rows.filter((r) => {
+    const d = Number(r?.tee_duration_sec);
+    if (r?.tee_duration_sec == null || !Number.isFinite(d)) return false;
+    return op === "over" ? d > n : d < n;
+  });
+}
+
 export default function AdminProduction() {
   const adminPassword =
     localStorage.getItem(ADMIN_PW_STORAGE) ||
@@ -18565,7 +18634,32 @@ export default function AdminProduction() {
   // produced, or replayed, so it's pure clutter. The tee is the primary
   // source; when it's missing the whole row is dead. Raw list still
   // drives pagination (hasMore reads the unfiltered batch length).
-  const visibleRows = rows ? rows.filter((r) => !r.tee_missing) : rows;
+  // ── LENGTH FILTER, FOR CLEARING OUT THE JUNK ──────────────────────
+  //
+  // A dwell clip with nobody in it is SHORT, and that is the only
+  // thing about it that is machine-readable. The trigger fired, the
+  // tee box was empty from the first frame, and the recorder stopped
+  // as soon as the no-person timeout ran out -- so a wall of 18-second
+  // clips is a wall of surplus, and the operator was picking them off
+  // one at a time by eye.
+  //
+  // Pairs with the select-all and bulk-delete that are already here:
+  // filter to what is too short to contain a swing, select all, delete.
+  const [lenOn, setLenOn] = useState(false);
+  const [lenOp, setLenOp] = useState("under");
+  const [lenSec, setLenSec] = useState(20);
+
+  const visibleRows = useMemo(() => {
+    if (!rows) return rows;
+    return filterByTeeLength(
+      rows.filter((r) => !r.tee_missing),
+      { on: lenOn, op: lenOp, sec: lenSec });
+  }, [rows, lenOn, lenOp, lenSec]);
+
+  const lenHiddenCount =
+    rows && lenOn
+      ? rows.filter((r) => !r.tee_missing).length - visibleRows.length
+      : 0;
   const allHidden =
     rows !== null && rows.length > 0 && visibleRows.length === 0;
 
@@ -19547,6 +19641,52 @@ export default function AdminProduction() {
             <span className="small">Select all loaded</span>
           </label>
           <span className="small muted">{selectedIds.size} selected</span>
+          {/* ── LENGTH FILTER ──────────────────────────────────────
+              Narrows the list, and therefore narrows "Select all
+              loaded" and the bulk delete beside it, which is the
+              whole point: filter to what is too short to hold a
+              swing, select all, delete. */}
+          <label
+            style={{ display: "inline-flex", alignItems: "center", gap: 6,
+                     cursor: "pointer" }}
+            title="Filter by tee clip length"
+          >
+            <input
+              type="checkbox"
+              checked={lenOn}
+              onChange={(e) => setLenOn(e.target.checked)}
+              style={{ width: 16, height: 16, cursor: "pointer" }}
+            />
+            <span className="small">Tee length</span>
+          </label>
+          <select
+            className="small"
+            value={lenOp}
+            onChange={(e) => setLenOp(e.target.value)}
+            disabled={!lenOn}
+            style={{ width: "auto" }}
+          >
+            <option value="under">under</option>
+            <option value="over">over</option>
+          </select>
+          <input
+            type="number"
+            className="small"
+            min="0"
+            step="1"
+            value={lenSec}
+            onChange={(e) => setLenSec(e.target.value)}
+            disabled={!lenOn}
+            style={{ width: 68 }}
+            aria-label="seconds"
+          />
+          <span className="small muted">s</span>
+          {lenOn && (
+            <span className="small muted">
+              {visibleRows.length} shown
+              {lenHiddenCount > 0 ? `, ${lenHiddenCount} hidden` : ""}
+            </span>
+          )}
           {mirror.configured && (
             <button
               className="small"
