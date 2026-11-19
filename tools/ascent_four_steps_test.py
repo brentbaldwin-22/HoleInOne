@@ -124,7 +124,11 @@ check("  with the swing saying which of the two it got",
 print()
 print("STEP 2 — one ascent per swing, graded by the gates:")
 check("each swing gets its own span",
-      "_spans.append((_f0, _f1))" in _run, True)
+      "_spans.append((_f0, (_f0 + _span_max if _f1 is None" in _run, True)
+# ...AND THAT SPAN HAS A CEILING. Without one the last swing's span
+# ran to the end of the footage — see tools/ascent_span_test.py.
+check("  bounded after the strike, not just before it",
+      "_ascent_span_verdict(" in _run and "_span_max" in _run, True)
 check("  chains are graded fewest-refusals then longest",
       bool(re.search(r'len\(c\.get\("why"\) or \[\]\), '
                      r'-int\(c\.get\("n_points"\)', _run)), True)

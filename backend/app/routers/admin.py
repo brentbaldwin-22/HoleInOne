@@ -28745,31 +28745,43 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
 
     _asc = []
     _spans = []
+    _span_max = int(round(float(fps or 30.0) * ASCENT_SPAN_MAX_SEC))
     _sw_list = rep["swings"]
     for _k, _sw in enumerate(_sw_list):
         _f0 = int(_sw.get("impact_frame") or 0)
         _f1 = (int(_sw_list[_k + 1].get("impact_frame") or 0)
                if _k + 1 < len(_sw_list) else None)
-        _spans.append((_f0, _f1))
+        # THE SPAN AS IT IS ACTUALLY SEARCHED, which is what the panel
+        # should print. Before the ceiling this read "f1286 onwards" on
+        # a single-swing clip and that was true, which was the problem.
+        _spans.append((_f0, (_f0 + _span_max if _f1 is None
+                             else min(int(_f1), _f0 + _span_max))))
 
         def _mine(c, lo=_f0, hi=_f1):
-            try:
-                _ff = int(c.get("first_frame"))
-            except (TypeError, ValueError):
-                return False
-            # A BALL CANNOT BE SEEN LEAVING BEFORE IT IS STRUCK, but
-            # the strike is itself an estimate, so a couple of frames
-            # of slack keeps a chain that starts on the impact frame.
-            if _ff < lo - ASCENT_SWING_SPAN_SLACK_FRAMES:
-                return False
-            return hi is None or _ff < hi
-        _cands = [c for c in _asc_all if _mine(c)]
-        _sw["considered"] = sorted(
-            [{"first_frame": c.get("first_frame"),
-              "last_frame": c.get("last_frame"),
-              "n_points": c.get("n_points"),
-              "why": list(c.get("why") or []),
-              "grade": _grade(c)} for c in _cands], key=lambda z: z["grade"])
+            return _ascent_span_verdict(c.get("first_frame"), lo, hi,
+                                        _span_max, fps)
+        _cands = []
+        _cons = []
+        for _c in _asc_all:
+            _verdict = _mine(_c)
+            if _verdict is None:
+                continue
+            # THE LATE ONES ARE SHOWN, NOT HIDDEN. "It found all the
+            # right chains and produced the wrong one" is what this
+            # table is for -- a chain that was refused has to appear
+            # here saying so, or the step reads as though it never saw
+            # it.
+            _why = list(_c.get("why") or [])
+            if _verdict:
+                _why.append(_verdict)
+            else:
+                _cands.append(_c)
+            _cons.append({"first_frame": _c.get("first_frame"),
+                          "last_frame": _c.get("last_frame"),
+                          "n_points": _c.get("n_points"),
+                          "why": _why,
+                          "grade": (len(_why), -int(_c.get("n_points") or 0))})
+        _sw["considered"] = sorted(_cons, key=lambda z: z["grade"])
         if _cands:
             _best = sorted(_cands, key=_grade)[0]
             _sw["ascent_from"] = (
@@ -32442,6 +32454,62 @@ def _point_to_segment_px(px, py, ax, ay, bx, by) -> float:
 # frame or two "before" impact is the same ball, not an
 # earlier one.
 ASCENT_SWING_SPAN_SLACK_FRAMES = 3
+
+# HOW LONG AFTER THE STRIKE A BALL CAN STILL BE *LEAVING*.
+#
+# A swing's span ran from its own impact frame to the NEXT swing's --
+# and on the last swing of a clip, which on a single-swing clip is the
+# only swing, there is no next one, so the span ran to the end of the
+# footage. Every chain the sweep found in the remaining twenty seconds
+# was a candidate for "the ball leaving the tee", graded only on gate
+# refusals and length. The ball coming down, a bird, a cart on the far
+# path: all eligible, and a clean late chain outgrades the real ascent
+# the moment the real one picks up a single refusal.
+#
+# Measured on #1780: impact f1286, and the chain produced was f1480 --
+# 194 frames, 3.2 seconds later. The green saw the ball land at f1574,
+# so f1286 gives a 4.8s flight for a 145-yard shot and f1480 gives
+# 1.6s. The ball was already most of the way to the green when the
+# chain the produce drew from even began.
+#
+# The band this sweep searches sits just above the golfers' heads. A
+# struck ball crosses it in a fraction of a second; a second and a half
+# is generous by an order of magnitude and still excludes everything
+# above.
+ASCENT_SPAN_MAX_SEC = 1.5
+
+
+def _ascent_span_verdict(first_frame, lo, hi, span_max, fps):
+    """Is this chain the ball leaving the tee on THIS swing?
+
+    Returns None when the chain belongs to another swing (or to no
+    swing at all), "" when it is this swing's, and a sentence when it
+    falls inside this swing's span but too late to be an ascent — the
+    sentence goes on the chain's refusal list so the step panel can
+    show the chain and say why it was not used.
+    """
+    try:
+        _ff = int(first_frame)
+    except (TypeError, ValueError):
+        return None
+    # A BALL CANNOT BE SEEN LEAVING BEFORE IT IS STRUCK, but the strike
+    # is itself an estimate, so a couple of frames of slack keeps a
+    # chain that starts on the impact frame.
+    if _ff < int(lo) - ASCENT_SWING_SPAN_SLACK_FRAMES:
+        return None
+    if hi is not None and _ff >= int(hi):
+        return None
+    # ...NOR LONG AFTER IT. See ASCENT_SPAN_MAX_SEC: without a ceiling
+    # the last swing's span runs to the end of the footage and the ball
+    # coming down competes with the ball going up.
+    if _ff > int(lo) + int(span_max):
+        return ("started %.1fs after the strike — a ball leaving the tee "
+                "crosses the band above the golfers in a fraction of a "
+                "second, and anything past %.1fs is something else in "
+                "the sky"
+                % ((_ff - int(lo)) / float(fps or 30.0),
+                   ASCENT_SPAN_MAX_SEC))
+    return ""
 
 ASCENT_CLIMB_FILL_FRAMES = 40
 
@@ -38058,7 +38126,28 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                 "fps": round(fps, 2),
                 "start_frame": int(round(t0 * fps)),
                 "end_frame": int(round(t1 * fps)),
-                "impact_frame": launch_f,
+                # STEP 1'S FRAME, NOT THE TRACER'S LAUNCH.
+                #
+                # This wrote `launch_f` -- the frame the ascent chain's
+                # first point sits on -- into the field the edit wizard
+                # reads as "impact frame". It is the LAST write of a
+                # produce, so it landed on top of the measured frame
+                # `_d3_save_swing` had just saved, and the wizard then
+                # showed a number the step panel had never reported.
+                # On #1780: panel f1286, wizard f1480, nothing in
+                # between to explain it.
+                #
+                # They are different quantities. The impact frame is
+                # when the club met the ball; the launch frame is when
+                # a detector first picked the ball out of the sky,
+                # which is always later and sometimes much later. The
+                # renderer already keeps them apart (`_rest_f` takes
+                # the earlier of the two); only this record conflated
+                # them.
+                "impact_frame": (int(sw["impact_frame"])
+                                 if sw.get("impact_frame") is not None
+                                 else launch_f),
+                "launch_frame": launch_f,
                 "ball": {"x": int(round(float(ball[0]))),
                          "y": int(round(float(ball[1])))},
                 "tracer_url": _url,
