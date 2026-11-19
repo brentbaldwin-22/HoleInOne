@@ -27699,16 +27699,30 @@ def _ascent_step3_work(desc, rep):
             if _wk.get("lost_at") is not None:
                 rows.append({"label": "lost it at",
                              "value": "f%s" % _wk["lost_at"]})
+            # `frames`, NOT `work`. These three live on the walk's
+            # `frames` dict; `work` is the one-sentence summary and is
+            # a STRING, so asking it for a key crashed the whole
+            # produce with "'str' object has no attribute 'get'" —
+            # after the run had done every expensive thing it does,
+            # at the one step left that only formats a report.
+            _frm = _wk.get("frames")
+            _frm = _frm if isinstance(_frm, dict) else {}
             for _k, _lbl in (("walk_searched", "frames walked"),
                              ("at_rest", "started on the ball at"),
                              ("at_rest_from", "which frame, and why")):
-                _v = (_wk.get("work") or {}).get(_k)
+                _v = _frm.get(_k)
                 if _v is not None:
                     rows.append({"label": _lbl,
                                  "value": ("f%s–f%s" % tuple(_v[:2])
                                            if isinstance(_v, (list, tuple))
                                            and len(_v) >= 2
                                            else str(_v))})
+            # AND THE SENTENCE ITSELF, which says how many frames it
+            # looked at, how wide the windows were, what it zoomed to
+            # and where the candidates went.
+            if isinstance(_wk.get("work"), str) and _wk["work"]:
+                rows.append({"label": "what the walk did",
+                             "value": _wk["work"]})
         groups.append({
             "title": "Swing %s" % v.get("swing"),
             "note": str(v.get("reason") or ""),
@@ -28128,6 +28142,28 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
             "counts": units, "seconds": round(secs or 0.0, 2),
             "work": work or None})
 
+    def _work(fn, *a):
+        """Build a step's work panel, and NEVER let it kill the run.
+
+        THE REPORT IS NOT THE WORK. These builders only format what
+        has already been found, and they run at the end of a step that
+        has done everything expensive -- so a typo in one of them
+        throws away a produce that had succeeded. That is exactly what
+        happened: `_wk.get("work")` was written expecting a dict, the
+        walk's `work` is a one-sentence SUMMARY, and the whole produce
+        of #1780 died on "'str' object has no attribute 'get'" with
+        every frame already scanned and every chain already graded.
+
+        A broken panel is a broken panel. It says so, in the panel,
+        and the run carries on.
+        """
+        try:
+            return fn(*a)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("ascent: could not build the work panel: %s", exc)
+            return {"rows": [{"label": "the work panel could not be built",
+                              "value": "%s: %s" % (type(exc).__name__, exc)}]}
+
     _pt_reset()
     _t_run = time.perf_counter()
     fps = float(probe_fps(src_path) or 0.0) or 30.0
@@ -28184,7 +28220,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
            "hole's audio lag stands in, and the swing says which it "
            "got. " + str(_s1.get("why") or ""),
            len(rep["swings"]), "swing(s)", time.perf_counter() - _t,
-           work=_ascent_step1_work(_s1, rep["swings"], fps))
+           work=_work(_ascent_step1_work, _s1, rep["swings"], fps))
     rep["step1_detail"] = {
         "cutter": _s1.get("cutter"), "lag_sec": _s1.get("lag_sec"),
         "peaks": _s1.get("peaks"), "measured": _n_meas,
@@ -29143,7 +29179,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
            "invents a landing to draw from. "
            + str(_desc.get("reason") or ""),
            _desc.get("n_matched"), "matched", time.perf_counter() - _t,
-           work=_ascent_step3_work(_desc, rep))
+           work=_work(_ascent_step3_work, _desc, rep))
 
     # ══ STEP 4. BUILD THE TRACER, AND THE CLIP ══════════════════════─────────────────────────────
     if not produce:
@@ -29412,7 +29448,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                         sorted(_phase.items(), key=lambda kv: -kv[1])
                         if v > 0) or "nothing measured"),
            rep["n_produced"], "clips", time.perf_counter() - _t,
-           work={"rows": [{"label": "tee spot — measured",
+           work=_work(lambda: {"rows": [{"label": "tee spot — measured",
                            "value": "%s of %s, from the ball that was "
                                     "watched leaving"
                                     % (rep.get("tee_spot_measured") or 0,
@@ -29450,7 +29486,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                              "images": [{"caption": "the clip",
                                          "url": c["url"]}]
                                        if c.get("url") else []}
-                            for c in (rep.get("clips") or [])]})
+                            for c in (rep.get("clips") or [])]}))
 
     _ball_scan_finish_timing(rep, _t_run)
     rep["ok"] = rep["n_produced"] > 0

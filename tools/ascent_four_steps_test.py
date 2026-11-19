@@ -179,7 +179,7 @@ check("every step can carry its work",
 check("  and so can every sub-step",
       SRC.count("work=None):") >= 2, True)
 check("step 1 hands over the cutter's pictures and numbers",
-      "work=_ascent_step1_work(" in _run, True)
+      "work=_work(_ascent_step1_work," in _run, True)
 check("  including the motion heat the swing judge reads",
       '(ai.get("swing_check") or {}).get("image_url")' in SRC, True)
 # EVERY PEAK IT WEIGHED, not only the ones it kept. On this course the
@@ -203,7 +203,7 @@ check("  2b is the cone, and only when 2a found nothing",
 check("  2c is the detections around the best chain",
       '_sub("2c", "Every detection around the best chain"' in _run, True)
 check("step 3 hands over the green's window views",
-      "work=_ascent_step3_work(" in _run, True)
+      "work=_work(_ascent_step3_work," in _run, True)
 # `image_url`, NOT `image`: this read the wrong key on its first
 # writing and rendered nothing, which from outside looks exactly like
 # a descent that drew no picture.
