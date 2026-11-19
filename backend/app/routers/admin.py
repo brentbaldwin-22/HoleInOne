@@ -27461,62 +27461,107 @@ def _ascent_find_run(row, src_path, db, progress=None) -> dict:
     return _ascent_run(row, src_path, db, progress=progress, produce=False)
 
 
-def _ascent_step2_work(rep, sweep):
-    """WHAT STEP 2 KEPT, AND WHAT IT BEAT.
+def _ascent_step3_work(desc, rep):
+    """WHICH SECONDS OF GREEN WERE SEARCHED, AND WHAT WAS IN THEM.
 
-    THE LOSERS ARE THE POINT. One strike returned eleven chains "seen
-    leaving" on the clip this was built for; step 2 keeps one per
-    swing, and "why that one" cannot be answered from the kept chain
-    alone. So each swing shows its own shortlist in the order step 2
-    graded it -- fewest gate refusals, then longest -- with what the
-    gates said about every chain it did not keep.
+    THE PICTURE IS OFTEN THE WHOLE ANSWER. The per-swing green view is
+    the same one the edit wizard plots on -- its own few seconds of
+    green with every detection drawn and numbered -- and on a clean
+    descent the chain is obvious by eye in a way no table conveys. It
+    was computed on every run and shown only in a card that has since
+    gone.
+
+    `image_url`, NOT `image`: this read the wrong key on its first
+    writing and showed nothing at all, which from outside is
+    indistinguishable from a descent that drew no picture.
     """
+    views = desc.get("views") or []
     groups = []
-    for sw in (rep.get("swings") or []):
+    for v in views:
+        v = v or {}
         rows = []
-        if sw.get("ascent"):
-            _a = sw["ascent"]
-            rows.append({"label": "kept",
-                         "value": "f%s–f%s, %s point(s)"
-                                  % (_a.get("first_frame"),
-                                     _a.get("last_frame"),
-                                     _a.get("n_points"))})
-        else:
-            rows.append({"label": "kept", "value": "nothing"})
-        _acc = sw.get("accumulator") or {}
-        if _acc:
-            rows.append({"label": "cone accumulator",
-                         "value": ("ran — " if _acc.get("ran")
-                                   else "did not run — ")
-                                  + str(_acc.get("why") or "")})
+        if v.get("frames"):
+            rows.append({"label": "frames searched",
+                         "value": "f%s–f%s" % tuple(v["frames"][:2])
+                                  if isinstance(v.get("frames"), (list, tuple))
+                                  and len(v["frames"]) >= 2
+                                  else str(v.get("frames"))})
+        if v.get("secs"):
+            rows.append({"label": "seconds of green",
+                         "value": str(v.get("secs"))})
+        if v.get("n_dets") is not None:
+            rows.append({"label": "detections",
+                         "value": str(v.get("n_dets"))})
+        rows.append({"label": "chains weighed",
+                     "value": str(len(v.get("chains") or []))})
+        rows.append({"label": "outcome",
+                     "value": ("a descent was taken" if v.get("chosen")
+                               else str(v.get("reason") or "nothing taken"))})
         groups.append({
-            "title": "Swing %s" % sw.get("n"),
-            "note": sw.get("ascent_from") or "",
+            "title": "Swing %s" % v.get("swing"),
+            "note": str(v.get("reason") or ""),
             "rows": rows,
-            "images": [{"caption": "this swing's chains",
-                        "url": sw["ascent"]["image_url"]}]
-                      if (sw.get("ascent") or {}).get("image_url") else [],
-            # THE SHORTLIST, GRADED. `grade` is (refusals, -points), so
-            # the first row is the one that was kept.
-            "table": {
-                "columns": ["", "frames", "points", "the gates"],
-                "rows": [[("kept" if i == 0 else str(i + 1)),
-                          "f%s–f%s" % (c.get("first_frame"),
-                                       c.get("last_frame")),
-                          str(c.get("n_points")),
-                          (", ".join(c.get("why") or []) or "accepted")]
-                         for i, c in enumerate(sw.get("considered") or [])],
-            } if (sw.get("considered") or []) else None,
+            "images": ([{"caption": "its seconds of green, every detection "
+                                    "numbered — the same picture the edit "
+                                    "wizard plots on",
+                         "url": v["image_url"]}]
+                       if v.get("image_url") else []),
+            "table": _ascent_chain_table(v.get("chains")),
         })
-    rows = [{"label": "chains the sweep found",
-             "value": str(len(sweep.get("ascents") or []))},
-            {"label": "kept, one per swing",
-             "value": str(len(rep.get("ascents") or []))}]
-    if rep.get("ascents_unclaimed"):
-        rows.append({"label": "claimed by no swing",
-                     "value": "%s — they start outside every swing's span"
-                              % rep["ascents_unclaimed"]})
+    rows = [{"label": "matched",
+             "value": "%s of %s swing(s)" % (desc.get("n_matched"),
+                                             len(rep.get("swings") or []))}]
+    if desc.get("windows"):
+        rows.append({"label": "windows searched",
+                     "value": ", ".join("f%s–f%s" % (a, b)
+                                        for a, b in desc["windows"])})
+    if desc.get("descent_method"):
+        rows.append({"label": "method",
+                     "value": "%s — %s" % (desc["descent_method"],
+                                           desc.get("descent_method_why")
+                                           or "")})
+    if desc.get("reason"):
+        rows.append({"label": "reason", "value": str(desc["reason"])})
     return {"rows": rows, "groups": groups}
+
+
+def _ascent_chain_table(considered):
+    """EVERY CHAIN THAT WAS WEIGHED, with what each gate read off it.
+
+    "Six kept of forty-eight" is the question restated. The number
+    that matters is WHICH gate stopped the other forty-two, and by how
+    much -- a chain refused for bend at 1.8 against a limit of 6.5 is
+    a different problem from one refused at 6.4, and the first means
+    the gate is wrong where the second means the chain is.
+
+    Columns follow the order a chain is judged in, and the limit rides
+    beside the reading so neither has to be remembered.
+    """
+    rows = []
+    for i, c in enumerate(considered or []):
+        _why = c.get("why") or []
+        rows.append([
+            "#%d" % (i + 1),
+            "f%s" % c.get("from_frame"),
+            str(c.get("n_points")),
+            str(c.get("rise_px")),
+            "%s /%s" % (c.get("rate"), c.get("rate_limit")),
+            "%s /%s" % (c.get("bend_px"), c.get("bend_limit_px")),
+            str(c.get("density")),
+            str(c.get("straightness")),
+            ("%s°" % c.get("tilt_deg")) if c.get("tilt_deg") is not None
+            else "—",
+            str(c.get("backrun_frames")),
+            str(c.get("from_x")),
+            ("ACCEPTED" if not _why else ", ".join(_why)),
+        ])
+    if not rows:
+        return None
+    return {
+        "columns": ["#", "at", "pts", "rise", "rate", "bend", "density",
+                    "straight", "tilt", "back", "from x", "verdict"],
+        "rows": rows,
+    }
 
 
 def _ascent_step1_work(s1, swings, fps):
@@ -27537,6 +27582,13 @@ def _ascent_step1_work(s1, swings, fps):
             ("the six tiles — the ball at its spot, then gone from it",
              ai.get("frames_image_url")),
             ("the ball it measured", ai.get("measured_image_url")),
+            # THE HEAT MAP BELONGS HERE. It is the picture the swing
+            # judge reads -- a compact turning figure with the club as
+            # a thin plume above it -- and it is the one thing that
+            # separates a strike from range noise where the ratio
+            # cannot. It was computed on every run and shown nowhere.
+            ("the motion heat — what the swing judge reads",
+             (ai.get("swing_check") or {}).get("image_url")),
         ]
         rows = [
             ("peak", "%.2fs" % float(sw.get("peak_sec") or 0.0)),
@@ -27560,9 +27612,44 @@ def _ascent_step1_work(s1, swings, fps):
             "images": [{"caption": c, "url": u} for c, u in imgs if u],
             "rows": [{"label": a, "value": str(b)} for a, b in rows],
         })
+    # ── THE CUTTER'S OWN DECISIONS, AS TEST CUT SHOWS THEM ──────────
+    #
+    # EVERY PEAK IT WEIGHED, not only the ones it kept. "The cutter
+    # found one swing" says nothing about the four it threw out, and
+    # on this course the thing that separates a strike from range
+    # noise is the ATTACK -- confirmed strikes rise in 5 to 9ms where
+    # people talking take 8 to 14 -- so a peak refused for a slow
+    # attack is the single most useful row on the page when a swing
+    # goes missing. Test Cut has shown this table since it existed;
+    # the produce run showed none of it.
+    _peaks = ((s1.get("cutter_debug") or {}).get("top_peaks") or [])
+    _table = None
+    if _peaks:
+        _table = {
+            "columns": ["at", "×ratio", "attack", "attack ok?", "verdict"],
+            "rows": [[
+                "%.2fs" % float(_p.get("peak_sec") or 0.0),
+                str(_p.get("ratio")),
+                ("%sms" % _p.get("attack_ms")
+                 if _p.get("attack_measured") else "not measured"),
+                ("yes" if _p.get("passes_attack") else "NO — too slow"),
+                ("kept — this is a swing" if _p.get("kept") else "refused"),
+            ] for _p in _peaks],
+        }
+    _dbg = s1.get("cutter_debug") or {}
     return {
+        "table": _table,
         "rows": [
             {"label": "cutter", "value": str(s1.get("cutter"))},
+            {"label": "gate",
+             "value": "×%s over the noise floor, attack under %sms"
+                      % (_dbg.get("min_peak_ratio_used"),
+                         (float(_dbg.get("max_attack_sec_used") or 0) * 1000)
+                         or "—")},
+            {"label": "peaks weighed",
+             "value": "%d, of which %d kept"
+                      % (len(_peaks),
+                         sum(1 for _p in _peaks if _p.get("kept")))},
             {"label": "peaks heard",
              "value": ", ".join("%.2fs" % p for p in (s1.get("peaks") or []))
                       or "none"},
@@ -28176,67 +28263,117 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                 "counts": units, "seconds": round(float(secs or 0.0), 2),
                 "work": work or None}
 
+    # ══ STEP 2's SUB-STEPS ARE THE TWO SEARCHES ═══════════════════════
+    #
+    # THEY USED TO BE THE SWEEP'S INTERNAL CLOCK -- detect, walk, fit,
+    # stitch, extend, judge, draw -- which answers "where did the 24
+    # seconds go" and not "where did it look, and what did it find".
+    # The operator reads this panel for the second question. The
+    # timings are not lost: they are rows inside 2a, under the search
+    # they belong to.
+    _sec_cone = _pt_snapshot().get("the cone search") or 0.0
+    _n_kept_above = sum(1 for w in rep["swings"]
+                        if (w.get("ascent_from") or "").startswith("the chain"))
     _scan_stages = [
-        _sub("2a", "Working out where to look",
-             "An audio-triggered clip names the second the strike was "
-             "heard, so the band is swept for a few seconds around it "
-             "rather than for the whole clip. "
+        _sub("2a", "Sweeping for chains above the skyline",
+             "One frame-difference pass over the band above the golfers, "
+             "every frame. The band is floored at the SKYLINE, which is "
+             "why the golfer is never in it — and why a ball that is "
+             "lost before it gets there needs 2b. Each chain is then "
+             "judged against the gates, and the table below is every "
+             "chain that was weighed with the number each gate read "
+             "off it. "
              + str(rep.get("window_detail") or "the whole clip"),
-             # None IS A VALUE HERE, not a missing one: `_ascent_windows`
-             # returns it to mean "nothing was heard, scan the whole
-             # clip", which is the normal answer on a clip the audio
-             # detector found no swings in. `len(None)` raised, and the
-             # whole of Find ascents died on the step-timing line --
-             # reported from the field on upload #1487 as "object of
-             # type 'NoneType' has no len()". The sibling two lines up
-             # already guards with `if _win:`; this one did not.
-             (len(_win) if _win else None), "window(s)", _sec_win),
-        _sub("2b", "Detecting",
-             "One frame-difference pass over the band above the "
-             "golfers, every frame. This is decoding: it scales with "
-             "the seconds searched above, and with nothing else.",
-             sweep.get("n_dets"), "detections", _sw_t.get("detect")),
-        _sub("2c", "Walking the detections into chains",
-             "In memory, no video read: each detection joined to the "
-             "one it predicts in the next frame, inside a corridor "
-             "ascent_corridor_px wide.",
-             sweep.get("n_walked"), "chains", _sw_t.get("walk")),
-        _sub("2d", "Fitting chains to lines",
-             "A second pass that fits rather than walks, off by default "
-             "— ascent_fit_lines turns it on.",
-             sweep.get("n_fits"), "fits", _sw_t.get("fits")),
-        _sub("2e", "Joining the pieces, re-reading the gaps",
-             "One flight cut into pieces is stitched back together, and "
-             "each hole between two pieces is a seek into the clip and "
-             "a few decoded frames. This is where a bitty detection "
-             "pass gets expensive.",
-             sweep.get("n_holes_read"), "holes re-read",
-             _sw_t.get("stitch")),
-        _sub("2f", "Following the chains that just stopped",
-             "A chain that ends mid-flight is read further, frame by "
-             "frame, out of the same re-read budget as the holes.",
-             sweep.get("n_extended"), "points added", _sw_t.get("extend")),
-        _sub("2g", "Judging every chain against the gates",
-             "Rise, speed, straightness and where it points back to. "
-             "Arithmetic on points already in memory; if this is ever "
-             "slow, something is wrong.",
-             sweep.get("n_considered"), "judged", _sw_t.get("judge")),
-        _sub("2h", "Drawing the pictures",
-             "The sweep map, the considered-chains overlay, the "
-             "detection zoom and one picture per swing. Every one is a "
-             "re-read of the frames it draws on, so this grows with the "
-             "number of swings found rather than with the clip.",
+             sweep.get("n_considered"), "chains weighed",
+             _sec_win + _sec_sweep,
+             work={
+                 "rows": [
+                     {"label": "window",
+                      "value": str(rep.get("window_detail")
+                                   or "the whole clip")},
+                     {"label": "detections",
+                      "value": "%s over %s frame(s)"
+                               % (sweep.get("n_dets"),
+                                  sweep.get("n_frames"))},
+                     {"label": "walked into chains",
+                      "value": str(sweep.get("n_walked"))},
+                     {"label": "holes re-read",
+                      "value": str(sweep.get("n_holes_read"))},
+                     {"label": "accepted by the gates",
+                      "value": "%s of %s"
+                               % (len(sweep.get("ascents") or []),
+                                  sweep.get("n_considered"))},
+                     # THE CLOCK, KEPT. This is where the sub-steps
+                     # that used to be 2b..2g went.
+                     {"label": "time",
+                      "value": ", ".join(
+                          "%s %.1fs" % (k, v) for k, v in (
+                              ("window", _sec_win),
+                              ("detect", _sw_t.get("detect") or 0.0),
+                              ("walk", _sw_t.get("walk") or 0.0),
+                              ("fit", _sw_t.get("fits") or 0.0),
+                              ("stitch", _sw_t.get("stitch") or 0.0),
+                              ("extend", _sw_t.get("extend") or 0.0),
+                              ("judge", _sw_t.get("judge") or 0.0),
+                          ) if v)},
+                 ],
+                 "images": [{"caption": c, "url": u} for c, u in (
+                     ("every chain it considered, drawn over the band",
+                      sweep.get("considered_image_url")),
+                     ("the sweep map", sweep.get("image_url")),
+                 ) if u],
+                 "table": _ascent_chain_table(sweep.get("considered")),
+             }),
+        # ── 2b ONLY RUNS IF 2a FOUND NOTHING ────────────────────────
+        #
+        # The cone search is the fallback, not a second opinion: on a
+        # tee far from the camera the ball is lost before it reaches
+        # the skyline, and the accumulator is the only thing that can
+        # look below the band's floor. When 2a has an accepted chain
+        # there is nothing for it to add, and saying so is better than
+        # a blank row that reads as a step that failed.
+        _sub("2b", "The cone search, below the skyline",
+             ("a chain was accepted above the skyline for every swing — "
+              "skipping the cone search"
+              if _n_kept_above >= len(rep["swings"]) and rep["swings"]
+              else
+              "Nothing cleared the band above the skyline, so the cone "
+              "is searched instead: every straight path out of the "
+              "ball is integrated and the one that lights up wins. "
+              "No per-frame threshold at all, which is what lets it "
+              "see a ball too faint to detect."),
+             None, None, _sec_cone,
+             work=(None if _n_kept_above >= len(rep["swings"])
+                   and rep["swings"] else {
+                 "rows": [
+                     {"label": "accumulator",
+                      "value": str((rep.get("cone_accum") or {}).get("why")
+                                   or "did not run")},
+                 ],
+                 "images": [{"caption": "the cone, and the chains in it",
+                             "url": (rep.get("cone_search") or {})
+                                    .get("image_url")}]
+                           if (rep.get("cone_search") or {}).get("image_url")
+                           else [],
+                 "table": _ascent_chain_table(
+                     (rep.get("cone_search") or {}).get("considered")),
+             })),
+        # ── AND THE ONE PICTURE THAT SETTLES "WAS IT EVEN SEEN" ─────
+        #
+        # Every detection the sweep had around its best chain: grey
+        # for seen, red for kept. Grey dots ON the red line that are
+        # not red is the TRACKER losing a ball it detected; no grey
+        # dots at all is the DETECTOR never seeing it. Those need
+        # opposite fixes and look identical from every other picture.
+        _sub("2c", "Every detection around the best chain",
+             "Grey = the detector saw it. Red = the chain kept it. "
+             "Grey dots lying ON the red line are the tracker dropping "
+             "a ball it had; no grey at all is the detector never "
+             "seeing one.",
              None, None, _sec_pics,
-             work={"images": [{"caption": c, "url": u} for c, u in (
-                 ("the sweep map — every chain it walked",
-                  sweep.get("image_url")),
-                 ("the chains it considered, and what the gates said",
-                  sweep.get("considered_image_url")),
-                 ("the detection zoom, frame numbers on every dot",
-                  sweep.get("dets_image_url")),
-                 ("the cone, and the chains it refused",
-                  (rep.get("cone_search") or {}).get("image_url")),
-             ) if u]}),
+             work={"images": [{"caption": "grey = seen · red = kept",
+                               "url": sweep.get("dets_image_url")}]
+                             if sweep.get("dets_image_url") else []}),
     ]
     # THE SWEEP'S OWN CLOCK, NOT THE SUM OF ITS PARTS. `seconds` comes
     # from inside `sweep_ascents`; the laps above are measured inside
@@ -28384,8 +28521,11 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
             + (" | " + str((sweep.get("ordered_by_measured_ball") or {})
                            .get("why") or "")
                if sweep.get("ordered_by_measured_ball") else "")),
-           len(_asc), "seen leaving", time.perf_counter() - _t,
-           work=_ascent_step2_work(rep, sweep))
+           # NOTHING AT THE ROOT OF STEP 2. The two searches are 2a and
+           # 2b and the work belongs on whichever of them did it; a
+           # summary here repeats one of them and contradicts the
+           # other the moment they disagree.
+           len(_asc), "seen leaving", time.perf_counter() - _t)
     if not _asc:
         rep["reason"] = "no ball was seen leaving the tee in this clip"
         _ball_scan_finish_timing(rep, _t_run)
@@ -28709,20 +28849,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
            "invents a landing to draw from. "
            + str(_desc.get("reason") or ""),
            _desc.get("n_matched"), "matched", time.perf_counter() - _t,
-           work={"images": [{"caption": ("swing %s — its seconds of green, "
-                                         "every detection, and the chains "
-                                         "that were weighed" % (i + 1)),
-                             "url": (v or {}).get("image")}
-                            for i, v in enumerate(_desc.get("views") or [])
-                            if (v or {}).get("image")],
-                 "rows": [{"label": "matched",
-                           "value": "%s of %s swing(s)"
-                                    % (_desc.get("n_matched"),
-                                       len(rep.get("swings") or []))},
-                          {"label": "found at rest",
-                           "value": str(_desc.get("n_at_rest")
-                                        if _desc.get("n_at_rest") is not None
-                                        else "—")}]})
+           work=_ascent_step3_work(_desc, rep))
 
     # ══ STEP 4. BUILD THE TRACER, AND THE CLIP ══════════════════════─────────────────────────────
     if not produce:

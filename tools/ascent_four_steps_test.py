@@ -172,15 +172,40 @@ check("  and so can every sub-step",
       SRC.count("work=None):") >= 2, True)
 check("step 1 hands over the cutter's pictures and numbers",
       "work=_ascent_step1_work(" in _run, True)
-check("step 2 hands over the graded shortlist",
-      "work=_ascent_step2_work(" in _run, True)
-check("  including the chains it did not keep",
-      '"the gates"' in SRC, True)
+check("  including the motion heat the swing judge reads",
+      '(ai.get("swing_check") or {}).get("image_url")' in SRC, True)
+# EVERY PEAK IT WEIGHED, not only the ones it kept. On this course the
+# attack is what separates a strike from range noise, so a peak
+# refused for a slow attack is the most useful row on the page when a
+# swing goes missing.
+check("  and every peak it weighed, with why each was kept or refused",
+      '"attack ok?"' in SRC and '"refused"' in SRC, True)
+# NOTHING AT THE ROOT OF STEP 2. The two searches are 2a and 2b, and
+# the work belongs to whichever of them did it; a summary on the step
+# repeats one and contradicts the other the moment they disagree.
+_step2 = next(c for n, c in _calls(_run, "_stage") if n == "2")
+check("step 2 itself carries no work", "work=" in _step2, False)
+check("  2a carries the sweep above the skyline",
+      '_sub("2a", "Sweeping for chains above the skyline"' in _run, True)
+check("  with every chain that was weighed, and each gate's reading",
+      "_ascent_chain_table(sweep.get(\"considered\"))" in _run, True)
+check("  2b is the cone, and only when 2a found nothing",
+      '_sub("2b", "The cone search, below the skyline"' in _run
+      and "skipping the cone search" in _run, True)
+check("  2c is the detections around the best chain",
+      '_sub("2c", "Every detection around the best chain"' in _run, True)
 check("step 3 hands over the green's window views",
-      '"url": (v or {}).get("image")' in _run, True)
+      "work=_ascent_step3_work(" in _run, True)
+# `image_url`, NOT `image`: this read the wrong key on its first
+# writing and rendered nothing, which from outside looks exactly like
+# a descent that drew no picture.
+check("  reading image_url, the key the view actually has",
+      '"url": v["image_url"]' in SRC, True)
+check("  with the frames searched and the chains weighed",
+      '"frames searched"' in SRC and '"chains weighed"' in SRC, True)
 check("step 4 hands over the tee spot and the clip",
       '"tee spot — measured"' in _run, True)
-check("and the sweep's pictures hang off 2h, where they are drawn",
+check("and the sweep's pictures hang off 2a, the search that drew them",
       'sweep.get("considered_image_url")' in _run, True)
 
 print()

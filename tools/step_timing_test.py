@@ -120,15 +120,24 @@ print("stage 2 reports the sweep's steps under it:")
 _s1 = _block("    _ascent_trim_considered(sweep)",
              "    _asc_all = list(sweep.get(\"ascents\") or [])")
 check("the run builds scan_stages", 'rep["scan_stages"]' in _s1, True)
-for _n, _what in (("2a", "the window calculation"),
-                  ("2b", "detection"),
-                  ("2c", "the walk"),
-                  ("2d", "the fits"),
-                  ("2e", "the stitch and its re-reads"),
-                  ("2f", "following stopped chains"),
-                  ("2g", "the gates"),
-                  ("2h", "drawing the pictures")):
+# ── AND THEY ARE THE TWO SEARCHES NOW, NOT THE SWEEP'S CLOCK ────────
+#
+# 2a..2h used to be detect, walk, fit, stitch, extend, judge, draw --
+# which answers "where did the 24 seconds go" and never "where did it
+# look, and what did it find". The operator reads this panel for the
+# second question. The timings are not lost: they are a row inside
+# 2a's work, under the search they belong to.
+for _n, _what in (("2a", "sweeping above the skyline"),
+                  ("2b", "the cone search below it"),
+                  ("2c", "every detection around the best chain")):
     check("%s is %s" % (_n, _what), '"%s"' % _n in _s1, True)
+check("  and the sweep's own laps survive as a row in 2a",
+      '("detect", _sw_t.get("detect")' in _s1, True)
+# 2b IS A FALLBACK, NOT A SECOND OPINION. When a chain was accepted
+# above the skyline there is nothing for it to add, and saying so
+# beats a blank row that reads as a step that failed.
+check("  2b says when it was skipped, rather than going blank",
+      "skipping the cone search" in _s1, True)
 # MEASURED, NOT RETYPED. Every one of the sweep's own laps is read off
 # the sweep's report -- a number typed into the page by hand describes
 # the run it was typed during and no other.
@@ -223,10 +232,19 @@ check("sub-steps too small to matter are dropped",
 # A count is the least important thing on the line. It must never be
 # the thing that takes the run down.
 print("a stage line cannot kill the run it is describing:")
-check("the window count handles 'nothing heard'",
-      "len(_win) if _win else None" in _src, True)
-check("  and the bare len is gone, not merely shadowed",
-      "(len(_win) or None)" in _src, False)
+# `_win` IS NO LONGER COUNTED ON A STAGE LINE AT ALL, which retires
+# the bug rather than guarding it: `_ascent_windows` returns None to
+# mean "nothing heard, scan the whole clip", `len(None)` raised, and
+# the whole of Find ascents died on the step-timing line. 2a reports
+# the window as the sentence the run already built and counts chains
+# instead.
+# Scoped to the stage lines, not the file: the descent counts `_win`
+# too and guards it with `if _win and len(_win) == 2`, which is the
+# correct shape and not what this is about.
+check("no stage line takes len() of the window list",
+      "len(_win)" in _s1, False)
+check("  and 2a reports the window as prose, which cannot raise",
+      'rep.get("window_detail")' in _src, True)
 # The same rule for every count that comes off a `.get()`, which can
 # be absent for the same ordinary reasons.
 for _c in ("sweep.get(\"n_dets\")", "sweep.get(\"n_chains\")"):
