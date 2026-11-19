@@ -10184,6 +10184,162 @@ const PHASE_LABELS = {
   launch_track_pixel: "Tracking the launch",
 };
 
+/** EVERY SWING, WITH WHAT EACH STEP SAW OF IT.
+ *
+ * THE RUN IS PER SWING NOW, AND THE CARD WAS NOT. Step 1 asks the
+ * cutter where the swings are and steps 2 to 4 run once for each, so
+ * a clip of a fourball has four of everything -- four impact frames,
+ * four sets of tiles, four graded shortlists of chains. The panel
+ * showed one: the first swing's, under a heading that did not say so.
+ *
+ * AND THE LOSING CHAINS ARE THE POINT. One strike on the clip that
+ * prompted this returned ELEVEN chains "seen leaving". Step 2 keeps
+ * the best one per swing, and an operator asking "why that one" can
+ * only answer it by seeing the ones it beat and what the gates said
+ * about them.
+ */
+function AscentSwingSteps({ rep }) {
+  const swings = rep?.swings || [];
+  if (!swings.length) return null;
+  const s1 = rep?.step1_detail || {};
+  return (
+    <div className="card" style={{ marginTop: 12 }}>
+      <div className="row" style={{ gap: 8, alignItems: "baseline",
+                                    flexWrap: "wrap" }}>
+        <b>Step 1 · the cutter found {swings.length} swing
+          {swings.length === 1 ? "" : "s"}</b>
+        {s1.cutter && (
+          <span className="pill small live">{s1.cutter} cutter</span>
+        )}
+        {s1.measured != null && (
+          <span className="small muted">
+            {s1.measured} impact frame{s1.measured === 1 ? "" : "s"} measured
+            from the ball
+            {s1.fell_back ? `, ${s1.fell_back} from the peak less `
+              + `${s1.lag_sec}s` : ""}
+          </span>
+        )}
+      </div>
+      {swings.map((sw) => {
+        const ai = sw.ai_launch || {};
+        const pics = [
+          ["the golfer and the ball", ai.image_url],
+          ["the six tiles — the ball at rest, then gone",
+           ai.frames_image_url],
+          ["the ball it measured", ai.measured_image_url],
+        ].filter(([, u]) => !!u);
+        return (
+          <div key={sw.n} style={{ marginTop: 12, paddingTop: 10,
+                                   borderTop: "1px solid #0001" }}>
+            <div className="row" style={{ gap: 8, alignItems: "baseline",
+                                          flexWrap: "wrap" }}>
+              <b>Swing {sw.n}</b>
+              <span className="small muted">peak {sw.peak_sec}s</span>
+              <span className={`pill small ${sw.measured ? "ok" : "warn"}`}>
+                impact f{sw.impact_frame}
+              </span>
+              <span className="small muted">
+                {sw.measured ? "measured" : "not measured"}
+              </span>
+              {sw.seconds != null && (
+                <span className="tiny muted" style={{ marginLeft: "auto" }}>
+                  {sw.seconds}s
+                </span>
+              )}
+            </div>
+            {/* WHICH OF THE TWO IT GOT, in the words the step uses.
+                A measured frame and a subtracted one are the same
+                number on screen and are not the same claim. */}
+            {sw.impact_from && (
+              <div className="tiny muted" style={{ marginTop: 2 }}>
+                {sw.impact_from}
+              </div>
+            )}
+            {pics.length > 0 && (
+              <div className="row" style={{ gap: 8, marginTop: 8,
+                                            flexWrap: "wrap" }}>
+                {pics.map(([cap, url]) => (
+                  <figure key={cap} style={{ margin: 0, maxWidth: 320 }}>
+                    <a href={url} target="_blank" rel="noreferrer">
+                      <img src={url} alt={cap}
+                           style={{ width: "100%", borderRadius: 6 }} />
+                    </a>
+                    <figcaption className="tiny muted">{cap}</figcaption>
+                  </figure>
+                ))}
+              </div>
+            )}
+            {/* ── STEP 2, FOR THIS SWING ────────────────────────── */}
+            <div className="small" style={{ marginTop: 8 }}>
+              <b>Step 2 · the ascent</b>{" "}
+              {sw.ascent
+                ? <span className="pill small ok">
+                    {sw.ascent_n_points} point(s)
+                  </span>
+                : <span className="pill small bad">nothing found</span>}
+            </div>
+            {sw.ascent_from && (
+              <div className="tiny muted" style={{ marginTop: 2 }}>
+                {sw.ascent_from}
+              </div>
+            )}
+            {/* THE SHORTLIST, AND WHAT THE GATES SAID. Sorted the way
+                step 2 sorted it, so the kept one is first. */}
+            {(sw.considered || []).length > 0 && (
+              <table className="small" style={{ marginTop: 6,
+                                                borderCollapse: "collapse" }}>
+                <thead>
+                  <tr className="tiny muted">
+                    <th style={{ textAlign: "left", paddingRight: 10 }}>#</th>
+                    <th style={{ textAlign: "left", paddingRight: 10 }}>
+                      frames</th>
+                    <th style={{ textAlign: "left", paddingRight: 10 }}>
+                      points</th>
+                    <th style={{ textAlign: "left" }}>the gates</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sw.considered.map((c, i) => (
+                    <tr key={i} style={{ opacity: i === 0 ? 1 : 0.65 }}>
+                      <td style={{ paddingRight: 10 }}>
+                        {i === 0 ? "kept" : i + 1}
+                      </td>
+                      <td style={{ paddingRight: 10 }}>
+                        f{c.first_frame}–f{c.last_frame}
+                      </td>
+                      <td style={{ paddingRight: 10 }}>{c.n_points}</td>
+                      <td>
+                        {(c.why || []).length === 0
+                          ? "accepted"
+                          : (c.why || []).join(", ")}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {/* 2b, WHEN THE SKYLINE HAD NOTHING. */}
+            {sw.accumulator && (
+              <div className="tiny muted" style={{ marginTop: 4 }}>
+                cone accumulator:{" "}
+                {sw.accumulator.ran
+                  ? (sw.accumulator.why || "ran")
+                  : `did not run — ${sw.accumulator.why || "no reason given"}`}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {rep.ascents_unclaimed > 0 && (
+        <div className="tiny muted" style={{ marginTop: 10 }}>
+          {rep.ascents_unclaimed} chain(s) the sweep found were claimed by
+          no swing — they start outside every swing&apos;s span.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProduceStepSummary({ rep }) {
   const t = rep?.timing;
   const stages = rep?.stages || [];
@@ -10207,9 +10363,15 @@ function ProduceStepSummary({ rep }) {
   // of them (the AI launch plot), so these moved from 1 and 3 to 2 and
   // 4. The ball-scan report has its own numbering and no sub-steps
   // under these, so a stale key here would simply show nothing.
+  // AND THEY MOVE WHEN THE STEPS DO. The ascent run is now the four
+  // steps the operator asked for -- cutter, ascent, descent, tracer --
+  // so the descent's own sub-steps sit under 3, not 4. A stale key
+  // here does not break anything, which is exactly the problem: the
+  // breakdown simply stops appearing and the step reads as one opaque
+  // number again.
   const subsByStage = {
     2: rep?.scan_stages || [],
-    4: rep?.descent_stages || [],
+    3: rep?.descent_stages || [],
   };
 
   push("queue", "Waiting for the produce queue", t.queued_sec, null, true);
@@ -10971,6 +11133,11 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
         )}
 
         <ProduceStepSummary rep={rep} />
+        {/* AND THEN EACH SWING, with what every step saw of it. The
+            summary above says how long the four steps took; this says
+            what they found, per swing, with the pictures they drew
+            and the chains step 2 graded and did not keep. */}
+        <AscentSwingSteps rep={rep} />
 
         {/* ── THE SHOT, IN THE ORDER IT HAPPENED ──────────────────
             Before any of the panels below, which are each one

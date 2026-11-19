@@ -114,8 +114,11 @@ def _block(start_marker: str, end_marker: str) -> str:
 
 # ── 2. stage 2 carries them out ──────────────────────────────────────
 print("stage 2 reports the sweep's steps under it:")
+# THE END MARKER MOVED WITH THE RESTRUCTURE. The sweep's own
+# sub-steps are still built in the same place; what follows them is
+# no longer `_asc = list(...)` but STEP 2's per-swing selection.
 _s1 = _block("    _ascent_trim_considered(sweep)",
-             '    _asc = list(sweep.get("ascents") or [])')
+             "    _asc_all = list(sweep.get(\"ascents\") or [])")
 check("the run builds scan_stages", 'rep["scan_stages"]' in _s1, True)
 for _n, _what in (("2a", "the window calculation"),
                   ("2b", "detection"),

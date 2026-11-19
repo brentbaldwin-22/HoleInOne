@@ -93,23 +93,38 @@ def main():
     ok("the production page has no column-search block left",
        "ascent_column" in _jsx, False)
 
-    # ── AND THE MEASURED BALL IS WHAT PICKS AMONG THE CHAINS ────────
+    # ── AND EACH SWING TAKES EXACTLY ONE OF THE CHAINS ──────────────
     #
-    # This is the whole replacement. Without it the sweep's first
-    # chain wins by position in a list, which on a busy tee is
-    # whichever ball happened to be detected first.
-    ok("the measured ball orders the sweep's chains",
-       "ordered_by_measured_ball" in src, True)
-    ok("  by distance from its own traced-back tee spot",
-       bool(re.search(r"from_x.*_mb\[0\]", src, re.S)), True)
+    # ORDERING THEM WAS NOT ENOUGH. The measured ball used to SORT the
+    # sweep's chains and the run then produced from all of them: one
+    # strike on the clip that prompted the restructure returned
+    # ELEVEN "seen leaving", so eleven clips stood for one swing and
+    # which produced came down to a list position.
+    #
+    # Now step 1 says how many swings there were, and step 2 keeps one
+    # chain for each -- the best of those starting inside that swing's
+    # own span, graded the way the gates already grade.
+    ok("each swing takes the chains in its own span",
+       "_spans.append((_f0, _f1))" in src, True)
+    ok("  graded fewest-refusals-then-longest, as the sweep grades",
+       bool(re.search(r"len\(c\.get\(\"why\"\) or \[\]\), "
+                      r"-int\(c\.get\(\"n_points\"\)", src)), True)
+    ok("  and exactly one is kept per swing",
+       "_best = sorted(_cands, key=_grade)[0]" in src, True)
+    ok("  with the losers kept for the card, not discarded silently",
+       '_sw["considered"] = sorted(' in src, True)
+    # AND WHEN NOTHING CLEARED THE SKYLINE, the cone accumulator is
+    # the fallback rather than nothing at all.
+    ok("no chain above the skyline falls back to the accumulator",
+       "_ascent_cone_accumulate(" in src, True)
 
-    # ── STAGE 1 NO LONGER CLAIMS AN ASCENT ──────────────────────────
+    # ── STEP 1 NO LONGER CLAIMS AN ASCENT ───────────────────────────
     _i_stage1 = src.index('_stage(1,')
     _i_stage2 = src.index('_stage(2,')
     _s1 = src[_i_stage1:_i_stage2]
-    ok("stage 1's title stops at the impact frame",
-       "The golfer, the ball and the impact frame" in _s1, True)
-    ok("  and it counts balls measured, not ascent points",
+    ok("step 1's title stops at the impact frame",
+       "the frame the ball left" in _s1, True)
+    ok("  and it counts swings, not ascent points",
        "ascent point(s)" in _s1, False)
 
     print()

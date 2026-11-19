@@ -113,8 +113,25 @@ kept, _ = run([chain(1454, 7), chain(1457, 4)],
               gates={"ascent_same_swing_sec": 0.0})
 check("a zero window merges nothing", len(kept), 2)
 _adm = (ROOT / "backend" / "app" / "routers" / "admin.py").read_text()
-check("the run records what it collapsed",
-      'rep["ascents_merged"]' in _adm)
+# ── THE RUN NO LONGER NEEDS TO COLLAPSE ANYTHING ───────────────────
+#
+# `_collapse_one_ball` exists because the sweep returned every chain
+# it liked and the run then had to notice that two of them were one
+# flight. STEP 2 removes the cause rather than the symptom: step 1
+# says how many swings there were, and step 2 keeps ONE chain per
+# swing. Two pieces of one flight cannot both survive, because only
+# one of them is kept in the first place.
+#
+# The function is still here, still tested above on its own, because
+# the question it answers -- did these two leave the same place at
+# the same moment -- is the right one to ask if the sweep is ever
+# trusted to count swings again.
+check("one chain per swing, so there is nothing left to collapse",
+      "_best = sorted(_cands, key=_grade)[0]" in _adm)
+check("  and the chains that lost are still reported",
+      '_sw["considered"] = sorted(' in _adm)
+check("  with the ones no swing claimed counted",
+      'rep["ascents_unclaimed"]' in _adm)
 
 print()
 if FAILED:
