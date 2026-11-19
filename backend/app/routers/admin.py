@@ -27497,6 +27497,46 @@ def _rest_spot_of(rep, view):
     return (_c or {}).get("rest_spot")
 
 
+def _walk_log_table(walk, cap=80):
+    """ONE ROW PER FRAME THE WALK CLIMBED, which is what it did.
+
+    "1 walked" and a number of seconds says a walk happened. It does
+    not say where it looked, how far it was willing to match, or why
+    it stopped — and a walk that stops early is the whole question on
+    a green where the descent is plain to the eye.
+
+    The last rows before it was lost are the interesting ones: an
+    empty window means the detector saw nothing at all there, while
+    candidates present and none taken means something was there and
+    was refused for being too far from where the ball had to be.
+    """
+    _log = (walk or {}).get("log") or []
+    if not _log:
+        return None
+    _rows = _log[-cap:]
+    return {
+        "columns": ["frame", "looked at", "window", "zoom", "within",
+                    "cands", "nearest", "took", "area", "contrast"],
+        "rows": [[
+            "f%s" % q.get("frame"),
+            ("%d,%d" % tuple(q["looked_at"][:2])
+             if q.get("looked_at") else "—"),
+            "%spx" % q.get("window_px"),
+            "%sx" % q.get("zoom"),
+            "%spx" % q.get("match_within_px"),
+            str(q.get("n_cands")),
+            ("%spx" % q["nearest_px"]) if q.get("nearest_px") is not None
+            else "—",
+            ("%d,%d" % tuple(q["took"][:2])) if q.get("took") else "LOST",
+            str(q.get("area") if q.get("area") is not None else "—"),
+            str(q.get("contrast") if q.get("contrast") is not None else "—"),
+        ] for q in _rows],
+        "note": ("the last %d of %d steps" % (len(_rows), len(_log))
+                 if len(_log) > len(_rows) else
+                 "every step it took"),
+    }
+
+
 def _descent_chain_table(chains):
     """EVERY CHAIN THE GREEN WEIGHED, in the numbers a DESCENT has.
 
@@ -27630,6 +27670,16 @@ def _ascent_step3_work(desc, rep):
             if _wk.get("lost_at") is not None:
                 rows.append({"label": "lost it at",
                              "value": "f%s" % _wk["lost_at"]})
+            for _k, _lbl in (("walk_searched", "frames walked"),
+                             ("at_rest", "started on the ball at"),
+                             ("at_rest_from", "which frame, and why")):
+                _v = (_wk.get("work") or {}).get(_k)
+                if _v is not None:
+                    rows.append({"label": _lbl,
+                                 "value": ("f%s–f%s" % tuple(_v[:2])
+                                           if isinstance(_v, (list, tuple))
+                                           and len(_v) >= 2
+                                           else str(_v))})
         groups.append({
             "title": "Swing %s" % v.get("swing"),
             "note": str(v.get("reason") or ""),
@@ -27650,7 +27700,21 @@ def _ascent_step3_work(desc, rep):
                 ("walked back from the ball at rest, window by zoomed "
                  "window", (_wk or {}).get("image_url")),
             ) if u],
-            "table": _descent_chain_table(v.get("chains")),
+            # ── WHAT THE WALK DID, STEP BY STEP ────────────────────
+            #
+            # One row per frame it climbed: where it looked, how big
+            # the window was, what it was zoomed to, how many
+            # candidates were inside it and which it took. This is
+            # the answer to "how many detections do we get when we
+            # zoom in" at the only resolution that settles it, and
+            # it is also where a walk that stops early explains
+            # itself — the last rows before `lost_at` show whether
+            # the window was empty or whether something was there
+            # and refused for being too far.
+            "table": _walk_log_table(_wk) or _descent_chain_table(
+                v.get("chains")),
+            "table2": (_descent_chain_table(v.get("chains"))
+                       if _walk_log_table(_wk) else None),
             # ── THE WIZARD'S OWN PICTURE ────────────────────────────
             #
             # THE FRAME ALONE WAS NEVER THE PICTURE. What makes the
@@ -29486,6 +29550,9 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     # Reported after the walk has run, since it is now decided per
     # swing by whether a ball was found at rest. Set here so the key
     # exists on every early return below.
+    # PROVISIONAL. Both are rewritten once the walk has run and the
+    # skip is known — see the end of this function. Set here so the
+    # keys exist on every early return above that.
     out["descent_method"] = "search" if _old_way else "walk+crawl"
     out["descent_method_why"] = (
         "this clip was fired by a DWELL — nobody heard a strike, so the "
@@ -30074,9 +30141,17 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
          "candidate — a branch in the treeline is not rejected, it is "
          "never considered.",
          out.get("n_descent"),
-         "walked" if not _old_way else
-         "walked — SKIPPED, this is a dwell clip and gets the older "
-         "whole-window search instead", _lap())
+         # WHAT HAPPENED, NOT WHAT THE TRIGGER KIND USED TO IMPLY.
+         # This said "walked — SKIPPED, this is a dwell clip and gets
+         # the older whole-window search instead" whenever the clip was
+         # a dwell — printed beside a count of 1 and 57.6 seconds of
+         # work, because the walk now runs on dwell clips and only the
+         # label still believed otherwise. A label keyed on a flag
+         # rather than on the outcome lies the moment the flag stops
+         # deciding anything.
+         ("walked" if out.get("n_descent") else
+          "walked — no swing had a ball at rest to walk back from"),
+         _lap())
     _sub("3e", "Finding the flight, forwards from the pitch mark",
          "THE WALK STOPS AT THE BOUNCE AND ALWAYS WILL — a bounce is "
          "an impulse, and no smooth motion model crosses one in either "
@@ -30362,6 +30437,17 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     out["descent_method"] = (
         "walk+crawl" if _walked and not _do_descent else
         "walk+crawl, with a search for the rest" if _walked else "search")
+    # AND THE REASON, REWRITTEN FROM WHAT HAPPENED. The text set at the
+    # top explains a choice made on trigger kind, which is no longer
+    # the choice being made: it would tell an operator the walk was
+    # skipped for being a dwell while the step above it reports a
+    # swing walked.
+    out["descent_method_why"] = (
+        "%d swing(s) were walked back from their own ball at rest. %s"
+        % (len(_walked), out["descent_search_why"])
+        if _walked else
+        "no swing had a ball at rest to walk back from, so the whole "
+        "window is searched. " + str(out.get("descent_method_why") or ""))
     for i, (_flo, _fhi) in enumerate(_wins if _do_descent else []):
         if progress:
             progress(f"Looking for the ball coming down, window {i + 1} "

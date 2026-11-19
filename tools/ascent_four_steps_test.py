@@ -339,6 +339,28 @@ check("  where the ball first moved and where it was lost",
       '"ball first moved"' in SRC and '"lost it at"' in SRC, True)
 check("  and the picture of the windows it walked",
       '(_wk or {}).get("image_url")' in SRC, True)
+# "1 WALKED" AND A NUMBER OF SECONDS SAYS A WALK HAPPENED. It does not
+# say where it looked, how far it was willing to match, or why it
+# stopped — and a walk that stops early is the whole question on a
+# green where the descent is plain to the eye.
+check("  and one row per frame it climbed",
+      "def _walk_log_table(" in SRC, True)
+for _col in ("looked at", "window", "zoom", "within", "cands",
+             "nearest", "took"):
+    check("    with its %r column" % _col, '"%s"' % _col in SRC, True)
+# THE LAST ROWS BEFORE IT WAS LOST ARE THE INTERESTING ONES: an empty
+# window means the detector saw nothing there at all, while candidates
+# present and none taken means something was there and was refused for
+# being too far from where the ball had to be.
+check("    showing the steps nearest where it stopped",
+      "_rows = _log[-cap:]" in SRC, True)
+check("    and saying when it is only part of the walk",
+      '"the last %d of %d steps"' in SRC, True)
+check("    which the page prints above the table",
+      "{t.note && (" in JSX, True)
+# The chain table is not displaced by it — both are shown.
+check("  without displacing the chains table",
+      '"table2"' in SRC and "<Table t={g.table2} />" in JSX, True)
 # IT IS MATCHED BY SWING, not by position: `descents_back` only holds
 # rows for swings that had a rest spot, so index i is not swing i.
 check("matched to its swing by number, not by position",
@@ -379,6 +401,23 @@ check("  nothing unsolved means nothing searched",
       "_do_descent = bool(_unsolved)" in _desc, True)
 check("the step says whether it ran, and why",
       '"the 3g search"' in SRC, True)
+# AND THE LABELS REPORT THE OUTCOME, NOT THE FLAG. 3c's units read
+# "walked — SKIPPED, this is a dwell clip and gets the older
+# whole-window search instead" beside a count of 1 and 57.6 seconds of
+# work: the walk had started running on dwell clips and only the label
+# still believed otherwise. A label keyed on a flag rather than on
+# what happened lies the moment the flag stops deciding anything.
+check("3c's label is keyed on what it walked, not the trigger kind",
+      '"walked" if out.get("n_descent") else' in _desc, True)
+check("  with no trigger-kind text left on it",
+      "this is a dwell clip and gets the older" in _desc, False)
+check("the method prose is rewritten from what happened",
+      "swing(s) were walked back from their own ball at rest" in _desc,
+      True)
+# The provisional values set at the top must still exist, because an
+# early return can happen before the rewrite.
+check("  but a provisional one survives the early returns",
+      '"search" if _old_way else "walk+crawl"' in _desc, True)
 check("  and which swings were walked instead",
       '"descent_skipped_for"' in SRC, True)
 

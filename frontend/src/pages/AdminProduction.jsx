@@ -10240,7 +10240,15 @@ function StepWork({ work }) {
   );
   const Table = ({ t }) => (
     !t || !(t.rows || []).length ? null : (
-      <table className="tiny" style={{ marginTop: 6,
+      <>
+      {/* HOW MUCH OF IT THIS IS. A walk of four hundred steps shows
+          its last eighty, and a table that does not say so reads as
+          the whole walk — which makes the first row look like where
+          it started rather than where the interesting part begins. */}
+      {t.note && (
+        <div className="tiny muted" style={{ marginTop: 6 }}>{t.note}</div>
+      )}
+      <table className="tiny" style={{ marginTop: 4,
                                        borderCollapse: "collapse" }}>
         <thead>
           <tr className="muted">
@@ -10265,6 +10273,7 @@ function StepWork({ work }) {
           ))}
         </tbody>
       </table>
+      </>
     )
   );
   // ── THE FRAME WITH ITS DETECTIONS ON IT ──────────────────────────
@@ -10333,6 +10342,7 @@ function StepWork({ work }) {
       <Pics list={work.images} />
       <DotMap m={work.dotmap} />
       <Table t={work.table} />
+      <Table t={work.table2} />
       {(work.groups || []).map((g, i) => (
         <div key={i} style={{ marginTop: 10, paddingTop: 8,
                               borderTop: "1px solid var(--line)" }}>
@@ -10344,6 +10354,7 @@ function StepWork({ work }) {
           <Pics list={g.images} />
           <DotMap m={g.dotmap} />
           <Table t={g.table} />
+          <Table t={g.table2} />
         </div>
       ))}
     </div>
