@@ -1947,11 +1947,36 @@ export default function AdminCamerasOld() {
   // capture shows today's framing rather than the browser's copy of
   // last week's.
   const [stillBust, setStillBust] = useState(() => Date.now());
+  // WHETHER THERE IS A STILL AT ALL. `/cameras/{id}/still` answers 204
+  // when none has been captured, and a 204 gives an <img> nothing to
+  // decode: `onLoad` never fires, the frame size stays null, and the
+  // zone editor shows "Waiting for a frame to draw on…" forever. That
+  // reads as a broken editor when the real answer is "press Capture",
+  // so the failure is caught and said out loud.
+  const [stillMissing, setStillMissing] = useState(false);
+  const [stillTries, setStillTries] = useState(0);
   useEffect(() => {
     if (zoningCamId != null || outliningCamId != null) {
       setStillBust(Date.now());
+      setStillMissing(false);
+      setStillTries(0);
     }
   }, [zoningCamId, outliningCamId]);
+  // AND IT USUALLY FIXES ITSELF, so wait rather than make them come
+  // back. `still_wanted` on the server returns True the moment the
+  // file is missing, and the agent pushes one on its next poll — a
+  // few seconds. Bounded, because a camera that is offline will never
+  // produce one and a page that retries forever hides that.
+  useEffect(() => {
+    if (!stillMissing || stillTries >= 4) return undefined;
+    if (zoningCamId == null && outliningCamId == null) return undefined;
+    const t = setTimeout(() => {
+      setStillTries((n) => n + 1);
+      setStillBust(Date.now());
+      setStillMissing(false);
+    }, 6000);
+    return () => clearTimeout(t);
+  }, [stillMissing, stillTries, zoningCamId, outliningCamId]);
   // The element the picture is painted in. The zone editor portals its
   // drawing surface into it, so the surface covers the PICTURE and not
   // the controls underneath — only one camera is ever watched, so one
@@ -3256,9 +3281,37 @@ export default function AdminCamerasOld() {
                               after the latest zoom nudge. Re-capture a
                               still after moving the lens and the box
                               is drawn on today's framing again. */}
-                          {(zoningCamId === cam.id || outliningCamId === cam.id) && (
+                          {(zoningCamId === cam.id || outliningCamId === cam.id)
+                            && !stillMissing && (
                             <img
                               src={`${api.cameraStillUrl(cam.id)}?t=${stillBust}`}
+                              alt=""
+                              onLoad={(e) => {
+                                const { naturalWidth: w, naturalHeight: h } = e.target;
+                                // A 204 CAN STILL FIRE onLoad in some
+                                // browsers, with a zero-sized image. A
+                                // frame of 0x0 is not a frame.
+                                if (!w || !h) { setStillMissing(true); return; }
+                                if (liveNatural?.w !== w
+                                    || liveNatural?.h !== h) {
+                                  setLiveNatural({ w, h });
+                                }
+                              }}
+                              onError={() => setStillMissing(true)}
+                              style={{ display: "block", width: "100%",
+                                       height: "auto" }}
+                            />
+                          )}
+                          {/* NO STILL: FALL BACK TO THE STREAM RATHER THAN
+                              TO NOTHING. Drawing on the live frame is
+                              what this replaced, not something that
+                              stopped working — so a camera with no
+                              capture yet still gets an editor, and the
+                              banner below says why it is moving. */}
+                          {(zoningCamId === cam.id || outliningCamId === cam.id)
+                            && stillMissing && liveFrameSrc && (
+                            <img
+                              src={liveFrameSrc}
                               alt=""
                               onLoad={(e) => {
                                 const { naturalWidth: w, naturalHeight: h } = e.target;
@@ -3270,6 +3323,27 @@ export default function AdminCamerasOld() {
                               style={{ display: "block", width: "100%",
                                        height: "auto" }}
                             />
+                          )}
+                          {(zoningCamId === cam.id || outliningCamId === cam.id)
+                            && stillMissing && (
+                            <div
+                              style={{
+                                position: "absolute", left: 0, right: 0,
+                                top: 0, padding: "6px 10px", zIndex: 5,
+                                background: "rgba(180,83,9,0.92)",
+                                color: "#fff", fontSize: 12,
+                              }}
+                            >
+                              No still for this camera yet
+                              {liveFrameSrc
+                                ? " — drawing on the live view instead."
+                                : " and no live frame is arriving either."}
+                              {stillTries < 4
+                                ? " The agent is asked for one on its next"
+                                  + " poll; retrying…"
+                                : " It has not arrived after four tries —"
+                                  + " check the camera is online."}
+                            </div>
                           )}
                           {!(zoningCamId === cam.id || outliningCamId === cam.id)
                             && liveFrameSrc && (

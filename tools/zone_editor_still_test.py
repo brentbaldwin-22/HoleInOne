@@ -67,6 +67,34 @@ check("the newer cameras page was already on the still",
       "api.cameraStillUrl(cam.id)" in NEW, True)
 
 print()
+print("A MISSING STILL MUST NOT LOOK LIKE A BROKEN EDITOR:")
+# `/cameras/{id}/still` answers 204 when none has been captured, and a
+# 204 gives an <img> nothing to decode — `onLoad` never fires, the
+# frame size stays null, and TriggerZones shows "Waiting for a frame
+# to draw on…" forever. Reported from the field as the editor not
+# working, when the answer was that the camera had no still yet.
+check("the failure is caught", "onError={() => setStillMissing(true)}"
+      in OLD, True)
+# A 204 FIRES onLoad IN SOME BROWSERS, with a zero-sized image, so the
+# error handler alone does not cover it.
+check("  and a zero-sized image counts as missing",
+      "if (!w || !h) { setStillMissing(true); return; }" in OLD, True)
+check("  it says so, with what to do about it",
+      "No still for this camera yet" in OLD, True)
+# FALL BACK TO THE STREAM RATHER THAN TO NOTHING: drawing on the live
+# frame is what this replaced, not something that stopped working.
+check("  and falls back to the live frame so the editor still opens",
+      "&& stillMissing && liveFrameSrc && (" in OLD, True)
+# IT USUALLY FIXES ITSELF: `still_wanted` returns True the moment the
+# file is absent, and the agent pushes one on its next poll.
+check("it retries, because the agent is about to send one",
+      "setStillTries((n) => n + 1)" in OLD, True)
+check("  but not forever — an offline camera never sends one",
+      "stillTries >= 4" in OLD, True)
+check("  and says which of the two it is",
+      "has not arrived after four tries" in OLD, True)
+
+print()
 print("and the reasoning is written down where it changed:")
 check("the component says why the still, and what it gives up",
       "DRAWN ON THE LAST STILL" in TZ and "latest lens move" in TZ, True)
