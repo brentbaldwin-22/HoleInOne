@@ -105,7 +105,14 @@ def main():
     # chain for each -- the best of those starting inside that swing's
     # own span, graded the way the gates already grade.
     ok("each swing takes the chains in its own span",
-       "_spans.append((_f0, _f1))" in src, True)
+       "_ascent_span_verdict(" in src and "_span_max" in src, True)
+    # THE SPAN IS BOUNDED AT BOTH ENDS, and judged on the chain's own
+    # back-run as well as its first detection -- see
+    # tools/ascent_span_test.py for the clip that needed each.
+    ok("  bounded after the strike, not only before it",
+       "_f0 + _span_max" in src, True)
+    ok("  and the chain's back-run counts as well as its first point",
+       'c.get("from_frame")' in src, True)
     ok("  graded fewest-refusals-then-longest, as the sweep grades",
        bool(re.search(r"len\(c\.get\(\"why\"\) or \[\]\), "
                       r"-int\(c\.get\(\"n_points\"\)", src)), True)

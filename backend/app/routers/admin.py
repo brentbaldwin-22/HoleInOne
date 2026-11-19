@@ -28746,6 +28746,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     _asc = []
     _spans = []
     _span_max = int(round(float(fps or 30.0) * ASCENT_SPAN_MAX_SEC))
+    _span_lead = int(round(float(fps or 30.0) * ASCENT_SPAN_LEAD_SEC))
     _sw_list = rep["swings"]
     for _k, _sw in enumerate(_sw_list):
         _f0 = int(_sw.get("impact_frame") or 0)
@@ -28758,29 +28759,40 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                              else min(int(_f1), _f0 + _span_max))))
 
         def _mine(c, lo=_f0, hi=_f1):
-            return _ascent_span_verdict(c.get("first_frame"), lo, hi,
-                                        _span_max, fps)
+            return _ascent_span_verdict(c.get("first_frame"),
+                                        c.get("from_frame"), lo, hi,
+                                        _span_lead, _span_max, fps)
         _cands = []
         _cons = []
         for _c in _asc_all:
             _verdict = _mine(_c)
-            if _verdict is None:
-                continue
-            # THE LATE ONES ARE SHOWN, NOT HIDDEN. "It found all the
-            # right chains and produced the wrong one" is what this
-            # table is for -- a chain that was refused has to appear
-            # here saying so, or the step reads as though it never saw
-            # it.
+            # EVERY CHAIN IS SHOWN, WITH WHAT THIS SWING MADE OF IT.
+            #
+            # This dropped the ones it judged to be another swing's
+            # with `continue`, so they never reached a table. The 2a
+            # table renders the SWEEP's list, where those same chains
+            # read ACCEPTED -- and on #1780 the 26-point chain sat
+            # there marked ACCEPTED while the produce used a 6-point
+            # one, with nothing anywhere saying it had been dropped.
+            # "I'm not sure where that is coming from" is the only
+            # possible reading of that screen.
             _why = list(_c.get("why") or [])
-            if _verdict:
+            if _verdict is None:
+                _why.append(
+                    "not this swing's: the strike is f%s%s, and this "
+                    "chain starts at f%s with its back-run putting its "
+                    "own strike at f%s"
+                    % (_f0,
+                       "" if _f1 is None else " with the next at f%s" % _f1,
+                       _c.get("first_frame"), _c.get("from_frame")))
+            elif _verdict:
                 _why.append(_verdict)
             else:
                 _cands.append(_c)
-            _cons.append({"first_frame": _c.get("first_frame"),
-                          "last_frame": _c.get("last_frame"),
-                          "n_points": _c.get("n_points"),
-                          "why": _why,
-                          "grade": (len(_why), -int(_c.get("n_points") or 0))})
+            _cons.append(dict(
+                {_k: _v for _k, _v in _c.items() if _k != "points"},
+                why=_why,
+                grade=(len(_why), -int(_c.get("n_points") or 0))))
         _sw["considered"] = sorted(_cons, key=lambda z: z["grade"])
         if _cands:
             _best = sorted(_cands, key=_grade)[0]
@@ -28832,6 +28844,25 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                 "nothing found: no chain above the skyline in this "
                 "swing's span, and the cone accumulator %s"
                 % (_acc.get("why") or "found nothing either"))
+    # ── AND PUT THAT ON 2a, WHICH IS THE TABLE BEING READ ───────────
+    #
+    # 2a prints the SWEEP's considered list: every chain, with the gate
+    # verdict the sweep gave it. That is a different question from the
+    # one an operator is asking at that table, which is "why was THIS
+    # chain not the one produced" -- and the sweep's answer to a chain
+    # the span rule later dropped is "ACCEPTED".
+    for _st in (rep.get("scan_stages") or []):
+        if _st.get("n") != "2a":
+            continue
+        _w2 = dict(_st.get("work") or {})
+        _w2["groups"] = [
+            {"title": "Swing %d — every chain, judged against this "
+                      "swing's span" % (_j + 1),
+             "note": str(_s2.get("ascent_from") or ""),
+             "table": _ascent_chain_table(_s2.get("considered"))}
+            for _j, _s2 in enumerate(_sw_list)
+        ]
+        _st["work"] = _w2
     rep["ascent_spans"] = [{"swing": _i + 1, "from_frame": a,
                             "to_frame": b} for _i, (a, b) in
                            enumerate(_spans)]
@@ -32453,7 +32484,23 @@ def _point_to_segment_px(px, py, ax, ay, bx, by) -> float:
 # from the peak where it could not -- so a chain beginning a
 # frame or two "before" impact is the same ball, not an
 # earlier one.
-ASCENT_SWING_SPAN_SLACK_FRAMES = 3
+# HOW FAR BEFORE THE STRIKE A CHAIN CAN START AND STILL BE THIS SWING'S.
+#
+# This was 3 FRAMES, and on #1780 it threw away the right answer by
+# one. The sweep's best chain — 26 points, rising 481px, every gate
+# passed — has its first detection at f1282 against a measured impact
+# of f1286, so the floor at f1283 read it as some earlier swing's ball
+# and dropped it without a word. What was left was a 7-point chain
+# starting 3.2 seconds later, and when the span ceiling removed that
+# too, nothing was left and the cone accumulator's 6 points were
+# produced instead.
+#
+# Both numbers being compared are estimates. The impact frame is the
+# midpoint of a tile bracket; the chain's first point is wherever a
+# blob detector first caught something, which can precede separation
+# when the club is still in frame. Three frames is 50ms at 60fps and
+# allows for neither.
+ASCENT_SPAN_LEAD_SEC = 0.25
 
 # HOW LONG AFTER THE STRIKE A BALL CAN STILL BE *LEAVING*.
 #
@@ -32479,7 +32526,8 @@ ASCENT_SWING_SPAN_SLACK_FRAMES = 3
 ASCENT_SPAN_MAX_SEC = 1.5
 
 
-def _ascent_span_verdict(first_frame, lo, hi, span_max, fps):
+def _ascent_span_verdict(first_frame, from_frame, lo, hi, lead, span_max,
+                         fps):
     """Is this chain the ball leaving the tee on THIS swing?
 
     Returns None when the chain belongs to another swing (or to no
@@ -32487,29 +32535,44 @@ def _ascent_span_verdict(first_frame, lo, hi, span_max, fps):
     falls inside this swing's span but too late to be an ascent — the
     sentence goes on the chain's refusal list so the step panel can
     show the chain and say why it was not used.
+
+    TWO FRAMES ARE ASKED, NOT ONE. `first_frame` is where a detector
+    first caught something, which can precede separation while the club
+    is still in the band. `from_frame` is the chain's OWN estimate of
+    when its ball left the tee — the back-run along its heading — and
+    that is the like-for-like comparison against a measured impact
+    frame. Judging on `first_frame` alone is what dropped #1780's
+    26-point chain: its first detection is f1282 against impact f1286,
+    while its back-run lands on f1286 exactly.
     """
-    try:
-        _ff = int(first_frame)
-    except (TypeError, ValueError):
+    _fs = []
+    for _f in (from_frame, first_frame):
+        try:
+            _fs.append(int(_f))
+        except (TypeError, ValueError):
+            continue
+    if not _fs:
         return None
-    # A BALL CANNOT BE SEEN LEAVING BEFORE IT IS STRUCK, but the strike
-    # is itself an estimate, so a couple of frames of slack keeps a
-    # chain that starts on the impact frame.
-    if _ff < int(lo) - ASCENT_SWING_SPAN_SLACK_FRAMES:
+    _lo = int(lo)
+    _floor = _lo - int(lead)
+    _ceil = _lo + int(span_max)
+    # ANOTHER SWING'S, either the one before (every frame it offers is
+    # before this strike) or the one after.
+    if all(_f < _floor for _f in _fs):
         return None
-    if hi is not None and _ff >= int(hi):
+    if hi is not None and all(_f >= int(hi) for _f in _fs):
         return None
-    # ...NOR LONG AFTER IT. See ASCENT_SPAN_MAX_SEC: without a ceiling
-    # the last swing's span runs to the end of the footage and the ball
-    # coming down competes with the ball going up.
-    if _ff > int(lo) + int(span_max):
-        return ("started %.1fs after the strike — a ball leaving the tee "
-                "crosses the band above the golfers in a fraction of a "
-                "second, and anything past %.1fs is something else in "
-                "the sky"
-                % ((_ff - int(lo)) / float(fps or 30.0),
-                   ASCENT_SPAN_MAX_SEC))
-    return ""
+    if any(_floor <= _f <= _ceil for _f in _fs):
+        return ""
+    # THIS SWING'S SPAN, BUT TOO LATE TO BE AN ASCENT. See
+    # ASCENT_SPAN_MAX_SEC: without a ceiling the last swing's span runs
+    # to the end of the footage and the ball coming down competes with
+    # the ball going up.
+    return ("started %.1fs after the strike — a ball leaving the tee "
+            "crosses the band above the golfers in a fraction of a "
+            "second, and anything past %.1fs is something else in "
+            "the sky"
+            % ((min(_fs) - _lo) / float(fps or 30.0), ASCENT_SPAN_MAX_SEC))
 
 ASCENT_CLIMB_FILL_FRAMES = 40
 
