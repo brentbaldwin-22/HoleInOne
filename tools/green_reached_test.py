@@ -107,13 +107,20 @@ def main():
     # really for -- that the green pass runs whatever the search did
     # or did not find -- is the ordering above, not the constant.
     #
-    # What must stay true is that the choice is made from the trigger
-    # kind rather than hard-wired, and that the green pass is above
-    # every return it could be gated by. Both are checked already; the
-    # constant itself is not the guarantee and asserting on it was
-    # testing the symptom.
-    _dod = first(r"_do_descent = _old_way")
-    ok("the old search is chosen by trigger kind, not hard-wired",
+    # AND THE CHOICE IS NO LONGER THE TRIGGER KIND. It was
+    # `_do_descent = _old_way`, i.e. "search on a dwell, walk
+    # otherwise" — which on a rig with the audio trigger off switched
+    # the walk off on every clip there is. It is now per SWING and
+    # about evidence: a swing that was walked back from its own ball
+    # at rest needs no search, and one with no ball to walk from gets
+    # the old one.
+    #
+    # What must stay true is that the green pass — the before/after
+    # test that FINDS that ball — is above every return that could
+    # gate it. Without it there is no rest spot, so no walk, so the
+    # old search for everything.
+    _dod = first(r"_do_descent = bool\(_unsolved\)")
+    ok("the old search is chosen by what the walk solved",
        _dod is not None, True)
     ok("  and the green pass still runs before it either way",
        _rest < _dod, True)

@@ -345,6 +345,44 @@ check("matched to its swing by number, not by position",
       'int(w.get("swing") or 0) == int(v.get("swing") or -1)' in SRC, True)
 
 print()
+print("A CHAIN THAT FINISHES ON THE BALL IS THE DESCENT:")
+# THE WALK WAS SWITCHED OFF ON EVERY DWELL CLIP, which on a rig with
+# the audio trigger off is every clip there is: `_old_way = (_kind ==
+# "dwell")` and the walk looped over `_clips if not _old_way else []`.
+# The reason given was that a dwell's impact frame is FITTED, and "the
+# walk and the crawl are anchored on that frame all the way down".
+#
+# They are not. The walk starts at `_rf`, which comes from the rest
+# WINDOW — the rung of the after-ladder the before/after test actually
+# found the ball on — and the impact frame cancels out of that
+# arithmetic. Its anchor is a measurement of the ball.
+check("the walk runs for every swing with a ball at rest",
+      "for i, c in enumerate(_clips):" in _desc, True)
+check("  not only on non-dwell clips",
+      "_clips if not _old_way else []" in _desc, False)
+check("  still skipping a swing with no ball to walk from",
+      'if not c.get("rest_spot") or c.get("impact_frame") is None:'
+      in _desc, True)
+
+print()
+print("...and then 3g is skipped, because there is nothing to find:")
+# Searching anyway is expensive — 82% of this step — and actively
+# harmful: it puts branch chains in front of a matcher that has
+# already been handed the right answer.
+check("the old search runs only for swings the walk did not solve",
+      "_unsolved = [c for c in _clips" in _desc, True)
+check("  keyed on the walk having succeeded",
+      'if w.get("ok")' in _desc, True)
+check("  and on no track already being there",
+      'not c.get("green_track")' in _desc, True)
+check("  nothing unsolved means nothing searched",
+      "_do_descent = bool(_unsolved)" in _desc, True)
+check("the step says whether it ran, and why",
+      '"the 3g search"' in SRC, True)
+check("  and which swings were walked instead",
+      '"descent_skipped_for"' in SRC, True)
+
+print()
 print("and the page renders it, collapsed, on the step's own row:")
 check("there is one generic renderer",
       "function StepWork({ work })" in JSX, True)

@@ -27705,6 +27705,22 @@ def _ascent_step3_work(desc, rep):
                      "value": "%s — %s" % (desc["descent_method"],
                                            desc.get("descent_method_why")
                                            or "")})
+    # ── WHETHER THE OLD SEARCH RAN AT ALL, AND WHY ──────────────────
+    #
+    # The walk is the cheap, anchored answer and the search is the
+    # expensive, unanchored one — 82% of this step on the clip that
+    # prompted it. Which of them produced the descent is the first
+    # thing to know about a green, and neither was on the panel.
+    rows.append({
+        "label": "the 3g search",
+        "value": ("skipped — " if not desc.get("descent_search") else "ran — ")
+                 + str(desc.get("descent_search_why") or "")})
+    if desc.get("descent_skipped_for"):
+        rows.append({"label": "walked back from the ball",
+                     "value": "swing(s) %s — their descent is the walk, "
+                              "not a search"
+                              % ", ".join(str(n) for n
+                                          in desc["descent_skipped_for"])})
     if desc.get("reason"):
         rows.append({"label": "reason", "value": str(desc["reason"])})
     return {"rows": rows, "groups": groups}
@@ -29467,6 +29483,9 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     _kind = _trigger_kind(db, row)
     _old_way = (_kind == "dwell")
     out["trigger_kind"] = _kind
+    # Reported after the walk has run, since it is now decided per
+    # swing by whether a ball was found at rest. Set here so the key
+    # exists on every early return below.
     out["descent_method"] = "search" if _old_way else "walk+crawl"
     out["descent_method_why"] = (
         "this clip was fired by a DWELL — nobody heard a strike, so the "
@@ -29678,7 +29697,26 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     # that can disagree about the same ball, which is the failure this
     # project has paid for over and over -- the two ascent searches,
     # the button and the produce on the green window, the two pickers.
-    for i, c in enumerate(_clips if not _old_way else []):
+    # ── THE WALK RUNS WHENEVER THERE IS A BALL TO WALK FROM ─────────
+    #
+    # IT USED TO BE SWITCHED OFF ON EVERY DWELL CLIP, which on a rig
+    # with the audio trigger off is every clip there is. The reason
+    # given was that a dwell's impact frame is FITTED from the ascent
+    # chain rather than measured, and "the walk and the crawl are
+    # anchored on that frame all the way down".
+    #
+    # They are not. The walk starts at `_rf`, and `_rf` comes from the
+    # rest WINDOW — the rung of the after-ladder on which the
+    # before/after test actually found the ball — in which the impact
+    # frame cancels out of the arithmetic entirely. Its anchor is a
+    # measurement of the ball, not an estimate of the strike.
+    #
+    # And since step 1, a dwell clip's impact frame is measured from
+    # the ball leaving too, so the premise is twice out of date.
+    #
+    # So the question is per SWING and about evidence, not per clip and
+    # about trigger kind: is there a ball at rest to walk back from?
+    for i, c in enumerate(_clips):
         if not c.get("rest_spot") or c.get("impact_frame") is None:
             continue
         if progress:
@@ -30293,12 +30331,37 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     #
     # `ascent_descent_search` is no longer read. A hole that set it
     # is not re-enabling this.
-    # THE OLDER SEARCH, FOR DWELL CLIPS ONLY. See `_old_way` at the
-    # top: a dwell heard nothing, so the impact frame everything below
-    # it would be anchored on is a fit rather than a measurement, and
-    # this search does not anchor on it at all.
-    _do_descent = _old_way
+    # ── THE OLDER SEARCH, ONLY FOR SWINGS THE WALK DID NOT SOLVE ────
+    #
+    # A CHAIN THAT FINISHES ON THE BALL IS THE DESCENT. The walk above
+    # starts ON the ball the before/after test measured and climbs,
+    # zooming each window; when it comes back with a path there is
+    # nothing left to search for, and searching anyway is expensive —
+    # it was 82% of this step — and actively harmful, because it puts
+    # branch chains in front of a matcher that has already been given
+    # the right answer.
+    #
+    # So it runs for the swings with no walk behind them: no ball at
+    # rest, or a walk that could not get going. Nothing to skip means
+    # nothing to search.
+    _walked = {int(w.get("swing") or 0) for w in out["descents_back"]
+               if w.get("ok")}
+    _unsolved = [c for c in _clips
+                 if int(c.get("n") or 0) not in _walked
+                 and not c.get("green_track")]
+    _do_descent = bool(_unsolved)
     out["descent_search"] = _do_descent
+    out["descent_skipped_for"] = sorted(_walked)
+    out["descent_search_why"] = (
+        "every swing was walked back from its own ball at rest, so there "
+        "is nothing left to search for"
+        if not _do_descent else
+        "%d swing(s) had no walk behind them — no ball found at rest, or "
+        "a walk that could not get going — so the window is searched for "
+        "those" % len(_unsolved))
+    out["descent_method"] = (
+        "walk+crawl" if _walked and not _do_descent else
+        "walk+crawl, with a search for the rest" if _walked else "search")
     for i, (_flo, _fhi) in enumerate(_wins if _do_descent else []):
         if progress:
             progress(f"Looking for the ball coming down, window {i + 1} "

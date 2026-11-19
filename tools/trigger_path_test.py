@@ -103,17 +103,35 @@ def main():
        "_kind = _trigger_kind(db, row)" in src, True)
     ok("  the old search is for dwell", '_old_way = (_kind == "dwell")' in src,
        True)
-    ok("  and it is what turns the old search on",
-       "_do_descent = _old_way" in src, True)
+    # ...BUT IT NO LONGER TURNS THE OLD SEARCH ON. `_kind` still
+    # describes the clip and still explains the method on the card;
+    # what the search runs for is now whether the walk solved the
+    # swing. Keyed on "dwell", the walk never ran on a rig with the
+    # audio trigger switched off — which is every clip that rig makes.
+    ok("  but the search is no longer turned on by the kind",
+       "_do_descent = _old_way" in src, False)
+    ok("  it is turned on by a swing the walk did not solve",
+       "_do_descent = bool(_unsolved)" in src, True)
 
-    # ── ONE PATH PER CLIP, NEVER BOTH ───────────────────────────────
+    # ── ONE PATH PER SWING, NEVER BOTH ──────────────────────────────
     #
     # Running both and picking would be two answers that can disagree
     # about the same ball, which is the failure this project has paid
     # for over and over: the two ascent searches, the button and the
     # produce on the green window, the two ball pickers.
-    ok("a dwell clip skips the walk and the crawl entirely",
-       "for i, c in enumerate(_clips if not _old_way else []):" in src, True)
+    #
+    # It is still one path — but chosen per SWING, by evidence, rather
+    # than per CLIP by trigger kind. A swing walked back from its own
+    # ball at rest is not searched for; a swing with no ball to walk
+    # from is. On a rig with the audio trigger off, keying it on
+    # "dwell" meant the walk never ran at all.
+    ok("a swing with no ball at rest is not walked",
+       'if not c.get("rest_spot") or c.get("impact_frame") is None:'
+       in src, True)
+    ok("  and a swing the walk solved is not searched for",
+       "_unsolved = [c for c in _clips" in src, True)
+    ok("  so the two never both answer for one swing",
+       'not c.get("green_track")' in src, True)
 
     # ── AND THE REPORT SAYS WHICH RAN AND WHY ───────────────────────
     #
@@ -127,15 +145,26 @@ def main():
     ok("  and why it chose it",
        'out["descent_method_why"]' in src, True)
 
-    # ── THE GREEN REST SEARCH RUNS FOR BOTH ─────────────────────────
+    # ── AND THE REST SEARCH COMES FIRST, WHICHEVER PATH FOLLOWS ─────
     #
-    # Only the DESCENT method differs. Where the ball came to rest is
-    # worth having either way, and it is the gate the new path needs
-    # and the old path's matcher is glad of.
+    # Where the ball came to rest is worth having either way: it is
+    # what the walk anchors on, what narrows the old search's window,
+    # and what the matcher weighs chains against. It now also DECIDES
+    # which of the two runs, so a run that found it after choosing
+    # would be choosing blind.
     _i_rest = src.index('_sub("3b"')
-    _i_walk = src.index("if not _old_way else []")
-    ok("where it came to rest is still found on a dwell clip",
+    # BY INDENTATION, because the rest search loops over the same
+    # clips with the same header one level deeper, and a bare
+    # `src.index` finds that one — which made this assertion compare
+    # the rest search against itself and read as an ordering bug.
+    _i_walk = src.index("\n    for i, c in enumerate(_clips):")
+    _i_pick = src.index("_do_descent = bool(_unsolved)")
+    ok("where it came to rest is found before the walk",
        _i_rest < _i_walk, True)
+    ok("  and before the search is chosen at all",
+       _i_rest < _i_pick, True)
+    ok("  with the walk itself ahead of that choice",
+       _i_walk < _i_pick, True)
 
     print()
     if _fails:
