@@ -1942,6 +1942,16 @@ export default function AdminCamerasOld() {
   const [liveNatural, setLiveNatural] = useState(null);
   const [zoningCamId, setZoningCamId] = useState(null);
   const [outliningCamId, setOutliningCamId] = useState(null);
+  // CACHE-BUST FOR THE STILL THE EDITORS DRAW ON. Bumped whenever one
+  // of them opens, so re-opening after a lens nudge and a fresh
+  // capture shows today's framing rather than the browser's copy of
+  // last week's.
+  const [stillBust, setStillBust] = useState(() => Date.now());
+  useEffect(() => {
+    if (zoningCamId != null || outliningCamId != null) {
+      setStillBust(Date.now());
+    }
+  }, [zoningCamId, outliningCamId]);
   // The element the picture is painted in. The zone editor portals its
   // drawing surface into it, so the surface covers the PICTURE and not
   // the controls underneath — only one camera is ever watched, so one
@@ -3227,7 +3237,42 @@ export default function AdminCamerasOld() {
                             } : { minHeight: 240 }),
                           }}
                         >
-                          {liveFrameSrc && (
+                          {/* ── DRAW ON THE STILL, NOT THE STREAM ──────
+                              
+                              Placing a box does not need a moving
+                              picture, and needing one made the editor
+                              depend on the Pi streaming right now: no
+                              live frame, no picture, and the panel sat
+                              on "Waiting for live frame from Pi…" with
+                              nothing to draw against at all.
+                              
+                              The last still is always there, is the
+                              camera's own native frame, and holds
+                              still while a box is dragged across it.
+                              
+                              WHAT THIS GIVES UP, and it was the
+                              original reason for the stream: the
+                              picture is no longer guaranteed to be
+                              after the latest zoom nudge. Re-capture a
+                              still after moving the lens and the box
+                              is drawn on today's framing again. */}
+                          {(zoningCamId === cam.id || outliningCamId === cam.id) && (
+                            <img
+                              src={`${api.cameraStillUrl(cam.id)}?t=${stillBust}`}
+                              alt=""
+                              onLoad={(e) => {
+                                const { naturalWidth: w, naturalHeight: h } = e.target;
+                                if (w && h && (liveNatural?.w !== w
+                                               || liveNatural?.h !== h)) {
+                                  setLiveNatural({ w, h });
+                                }
+                              }}
+                              style={{ display: "block", width: "100%",
+                                       height: "auto" }}
+                            />
+                          )}
+                          {!(zoningCamId === cam.id || outliningCamId === cam.id)
+                            && liveFrameSrc && (
                             <img
                               src={liveFrameSrc}
                               alt=""
@@ -3246,7 +3291,8 @@ export default function AdminCamerasOld() {
                             />
                           )}
 
-                          {!liveFrameSrc && (
+                          {!(zoningCamId === cam.id || outliningCamId === cam.id)
+                            && !liveFrameSrc && (
                             <div
                               style={{
                                 position: "absolute",

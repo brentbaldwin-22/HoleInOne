@@ -7,11 +7,26 @@
  * person crossing any of those is a recording nobody asked for. So the
  * camera gets one box per tee and fires when a golfer is in ANY of them.
  *
- * Drawn against the live frame rather than a saved still, because the
- * question being answered is "is the back tee inside this box RIGHT NOW"
- * — after a zoom nudge, after the mount was bumped, with today's markers
- * where they actually are. Zoom with the lens buttons and the picture
- * underneath moves while you draw.
+ * DRAWN ON THE LAST STILL, NOT THE STREAM. It used to require the
+ * live frame, on the reasoning that the question is "is the back tee
+ * inside this box RIGHT NOW" — after a zoom nudge, with today's
+ * markers where they actually are. The cost was that the editor could
+ * not open at all unless the Pi happened to be streaming: no live
+ * frame, no picture, and the panel sat on "Waiting for live frame from
+ * Pi…" with nothing to draw against.
+ *
+ * The still is always there, is the camera's own native frame, and
+ * holds still while a box is dragged across it. What it gives up is
+ * the guarantee of being after the latest lens move — re-capture a
+ * still and the box is drawn on today's framing again.
+ *
+ * AND NOTHING OUTSIDE THE ZONES IS DIMMED. A 45% black wash used to
+ * cover everything a zone did not, so that ignored ground read as
+ * ignored. But a tee at dusk, under a tree, or on the far side of the
+ * hole is already the darkest part of the frame, and the markers and
+ * turf edges an operator aims at were exactly what went under the
+ * black. The zones carry their own colour, outline and label, which
+ * says which ground is covered without hiding the rest.
  *
  * WHAT IS ACTUALLY TESTED IS ONE POINT. The detector finds people in
  * the whole frame and hands back a single pixel — the BOTTOM of the
@@ -187,18 +202,21 @@ export default function TriggerZones({
         onPointerUp={onUp}
         onPointerCancel={onUp}
       >
-        {/* Everything outside the zones is dimmed, so what the camera
-            ignores reads as ignored rather than as unmarked. */}
-        <defs>
-          <mask id={`zm-${cam.id}`}>
-            <rect x="0" y="0" width={frameW} height={frameH} fill="#fff" />
-            {boxes.map((b, i) => (
-              <rect key={i} x={b.x} y={b.y} width={b.w} height={b.h} fill="#000" />
-            ))}
-          </mask>
-        </defs>
-        <rect x="0" y="0" width={frameW} height={frameH}
-              fill="rgba(0,0,0,0.45)" mask={`url(#zm-${cam.id})`} />
+        {/* NO DIMMING OUTSIDE THE ZONES.
+            
+            It used to lay 45% black over everything a zone did not
+            cover, so that what the camera ignores read as ignored.
+            The cost was the picture you are drawing ON: a tee at
+            dusk, under a tree, or on the far side of the hole is
+            already the darkest part of the frame, and the thing the
+            operator has to see to place a box accurately — the
+            markers, the edge of the turf — is exactly what went
+            under the black. You cannot aim at ground you cannot
+            make out.
+            
+            The zones carry their own colour, outline and label, which
+            is enough to say which ground is covered without hiding
+            the rest of it. */}
         {boxes.map((b, i) => {
           const c = COLOURS[i % COLOURS.length];
           // EVERYTHING DRAWN HERE IS IN NATIVE PIXELS, because the
