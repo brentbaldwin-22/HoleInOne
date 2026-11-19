@@ -1955,6 +1955,46 @@ export default function AdminCamerasOld() {
   // so the failure is caught and said out loud.
   const [stillMissing, setStillMissing] = useState(false);
   const [stillTries, setStillTries] = useState(0);
+  // ── THE STILL, FETCHED WITH THE ADMIN HEADER ─────────────────────
+  //
+  // AN <img src> CANNOT SEND A HEADER, and every /api/admin route
+  // needs `X-Admin-Password`. So pointing an <img> at the still
+  // endpoint got a rejection, `onError` fired, and the editor
+  // reported "No still for this camera yet" about a still that was
+  // sitting right there — the card above it was showing the same
+  // picture at the same moment.
+  //
+  // Fetched the way every other picture on this page is fetched, and
+  // handed to the <img> as an object URL. 204 means there genuinely
+  // is not one yet, which is the case the banner is for.
+  const [stillUrl, setStillUrl] = useState(null);
+  useEffect(() => {
+    const camId = zoningCamId ?? outliningCamId;
+    if (camId == null) { setStillUrl(null); return undefined; }
+    let dead = false;
+    let made = null;
+    (async () => {
+      try {
+        const res = await fetch(api.cameraStillUrl(camId), {
+          headers: { "X-Admin-Password": adminPassword },
+          cache: "no-store",
+        });
+        if (dead) return;
+        if (res.status !== 200) { setStillMissing(true); return; }
+        const blob = await res.blob();
+        if (dead || !blob || !blob.size) { setStillMissing(true); return; }
+        made = URL.createObjectURL(blob);
+        setStillUrl(made);
+        setStillMissing(false);
+      } catch {
+        if (!dead) setStillMissing(true);
+      }
+    })();
+    return () => {
+      dead = true;
+      if (made) URL.revokeObjectURL(made);
+    };
+  }, [zoningCamId, outliningCamId, stillBust, adminPassword]);
   useEffect(() => {
     if (zoningCamId != null || outliningCamId != null) {
       setStillBust(Date.now());
@@ -3189,7 +3229,13 @@ export default function AdminCamerasOld() {
                       } : null),
                     }}
                   >
-                    {watchingCamId === cam.id ? (
+                    {/* OPEN FOR WATCHING *OR* FOR DRAWING. The picture
+                        block used to require a watch, so a zone editor
+                        that no longer starts one would have had
+                        nothing to render into at all. */}
+                    {(watchingCamId === cam.id
+                      || zoningCamId === cam.id
+                      || outliningCamId === cam.id) ? (
                       <>
                         <div
                           ref={setChromeTopEl}
@@ -3282,9 +3328,9 @@ export default function AdminCamerasOld() {
                               still after moving the lens and the box
                               is drawn on today's framing again. */}
                           {(zoningCamId === cam.id || outliningCamId === cam.id)
-                            && !stillMissing && (
+                            && !stillMissing && stillUrl && (
                             <img
-                              src={`${api.cameraStillUrl(cam.id)}?t=${stillBust}`}
+                              src={stillUrl}
                               alt=""
                               onLoad={(e) => {
                                 const { naturalWidth: w, naturalHeight: h } = e.target;
@@ -3549,12 +3595,14 @@ export default function AdminCamerasOld() {
                       title={
                         offlineWhy
                           ? offlineWhy
-                          : watchingCamId === cam.id
-                          ? "Draw the boxes a golfer has to stand in for this camera to trigger — one per tee, so the path between them does not fire it"
-                          : "Watch this camera first: the zones are drawn on its live picture, so you can see where the tees actually are"
+                          : "Draw the boxes a golfer has to stand in for this camera to trigger — one per tee, so the path between them does not fire it"
                       }
                       onClick={() => {
-                        if (watchingCamId !== cam.id) startWatch(cam);
+                        // NO LONGER STARTS THE STREAM. The zones are
+                        // drawn on the last still, which costs the Pi
+                        // nothing; making the button watch put the
+                        // camera into 10fps streaming to place a box
+                        // on ground that is not moving.
                         setZoningCamId(zoningCamId === cam.id ? null : cam.id);
                       }}
                     >

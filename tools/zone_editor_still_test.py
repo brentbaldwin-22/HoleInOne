@@ -51,8 +51,8 @@ check("  and their labels", "<text" in TZ, True)
 
 print()
 print("the editors draw on the last still, not the stream:")
-check("the old page uses the camera still while editing",
-      "api.cameraStillUrl(cam.id)}?t=${stillBust}" in OLD, True)
+check("the old page draws the camera still while editing",
+      "src={stillUrl}" in OLD and "api.cameraStillUrl(camId)" in OLD, True)
 check("  for the zone editor and the outline editor alike",
       "(zoningCamId === cam.id || outliningCamId === cam.id)" in OLD, True)
 check("  with a cache-bust, so a fresh capture is not a stale copy",
@@ -65,6 +65,42 @@ check("  and 'waiting for live frame' no longer blocks the editor",
 # The newer page was already on a still; this must not have regressed it.
 check("the newer cameras page was already on the still",
       "api.cameraStillUrl(cam.id)" in NEW, True)
+
+print()
+print("AN <img src> CANNOT SEND AN AUTH HEADER:")
+# EVERY /api/admin ROUTE NEEDS `X-Admin-Password`, and an <img> has no
+# way to send one. Pointing one at the still endpoint got a rejection,
+# `onError` fired, and the editor reported "No still for this camera
+# yet" about a still that was sitting right there — the card directly
+# above it was showing the same picture, stamped 11 minutes old, at
+# the same moment. Every other picture on this page is fetched, not
+# src'd, for exactly this reason.
+check("the still is fetched, not pointed at",
+      '"X-Admin-Password": adminPassword' in OLD, True)
+check("  and handed over as an object URL",
+      "URL.createObjectURL(blob)" in OLD, True)
+check("  which is revoked when the editor closes",
+      "URL.revokeObjectURL(made)" in OLD, True)
+check("  a non-200 is the missing case, not an error",
+      "if (res.status !== 200) { setStillMissing(true); return; }" in OLD,
+      True)
+
+print()
+print("and drawing a box does not start the camera streaming:")
+# The button used to call `startWatch(cam)` first, on the reasoning
+# that the zones were drawn on the live picture. They are drawn on a
+# still now, which costs the Pi nothing — putting a camera into 10fps
+# streaming to place a box on ground that is not moving is the thing
+# the still was adopted to avoid.
+check("the zones button no longer watches",
+      "if (watchingCamId !== cam.id) startWatch(cam);\n                        setZoningCamId"
+      in OLD, False)
+# AND THE PICTURE STILL HAS SOMEWHERE TO RENDER. It used to be inside
+# a block gated on watching, so removing the watch would have left the
+# editor with nothing to draw into.
+check("  and the picture block opens for editing as well as watching",
+      "|| zoningCamId === cam.id" in OLD
+      and "|| outliningCamId === cam.id) ? (" in OLD, True)
 
 print()
 print("A MISSING STILL MUST NOT LOOK LIKE A BROKEN EDITOR:")
