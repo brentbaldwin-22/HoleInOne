@@ -138,7 +138,7 @@ def main():
     # ── IT IS REPORTED AS ITS OWN STEP ──────────────────────────────
     ok("the run counts the flights it found", 'out["n_flight"]' in src, True)
     ok("  and reports it as its own sub-stage",
-       '_sub("4e"' in src, True)
+       '_sub("3e"' in src, True)
 
     _adm = Path(__import__("app.routers.admin", fromlist=["x"]).__file__)
     _mod = _adm.read_text(encoding="utf-8")

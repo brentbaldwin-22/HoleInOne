@@ -387,12 +387,12 @@ check("...and the plot is called before it",
       _run.index("_ascent_ai_launch(") < _run.index("_d3.sweep_ascents("),
       True)
 check("the sweep's own sub-steps moved with it", '_sub("2b"' in _run, True)
-check("the green half's moved too", '_sub("4c"' in _src, True)
+check("the green half's moved too", '_sub("3c"' in _src, True)
 _jsx = (ROOT / "frontend" / "src" / "pages"
         / "AdminProduction.jsx").read_text(encoding="utf-8")
 check("the panel nests them under the new numbers",
       "2: rep?.scan_stages || []" in _jsx
-      and "4: rep?.descent_stages || []" in _jsx, True)
+      and "3: rep?.descent_stages || []" in _jsx, True)
 check("the modal shows the plot", "rep?.ai_launch &&" in _jsx, True)
 check("...the strip it drew", "rep.ai_launch.image_url" in _jsx, True)
 check("...and what was refused", "ai_launch_merge.refused" in _jsx, True)

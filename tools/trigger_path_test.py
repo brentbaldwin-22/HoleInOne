@@ -132,7 +132,7 @@ def main():
     # Only the DESCENT method differs. Where the ball came to rest is
     # worth having either way, and it is the gate the new path needs
     # and the old path's matcher is glad of.
-    _i_rest = src.index('_sub("4b"')
+    _i_rest = src.index('_sub("3b"')
     _i_walk = src.index("if not _old_way else []")
     ok("where it came to rest is still found on a dwell clip",
        _i_rest < _i_walk, True)

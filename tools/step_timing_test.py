@@ -160,14 +160,18 @@ _s3 = _block("def _ascent_descents(", "\ndef _ascent_window_views(")
 # never executed at all (see green_reached_test). They now run
 # immediately after the clocks, which is also the order they depend
 # on each other in: find the ball, then walk back from it.
-for _n, _what in (("4a", "opening the green and reading the clocks"),
-                  ("4b", "finding where it came to rest"),
-                  ("4c", "walking the descent back from the ball"),
-                  ("4d", "placing the flight windows"),
-                  ("4e", "finding the flight forwards from the pitch mark"),
-                  ("4f", "matching swings to landings"),
-                  ("4g", "the old descent search, off by default"),
-                  ("4h", "drawing the window views")):
+# AND THE LETTERS CARRY THE STEP'S NUMBER. The descent is STEP 3 of
+# the four now, not stage 4 — so a sub-step still called "4b" sits
+# under a heading that reads "3 · Balls coming down", which is how an
+# operator ends up looking for a step 4 that is the tracer.
+for _n, _what in (("3a", "opening the green and reading the clocks"),
+                  ("3b", "finding where it came to rest"),
+                  ("3c", "walking the descent back from the ball"),
+                  ("3d", "placing the flight windows"),
+                  ("3e", "finding the flight forwards from the pitch mark"),
+                  ("3f", "matching swings to landings"),
+                  ("3g", "the old descent search, off by default"),
+                  ("3h", "drawing the window views")):
     check("%s is %s" % (_n, _what), '"%s"' % _n in _s3, True)
 # A RUN THAT GIVES UP STILL SAYS WHAT IT DID. Three of this function's
 # exits are early ones -- no green file, no impact frame, nothing found
@@ -176,7 +180,7 @@ check("the laps are recorded as they finish, not at the end",
       _s3.count("_lap()") >= 6, True)
 check("the no-window exit reports what it reached",
       bool(re.search(r'out\["reason"\] = "no swing had an impact frame',
-                     _s3)) and _s3.count('_sub("4h"') >= 2, True)
+                     _s3)) and _s3.count('_sub("3h"') >= 2, True)
 check("every early exit's rows survive on the report",
       '"stages": []' in _s3, True)
 check("the expensive step says it scales with the window, not the clip",
@@ -193,8 +197,8 @@ _card = _jsx[_jsx.index("function ProduceStepSummary("):
              _jsx.index("function SwingCard(")]
 check("stage 2's steps come from scan_stages",
       "2: rep?.scan_stages || []" in _card, True)
-check("stage 4's steps come from descent_stages",
-      "4: rep?.descent_stages || []" in _card, True)
+check("step 3's steps come from descent_stages",
+      "3: rep?.descent_stages || []" in _card, True)
 check("they are indented under their own stage row",
       "r.subs?.length > 0" in _card, True)
 # SHARE OF THE STEP, NOT OF THE RUN. "The stitch was 70% of stage 1"

@@ -64,7 +64,7 @@ def main():
     #
     # What must not happen is a return between the clip being OPEN
     # and the green being searched. That is where the dead one was.
-    _opened = first(r'_sub\("4a", "Opening the green clip and reading')
+    _opened = first(r'_sub\("3a", "Opening the green clip and reading')
     ok("the clip-open step is identifiable", _opened is not None, True)
     _returns = [i for i, ln in enumerate(lines)
                 if ln.strip() == "return out"]
@@ -83,8 +83,8 @@ def main():
     ok("  and the green pass is above it", _green < _noball, True)
 
     # ...and so are both halves of it.
-    _rest = first(r'_sub\("4b", "Finding where it came to rest"')
-    _walk = first(r'_sub\("4c", "Walking the descent back')
+    _rest = first(r'_sub\("3b", "Finding where it came to rest"')
+    _walk = first(r'_sub\("3c", "Walking the descent back')
     ok("the resting-ball search runs before that bail",
        _rest is not None and _rest < _noball, True)
     ok("the reverse walk runs before it too",

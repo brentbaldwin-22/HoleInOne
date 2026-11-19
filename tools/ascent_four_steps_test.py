@@ -67,10 +67,29 @@ check("  3 is the descent", _titles[2][0] == "3"
       and "coming down" in _titles[2][1].lower(), True)
 check("  4 is the tracer", _titles[3][0] == "4"
       and "tracer" in _titles[3][1].lower(), True)
-# EVERY STEP REPORTS ITS OWN TIME. `_stage` takes the seconds as its
-# last argument, and a step that passes none reads as instant.
-check("and every one of them is timed",
-      len(re.findall(r"time\.perf_counter\(\) - _t\)", _run)) >= 4, True)
+# EVERY STEP REPORTS ITS OWN TIME, and a step that passes none reads
+# as instant. Checked by walking each `_stage(` call to its closing
+# paren rather than matching "...- _t)" as a literal: the seconds are
+# no longer the last argument now that `work=` follows them, and an
+# assertion that depends on argument ORDER goes quiet the moment one
+# is added rather than failing honestly.
+def _calls(text, name):
+    for m in re.finditer(name + r"\((\d),", text):
+        d = 0
+        for j in range(m.start(), len(text)):
+            if text[j] == "(":
+                d += 1
+            elif text[j] == ")":
+                d -= 1
+                if d == 0:
+                    yield m.group(1), text[m.start():j + 1]
+                    break
+
+
+_timed = [n for n, c in _calls(_run, "_stage")
+          if "time.perf_counter() - _t" in c]
+check("and every one of them is timed", sorted(_timed),
+      ["1", "2", "3", "4"])
 
 print()
 print("STEP 1 — the cutter finds the swings, not a window:")
@@ -140,13 +159,45 @@ check("  and so are the stage-3 extras",
       "PARKED: the stage-3 extras" in SRC, True)
 
 print()
-print("and the page shows every swing, with its pictures:")
-check("there is a per-swing panel",
-      "function AscentSwingSteps(" in JSX, True)
-check("  it is rendered", "<AscentSwingSteps rep={rep} />" in JSX, True)
-check("  with the tiles the step drew", "frames_image_url" in JSX, True)
-check("  and the graded chains it did not keep",
-      "sw.considered" in JSX, True)
+print("THE WORK IS SHOWN UNDER THE STEP THAT DID IT:")
+# IT USED TO LIVE IN CARDS BESIDE THE STEP LIST, so the row saying a
+# step took 24 seconds and the picture showing what it did with them
+# were in different parts of the page with nothing tying them
+# together. Every step now carries its own `work`, and the panel
+# renders it behind a toggle on that step's own row.
+check("every step can carry its work",
+      "def _stage(n, title, detail, count=None, units=None, secs=None,"
+      in SRC and "work=None):" in SRC, True)
+check("  and so can every sub-step",
+      SRC.count("work=None):") >= 2, True)
+check("step 1 hands over the cutter's pictures and numbers",
+      "work=_ascent_step1_work(" in _run, True)
+check("step 2 hands over the graded shortlist",
+      "work=_ascent_step2_work(" in _run, True)
+check("  including the chains it did not keep",
+      '"the gates"' in SRC, True)
+check("step 3 hands over the green's window views",
+      '"url": (v or {}).get("image")' in _run, True)
+check("step 4 hands over the tee spot and the clip",
+      '"tee spot — measured"' in _run, True)
+check("and the sweep's pictures hang off 2h, where they are drawn",
+      'sweep.get("considered_image_url")' in _run, True)
+
+print()
+print("and the page renders it, collapsed, on the step's own row:")
+check("there is one generic renderer",
+      "function StepWork({ work })" in JSX, True)
+check("  behind a toggle", "function WorkToggle({ work, label })" in JSX,
+      True)
+check("  on each step", "<WorkToggle work={r.work} />" in JSX, True)
+check("  and on each sub-step",
+      "{sub.work && <WorkToggle work={sub.work} />}" in JSX, True)
+check("  collapsed by default", "useState(false)" in JSX, True)
+# ONE PLACE, NOT TWO. The per-swing card that used to sit beside the
+# step list said the same things in a different order; two panels
+# that must agree are one more thing to keep in agreement.
+check("the duplicate per-swing card is gone",
+      "AscentSwingSteps" in JSX, False)
 # THE SUB-STEP TIMINGS FOLLOW THE STEP THEY BELONG TO. The descent's
 # own breakdown was keyed to stage 4; the descent is step 3 now, and a
 # stale key does not error -- the breakdown just stops appearing.
