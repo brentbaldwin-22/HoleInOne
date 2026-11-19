@@ -27477,6 +27477,63 @@ def _ascent_find_run(row, src_path, db, progress=None) -> dict:
     return _ascent_run(row, src_path, db, progress=progress, produce=False)
 
 
+def _rest_spot_of(rep, view):
+    """This swing's measured ball at rest, for drawing on the dot map."""
+    try:
+        _n = int(view.get("swing") or 0)
+    except (TypeError, ValueError):
+        return None
+    _c = next((c for c in (rep.get("clips") or [])
+               if int(c.get("n") or 0) == _n), None)
+    return (_c or {}).get("rest_spot")
+
+
+def _descent_chain_table(chains):
+    """EVERY CHAIN THE GREEN WEIGHED, in the numbers a DESCENT has.
+
+    THIS USED TO REUSE THE ASCENT TABLE and printed a wall of None.
+    They are different measurements: an ascent is judged on how fast
+    and how straight it RISES out of a known spot, so it carries rate,
+    bend, density and a traced-back origin. A descent is judged on how
+    far it FELL and how much of it survived trimming, and it has no
+    origin to trace back to -- `from_x` and `rate` do not exist on one.
+    Twelve columns of None is worse than no table: it reads as a
+    detector that measured nothing rather than a table asking the
+    wrong questions.
+    """
+    rows = []
+    for i, c in enumerate(chains or []):
+        _why = c.get("why") or []
+        _pts = c.get("points") or []
+        _end = _pts[-1] if _pts else None
+        rows.append([
+            "#%d" % (i + 1),
+            "f%s" % (c.get("last_descent_frame")
+                     if c.get("last_descent_frame") is not None
+                     else c.get("last_frame")),
+            "f%s–f%s" % (c.get("first_frame"), c.get("last_frame")),
+            str(c.get("n_points")),
+            ("%s of %s" % (c.get("n_points"), c.get("n_points_raw"))
+             if c.get("n_points_raw") is not None else "—"),
+            ("%spx" % c.get("fall_px")) if c.get("fall_px") is not None
+            else "—",
+            ("%spx" % c.get("drop_px")) if c.get("drop_px") is not None
+            else "—",
+            str(c.get("n_off_line") if c.get("n_off_line") is not None
+                else "—"),
+            ("%d,%d" % (int(_end["x"]), int(_end["y"])))
+            if _end and _end.get("x") is not None else "—",
+            ("TAKEN" if not _why else ", ".join(_why)),
+        ])
+    if not rows:
+        return None
+    return {
+        "columns": ["#", "lands", "frames", "pts", "kept", "fall",
+                    "drop", "off line", "ends at", "verdict"],
+        "rows": rows,
+    }
+
+
 def _rest_imgs(rep, view, which):
     """The before/after frame the green's rest test drew, for a swing.
 
@@ -27535,15 +27592,37 @@ def _ascent_step3_work(desc, rep):
             "note": str(v.get("reason") or ""),
             "rows": rows,
             "images": [{"caption": c, "url": u} for c, u in (
-                ("its seconds of green, every detection numbered — the "
-                 "same picture the edit wizard plots on",
-                 v.get("image_url")),
+                # The bare frame only when there are no dots to draw on
+                # it; otherwise `dotmap` below shows the same frame WITH
+                # them, and two copies of one picture is just scrolling.
+                ("its seconds of green",
+                 (None if (v.get("dots") or []) else v.get("image_url"))),
                 # THE TEST THAT NARROWED IT, next to what it narrowed.
                 ("the green before the shot", _rest_imgs(rep, v, "before")),
                 ("...and after it settled — the cyan ring is what was "
                  "not there before", _rest_imgs(rep, v, "after")),
             ) if u],
-            "table": _ascent_chain_table(v.get("chains")),
+            "table": _descent_chain_table(v.get("chains")),
+            # ── THE WIZARD'S OWN PICTURE ────────────────────────────
+            #
+            # THE FRAME ALONE WAS NEVER THE PICTURE. What makes the
+            # edit wizard's view readable is the DOTS on it -- every
+            # detection, numbered -- and a descent is often obvious by
+            # eye there in a way no table conveys. The view has
+            # carried them all along; nothing drew them.
+            "dotmap": ({"url": v.get("image_url"),
+                        "w": v.get("w"), "h": v.get("h"),
+                        "dots": v.get("dots") or [],
+                        "mark": (v.get("rest_spot")
+                                 or _rest_spot_of(rep, v)),
+                        "caption": ("%s detection(s) on the green, "
+                                    "numbered — the picture the edit "
+                                    "wizard plots on"
+                                    % (v.get("n_dets")
+                                       if v.get("n_dets") is not None
+                                       else len(v.get("dots") or [])))}
+                       if v.get("image_url") and (v.get("dots") or [])
+                       else None),
         })
     rows = [{"label": "matched",
              "value": "%s of %s swing(s)" % (desc.get("n_matched"),
@@ -29245,6 +29324,26 @@ def _trigger_zone(db, row):
     return None
 
 
+def _window_covers(clip, flo, fhi, gfps) -> bool:
+    """Does this swing's own landing window fall inside the merged one?
+
+    `_merge_frame_windows` collapses overlapping stretches so shared
+    seconds are decoded once, which means a window can belong to more
+    than one swing. Narrowing such a window onto ONE swing's rest spot
+    would hide another swing's descent, so the caller checks that every
+    swing sharing a window agrees about where the ball finished.
+    """
+    _w = clip.get("landing_window_sec")
+    if not _w or len(_w) < 2:
+        return False
+    try:
+        _a = int(float(_w[0]) * float(gfps))
+        _b = int(float(_w[1]) * float(gfps))
+    except (TypeError, ValueError):
+        return False
+    return not (_b < flo or _a > fhi)
+
+
 def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
     """Match each ball that left the tee to the one that came down.
 
@@ -30156,9 +30255,24 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         if progress:
             progress(f"Looking for the ball coming down, window {i + 1} "
                      f"of {len(_wins)}", i, len(_wins))
+        # ── AND THE SIDE OF THE GREEN IT LANDED ON ──────────────────
+        #
+        # Windows are merged across swings, so a window can belong to
+        # more than one; narrowing on one swing's rest spot would hide
+        # another's descent. Only narrow when every swing sharing this
+        # window came to rest in the same place -- which on a clip
+        # with one swing is always, and that is the case this is for.
+        _near = None
+        _rests = [c.get("rest_spot") for c in _clips
+                  if c.get("rest_spot")
+                  and _window_covers(c, _flo, _fhi, _gfps)]
+        if _rests and all(abs(r[0] - _rests[0][0]) <= DESCENT_NEAR_REST_PX
+                          for r in _rests):
+            _near = (float(_rests[0][0]), float(_rests[0][1]))
         try:
             _gd = _d3.find_descents(_gp, fps=_gfps, window=(_flo, _fhi),
-                                    gates=_gates)
+                                    gates=_gates, near_xy=_near,
+                                    near_px=DESCENT_NEAR_REST_PX)
         except Exception as exc:  # noqa: BLE001
             log.warning("ascent descents: window %s-%s failed on %s: %s",
                         _flo, _fhi, row.id, exc)

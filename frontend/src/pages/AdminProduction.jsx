@@ -10267,10 +10267,71 @@ function StepWork({ work }) {
       </table>
     )
   );
+  // ── THE FRAME WITH ITS DETECTIONS ON IT ──────────────────────────
+  //
+  // THE BARE FRAME WAS NEVER THE PICTURE. What makes the edit
+  // wizard's green view readable is the DOTS -- every detection,
+  // numbered -- and on a clean landing the descent is obvious by eye
+  // there in a way the table never conveys. The server has carried
+  // them all along and nothing drew them.
+  //
+  // Drawn as SVG over the frame rather than baked into a JPEG on the
+  // server: the numbers stay crisp at any zoom, and it costs no
+  // re-read of the clip.
+  const DotMap = ({ m }) => {
+    if (!m || !m.url || !(m.dots || []).length) return null;
+    const w = m.w || 1280;
+    const h = m.h || 720;
+    return (
+      <figure style={{ margin: "8px 0 0" }}>
+        <div style={{ position: "relative", lineHeight: 0 }}>
+          <img src={m.url} alt={m.caption || ""}
+               style={{ width: "100%", borderRadius: 6 }} />
+          <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none"
+               style={{ position: "absolute", inset: 0, width: "100%",
+                        height: "100%" }}>
+            {m.dots.map((d, i) => (
+              <g key={i}>
+                <circle cx={d.x} cy={d.y} r={Math.max(4, w / 180)}
+                        fill="rgba(255,176,32,0.55)"
+                        stroke="#ffb020" strokeWidth={Math.max(1, w / 900)} />
+                {/* EVERY NTH LABEL, not every one: a busy green puts a
+                    thousand dots up and the numbers become a smear
+                    that hides the dots they describe. */}
+                {i % Math.ceil((m.dots.length || 1) / 60) === 0 && (
+                  <text x={d.x + w / 150} y={d.y - h / 150}
+                        fill="#ffd79a" fontSize={Math.max(9, w / 110)}>
+                    {d.f}
+                  </text>
+                )}
+              </g>
+            ))}
+            {/* WHERE THE BEFORE/AFTER TEST FOUND IT AT REST, which is
+                what the search was narrowed onto. */}
+            {m.mark && (
+              <g>
+                <circle cx={m.mark[0]} cy={m.mark[1]} r={Math.max(14, w / 60)}
+                        fill="none" stroke="#22d3ee"
+                        strokeWidth={Math.max(2, w / 500)} />
+                <text x={m.mark[0] + w / 50} y={m.mark[1]}
+                      fill="#22d3ee" fontSize={Math.max(11, w / 90)}>
+                  at rest
+                </text>
+              </g>
+            )}
+          </svg>
+        </div>
+        {m.caption && (
+          <figcaption className="tiny muted">{m.caption}</figcaption>
+        )}
+      </figure>
+    );
+  };
   return (
     <div style={{ marginTop: 6 }}>
       <Rows list={work.rows} />
       <Pics list={work.images} />
+      <DotMap m={work.dotmap} />
       <Table t={work.table} />
       {(work.groups || []).map((g, i) => (
         <div key={i} style={{ marginTop: 10, paddingTop: 8,
@@ -10281,6 +10342,7 @@ function StepWork({ work }) {
           )}
           <Rows list={g.rows} />
           <Pics list={g.images} />
+          <DotMap m={g.dotmap} />
           <Table t={g.table} />
         </div>
       ))}

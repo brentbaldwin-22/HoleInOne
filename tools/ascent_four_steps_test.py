@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = (ROOT / "backend" / "app" / "routers" / "admin.py").read_text()
 JSX = (ROOT / "frontend" / "src" / "pages"
        / "AdminProduction.jsx").read_text()
+D3 = (ROOT / "backend" / "app" / "services" / "debug3.py").read_text()
 
 FAILED = []
 
@@ -258,6 +259,66 @@ check("  no rest spot means no narrowing at all",
 check("  which the step says out loud",
       "whole window was searched" in SRC
       and "nothing was found at rest" in SRC, True)
+
+print()
+print("the descent table asks a DESCENT's questions:")
+# IT REUSED THE ASCENT TABLE AND PRINTED A WALL OF None. They are
+# different measurements: an ascent is judged on how fast and how
+# straight it RISES out of a known spot, so it carries rate, bend,
+# density and a traced-back origin; a descent is judged on how far it
+# FELL and how much survived trimming, and has no origin to trace back
+# to. Twelve columns of None reads as a detector that measured
+# nothing, rather than a table asking the wrong questions.
+check("there is a table of its own", "def _descent_chain_table(" in SRC,
+      True)
+check("  and step 3 uses it, not the ascent one",
+      "_descent_chain_table(v.get(\"chains\"))" in SRC, True)
+for _col in ("fall", "drop", "off line", "ends at"):
+    check("  it has a %r column" % _col, '"%s"' % _col in SRC, True)
+check("  and does not ask a descent for its rise rate",
+      '"rate"' in SRC.split("def _descent_chain_table(")[1]
+      .split("def ")[0], False)
+
+print()
+print("THE SEARCH AREA NARROWS, not just the results:")
+# "The ball landed on the right of the green" means this swing's
+# descent came down the right of the FRAME, so every detection on the
+# left is a branch, a shadow or a mower. Filtering finished chains
+# still pays to link all of them, and on a windy green most of what
+# gets linked is foliage -- narrowing before linking is what makes
+# the wide window affordable.
+_fd = D3[D3.index("def find_descents("):]
+_fd = _fd[:_fd.index("\ndef ", 10)]
+check("find_descents takes where the ball came to rest",
+      "near_xy: tuple | None = None" in _fd, True)
+check("  and drops detections before linking, not chains after",
+      _fd.index("dets = [_d for _d in dets") < _fd.index("tracks = build_tracks("),
+      True)
+check("  a column, not a circle — the sideways constraint is the one"
+      " that means anything",
+      'abs(float(_d.get("x", 1e9)) - _nx)' in _fd, True)
+check("  it reports what it dropped", '"near_why"' in _fd, True)
+# A MERGED WINDOW CAN BELONG TO MORE THAN ONE SWING, and narrowing it
+# onto one swing's rest spot would hide another's descent.
+check("a shared window only narrows when the swings agree",
+      "_window_covers(" in SRC, True)
+check("  and never narrows onto a spot nobody measured",
+      "if near_xy and dets:" in _fd, True)
+
+print()
+print("and the green's detections are drawn on the frame:")
+# THE BARE FRAME WAS NEVER THE PICTURE. What makes the wizard's view
+# readable is the dots, numbered, and the server has carried them all
+# along with nothing drawing them.
+check("the view's dots are handed over", '"dotmap"' in SRC, True)
+check("  with the ball at rest marked on it", '"mark"' in SRC, True)
+check("  and the page draws them over the frame",
+      "const DotMap = ({ m })" in JSX, True)
+check("  labelling every nth, so a busy green stays readable",
+      "m.dots.length || 1) / 60" in JSX, True)
+check("  and the bare frame is dropped when the dots carry it",
+      "(None if (v.get(\"dots\") or []) else v.get(\"image_url\"))" in SRC,
+      True)
 
 print()
 print("and the page renders it, collapsed, on the step's own row:")

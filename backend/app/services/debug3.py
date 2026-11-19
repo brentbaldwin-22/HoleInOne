@@ -2771,6 +2771,13 @@ def find_descents(
     merge_sec: float = 1.0,
     # THIS HOLE'S GATES, or None for the module defaults.
     gates: dict | None = None,
+    # WHERE THE BALL CAME TO REST, when the green's before/after test
+    # found it. Detections further than `near_px` to the side of it are
+    # dropped before anything is linked. None means no narrowing, which
+    # is what an honest "nothing found at rest" must produce: this may
+    # never narrow onto a spot nobody measured.
+    near_xy: tuple | None = None,
+    near_px: float = 420.0,
     max_events: int = 20,
     # WHICH DETECTORS TO RUN. Measured on 200 frames of 720p with a ball
     # falling past a textured tree line:
@@ -2995,6 +3002,36 @@ def find_descents(
             {"frame": int(d["frame"]), "x": int(d["x"]), "y": int(d["y"])}
             for d in dets[::_step]
         ]
+        # ── THE BALL CAME TO REST SOMEWHERE, SO LOOK THERE ──────────
+        #
+        # A DESCENT IS THE PATH THAT ARRIVES AT THE BALL. The green's
+        # before/after test measures the one thing out there that was
+        # not there before the shot, and when it finds it the half of
+        # the picture the ball did not land in cannot hold this
+        # swing's descent -- every detection in it is a branch, a
+        # shadow or a mower.
+        #
+        # FILTERED BEFORE LINKING, NOT AFTER. Dropping finished chains
+        # that end in the wrong place still pays to link every one of
+        # them, and on a windy green most of what is linked is foliage.
+        # Narrowing here is why the wide window is affordable.
+        #
+        # A COLUMN, NOT A CIRCLE. The ball falls nearly vertically at
+        # the end, so the constraint that means anything is sideways:
+        # a chain that lands on the right of the green came down the
+        # right of the frame. The height is left alone -- it enters
+        # the picture high and may be tracked from near the top.
+        out["near_xy"] = list(near_xy) if near_xy else None
+        if near_xy and dets:
+            _nx = float(near_xy[0])
+            _before = len(dets)
+            dets = [_d for _d in dets
+                    if abs(float(_d.get("x", 1e9)) - _nx) <= float(near_px)]
+            out["n_dets_near"] = len(dets)
+            out["near_why"] = (
+                "the ball came to rest at x=%d, so %d of %d detection(s) "
+                "more than %dpx to its side were dropped before linking"
+                % (int(_nx), _before - len(dets), _before, int(near_px)))
         _t0 = time.perf_counter()
         tracks = build_tracks(dets, r, min_len=int(min_points),
                               max_gap=DESCENT_MAX_GAP,
