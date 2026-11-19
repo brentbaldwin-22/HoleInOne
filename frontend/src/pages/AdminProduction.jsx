@@ -10197,6 +10197,19 @@ const PHASE_LABELS = {
  * a step chose to put in it without knowing which step it came from.
  * A step that adds a picture tomorrow needs no change here.
  */
+/* ── THE PANELS THAT USED TO SIT BELOW THE STEPS ───────────────────
+ *
+ * PARKED, NOT DELETED. Everything they showed — the tiles, the cone,
+ * the per-swing narrative, the leaving/landing pair — is now the
+ * "show work" under the step that produced it, which is where it is
+ * read from. Two places saying the same thing in a different order is
+ * one more pair to keep in agreement, and the operator asked for the
+ * step list and nothing else.
+ *
+ * Flip to true to get them back while comparing one against the other.
+ */
+const SHOW_LEGACY_PANELS = false;
+
 function StepWork({ work }) {
   if (!work) return null;
   const imgs = (list) => (list || []).filter((i) => i && i.url);
@@ -11199,7 +11212,7 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             Before any of the panels below, which are each one
             step's internals and were written in the order they were
             added rather than the order the ball goes. */}
-        {(rep?.swing_steps || []).length > 0 && (
+        {SHOW_LEGACY_PANELS && (rep?.swing_steps || []).length > 0 && (
           <div className="card" style={{ margin: "10px 0", padding: 10 }}>
             <div className="row" style={{ justifyContent: "space-between" }}>
               <b>The shot, step by step</b>
@@ -11232,7 +11245,7 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             A stage that reports a sentence is a stage nobody can
             check -- and a picture nobody can find is the same thing
             with extra steps. */}
-        {rep?.ai_launch && (
+        {SHOW_LEGACY_PANELS && rep?.ai_launch && (
           <div className="card" style={{ margin: "10px 0", padding: 10 }}>
             <div className="row" style={{ justifyContent: "space-between" }}>
               <b>The golfer, the ball and the impact frame</b>
@@ -11460,7 +11473,7 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             Trigger zones: {rep.zones_from}
           </div>
         )}
-        {rep?.cone_search && (
+        {SHOW_LEGACY_PANELS && rep?.cone_search && (
           <div className="card" style={{ margin: "10px 0", padding: 10 }}>
             <div className="row" style={{ justifyContent: "space-between" }}>
               <b>The cone search — chains from the impact frame</b>
@@ -11696,7 +11709,7 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             chains the column search weighed and the gate each died
             on. Nothing was removed to tidy the dialog, only moved
             behind the picture it explains. */}
-        {rep?.ai_launch && (
+        {SHOW_LEGACY_PANELS && rep?.ai_launch && (
           <details className="card" style={{ margin: "10px 0", padding: 10 }}>
             <summary className="row"
                      style={{ justifyContent: "space-between",
@@ -11916,7 +11929,7 @@ function AscentProduceModal({ state, adminPassword, onClose }) {
             the tables, because "is swing 2 right" is the question
             actually being asked and it was the one the report made
             hardest to answer. */}
-        {(rep?.ascents || []).length > 0 && (
+        {SHOW_LEGACY_PANELS && (rep?.ascents || []).length > 0 && (
           <div style={{ margin: "10px 0" }}>
             {rep.ascents.map((a, i) => (
               <SwingCard key={i} n={i + 1} ascent={a}

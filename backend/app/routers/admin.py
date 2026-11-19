@@ -29270,9 +29270,18 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
             # point to keep.
             if c.get("rest_reason"):
                 _rec["rest_reason"] = c["rest_reason"]
+            _kept: dict = {}
             _d3_save_swing(db, row.id, _idx, _rec,
                            float((rep.get("descents") or {})
-                                 .get("delta_sec") or 0.0))
+                                 .get("delta_sec") or 0.0),
+                           kept_out=_kept)
+            # WHAT THE SAVE REFUSED TO TAKE FROM THIS RUN. A prior
+            # hand-set impact frame or ball outranks a measurement,
+            # which is right — and invisible, which is not: the panel
+            # then shows one number and the wizard another, with
+            # nothing anywhere explaining the gap.
+            if _kept:
+                c["saved_kept_prior"] = _kept
             _out = run_wizard_produce_job(
                 upload_id=row.id,
                 ball_xy=[float(c["ball"][0]), float(c["ball"][1])],
@@ -29393,7 +29402,22 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                                       {"label": "produced",
                                        "value": ("yes" if c.get("ok")
                                                  else str(c.get("reason")
-                                                          or "no"))}],
+                                                          or "no"))}]
+                             # ── AND WHAT THE SAVE KEPT INSTEAD ─────
+                             #
+                             # The wizard reads the SAVED record, not
+                             # this report. A hand-set value there wins
+                             # over anything measured here, so when the
+                             # two differ the panel has to say which
+                             # number actually went out.
+                             + [{"label": "SAVED %s" % k,
+                                 "value": "kept %s — this run measured "
+                                          "%s. %s" % (v.get("kept"),
+                                                      v.get("measured"),
+                                                      v.get("why") or "")}
+                                for k, v in sorted(
+                                    (c.get("saved_kept_prior") or {}).items()
+                                )],
                              "images": [{"caption": "the clip",
                                          "url": c["url"]}]
                                        if c.get("url") else []}
@@ -36386,7 +36410,7 @@ def _d3_plot_background(src_path: Path, frame_idx: int, name: str):
 
 
 def _d3_save_swing(db, upload_id: int, idx: int, rec: dict,
-                   delta_sec: float) -> None:
+                   delta_sec: float, kept_out: dict | None = None) -> None:
     """Merge one swing record into the upload's edit_metrics.
 
     Read-modify-write against a fresh row so a produce that ran for
@@ -36427,6 +36451,12 @@ def _d3_save_swing(db, upload_id: int, idx: int, rec: dict,
         if prior and prior.get("ball_manual"):
             merged["ball"] = prior.get("ball", rec.get("ball"))
             merged["ball_manual"] = True
+            if kept_out is not None and rec.get("ball") is not None:
+                kept_out["ball"] = {
+                    "kept": prior.get("ball"),
+                    "measured": rec.get("ball"),
+                    "why": "an operator placed this ball by hand",
+                }
         # THE IMPACT FRAME THE SAME WAY. A person moved it by eye
         # against the picture; a run that worked one out from a fit has
         # not learned anything that outranks that.
@@ -36434,6 +36464,25 @@ def _d3_save_swing(db, upload_id: int, idx: int, rec: dict,
             merged["impact_frame"] = prior.get(
                 "impact_frame", rec.get("impact_frame"))
             merged["impact_manual"] = True
+            # ── AND SAY SO, BECAUSE IT OUTRANKS A MEASUREMENT ───────
+            #
+            # THIS IS WHERE A RUN AND ITS OWN REPORT DISAGREE. The
+            # step panel shows what this run measured; the edit wizard
+            # shows what was SAVED, and a prior manual value wins here
+            # by design. Reported from the field as "the work looks
+            # right, but after production the wizard has a different
+            # impact frame and a different chain" — which is exactly
+            # what this line does, silently.
+            if (kept_out is not None
+                    and rec.get("impact_frame") is not None
+                    and int(prior.get("impact_frame", -1))
+                    != int(rec["impact_frame"])):
+                kept_out["impact_frame"] = {
+                    "kept": int(prior.get("impact_frame", -1)),
+                    "measured": int(rec["impact_frame"]),
+                    "why": "an operator set this frame by hand, and a "
+                           "produce does not overrule that",
+                }
         # The landing is the operator's too, and produce has nothing to
         # say about it -- a run that does not know about one must not
         # erase it from under the wizard.

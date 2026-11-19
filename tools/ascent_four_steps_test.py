@@ -436,6 +436,33 @@ check("  collapsed by default", "useState(false)" in JSX, True)
 # that must agree are one more thing to keep in agreement.
 check("the duplicate per-swing card is gone",
       "AscentSwingSteps" in JSX, False)
+# AND SO IS EVERY OTHER PANEL BELOW THE STEPS. They showed the same
+# tiles, cone and per-swing narrative in a different order; two places
+# saying one thing is one more pair to keep in agreement.
+check("the legacy panels are gated off behind one flag",
+      "const SHOW_LEGACY_PANELS = false;" in JSX, True)
+check("  and every one of them is behind it",
+      JSX.count("SHOW_LEGACY_PANELS && ") >= 5, True)
+
+print()
+print("A SAVE THAT REFUSES THIS RUN'S NUMBER MUST SAY SO:")
+# THE PANEL AND THE WIZARD DISAGREED AND NOTHING EXPLAINED IT. The
+# step list shows what this run measured; the wizard reads what was
+# SAVED, and `_d3_save_swing` keeps a prior hand-set impact frame or
+# ball over anything a produce measured. That is right — an operator
+# placed it by eye — and it was silent, so the report showed f1286 and
+# chain #1 while the wizard showed f14xx and chain #2.
+check("the save reports what it kept from a prior record",
+      "kept_out: dict | None = None" in SRC, True)
+check("  for a hand-set impact frame",
+      'kept_out["impact_frame"] = {' in SRC, True)
+check("  and a hand-placed ball", 'kept_out["ball"] = {' in SRC, True)
+# ONLY WHEN THEY DIFFER. Reporting a prior value that agrees with the
+# measurement is noise on every clip anyone has ever touched.
+check("  only when it differs from what was measured",
+      '!= int(rec["impact_frame"])' in SRC, True)
+check("and step 4 prints it beside the number it measured",
+      '"SAVED %s" % k' in SRC, True)
 # THE SUB-STEP TIMINGS FOLLOW THE STEP THEY BELONG TO. The descent's
 # own breakdown was keyed to stage 4; the descent is step 3 now, and a
 # stale key does not error -- the breakdown just stops appearing.
