@@ -56,6 +56,13 @@ _run_all = SRC[SRC.index("def _ascent_run("):]
 _run_all = _run_all[:_run_all.index("\ndef ", 10)]
 _run = _live(_run_all)
 
+# STEP 3 LIVES IN ITS OWN FUNCTION. `_ascent_run` calls it and nothing
+# more, so assertions about the window and the matcher belong here;
+# scoped to `_run` they pass vacuously or fail for the wrong reason.
+_desc_all = SRC[SRC.index("def _ascent_descents("):]
+_desc_all = _desc_all[:_desc_all.index("\ndef ", 10)]
+_desc = _live(_desc_all)
+
 print("the run is four steps, numbered as the operator numbered them:")
 _titles = re.findall(r'_stage\((\d), "([^"]+)"', _run)
 check("four of them", len(_titles), 4)
@@ -200,13 +207,57 @@ check("step 3 hands over the green's window views",
 # writing and rendered nothing, which from outside looks exactly like
 # a descent that drew no picture.
 check("  reading image_url, the key the view actually has",
-      '"url": v["image_url"]' in SRC, True)
+      'v.get("image_url")' in SRC, True)
+# AND THE TEST THAT NARROWED IT, beside what it narrowed: the
+# before/after frames the green's rest check drew.
+check("  with the rest test's own before and after",
+      '_rest_imgs(rep, v, "before")' in SRC, True)
 check("  with the frames searched and the chains weighed",
       '"frames searched"' in SRC and '"chains weighed"' in SRC, True)
 check("step 4 hands over the tee spot and the clip",
       '"tee spot — measured"' in _run, True)
 check("and the sweep's pictures hang off 2a, the search that drew them",
       'sweep.get("considered_image_url")' in _run, True)
+
+print()
+print("STEP 3 LOOKS AT THE WHOLE WINDOW THE WIZARD DOES:")
+# FIVE-TO-EIGHT WAS A GUESS ABOUT THE SHOT, AND IT MISSED ONE. On
+# #1780 the band placed f1326-f1626 and reported no descent among 237
+# tracks, while the edit wizard scanning f1283-f1763 drew the arc
+# plainly at f1572-f1763. A hundred and thirty-seven frames of the
+# landing were never looked at.
+check("the window is the wizard's, not a flight-time guess",
+      "_green_scan_window(" in _desc, True)
+check("  padded past the end of the cut, as the wizard pads it",
+      "GREEN_SCAN_PAD_SEC" in SRC, True)
+check("  with the old band kept as the fallback",
+      "FLIGHT_LO_SEC" in _desc and "no wide window could" in _desc, True)
+check("  and the step says which of the two it used",
+      '"landing_window_from"' in SRC, True)
+
+print()
+print("...and the ball at rest narrows it back down:")
+# A WIDE WINDOW ADMITS MORE RUBBISH, and this is what pays for it.
+# 3b already measures the one thing on the green that was not there
+# before the shot; a descent is the path that ARRIVES AT IT. Used
+# only as a gate, that measurement said whether to look and never
+# where, so a wind-shaken branch in the right seconds competed with
+# the real ball on equal terms.
+check("a chain must finish near where the ball came to rest",
+      "DESCENT_NEAR_REST_PX" in _desc, True)
+check("  and the refused ones are counted, not dropped silently",
+      '"rest_narrowing"' in _desc, True)
+# NO REST SPOT, NO NARROWING. The test fails honestly on a ball that
+# lands off the green, and the whole window is then searched as
+# before. What it must never do is narrow onto a spot it did not find.
+check("  no rest spot means no narrowing at all",
+      "if _rs:" in _desc, True)
+# Matched on the half that is not split across a source line: the
+# sentence is written as two adjacent literals, so the contiguous
+# string never appears in the file.
+check("  which the step says out loud",
+      "whole window was searched" in SRC
+      and "nothing was found at rest" in SRC, True)
 
 print()
 print("and the page renders it, collapsed, on the step's own row:")

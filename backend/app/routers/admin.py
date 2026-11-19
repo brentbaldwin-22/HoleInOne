@@ -9494,6 +9494,22 @@ FLIGHT_HI_SEC = 8.0
 # for the swing this was measured on.
 ASCENT_DESCENT_LEAD_SEC = 2.0
 
+# How far past the end of the produced green cut the landing
+# search runs. The same default the click-to-plot scan uses,
+# named here so the two cannot drift: a ball that lands just
+# after the clip stops is exactly the case worth seeing, and
+# the operator judging the picture and the run judging the
+# frames must be looking at the same seconds.
+GREEN_SCAN_PAD_SEC = 2.0
+
+# How near a descent chain must finish to the ball the green's
+# before/after test found at rest. Generous on purpose: the
+# rest spot is the ball AFTER it has bounced and rolled, and
+# the chain ends where the detector last saw it falling --
+# often a bounce short of where it settles. This rules out the
+# branch on the other side of the green, not a near miss.
+DESCENT_NEAR_REST_PX = 260.0
+
 
 def _clip_start_instant(db, row, which: str):
     """When a clip's FIRST frame happened, as a datetime (or None).
@@ -27461,6 +27477,23 @@ def _ascent_find_run(row, src_path, db, progress=None) -> dict:
     return _ascent_run(row, src_path, db, progress=progress, produce=False)
 
 
+def _rest_imgs(rep, view, which):
+    """The before/after frame the green's rest test drew, for a swing.
+
+    Filed on the CLIP rather than the view, because the test runs
+    before the windows are placed and the view is built after them.
+    """
+    try:
+        _n = int(view.get("swing") or 0)
+    except (TypeError, ValueError):
+        return None
+    _c = next((c for c in (rep.get("clips") or [])
+               if int(c.get("n") or 0) == _n), None)
+    if not _c:
+        return None
+    return _c.get("rest_before_url" if which == "before" else "rest_after_url")
+
+
 def _ascent_step3_work(desc, rep):
     """WHICH SECONDS OF GREEN WERE SEARCHED, AND WHAT WAS IN THEM.
 
@@ -27501,16 +27534,41 @@ def _ascent_step3_work(desc, rep):
             "title": "Swing %s" % v.get("swing"),
             "note": str(v.get("reason") or ""),
             "rows": rows,
-            "images": ([{"caption": "its seconds of green, every detection "
-                                    "numbered — the same picture the edit "
-                                    "wizard plots on",
-                         "url": v["image_url"]}]
-                       if v.get("image_url") else []),
+            "images": [{"caption": c, "url": u} for c, u in (
+                ("its seconds of green, every detection numbered — the "
+                 "same picture the edit wizard plots on",
+                 v.get("image_url")),
+                # THE TEST THAT NARROWED IT, next to what it narrowed.
+                ("the green before the shot", _rest_imgs(rep, v, "before")),
+                ("...and after it settled — the cyan ring is what was "
+                 "not there before", _rest_imgs(rep, v, "after")),
+            ) if u],
             "table": _ascent_chain_table(v.get("chains")),
         })
     rows = [{"label": "matched",
              "value": "%s of %s swing(s)" % (desc.get("n_matched"),
                                              len(rep.get("swings") or []))}]
+    # ── THE TWO THINGS THAT DECIDE WHETHER IT COULD HAVE SEEN IT ────
+    #
+    # The window, because a landing outside it is invisible however
+    # good the gates are; and the rest spot, because that is what
+    # narrows a wide window back down. Both belong on the step rather
+    # than in a log line: "0 matched" with neither of them shown is
+    # the state this run was in when it missed a descent the wizard
+    # drew plainly.
+    _c0 = next((c for c in (rep.get("clips") or [])
+                if c.get("landing_window_from")), None)
+    if _c0:
+        rows.append({"label": "window", "value": _c0["landing_window_from"]})
+    _narrow = [c.get("rest_narrowing") for c in (rep.get("clips") or [])
+               if c.get("rest_narrowing")]
+    if _narrow:
+        rows.append({"label": "narrowed by the ball at rest",
+                     "value": "; ".join(n["why"] for n in _narrow)})
+    else:
+        rows.append({"label": "narrowed by the ball at rest",
+                     "value": "no — nothing was found at rest, so the "
+                              "whole window was searched"})
     if desc.get("windows"):
         rows.append({"label": "windows searched",
                      "value": ", ".join("f%s–f%s" % (a, b)
@@ -29991,11 +30049,49 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         # past it would only buy frames of the ball sitting still --
         # every one of them a chance for a wind-shaken branch to be
         # weighed against the real thing.
-        _lo = _base + FLIGHT_LO_SEC - ASCENT_DESCENT_LEAD_SEC
-        _hi = _base + FLIGHT_HI_SEC
-        c["landing_window_sec"] = [round(_lo, 2), round(_hi, 2)]
-        _flo = max(0, int(_lo * _gfps))
-        _fhi = int(_hi * _gfps)
+        # ── THE WIDE WINDOW, WHICH IS THE WIZARD'S ──────────────────
+        #
+        # FIVE-TO-EIGHT IS A GUESS ABOUT THE SHOT, AND IT MISSED ONE.
+        # On #1780 the band placed f1326-f1626 and reported no descent
+        # among 237 tracks; the edit wizard, scanning f1283-f1763,
+        # drew the arc plainly, bounce scatter and all, at f1572-f1763.
+        # A hundred and thirty-seven frames of the landing were simply
+        # never looked at. The run had not judged it badly -- it had
+        # not seen it.
+        #
+        # So the window is the one the wizard uses, which is the one
+        # the produced clip covers: impact through the end of the
+        # green cut, plus its pad. It cannot be too late for a short
+        # iron or too early for a flier, because it is not a guess
+        # about flight time at all.
+        _flo = _fhi = None
+        try:
+            _flo, _fhi = _green_scan_window(
+                db, row, _gp, c.get("impact_frame"), _n_green,
+                GREEN_SCAN_PAD_SEC)
+        except Exception as _ww:  # noqa: BLE001
+            log.debug("step 3: no wide window for swing %s (%s)",
+                      i + 1, _ww)
+            _flo = _fhi = None
+        if _flo is None or _fhi is None or _fhi <= _flo:
+            # THE OLD BAND, AS THE FALLBACK. Without an impact frame
+            # or a clock there is nothing to anchor the wide window
+            # on, and a guess beats refusing to look.
+            _lo = _base + FLIGHT_LO_SEC - ASCENT_DESCENT_LEAD_SEC
+            _hi = _base + FLIGHT_HI_SEC
+            c["landing_window_sec"] = [round(_lo, 2), round(_hi, 2)]
+            c["landing_window_from"] = (
+                "the five-to-eight-second band — no wide window could "
+                "be placed")
+            _flo = max(0, int(_lo * _gfps))
+            _fhi = int(_hi * _gfps)
+        else:
+            c["landing_window_sec"] = [round(_flo / max(_gfps, 1.0), 2),
+                                       round(_fhi / max(_gfps, 1.0), 2)]
+            c["landing_window_from"] = (
+                "impact to the end of the green cut plus %.0fs — the "
+                "same window the edit wizard scans"
+                % GREEN_SCAN_PAD_SEC)
         if _n_green:
             _fhi = min(_fhi, _n_green - 1)
         if _fhi > _flo:
@@ -30181,11 +30277,60 @@ def _ascent_descents(row, db, rep, fps, progress=None) -> dict:
         c["landing_reason"] = (
             f"no ball came down between {round(_lo, 1)}s and "
             f"{round(_hi, 1)}s on the green clock")
+        # ── THE BALL AT REST NARROWS WHERE TO LOOK ──────────────────
+        #
+        # 3b ALREADY KNOWS WHERE THE BALL ENDED UP. The before/after
+        # zone test measures the one thing on the green that was not
+        # there before the shot, and a descent is the path that
+        # ARRIVES AT IT. Used only as a gate -- "no ball at rest, no
+        # descent" -- that measurement answered whether to look and
+        # never where, so a wind-shaken branch in the right seconds
+        # competed with the real ball on equal terms.
+        #
+        # Now a chain has to finish near it. The window is wide on
+        # purpose and a wide window admits more rubbish; this is what
+        # pays for that.
+        #
+        # NO REST SPOT, NO NARROWING. The test fails honestly on a
+        # ball that lands off the green or behind a bunker lip, and
+        # the whole window is searched exactly as before -- what it
+        # must never do is narrow onto a spot it did not find.
+        _rs = c.get("rest_spot")
+        _near, _far = 0, 0
         for ei, e in enumerate(_events):
             _s = float(e.get("last_descent_sec") or 0.0)
-            if _lo <= _s <= _hi:
-                _pairs.append((-int(e.get("fall_px") or 0),
-                               abs(_s - _mid), ci, ei))
+            if not (_lo <= _s <= _hi):
+                continue
+            if _rs:
+                _pts = e.get("points") or []
+                _end = _pts[-1] if _pts else None
+                _d = None
+                if _end is not None:
+                    try:
+                        _d = ((float(_end.get("x")) - float(_rs[0])) ** 2
+                              + (float(_end.get("y")) - float(_rs[1])) ** 2
+                              ) ** 0.5
+                    except (TypeError, ValueError):
+                        _d = None
+                # A CHAIN WITH NO END POINT IS NOT JUDGED ON ONE. It
+                # keeps its place rather than being thrown out for a
+                # measurement nobody could take.
+                if _d is not None and _d > DESCENT_NEAR_REST_PX:
+                    _far += 1
+                    continue
+                if _d is not None:
+                    _near += 1
+            _pairs.append((-int(e.get("fall_px") or 0),
+                           abs(_s - _mid), ci, ei))
+        if _rs:
+            c["rest_narrowing"] = {
+                "spot": [int(_rs[0]), int(_rs[1])],
+                "within_px": DESCENT_NEAR_REST_PX,
+                "kept": _near, "refused": _far,
+                "why": ("%d chain(s) finished within %dpx of where the "
+                        "ball came to rest; %d did not and were not "
+                        "weighed" % (_near, DESCENT_NEAR_REST_PX, _far)),
+            }
     # THE ONE THING THAT FELL, NOT THE ONE NEAREST THE MIDDLE.
     #
     # In three seconds of a green there is at most ONE ball coming down.
