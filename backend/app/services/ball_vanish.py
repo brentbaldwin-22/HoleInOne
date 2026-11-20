@@ -796,6 +796,28 @@ ADDRESS_MAX_AREA = 250
 BALL_BAND_ABOVE_FEET = 0.18
 BALL_BAND_BELOW_FEET = 0.02
 
+# HOW FAR BELOW THE FEET THE BOX REACHES, which is NOT how far the
+# band reaches.
+#
+# THIS FILE HOLDS TWO BELIEFS ABOUT WHICH SIDE OF THE FOOT LINE A
+# TEED BALL SITS ON, and they contradict each other. The band above
+# says "even or higher than the green foot line... Never below", from
+# the operator looking at real frames. The `_in_box` bypass further
+# down says the box "deliberately reaches further below the foot line
+# than the band does, because a ball teed forward of the stance sits
+# lower in frame than the feet". Both are written as settled.
+#
+# They have never been reconciled and this is not the change to
+# reconcile them in. What the box took from the trigger zone was
+# roughly 0.17 of a golfer's height below the feet, and
+# tools/ball_stance_box_test.py has a ball teed 0.06 below; moving
+# the box onto the golfer's feet must not quietly also cut that reach
+# to 0.02 and start refusing balls it has always found.
+#
+# So the box keeps the reach the zone gave it. Only its ANCHOR
+# changes -- from where a golfer may stand to where this one does.
+BALL_BOX_BELOW_FEET = 0.18
+
 
 # ── WHERE A TEED BALL SITS ──────────────────────────────────────────
 #
@@ -894,28 +916,63 @@ def ball_region(*, feet_x, crop=None, zone_y=None, anchor=None,
         _why.append("handedness unknown, assuming right-handed (%s)"
                     % _side)
 
-    # ── TOP AND BOTTOM: THE TRIGGER ZONE'S OWN LINES ────────────────
+    # ── TOP AND BOTTOM: THIS GOLFER'S FEET ──────────────────────────
+    #
+    # THE ZONE SAYS WHERE A GOLFER MAY STAND. THE FEET SAY WHERE THIS
+    # ONE IS STANDING. The zone used to win, and that is only ever
+    # right while the golfer is inside it.
+    #
+    # Reported from the field, with the six tiles showing the whole
+    # swing: a player teed up BEHIND the back zone, and the band came
+    # from the union of every zone's y lines -- a strip of turf
+    # further down the picture than the man swinging. The box was
+    # built beside his feet horizontally and at somebody else's depth
+    # vertically, so the search ran over grass the ball was never on
+    # and came back NO_BALL on a swing anyone can see.
+    #
+    # AND THE BOX IS THE ONLY RULER THAT APPLIES INSIDE ITSELF. A
+    # detection in the stance box skips the `_on_the_ground` band test
+    # altogether, by design -- "the stance box IS a ground test, a
+    # stricter one, since it bounds x as well". True while the box is
+    # at the golfer's depth, and the whole failure when it is not:
+    # nothing downstream was left to notice that the speck it returned
+    # sat well above this man's feet. It came back as the measured
+    # ball, the departure watch followed it, and the impact frame was
+    # derived from it. A confident answer about the wrong object.
+    #
+    # THE SIZE OF THE BOX IS NOT CHANGING HERE, only where it is put.
+    # Above the feet it takes the band's own figure; below it keeps
+    # the reach the zone used to give it -- see BALL_BOX_BELOW_FEET
+    # for the two beliefs this file holds about that side.
     _y0 = _y1 = None
-    if zone_y and len(zone_y) == 2:
-        try:
-            _y0, _y1 = float(zone_y[0]), float(zone_y[1])
-            _why.append("down the trigger zone, y %d..%d"
-                        % (int(_y0), int(_y1)))
-        except (TypeError, ValueError):
-            _y0 = _y1 = None
-    if _y0 is None and anchor:
-        # FALLBACK ONLY, for a camera with no zones drawn.
+    if anchor:
         try:
             _f, _h = float(anchor[0]), float(anchor[1])
             if _h > 0:
-                _y0 = _f - BALL_BAND_ABOVE_FEET * _h
-                _y1 = _f + BALL_BAND_BELOW_FEET * _h
-                _why.append("no zones, so the foot band y %d..%d"
-                            % (int(_y0), int(_y1)))
+                # ROUNDED INWARDS, both edges. The box is returned as
+                # ints and `int()` truncates, which put its top row one
+                # pixel ABOVE the band -- a row the box would keep (it
+                # skips the band test) and the band would refuse. One
+                # pixel, and it is the same two-rulers bug in
+                # miniature, so the box is cut strictly inside.
+                _y0 = math.ceil(_f - BALL_BAND_ABOVE_FEET * _h)
+                _y1 = math.floor(_f + BALL_BOX_BELOW_FEET * _h)
+                _why.append("the foot band of the golfer who swung, "
+                            "y %d..%d" % (int(_y0), int(_y1)))
+        except (TypeError, ValueError):
+            _y0 = _y1 = None
+    # THE ZONE, WHEN THERE IS NO GOLFER TO MEASURE. Still better than
+    # the whole crop: it is where a golfer may stand, drawn by hand
+    # for this camera and this tee.
+    if _y0 is None and zone_y and len(zone_y) == 2:
+        try:
+            _y0, _y1 = float(zone_y[0]), float(zone_y[1])
+            _why.append("no golfer to measure from, so down the "
+                        "trigger zone, y %d..%d" % (int(_y0), int(_y1)))
         except (TypeError, ValueError):
             _y0 = _y1 = None
     if _y0 is None:
-        return None, "no trigger zone and no golfer to measure a band from"
+        return None, "no golfer to measure a band from and no trigger zone"
 
     # ── LEFT AND RIGHT: THE FEET, OUT TO THE EDGE OF THE CROP ───────
     _gap = 4.0

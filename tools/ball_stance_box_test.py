@@ -7,8 +7,17 @@ guess wearing the clothes of a measurement. It is now:
 
   left/right  from the FEET, out to the edge of the crop, on the side
               the ball is teed
-  top/bottom  the TRIGGER ZONE's own lines, which the operator drew
-              for this camera and this tee
+  top/bottom  THIS GOLFER'S FEET -- the band above them the ball is
+              always inside, and the box's own looser reach below
+
+The top and bottom used to be the TRIGGER ZONE's lines, which the
+operator drew for this camera and this tee. That is where a golfer
+MAY stand, and it is only the right answer while the one who swung is
+standing there. Reported from the field on a clip whose six tiles
+show the whole swing: a player teed up behind the back zone, the box
+went to the zones' depth, and the ball it measured was a speck in
+open grass well up the picture from him. Everything downstream --
+last seen, first gone, the impact frame -- was about that speck.
 
 and the ball search runs THERE and nowhere else. The wide pass over
 the whole crop still runs for its counts -- that is the diagnosis
@@ -21,6 +30,7 @@ and the floor is 18 because the search used to cover the whole crop.
 
     python3 tools/ball_stance_box_test.py
 """
+import math
 import sys
 from pathlib import Path
 
@@ -41,6 +51,7 @@ import numpy as np  # noqa: E402
 import cv2  # noqa: E402
 
 from app.services.ball_vanish import (  # noqa: E402
+    BALL_BAND_ABOVE_FEET, BALL_BOX_BELOW_FEET,
     ball_in_frames, ball_region, MIN_LOCAL_CONTRAST, REGION_MIN_FILL,
     MIN_FILL, RIGHTY_BALL_SIDE, REGION_REL, REGION_MAX_ASPECT,
     REGION_MAX_CANDIDATES, _detections,
@@ -90,18 +101,27 @@ def run(**kw):
                           people=PEOPLE, **kw)
 
 
-print("\n-- the box is the feet, the zone lines, and the crop edge")
+print("\n-- the box is the feet, the foot band, and the crop edge")
 _box, _why = ball_region(feet_x=FEET_X, crop=(0, 0, W, H),
                          zone_y=ZONE_Y, anchor=ANCHOR, handed="right")
-check("its top is the zone's top", _box[1], ZONE_Y[0])
-check("its bottom is the zone's bottom", _box[3], ZONE_Y[1])
-check("  not a fraction of the golfer", _box[3] - _box[1], 40)
+check("its top is the band above THIS golfer's feet",
+      _box[1], math.ceil(FEET_Y - BALL_BAND_ABOVE_FEET * GH))
+check("its bottom is the box's own reach below them",
+      _box[3], math.floor(FEET_Y + BALL_BOX_BELOW_FEET * GH))
+check("  not the zone's lines", (_box[1], _box[3]) == ZONE_Y, False)
+# THE BALL IN THIS FIXTURE IS TEED BELOW THE FOOT LINE, which is why
+# the box reaches further down than `_on_the_ground` does. See
+# BALL_BOX_BELOW_FEET: the file holds two beliefs about that side and
+# this change settles neither -- it moves the box without resizing it.
+check("  and the ball it is built for is still inside it",
+      _box[1] <= BALL[1] <= _box[3], True)
 check("it starts clear of the feet", _box[0] > FEET_X, True)
 check("  and runs to the edge of the crop", _box[2], W)
 # THE REASONING IS PART OF THE ANSWER. "No ball" from a patch of grass
 # beside the stance is only worth anything if the operator can see
 # where it looked and why there.
-for _phrase in ("right-handed", "trigger zone", "edge of the crop"):
+for _phrase in ("right-handed", "foot band of the golfer who swung",
+                "edge of the crop"):
     check("  the reasoning says %r" % _phrase, _phrase in _why, True)
 
 
