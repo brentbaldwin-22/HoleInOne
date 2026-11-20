@@ -10480,6 +10480,46 @@ function StepWork({ work }) {
  *  run with four swings in it would otherwise open as a wall of
  *  images with the numbers pushed off the screen.
  */
+// A STEP'S OWN TABLE, ALWAYS SHOWN.
+//
+// `StepWork` has a table of its own, and it lives behind a toggle
+// because the work panel is read when something has gone wrong. This
+// one is for the handful of numbers worth seeing every time.
+function PlainTable({ t }) {
+  if (!t || !(t.rows || []).length) return null;
+  return (
+    <div style={{ marginTop: 6, overflowX: "auto" }}>
+      <table className="tiny" style={{ borderCollapse: "collapse" }}>
+        <thead>
+          <tr className="muted">
+            {(t.columns || []).map((c, i) => (
+              <th key={i} style={{ textAlign: "left", paddingRight: 14,
+                                   fontWeight: 600 }}>{c}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {t.rows.map((r, i) => (
+            <tr key={i}>
+              {r.map((c, j) => (
+                <td key={j}
+                    style={{ paddingRight: 14, verticalAlign: "top",
+                             whiteSpace: "nowrap",
+                             fontVariantNumeric: "tabular-nums",
+                             opacity: j === 0 ? 1 : 0.85 }}>{c}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {t.note && (
+        <div className="tiny muted" style={{ marginTop: 3 }}>{t.note}</div>
+      )}
+    </div>
+  );
+}
+
+
 function WorkToggle({ work, label }) {
   const [open, setOpen] = useState(false);
   if (!work) return null;
@@ -10509,10 +10549,10 @@ function ProduceStepSummary({ rep }) {
 
   const wall = t.wall_sec || t.total_sec || 0;
   const rows = [];
-  const push = (key, label, sec, count, overhead, subs, work) => {
+  const push = (key, label, sec, count, overhead, subs, work, table) => {
     if (!(sec > 0.05)) return;
     rows.push({ key, label, sec, count, overhead, subs: subs || null,
-                work: work || null });
+                work: work || null, table: table || null });
   };
 
   // WHAT EACH STAGE IS MADE OF, where the stage itself knows.
@@ -10547,6 +10587,12 @@ function ProduceStepSummary({ rep }) {
     false,
     (subsByStage[st.n] || []).filter((x) => (x.seconds || 0) > 0.05),
     st.work,
+    // OUT IN THE OPEN, not behind "show work". A step may carry one
+    // table that is read every time rather than when something has
+    // gone wrong -- step 1's windows are the first thing to check
+    // when a clip comes out of the wrong few seconds, and a number
+    // you have to unfold to see is a number nobody checks.
+    st.table,
   ));
   push("other", "Unattributed", t.unattributed_sec, null, true);
 
@@ -10613,6 +10659,7 @@ function ProduceStepSummary({ rep }) {
             {/* WHAT THE STEP ACTUALLY LOOKED AT, next to how long it
                 took. Collapsed, because this panel is read for its
                 timings far more often than for its pictures. */}
+            {r.table && <PlainTable t={r.table} />}
             <WorkToggle work={r.work} />
             {/* The step's own steps. Shares are OF THE STEP, not of the
                 run: "the stitch was 70% of stage 1" is what points at

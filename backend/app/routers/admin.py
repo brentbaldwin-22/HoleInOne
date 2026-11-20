@@ -27833,6 +27833,108 @@ def _ascent_step3_work(desc, rep):
     return {"rows": rows, "groups": groups}
 
 
+def _ascent_swing_windows(rep, desc, win, fps):
+    """Per swing: the three windows this run searches, and where.
+
+    ONE ROW PER SWING, and every number labelled with the camera it
+    belongs to. The ascent is swept on the TEE clip; the ball-on-green
+    test and the descent sweep are on the GREEN clip, which runs at its
+    own frame rate with a clock offset between the two. Printing bare
+    frame numbers from both cameras in one table invites subtracting
+    one from the other, which is meaningless.
+
+    Everything here is read off what the run actually did. Nothing is
+    recomputed: a table that re-derives a window can disagree with the
+    search it claims to describe, and then it is worse than no table.
+    """
+    _f = float(fps or 30.0)
+    _gf = float((desc or {}).get("green_fps") or 0.0) or _f
+    _clips = list((rep or {}).get("clips") or [])
+    _swings = list((rep or {}).get("swings") or [])
+    _wins = [(int(a), int(b)) for a, b in (win or [])]
+    out = []
+    for _i, _sw in enumerate(_swings):
+        _imp = _sw.get("impact_frame")
+        _c = next((c for c in _clips if int(c.get("n") or 0) == _i + 1), {})
+        _row = {"swing": _i + 1, "impact_frame": _imp,
+                "impact_sec": (round(float(_imp) / _f, 2)
+                               if _imp is not None else None)}
+        # ── THE ASCENT SWEEP, on the tee clip ───────────────────────
+        #
+        # WHICHEVER WINDOW HOLDS THIS SWING'S STRIKE. The windows are
+        # built one per cutter peak and the swings come from the same
+        # peaks, so they correspond -- but matched by CONTENT rather
+        # than by position, because a window the cutter produced and a
+        # swing that survived step 1 are not guaranteed to be the same
+        # list. None means the whole clip was swept, which is what
+        # `_ascent_windows` returning nothing means.
+        _aw = None
+        if _imp is not None and _wins:
+            _aw = next((w for w in _wins
+                        if w[0] <= int(_imp) <= w[1]), None)
+        _row["ascent_frames"] = list(_aw) if _aw else None
+        _row["ascent_sec"] = ([round(_aw[0] / _f, 2), round(_aw[1] / _f, 2)]
+                              if _aw else None)
+        _row["ascent_all"] = not _wins
+        # ── THE BALL ON THE GREEN, in green seconds ─────────────────
+        #
+        # Two instants, not a span: one frame before the ball could
+        # have arrived and one after it has, and the difference
+        # between them is the shot.
+        _rw = _c.get("rest_window")
+        _row["green_ball_sec"] = ([round(float(_rw[0]), 2),
+                                   round(float(_rw[1]), 2)]
+                                  if _rw and len(_rw) == 2 else None)
+        _row["green_ball_tried"] = _c.get("rest_windows_tried")
+        # ── THE DESCENT SWEEP, on the green clip ────────────────────
+        _lw = _c.get("landing_window_sec")
+        _row["descent_sec"] = ([round(float(_lw[0]), 2),
+                                round(float(_lw[1]), 2)]
+                               if _lw and len(_lw) == 2 else None)
+        _row["descent_frames"] = ([int(float(_lw[0]) * _gf),
+                                   int(float(_lw[1]) * _gf)]
+                                  if _lw and len(_lw) == 2 else None)
+        _row["descent_from"] = _c.get("landing_window_from")
+        out.append(_row)
+    return out
+
+
+def _swing_window_table(rows):
+    """The window table as the step panel renders it."""
+    def _span(fr, sec, cam):
+        if not sec:
+            return "—"
+        if not fr:
+            return "%.2f–%.2fs %s" % (sec[0], sec[1], cam)
+        return "f%d–f%d · %.2f–%.2fs %s" % (fr[0], fr[1], sec[0], sec[1], cam)
+
+    out = []
+    for r in rows or []:
+        _asc = ("the whole clip (no cutter window)" if r.get("ascent_all")
+                else _span(r.get("ascent_frames"), r.get("ascent_sec"),
+                           "tee"))
+        _gb = r.get("green_ball_sec")
+        out.append([
+            "Swing %s" % r.get("swing"),
+            ("f%s · %.2fs tee" % (r.get("impact_frame"), r["impact_sec"])
+             if r.get("impact_sec") is not None else "—"),
+            _asc,
+            ("before %.2fs → after %.2fs green" % (_gb[0], _gb[1])
+             if _gb else "—"),
+            _span(r.get("descent_frames"), r.get("descent_sec"), "green"),
+        ])
+    if not out:
+        return None
+    return {
+        "columns": ["", "impact", "ascent sweep", "ball on green",
+                    "descent sweep"],
+        "note": ("Tee frames and green frames are different clocks at "
+                 "different rates — each span says which camera it is "
+                 "on."),
+        "rows": out,
+    }
+
+
 def _ascent_chain_table(considered):
     """EVERY CHAIN THAT WAS WEIGHED, with what each gate read off it.
 
@@ -29282,6 +29384,33 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
            + str(_desc.get("reason") or ""),
            _desc.get("n_matched"), "matched", time.perf_counter() - _t,
            work=_work(_ascent_step3_work, _desc, rep))
+
+    # ══ EVERY WINDOW THIS RUN WILL SEARCH, PER SWING ══════════════════
+    #
+    # ASKED FOR DIRECTLY, and it goes on STEP 1 rather than in a "show
+    # work" fold: step 1 is where the swings are named, and the three
+    # windows hung off each swing are the first thing to check when a
+    # clip comes out wrong. A number that has to be unfolded to be
+    # read is a number nobody checks.
+    #
+    # Each row says WHICH CAMERA its frames belong to. The ascent is
+    # swept on the tee clip and the other two on the green, at
+    # different frame rates and with a clock offset between them, so
+    # bare frame numbers side by side would invite exactly the
+    # arithmetic that cannot be done.
+    #
+    # Built here because this is the first point at which all three
+    # are known: the ascent windows come from the cutter before step
+    # 2, and the green ones are settled by step 3.
+    try:
+        rep["swing_windows"] = _ascent_swing_windows(
+            rep, _desc, _win, fps)
+        for _st in (rep.get("stages") or []):
+            if int(_st.get("n") or 0) == 1 and rep["swing_windows"]:
+                _st["table"] = _swing_window_table(rep["swing_windows"])
+    except Exception as _wx:  # noqa: BLE001
+        log.warning("ascent: could not build the swing window table: %s",
+                    _wx, exc_info=True)
 
     # ══ STEP 4. BUILD THE TRACER, AND THE CLIP ══════════════════════─────────────────────────────
     if not produce:
