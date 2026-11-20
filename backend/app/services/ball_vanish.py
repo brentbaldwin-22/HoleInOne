@@ -841,6 +841,30 @@ BALL_BOX_BELOW_FEET = 0.18
 # at a bar of 8. The operator drew the line they wanted further out.
 BALL_BOX_FOOT_GAP = 0.20
 
+# ...AND HOW FAR OUT IT STOPS, in the same body heights.
+#
+# THE BOX USED TO RUN TO THE EDGE OF THE CROP, which is not a box at
+# all on that side -- it is a strip of turf a few hundred pixels long
+# with a height test on it, and anything still and ball-sized
+# anywhere along it qualifies. Asked for directly, looking at the six
+# tiles: "can we crop around the golfer and then draw a square in
+# front of the feet around where the ball should be and just search
+# there?"
+#
+# TWO MEASUREMENTS OF WHERE A TEED BALL ACTUALLY SITS, both already
+# in this repository:
+#
+#   0.36  the 8 Nov crop quoted below -- box [80, 26, 94, 208],
+#         centre x=127, the real ball at x=201
+#   0.83  the ball in tools/ball_stance_box_test's fixture, drawn
+#         at (300, 222) with the feet at x=200 and a 120px golfer
+#
+# One is a frame, one is a drawing, and they are a factor of two
+# apart. 1.0 clears both and still turns a strip into a box: on the
+# 125px golfer this was reported from, it is 125px of turf instead of
+# the 400-odd the crop gives.
+BALL_BOX_FAR_FEET = 1.0
+
 # WHICH SIDE A RIGHT-HANDER'S BALL IS ON, IN IMAGE X.
 #
 # SET FROM THE OPERATOR'S OWN DRAWING on a real clip, where the ball
@@ -987,11 +1011,26 @@ def ball_region(*, feet_x, crop=None, zone_y=None, anchor=None,
         _cx0, _cx1 = 0.0, float(frame[0])
     else:
         return None, "no crop to run the box out to"
+    # ── AND A FAR EDGE, so this is a box and not a strip ────────────
+    _far = None
+    if anchor:
+        try:
+            _h2 = float(anchor[1] or 0)
+            if _h2 > 0:
+                _far = BALL_BOX_FAR_FEET * _h2
+        except (TypeError, ValueError):
+            _far = None
     if _side == "right":
-        _x0, _x1 = _fx + _gap, _cx1
+        _x0 = _fx + _gap
+        _x1 = min(_cx1, _fx + _far) if _far else _cx1
     else:
-        _x0, _x1 = _cx0, _fx - _gap
-    _why.append("from the feet out to the %s edge of the crop" % _side)
+        _x1 = _fx - _gap
+        _x0 = max(_cx0, _fx - _far) if _far else _cx0
+    _why.append(
+        ("a %d px box in front of the feet, on the %s"
+         % (int(abs(_x1 - _x0)), _side)) if _far else
+        ("from the feet out to the %s edge of the crop (no golfer to "
+         "measure a far edge from)" % _side))
 
     if frame:
         _x0, _x1 = max(0.0, _x0), min(float(frame[0]), _x1)
@@ -2027,7 +2066,8 @@ DEPART_AFTER_SEC = 0.50
 
 
 def ball_departure(video_path, at_sec: float, *, rect=None, people=None,
-                   anchor=None, spot=None,
+                   anchor=None, spot=None, feet_x=None, zone_y=None,
+                   handed=None,
                    before_sec: float = DEPART_BEFORE_SEC,
                    after_sec: float = DEPART_AFTER_SEC,
                    # HOW LONG THE SPOT MUST STAY EMPTY to count as gone.
@@ -2070,7 +2110,9 @@ def ball_departure(video_path, at_sec: float, *, rect=None, people=None,
 
     out = {"spot": list(spot) if spot else None, "impact_frame": None,
            "impact_sec": None, "checked": 0, "last_seen": None,
-           "why": "not checked"}
+           "why": "not checked",
+           "spot_from": ("handed in by the six-frame check" if spot
+                         else None)}
     cap = None
     try:
         cap = cv2.VideoCapture(str(video_path))
@@ -2088,6 +2130,35 @@ def ball_departure(video_path, at_sec: float, *, rect=None, people=None,
         else:
             x0, y0, x1, y1 = 0, 0, W, H
         boxes = [(x0, y0, x1, y1)]
+        # ── SEARCH THE BOX IN FRONT OF THE FEET, NOT THE WHOLE CROP ──
+        #
+        # WHEN NOBODY HANDS THIS A SPOT IT GOES AND FINDS ONE, and
+        # until now it looked across the ENTIRE verify crop with one
+        # test on it: `_on_the_ground`, which bounds height and says
+        # nothing about x. So any still, ball-sized, bright-enough
+        # speck at roughly foot height anywhere along a few hundred
+        # pixels of turf could be the most-seen blob and become "the
+        # ball", and everything after it -- last seen, first gone, the
+        # impact frame, the tracer's start -- is then about that
+        # speck. On the clip this was reported from, the ring landed
+        # out in open grass well to the side of the man swinging while
+        # `ball_in_frames` was searching a correct box a few dozen
+        # pixels wide.
+        #
+        # `ball_region` has built that box all along; this function
+        # just never asked for it. Same inputs, same box, one search
+        # area between the two halves of the same question.
+        out["region"] = None
+        out["region_why"] = None
+        if spot is None and feet_x is not None:
+            _reg, _rw = ball_region(
+                feet_x=feet_x, crop=(x0, y0, x1, y1), zone_y=zone_y,
+                anchor=anchor, handed=handed, frame=(W, H))
+            out["region_why"] = _rw
+            if _reg:
+                boxes = [(max(x0, int(_reg[0])), max(y0, int(_reg[1])),
+                          min(x1, int(_reg[2])), min(y1, int(_reg[3])))]
+                out["region"] = list(boxes[0])
         cap_area = ADDRESS_MAX_AREA
         _hs = [p["box"][3] for p in (people or [])
                if isinstance(p, dict) and p.get("box")]
@@ -2132,9 +2203,20 @@ def ball_departure(video_path, at_sec: float, *, rect=None, people=None,
                         seen[key] += 1
             if not seen:
                 out["why"] = "no ball at rest before the strike"
+                out["spot_from"] = "nothing found"
                 return out
             best = max(seen, key=lambda k: seen[k])
             out["spot"] = [int(round(best[0])), int(round(best[1]))]
+            # WHOSE ANSWER THIS IS. A spot handed in by the six-frame
+            # check and a spot this function went and found are
+            # different claims of very different strength, and the
+            # report showed them identically -- a red ring, with no
+            # way to tell which search put it there.
+            out["spot_from"] = ("found here, as the stillest thing in "
+                                "the box before the strike"
+                                if out.get("region") else
+                                "found here, across the whole crop — "
+                                "no box could be built")
 
         sx, sy = float(out["spot"][0]), float(out["spot"][1])
 

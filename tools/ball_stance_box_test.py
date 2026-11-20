@@ -51,7 +51,7 @@ import numpy as np  # noqa: E402
 import cv2  # noqa: E402
 
 from app.services.ball_vanish import (  # noqa: E402
-    BALL_BAND_ABOVE_FEET, BALL_BOX_BELOW_FEET,
+    BALL_BAND_ABOVE_FEET, BALL_BOX_BELOW_FEET, BALL_BOX_FAR_FEET,
     ball_in_frames, ball_region, MIN_LOCAL_CONTRAST, REGION_MIN_FILL,
     MIN_FILL, RIGHTY_BALL_SIDE, REGION_REL, REGION_MAX_ASPECT,
     REGION_MAX_CANDIDATES, _detections,
@@ -101,7 +101,7 @@ def run(**kw):
                           people=PEOPLE, **kw)
 
 
-print("\n-- the box is the feet, the foot band, and the crop edge")
+print("\n-- the box is a patch of turf in front of this golfer's feet")
 _box, _why = ball_region(feet_x=FEET_X, crop=(0, 0, W, H),
                          zone_y=ZONE_Y, anchor=ANCHOR, handed="right")
 check("its top is the band above THIS golfer's feet",
@@ -116,12 +116,17 @@ check("  not the zone's lines", (_box[1], _box[3]) == ZONE_Y, False)
 check("  and the ball it is built for is still inside it",
       _box[1] <= BALL[1] <= _box[3], True)
 check("it starts clear of the feet", _box[0] > FEET_X, True)
-check("  and runs to the edge of the crop", _box[2], W)
+# A BOX, NOT A STRIP. It used to run to the edge of the crop, which
+# on that side is no bound at all -- see BALL_BOX_FAR_FEET.
+check("  and stops a golfer's height out, not at the crop edge",
+      (_box[2], _box[2] < W), (int(FEET_X + BALL_BOX_FAR_FEET * GH), True))
+check("  with the fixture's ball still inside it",
+      _box[0] <= BALL[0] <= _box[2], True)
 # THE REASONING IS PART OF THE ANSWER. "No ball" from a patch of grass
 # beside the stance is only worth anything if the operator can see
 # where it looked and why there.
 for _phrase in ("right-handed", "foot band of the golfer who swung",
-                "edge of the crop"):
+                "box in front of the feet"):
     check("  the reasoning says %r" % _phrase, _phrase in _why, True)
 
 

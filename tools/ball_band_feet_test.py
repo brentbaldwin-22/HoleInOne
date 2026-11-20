@@ -111,13 +111,15 @@ check("no box", box3, None)
 check("and a reason naming both", "no golfer" in why3 and "zone" in why3,
       True)
 
-print("\n6. the horizontal rule is untouched")
-check("a right-hander's box runs from the feet to the right edge",
-      (box[0] > FEET_X, box[2]), (True, CROP[2]))
+print("\n6. the side is still chosen the same way")
+# The far edge is tools/departure_box_test.py's subject; here it is
+# only the SIDE that matters.
+check("a right-hander's box sits to the right of the feet",
+      (box[0] > FEET_X, box[2] > FEET_X), (True, True))
 box4, _ = ball_region(feet_x=FEET_X, crop=CROP, zone_y=ZONE_Y,
                       anchor=ANCHOR, handed="left", frame=FRAME)
-check("a left-hander's runs the other way",
-      (box4[0], box4[2] < FEET_X), (CROP[0], True))
+check("a left-hander's to the left",
+      (box4[0] < FEET_X, box4[2] <= FEET_X), (True, True))
 
 print()
 if FAILED:

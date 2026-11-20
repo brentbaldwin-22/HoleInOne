@@ -28016,6 +28016,24 @@ def _ascent_step1_work(s1, swings, fps):
         if ai.get("measured_impact_gone") is not None:
             rows.append(("first frame gone",
                          "f%s" % ai["measured_impact_gone"]))
+        # ── WHICH SEARCH PUT THE RED RING WHERE IT IS ───────────────
+        #
+        # The six tiles draw one ring and three different searches can
+        # have placed it, with very different authority. Without this
+        # row, "the ball search is looking in the wrong place" and
+        # "the ball search found nothing and a stale spot was used
+        # instead" are the same picture.
+        if ai.get("measured_from"):
+            rows.append(("the ball's spot came from",
+                         str(ai["measured_from"])))
+        if ai.get("measured_region"):
+            _mr = ai["measured_region"]
+            rows.append(("the box it searched",
+                         "x %d..%d · y %d..%d (%d x %d px)%s"
+                         % (_mr[0], _mr[2], _mr[1], _mr[3],
+                            _mr[2] - _mr[0], _mr[3] - _mr[1],
+                            (" — " + str(ai.get("measured_region_why")))
+                            if ai.get("measured_region_why") else "")))
         groups.append({
             "title": "Swing %s" % sw.get("n"),
             "note": sw.get("impact_from") or "",
@@ -32359,6 +32377,13 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi, anchor=None) -> dict:
             anchor=(None if not out.get("golfer_box") else
                     (out["golfer_box"][1] + out["golfer_box"][3],
                      out["golfer_box"][3])),
+            # AND THE FEET, so that when no spot is handed over this
+            # searches the box in front of them rather than the whole
+            # crop. The address check has always been given these;
+            # the watch never was, and the two halves of one question
+            # were looking at areas that differ by a factor of
+            # hundreds.
+            feet_x=_ffx1, zone_y=_zy1,
             # ── START LOOKING BEFORE THE BALL IS GONE ───────────────
             #
             # THE WHOLE EIGHT-FRAME ERROR WAS HERE. The default looks
@@ -32383,6 +32408,32 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi, anchor=None) -> dict:
             gone_hold_frames=ASCENT_GONE_HOLD_FRAMES)
         out["measured_ball"] = (_dep.get("spot")
                                 or (_addr or {}).get("spot"))
+        # ── WHICH SEARCH PUT THE RING THERE ─────────────────────────
+        #
+        # Three things can supply the watched spot: the six-frame
+        # address check, a ball spot kept on the camera event from an
+        # earlier run, or the watch going and finding one itself. They
+        # are very different claims and the panel drew all three as
+        # one red ring, so "the ball search is looking in the wrong
+        # place" could not be told from "the ball search found
+        # nothing and something else supplied a spot".
+        out["measured_from"] = (
+            _dep.get("spot_from")
+            if _dep.get("spot") else
+            ("the six-frame address check" if (_addr or {}).get("spot")
+             else "nothing found"))
+        if (_dep.get("spot_from") == "handed in by the six-frame check"
+                and not (_addr or {}).get("spot")
+                and (_kept or {}).get("ball_spot")):
+            # NOT THE SIX-FRAME CHECK AT ALL. `spot=` falls through to
+            # the kept rig answer when the address check comes back
+            # empty, and `ball_departure` cannot tell the two apart
+            # from the inside.
+            out["measured_from"] = (
+                "a ball spot kept on the camera event from an earlier "
+                "run — this run's own address check found nothing")
+        out["measured_region"] = _dep.get("region")
+        out["measured_region_why"] = _dep.get("region_why")
         # ── SPLIT THE DIFFERENCE, AND ONLY WHEN WE SAW BOTH ─────────
         #
         # The watch reports the first frame the ball's pixel is EMPTY,
