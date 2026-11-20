@@ -6747,24 +6747,50 @@ def sweep_ascents(
         # crowded out of a search that was meant to find more of it.
         # Two passes keep the band's budget exactly as it was.
         out["cone_below"] = None
-        if (bool(int(_G["ascent_cone_below_skyline"])) and cone_origin
+        # ── ONE WEDGE PER GOLFER, NOT ONE PER CLIP ──────────────────
+        #
+        # `cone_origin` may be a single (x, y) or a LIST of them, one
+        # per swing. It used to be one point, and the caller handed it
+        # `rep["swings"][0]` -- literally the FIRST swing's ball -- so
+        # on a clip with three golfers across the tee box the fallback
+        # search for swings 2 and 3 was aimed at where the first player
+        # had been standing. Each wedge is its own; a detection is kept
+        # if it lies inside ANY of them, under the bearing test each
+        # origin gives it.
+        _origins = []
+        for _o in (cone_origin if isinstance(cone_origin, (list, tuple))
+                   and cone_origin
+                   and isinstance(cone_origin[0], (list, tuple))
+                   else ([cone_origin] if cone_origin else [])):
+            try:
+                _origins.append((int(_o[0]), int(_o[1])))
+            except (TypeError, ValueError, IndexError):
+                continue
+        # Same point twice is one wedge's worth of work, not two.
+        _origins = list(dict.fromkeys(_origins))
+        if (bool(int(_G["ascent_cone_below_skyline"])) and _origins
                 and _cone_is_set(_CONE_LO, _CONE_HI)):
             try:
-                _ax, _ay = int(cone_origin[0]), int(cone_origin[1])
                 _top = int(band_h)
-                if _ay > _top:
-                    # The wedge's x-span between the skyline and the
-                    # ball, clamped to the frame: everything the cone
-                    # can reach down there and nothing else.
-                    _xs = [_ax]
-                    for _d in (_CONE_LO, _CONE_HI):
-                        _r = math.radians(_d)
-                        if abs(math.cos(_r)) > 1e-6:
-                            _t = (_ay - _top) / math.cos(_r)
-                            _xs.append(_ax + math.sin(_r) * _t)
-                        else:
-                            _xs.append(_ax + (1 if _d > 0 else -1)
-                                       * frame_w)
+                _origins = [(_x, _y) for _x, _y in _origins if _y > _top]
+                if _origins:
+                    # The wedges' x-span between the skyline and the
+                    # balls, clamped to the frame: everything the cones
+                    # can reach down there and nothing else. ONE
+                    # rectangle covering all of them, so the clip is
+                    # still decoded once however many golfers there are.
+                    _xs = []
+                    _ay_max = max(_y for _, _y in _origins)
+                    for _ax, _ay in _origins:
+                        _xs.append(_ax)
+                        for _d in (_CONE_LO, _CONE_HI):
+                            _r = math.radians(_d)
+                            if abs(math.cos(_r)) > 1e-6:
+                                _t = (_ay - _top) / math.cos(_r)
+                                _xs.append(_ax + math.sin(_r) * _t)
+                            else:
+                                _xs.append(_ax + (1 if _d > 0 else -1)
+                                           * frame_w)
                     _cx0 = max(0, int(min(_xs)))
                     _cx1 = min(int(frame_w), int(max(_xs)) + 1)
                     _below = []
@@ -6772,14 +6798,22 @@ def sweep_ascents(
                         for _lo2, _hi2 in _spans:
                             _below += detect_movers_by_diff(
                                 input_path, _lo2, _hi2, sens=int(sens),
-                                per_frame=_per_frame,
+                                # A BUDGET PER WEDGE. `per_frame` caps
+                                # how many blobs survive each frame, and
+                                # it was set for ONE wedge. Three wedges
+                                # sharing one cap is the same starvation
+                                # this fix is for, one layer down: the
+                                # extremal cap drops the surplus
+                                # largest-first and a far golfer's ball
+                                # is the smallest thing in the rect.
+                                per_frame=_per_frame * len(_origins),
                                 roi=(_cx0, _top, _cx1 - _cx0,
-                                     _ay - _top),
+                                     _ay_max - _top),
                                 cap=200000, three_frame=_three,
                                 ghost_px=_ghost, prefer_area=_prefer,
                                 merge_px=_merge)
-                    # ONLY WHAT IS ACTUALLY IN THE WEDGE. The rectangle
-                    # is the wedge's bounding box and is mostly not the
+                    # ONLY WHAT IS ACTUALLY IN A WEDGE. The rectangle
+                    # is the wedges' bounding box and is mostly not any
                     # wedge; the gate is the same bearing test the
                     # chains get, so the two cannot disagree.
                     _kept_b = []
@@ -6789,16 +6823,24 @@ def sweep_ascents(
                         # read the default for every one and put the
                         # whole wedge at the origin, so the bearing
                         # test refused all of it.
-                        _dx = float(_d2["x"]) - _ax
-                        _dy = float(_d2["y"]) - _ay
-                        _b2 = math.degrees(math.atan2(_dx, -_dy))
-                        if _CONE_LO <= _b2 <= _CONE_HI:
-                            _kept_b.append(_d2)
+                        for _ax, _ay in _origins:
+                            _dx = float(_d2["x"]) - _ax
+                            _dy = float(_d2["y"]) - _ay
+                            _b2 = math.degrees(math.atan2(_dx, -_dy))
+                            if _CONE_LO <= _b2 <= _CONE_HI:
+                                _kept_b.append(_d2)
+                                break
                     dets += _kept_b
                     out["cone_below"] = {
                         "ran": True,
-                        "rect": [_cx0, _top, _cx1 - _cx0, _ay - _top],
-                        "origin": [_ax, _ay],
+                        "rect": [_cx0, _top, _cx1 - _cx0,
+                                 _ay_max - _top],
+                        # EVERY APEX, not whichever one a loop variable
+                        # happened to hold last. `origin` is kept as
+                        # the first for the readers that expect one
+                        # point; `origins` is the truth.
+                        "origin": list(_origins[0]),
+                        "origins": [list(_o) for _o in _origins],
                         "n_found": len(_below),
                         "n_in_cone": len(_kept_b),
                     }

@@ -28523,7 +28523,24 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # THE SAME APEX THE PICTURE WILL BE DRAWN FROM. `ascent_cone_below
     # _skyline` searches the wedge under the skyline, and the wedge is
     # anchored here -- so this is read once and handed to both.
-    _origin_for_cone, _ = _cone_origin_for(rep.get("ai_launch"))
+    # ── ONE APEX PER SWING ──────────────────────────────────────────
+    #
+    # This read `rep["ai_launch"]`, which is set a few hundred lines
+    # up to `rep["swings"][0]` -- the FIRST swing's ball, kept there
+    # for a panel that wants exactly one. So on a clip with three
+    # golfers spread across the tee box, 2b's fallback wedge was aimed
+    # at where the first player stood, for all three swings. Every
+    # swing's own measured ball is handed over now; a detection counts
+    # if it is inside any of the wedges.
+    _origin_for_cone = []
+    for _sw0 in (rep.get("swings") or []):
+        _o0, _ = _cone_origin_for(_sw0.get("ai_launch"))
+        if _o0:
+            _origin_for_cone.append(_o0)
+    if not _origin_for_cone:
+        _o0, _ = _cone_origin_for(rep.get("ai_launch"))
+        _origin_for_cone = [_o0] if _o0 else []
+    rep["cone_origins"] = [list(_o) for _o in _origin_for_cone]
     # AND WHICH TEE, so the per-zone cone the editor offers is the one
     # that runs. Without it `resolve_gates` could not see a `name@N`
     # override and a cone set for zone 3 arrived as -90..+90.
@@ -28647,10 +28664,17 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                               ("judge", _sw_t.get("judge") or 0.0),
                           ) if v)},
                  ],
+                 # LABELLED AS WHOLE-CLIP, because they are, and a
+                 # per-swing pipeline whose only pictures are
+                 # whole-clip ones reads as a whole-clip sweep. Asked
+                 # directly: "based on the pics, it looks like we're
+                 # sweeping the entire clip." The per-swing pictures
+                 # are in the groups below.
                  "images": [{"caption": c, "url": u} for c, u in (
-                     ("every chain it considered, drawn over the band",
+                     ("ALL SWINGS — every chain it considered, drawn "
+                      "over the band",
                       sweep.get("considered_image_url")),
-                     ("the sweep map", sweep.get("image_url")),
+                     ("ALL SWINGS — the sweep map", sweep.get("image_url")),
                  ) if u],
                  "table": _ascent_chain_table(sweep.get("considered")),
              }),
@@ -28806,6 +28830,13 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
             _sw["ascent"] = {"first_frame": _best.get("first_frame"),
                              "last_frame": _best.get("last_frame"),
                              "n_points": _best.get("n_points")}
+            # THE PICTURE OF THIS SWING'S CHAIN, on the frame that
+            # chain starts on. `_ascent_swing_images` has drawn one
+            # per accepted chain all along and nothing displayed it,
+            # so the only ascent pictures on the page were the two
+            # whole-clip ones -- which is why a per-swing pipeline
+            # reads as a whole-clip sweep.
+            _sw["ascent_image_url"] = _best.get("image_url")
             _asc.append(_best)
             continue
         # ── 2b. NOTHING ABOVE THE SKYLINE: SEARCH THE CONE ──────────
@@ -28859,10 +28890,38 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
             {"title": "Swing %d — every chain, judged against this "
                       "swing's span" % (_j + 1),
              "note": str(_s2.get("ascent_from") or ""),
+             "images": ([{"caption": "the chain this swing kept, on the "
+                                     "frame it starts on",
+                          "url": _s2["ascent_image_url"]}]
+                        if _s2.get("ascent_image_url") else []),
              "table": _ascent_chain_table(_s2.get("considered"))}
             for _j, _s2 in enumerate(_sw_list)
         ]
         _st["work"] = _w2
+    # ── AND SAY WHOSE CHAIN 2c IS SHOWING ───────────────────────────
+    #
+    # `near_dets` is a slice around the SWEEP's best chain -- the best
+    # in the whole clip, chosen before any swing has claimed anything.
+    # On a multi-swing clip that is one swing's chain presented as
+    # "the best chain", with nothing saying which swing, so it reads
+    # as the only answer the step produced.
+    _top_chain = (_considered_all or [None])[0]
+    if _top_chain and len(_sw_list) > 1:
+        _whose = next(
+            (_j + 1 for _j, _s3 in enumerate(_sw_list)
+             if (_s3.get("ascent") or {}).get("first_frame")
+             == _top_chain.get("first_frame")), None)
+        for _st in (rep.get("scan_stages") or []):
+            if _st.get("n") != "2c":
+                continue
+            _st["detail"] = (
+                "The best chain IN THE CLIP, not in a swing — f%s–f%s, "
+                "%s. One picture, whichever swing it belongs to; each "
+                "swing's own chain is drawn in 2a. "
+                % (_top_chain.get("first_frame"),
+                   _top_chain.get("last_frame"),
+                   ("kept by swing %d" % _whose) if _whose
+                   else "kept by no swing")) + str(_st.get("detail") or "")
     rep["ascent_spans"] = [{"swing": _i + 1, "from_frame": a,
                             "to_frame": b} for _i, (a, b) in
                            enumerate(_spans)]
