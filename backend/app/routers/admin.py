@@ -15735,6 +15735,19 @@ def test_cut_long_upload(
     # baseline) against those same known swings. Off by default: the
     # flow pass is the only part of this panel that costs real time.
     pi_compare_signals: bool = Form(False),
+    # ── THE LAG, FOR THIS RUN ONLY ──────────────────────────────────
+    #
+    # The microphone hears the strike late. Every picture Test Cut
+    # draws is cut around `peak - audio_lag_sec`, so the lag decides
+    # which frames an operator is shown -- and until now the only way
+    # to try a different one was to change the hole's gate, run, and
+    # change it back.
+    #
+    # A STRING, so that EMPTY can mean "the hole's own gate". A float
+    # field has no spelling for "unset": 0.0 is a real lag (the sound
+    # is the strike) and every sentinel number is a number somebody
+    # can type by accident.
+    audio_lag_sec: str = Form(""),
     db: Session = Depends(get_db),
 ):
     """Dry-run the swing-cutting half of the pipeline.
@@ -15773,6 +15786,7 @@ def test_cut_long_upload(
         pi_zones_json=pi_zones_json,
         pi_known_swings=pi_known_swings,
         pi_compare_signals=pi_compare_signals,
+        audio_lag_sec=audio_lag_sec,
         db=db,
     )
 
@@ -15843,6 +15857,7 @@ def _test_cut_run(
     pi_zones_json='',
     pi_known_swings='',
     pi_compare_signals=False,
+    audio_lag_sec='',
     db=None,
 ):
     """Dry-run the swing-cutting half of the long-upload pipeline.
@@ -15883,6 +15898,30 @@ def _test_cut_run(
 
     tee_fps = probe_fps(src_path) or 30.0
     detector = (detector or "motion").lower()
+    # ── THE LAG THIS RUN WILL USE ───────────────────────────────────
+    #
+    # Parsed ONCE, here, rather than per peak: a run in which two
+    # peaks were cut around different lags would produce pictures that
+    # cannot be compared, which is the only thing this field is for.
+    #
+    # Anything unparseable is the hole's gate, not a zero. A typo in
+    # this box must not silently cut every picture at the audio peak
+    # and call it the strike.
+    _lag_override = None
+    _lag_override_why = None
+    if str(audio_lag_sec or "").strip():
+        try:
+            _lag_override = float(str(audio_lag_sec).strip())
+            if _lag_override < 0 or _lag_override > 3.0:
+                _lag_override_why = (
+                    "%.2fs is outside 0..3s — using the hole's gate"
+                    % _lag_override)
+                _lag_override = None
+        except (TypeError, ValueError):
+            _lag_override_why = (
+                "%r is not a number of seconds — using the hole's gate"
+                % str(audio_lag_sec)[:40])
+            _lag_override = None
     debug: dict = {}
     # AUDIO 2 HEARS EXACTLY WHAT AUDIO HEARS. It is a different
     # VERIFICATION process, not a different detector: same peaks, same
@@ -16229,6 +16268,19 @@ def _test_cut_run(
                              _bzone, _bmc, _blag)
                 except Exception as _gx:  # noqa: BLE001
                     log.debug("ball gates: %s — using defaults", _gx)
+                # ── AND THE OPERATOR'S OWN LAG, IF THEY TYPED ONE ───
+                #
+                # LAST, so it beats the gate and the default alike.
+                # This is a what-if: the hole's stored gate is not
+                # touched, and the next run without a value in the box
+                # goes back to it.
+                _blag_from = "the hole's gate"
+                if _lag_override is not None:
+                    _blag_from = "typed into Test Cut for this run only"
+                    _blag = _lag_override
+                cut_entry["ball_lag_from"] = _blag_from
+                if _lag_override_why:
+                    cut_entry["ball_lag_warning"] = _lag_override_why
                 # THE INSTANT EVERYTHING IS CUT AROUND. The sound is
                 # late by `_blag`; the strike is that much earlier.
                 _strike_sec = peak_time_sec - float(_blag)
@@ -17164,6 +17216,17 @@ def _test_cut_run(
         # none", which is the opposite of what happened.
         "n_swings": (sum(1 for c in cuts if c.get("kept"))
                      if verify_swings else None),
+        # ── THE LAG THE PICTURES WERE CUT AROUND ────────────────────
+        #
+        # At the top level and not only on a cut, because the per-cut
+        # copy is written inside the verify branch: a run with the
+        # judge off would show pictures cut around a typed lag and say
+        # nothing anywhere about it. And a value that was REFUSED has
+        # to be louder than one that was taken -- an operator who
+        # types 0.8 and is silently given the hole's 0.6 will read the
+        # pictures as evidence about 0.8.
+        "audio_lag_sec": _lag_override,
+        "audio_lag_warning": _lag_override_why,
         "debug": debug or None,
         "cuts": cuts,
     }

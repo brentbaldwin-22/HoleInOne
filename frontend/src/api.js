@@ -1322,6 +1322,13 @@ export const api = {
       if (opts.audioMinPeakRatio != null) {
         fd.append("audio_min_peak_ratio", String(opts.audioMinPeakRatio));
       }
+      // THE LAG, FOR THIS RUN ONLY. Sent only when the box has
+      // something in it: empty means "the hole's own gate", and an
+      // older server that has never heard of the field behaves the
+      // same way, so either end can deploy first.
+      if (opts.audioLagSec != null && String(opts.audioLagSec).trim()) {
+        fd.append("audio_lag_sec", String(opts.audioLagSec).trim());
+      }
       // The rig's knobs go up under the rig's own names, so what is
       // dialled in here can be copied into the Pi's config.yaml
       // verbatim instead of translated.

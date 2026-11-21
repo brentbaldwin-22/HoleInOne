@@ -109,6 +109,10 @@ export default function AdminLongUpload() {
   // with 0 -- but the heat-only wording is the one tuned over weeks,
   // so it stays one click away rather than being deleted.
   const [judgeFrames, setJudgeFrames] = useState({});
+  // THE AUDIO LAG, FOR ONE RUN. A string, not a number: empty has to
+  // mean "the hole's own gate", and 0 is a real lag (the sound IS the
+  // strike), so there is no number free to stand for "unset".
+  const [audioLag, setAudioLag] = useState({});
   // HOW CLOSE TWO ACCEPTED PEAKS MAY BE. It collapses the several
   // detections one strike produces -- one impact came back seven
   // times at the same timestamp on a 126s clip -- but at 6s it also
@@ -274,6 +278,12 @@ export default function AdminLongUpload() {
       if (Number.isFinite(ratio) && ratio > 0) opts.motionRatio = ratio;
     }
     if (detectOnly[uploadId]) opts.cutClips = false;
+    // EVERY DETECTOR, not just the audio ones. The lag is what turns
+    // a peak into a strike, and every picture Test Cut draws is cut
+    // around that instant whichever cutter found the peak.
+    if ((audioLag[uploadId] || "").trim()) {
+      opts.audioLagSec = audioLag[uploadId].trim();
+    }
     if (verifySwings[uploadId]) {
       opts.verifySwings = true;
       opts.verifyWindowSec = 0.5;
@@ -870,6 +880,44 @@ export default function AdminLongUpload() {
                           show frames
                         </label>
                       )}
+                      {/* THE LAG THE PICTURES ARE CUT AROUND.
+                          The microphone hears the strike late, so
+                          every frame Test Cut draws comes from
+                          `peak - lag`. Trying a different one meant
+                          editing the hole's gate, running, and
+                          putting it back; this is a what-if that
+                          touches nothing stored. */}
+                      <label
+                        className="tiny"
+                        style={{ display: "inline-flex",
+                                 alignItems: "center", gap: 4 }}
+                        title={
+                          "How late the microphone hears the strike. "
+                          + "Every picture here is cut around the peak "
+                          + "LESS this, so it decides which frames you "
+                          + "are shown.\n\nEmpty uses this hole's own "
+                          + "audio_lag_sec gate. A value here applies "
+                          + "to this run only and changes nothing "
+                          + "stored.\n\nSeconds, 0 to 3."
+                        }
+                      >
+                        lag
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={audioLag[u.id] || ""}
+                          placeholder="hole"
+                          onChange={(e) =>
+                            setAudioLag((d) => ({
+                              ...d, [u.id]: e.target.value,
+                            }))
+                          }
+                          disabled={!!testCutting[u.id] || missing || busy}
+                          style={{ width: 52, padding: "1px 4px",
+                                   fontSize: 12 }}
+                        />
+                        s
+                      </label>
                       <button
                         type="button"
                         className="secondary small"
@@ -1028,8 +1076,31 @@ export default function AdminLongUpload() {
                             <> · {testCutResults[u.id].n_superseded} superseded
                               inside the quiet period</>
                           )}
+                          {/* WHICH LAG THESE PICTURES WERE CUT AROUND.
+                              Shown only when one was typed: silence
+                              means the hole's own gate, which is what
+                              the panel has always meant. */}
+                          {testCutResults[u.id].audio_lag_sec != null && (
+                            <> · cut around peak −{" "}
+                              <code>{testCutResults[u.id].audio_lag_sec}s</code>
+                              {" "}(typed, this run only)</>
+                          )}
                         </span>
                       </div>
+                      {/* A REFUSED LAG HAS TO BE LOUDER THAN AN ACCEPTED
+                          ONE. Type 0.8, get the hole's 0.6 in silence,
+                          and every picture below is read as evidence
+                          about 0.8. */}
+                      {testCutResults[u.id].audio_lag_warning && (
+                        <div className="tiny"
+                             style={{ marginBottom: 6, padding: "4px 8px",
+                                      borderRadius: 6,
+                                      background: "var(--amber-100, #fdf2d0)",
+                                      color: "var(--amber-900, #6b4a00)" }}>
+                          <b>lag not used</b> ·{" "}
+                          {testCutResults[u.id].audio_lag_warning}
+                        </div>
+                      )}
                       {testCutResults[u.id].debug && (
                         <div className="tiny muted" style={{ marginBottom: 8, fontFamily: "monospace", lineHeight: 1.4 }}>
                           {testCutResults[u.id].debug.reason ? (
