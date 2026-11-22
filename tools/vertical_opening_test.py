@@ -24,13 +24,18 @@ import re
 
 _SRC = (pathlib.Path(__file__).resolve().parents[1]
         / "backend/app/routers/admin.py").read_text()
-_HDR = (
-    "_GREEN_BALL_HOLD_SEC = 1.7\n"
-    "_GREEN_PIN_PAN_SEC = 2.0\n"
-    "_GREEN_END_HOLD_SEC = "
-    + re.search(r"_GREEN_END_HOLD_SEC\s*=\s*([0-9.]+)", _SRC).group(1)
-    + "\n"
-)
+# EVERY _GREEN_* CONSTANT, READ FROM SOURCE. Two of them used to be
+# typed in here as literals, and when the hold changed from 1.7s to
+# 3.5s this file went on asserting against 1.7 -- passing, while
+# describing a pan that no longer existed. A test that carries its own
+# copy of the number under test is not testing it.
+_HDR = "\n".join(
+    f"{name} = {value}"
+    for name, value in re.findall(
+        r"^(_GREEN_[A-Z_]+)\s*=\s*([0-9.]+)", _SRC, re.M,
+    )
+) + "\n"
+assert "_GREEN_BALL_HOLD_SEC" in _HDR, "the green constants moved"
 _ns: dict = {}
 exec(
     _HDR + _SRC[_SRC.index("def _vertical_pan_path("):
@@ -101,143 +106,74 @@ def main() -> int:
     assert got == want, f"regression with no tracer: {got} != {want}"
     print(f"    no tracer: unchanged {got[0]} -> {got[2]}")
 
-    # ---- the green half lands on the ball ----------------------
-    # Clip 1444: cut 7.03s, composite 12.2s, gball 0.381, pin 0.67.
-    # The green half must OPEN on the ball before it walks to the pin.
-    def green_at_cut(total_dur):
-        p = _vertical_pan_path(
-            TRACK, None, FPS, FW, 7.03, golfer_x=None, impact_t=IMPACT,
-            green_x=0.67, ball_green_x=0.381, total_dur=total_dur,
+    # ---- the green half, in three beats -------------------------
+    # Clip 1684: cut 8.03s, dur 13.8s, gball 0.323, pin 0.679(marked).
+    # Land on the ball, hold on it, walk to the flag, stay there.
+    HOLD = _ns["_GREEN_BALL_HOLD_SEC"]
+    PAN = _ns["_GREEN_PIN_PAN_SEC"]
+    G_CUT, G_DUR, GBALL, G_PIN = 8.03, 13.8, 0.323, 0.679
+
+    def green(total_dur=G_DUR, ball=GBALL, pin=G_PIN):
+        return _vertical_pan_path(
+            TRACK, None, FPS, FW, G_CUT, golfer_x=None, impact_t=IMPACT,
+            green_x=pin, ball_green_x=ball, total_dur=total_dur,
             opening_x=TRACER_X, opening_t=TRACER_T,
         )
-        # The first waypoint at or after the cut is what the render
-        # teleports to when the picture changes.
-        return next(x for t, x in p if t >= 7.03)
-
-    at_cut = green_at_cut(12.2)
-    print(f"\ngreen half, composite 12.2s: opens at {at_cut:.3f}")
-    assert abs(at_cut - 0.381) < 1e-9, (
-        f"opens at {at_cut:.3f}, not the ball at 0.381")
-
-    # THE BUG, NAMED. Produce probed seg_path -- the TEE segment -- so
-    # total_dur came back as the tee's ~7s for a 12.2s clip. The green
-    # half then measured as roughly zero, "not enough room to move in"
-    # fired, and it snapped to the pin at the cut. gball was found and
-    # never framed.
-    tee_only = green_at_cut(7.03)
-    print(f"green half, tee duration 7.03s: opens at {tee_only:.3f} "
-          f"(the pin) -- the bug")
-    assert abs(tee_only - 0.67) < 1e-9, (
-        "MUTATION DID NOT BITE: the wrong duration framed the ball anyway")
-
-    # The short-green fallback is deliberate and must survive: with
-    # genuinely no room, the pin alone beats a move that never lands.
-    assert abs(green_at_cut(9.0) - 0.67) < 1e-9, (
-        "a 2s green half should still go straight to the pin")
-    print("short green half (2.0s): still straight to the pin, as designed")
-
-    # A TRACK RUNNING PAST THE CUT USED TO KILL THE GREEN HALF. The
-    # block sat behind `cut_dur > t_last`, t_last being the last DRAWN
-    # tracer waypoint, and the tracer keeps being drawn along the aimed
-    # continuation toward the landing -- so whenever that ran past the
-    # cut the whole block was skipped and the crop held the tee's last
-    # position across the scene change. gball was found, reported and
-    # never framed. The tee track's post-cut points are dropped now,
-    # because they are positions in a picture that is no longer on
-    # screen, so t_last is always before the cut.
-    late = [{"frame": int(t * FPS), "x": x * FW} for t, x in
-            [(2.05, 0.55), (4.0, 0.62), (7.5, 0.70)]]
-    p_late = _vertical_pan_path(
-        late, None, FPS, FW, 7.03, golfer_x=None, impact_t=IMPACT,
-        green_x=0.67, ball_green_x=0.381, total_dur=12.2,
-        opening_x=TRACER_X, opening_t=TRACER_T,
-    )
-    opens = next(x for t, x in sorted(p_late) if t >= 7.03)
-    print(f"\ntrack running to 7.5s (past the 7.03s cut): "
-          f"green half opens at {opens:.3f}")
-    assert abs(opens - 0.381) < 1e-9, (
-        f"opens at {opens:.3f}: the green half is still being dropped")
-    # And no tee coordinate leaked across the cut.
-    assert all(t < 7.03 or x <= 0.68 for t, x in p_late), (
-        "a tee position survived into the green half")
-
-    # The same clip with the track ending early behaves identically --
-    # the two cases are no longer distinguishable, which is the point.
-    early = [{"frame": int(t * FPS), "x": x * FW} for t, x in
-             [(2.05, 0.55), (4.0, 0.62), (6.0, 0.70)]]
-    p_early = _vertical_pan_path(
-        early, None, FPS, FW, 7.03, golfer_x=None, impact_t=IMPACT,
-        green_x=0.67, ball_green_x=0.381, total_dur=12.2,
-        opening_x=TRACER_X, opening_t=TRACER_T,
-    )
-    assert abs(next(x for t, x in sorted(p_early) if t >= 7.03)
-               - 0.381) < 1e-9
-    print("track ending at 6.0s: same, opens on the ball")
-
-    # ---- the green half follows the stroke ---------------------
-    # The ball is still coming DOWN when the picture cuts, so the
-    # stroke is in a different place at the cut than where it lands.
-    # Framing the landing leaves it off to one side for the whole
-    # descent, which is what was on screen.
-    GTRACK = [(7.05, 0.55), (7.40, 0.49), (7.80, 0.43), (8.20, 0.381)]
-    p_follow = _vertical_pan_path(
-        TRACK, None, FPS, FW, 7.03, golfer_x=None, impact_t=IMPACT,
-        green_x=0.67, ball_green_x=0.381, total_dur=12.2,
-        opening_x=TRACER_X, opening_t=TRACER_T, green_track=GTRACK,
-    )
 
     def at(path, t):
-        """Where the crop is told to be at time t."""
         pts = sorted(path)
         for i in range(len(pts) - 1):
             (t0, x0), (t1, x1) = pts[i], pts[i + 1]
             if t0 <= t <= t1:
-                if t1 == t0:
-                    return x1
-                return x0 + (x1 - x0) * (t - t0) / (t1 - t0)
+                return x1 if t1 == t0 else x0 + (x1 - x0) * (t - t0) / (t1 - t0)
         return pts[-1][1]
 
-    print("\ngreen half following the stroke:")
-    for t in (7.05, 7.40, 7.80, 8.20):
-        want = dict(GTRACK)[t]
-        got = at(p_follow, t)
-        print(f"    t={t:.2f}  stroke at {want:.3f}  crop at {got:.3f}")
-        assert abs(got - want) < 1e-6, (t, got, want)
+    p = green()
+    print(f"\ngreen half (cut {G_CUT}s, dur {G_DUR}s, "
+          f"hold {HOLD}s, pan {PAN}s):")
+    for t, label in ((G_CUT, "at the cut"),
+                     (G_CUT + HOLD - 0.1, "end of the hold"),
+                     (G_CUT + HOLD + PAN, "end of the pan"),
+                     (G_DUR - 0.1, "last frame")):
+        print(f"    t={t:5.2f}  {label:16s} x={at(p, t):.3f}")
 
-    # The old behaviour: one jump to the landing, so at the cut the
-    # stroke sits 0.17 of a frame off centre -- more than half the
-    # 9:16 crop's half-width, i.e. visibly off to the side.
-    p_jump = _vertical_pan_path(
-        TRACK, None, FPS, FW, 7.03, golfer_x=None, impact_t=IMPACT,
-        green_x=0.67, ball_green_x=0.381, total_dur=12.2,
-        opening_x=TRACER_X, opening_t=TRACER_T, green_track=None,
-    )
-    off = abs(at(p_jump, 7.05) - 0.55)
-    print(f"    without the track, at t=7.05 the stroke is "
-          f"{off:.3f} off centre")
-    assert off > 0.15, (
-        "MUTATION DID NOT BITE: jumping to the landing centred it anyway")
+    assert abs(at(p, G_CUT) - GBALL) < 1e-9, "does not open on the ball"
+    assert abs(at(p, G_CUT + HOLD - 0.1) - GBALL) < 1e-9, "left the ball early"
+    assert abs(at(p, G_CUT + HOLD + PAN) - G_PIN) < 1e-9, "never reaches the pin"
+    assert abs(at(p, G_DUR - 0.1) - G_PIN) < 1e-9, "did not hold the pin"
+    # It must MOVE through the middle, not jump.
+    mid = at(p, G_CUT + HOLD + PAN / 2)
+    assert GBALL < mid < G_PIN, f"the walk teleported: midpoint {mid:.3f}"
+    print(f"    midway through the pan: x={mid:.3f} (between the two)")
 
-    # ---- a track running past the cut must not kill the green ----
-    # Previously `cut_dur > t_last` went false and the WHOLE green
-    # block was skipped. The tee track's post-cut points are dropped
-    # now, so the green half survives.
-    late = [{"frame": int(t * FPS), "x": x * FW} for t, x in
-            [(2.05, 0.55), (4.0, 0.62), (7.5, 0.70)]]
-    p_late = _vertical_pan_path(
-        late, None, FPS, FW, 7.03, golfer_x=None, impact_t=IMPACT,
-        green_x=0.67, ball_green_x=0.381, total_dur=12.2,
-        opening_x=TRACER_X, opening_t=TRACER_T, green_track=GTRACK,
-    )
-    assert abs(at(p_late, 7.05) - 0.55) < 1e-6, (
-        "a track running past the cut still loses the green half")
-    assert all(t < 7.03 or x <= 0.68 for t, x in p_late), (
-        "a tee coordinate survived into the green half")
-    print("    track running to 7.5s: green half survives, opens at 0.550")
+    # THE BUG, NAMED. Opening on the ball used to sit behind a room
+    # check, and room is 0.0 when the duration is unknown -- so a clip
+    # whose duration failed to probe went straight to the pin and never
+    # showed where the shot finished. Clip 1684 read `gball 0.323 ·
+    # open@cut 0.679(1pt)`.
+    p_nodur = green(total_dur=None)
+    assert abs(at(p_nodur, G_CUT) - GBALL) < 1e-9, (
+        "an unknown duration still loses the ball framing")
+    assert abs(at(p_nodur, G_CUT + HOLD + PAN) - G_PIN) < 1e-9
+    print("    duration unknown: still opens on the ball, still reaches the pin")
 
-    # ...and it still reaches the pin.
-    assert abs(at(p_follow, 12.0) - 0.67) < 1e-6, "never reaches the pin"
-    print("    still walks to the pin by the end")
+    # A SHORT GREEN HALF SHRINKS THE BEATS, it does not skip one.
+    p_short = green(total_dur=G_CUT + 2.0)
+    assert abs(at(p_short, G_CUT) - GBALL) < 1e-9, (
+        "a short green half dropped the ball framing")
+    moved = [t for t, x in sorted(p_short) if t > G_CUT and abs(x - G_PIN) < 1e-9]
+    assert moved and moved[0] - G_CUT <= 2.0 + 1e-6, (
+        "the squeezed walk does not finish inside the clip")
+    print(f"    2s of green: ball at the cut, pin by "
+          f"{moved[0] - G_CUT:.2f}s in")
+
+    # No pin: hold the ball rather than inventing somewhere to go.
+    p_nopin = green(pin=None)
+    assert abs(at(p_nopin, G_DUR - 0.1) - GBALL) < 1e-9, "wandered off the ball"
+    # No ball: the flag, as before.
+    p_noball = green(ball=None)
+    assert abs(at(p_noball, G_CUT) - G_PIN) < 1e-9, "no ball should open on the pin"
+    print("    no pin -> holds the ball; no ball -> opens on the pin")
 
     print("\nOK")
     return 0
