@@ -248,6 +248,32 @@ export default function Contests() {
 
       <ShotOfWeek />
 
+      {/* THE WALL, AND IT IS NOT A CONTEST. No countdown and no prize
+          footer, deliberately: everything above resets, and the point
+          of this one is that it never has. Hidden until somebody is on
+          it -- an empty wall saying "no aces yet" is a reminder that
+          the hard thing is hard, which is not the note to end on. */}
+      {data?.alltime?.rows?.length > 0 && (
+        <section style={{ marginBottom: 28 }}>
+          <div className="cadence-header">
+            <div>
+              <h2 style={{ marginBottom: 2 }}>All time</h2>
+              <p className="small muted" style={{ margin: 0 }}>
+                Every verified ace since we started. Nothing to win —
+                this one is just the record.
+              </p>
+            </div>
+          </div>
+          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
+            <LeaderboardCard
+              title={data.alltime.title}
+              icon={data.alltime.icon}
+              rows={data.alltime.rows}
+            />
+          </div>
+        </section>
+      )}
+
       <div className="card" style={{ background: "var(--primary-soft)", border: "1px solid var(--emerald-200)" }}>
         <h3 style={{ color: "var(--emerald-800)" }}>About the prizes</h3>
         <p className="small" style={{ color: "var(--emerald-800)" }}>

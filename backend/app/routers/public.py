@@ -258,10 +258,29 @@ def contests(db: Session = Depends(get_db)):
         ],
     }]
 
+    # THE WALL. Not a contest: no timer, no prize, and it has never
+    # been reset. That is the point of it next to a board that resets
+    # at midnight.
+    from ..services import aces as _aces
+    _wall = _aces.all_time_board(db)
+
     return {
         "daily": {
             "ends_at": day_end.isoformat() + "Z",
             "contests": daily_contests,
+        },
+        "alltime": {
+            "id": "alltime_aces",
+            "title": "Most hole-in-ones",
+            "icon": "dollar",
+            "rows": [
+                {
+                    "golfer": _short_name(p["name"]),
+                    "value": p["aces"],
+                    "unit": "ace" if p["aces"] == 1 else "aces",
+                }
+                for p in _wall
+            ],
         },
     }
 
