@@ -23,6 +23,35 @@ function Countdown({ endsAt }) {
   return <span><b>{minutes}m</b> {seconds}s</span>;
 }
 
+// Which course's card to show, and how that choice is made.
+//
+// NOT JUST "THE FIRST ONE". A course with no entries is a dead end --
+// the card says "be the first" and there is nothing to read -- so the
+// opening pick prefers a course that actually has a leaderboard today.
+// A choice the viewer made themselves outranks that, and outlives the
+// page, because somebody checking their own club does not want to
+// re-pick it every visit.
+const COURSE_STORAGE = "golfreelz.ctpCourse";
+
+export function pickOpeningCourse(contests, saved) {
+  const list = contests || [];
+  if (!list.length) return null;
+  const key = (c) => String(c.course_id ?? c.id);
+  if (saved && list.some((c) => key(c) === String(saved))) return String(saved);
+  const withRows = list.find((c) => (c.rows || []).length);
+  return key(withRows || list[0]);
+}
+
+export function visibleContests(contests, shown) {
+  const list = contests || [];
+  // ONE CARD, OR ALL OF THEM. A selection that matches nothing -- a
+  // course that stopped running today, a stale saved choice -- shows
+  // the lot rather than an empty section.
+  if (!shown || list.length <= 1) return list;
+  const hit = list.filter((c) => String(c.course_id ?? c.id) === String(shown));
+  return hit.length ? hit : list;
+}
+
 const CADENCES = [
   { key: "daily",   label: "Daily contests", blurb: "Reset at midnight UTC. Small but constant — show up daily." },
 ];
@@ -179,7 +208,23 @@ function ShotOfWeek() {
 
 export default function Contests() {
   const [data, setData] = useState(null);
+  const [shownCourse, setShownCourse] = useState(null);
   useEffect(() => { api.contests().then(setData).catch(() => setData({})); }, []);
+
+  // Settled once the contests arrive, and not fought over afterwards:
+  // re-deriving it on every render would stamp on the viewer's choice
+  // the moment a course's first entry of the day landed.
+  useEffect(() => {
+    if (!data?.daily?.contests || shownCourse !== null) return;
+    let saved = null;
+    try { saved = localStorage.getItem(COURSE_STORAGE); } catch { /* private mode */ }
+    setShownCourse(pickOpeningCourse(data.daily.contests, saved));
+  }, [data, shownCourse]);
+
+  function pickCourse(v) {
+    setShownCourse(v);
+    try { localStorage.setItem(COURSE_STORAGE, v); } catch { /* private mode */ }
+  }
 
   return (
     <div className="wrap wide">
@@ -216,8 +261,33 @@ export default function Contests() {
                   <Countdown endsAt={section.ends_at} />
                 </div>
               </div>
+              {/* ONE COURSE AT A TIME. Five identical cards reading
+                  "No entries yet" is five cards of nothing, and the
+                  list grows with every course signed. The picker only
+                  appears once there is something to pick between. */}
+              {section.contests.length > 1 && (
+                <div className="inline" style={{ gap: 8, marginBottom: 14,
+                                                 flexWrap: "wrap" }}>
+                  <label className="tiny upper muted" htmlFor="ctp-course">
+                    Course
+                  </label>
+                  <select
+                    id="ctp-course"
+                    value={shownCourse ?? ""}
+                    onChange={(e) => pickCourse(e.target.value)}
+                    style={{ maxWidth: 320 }}
+                  >
+                    {section.contests.map((c) => (
+                      <option key={c.id} value={String(c.course_id ?? c.id)}>
+                        {c.course_name || c.title}
+                        {(c.rows || []).length ? "" : " — no entries yet"}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
-                {section.contests.map((c) => (
+                {visibleContests(section.contests, shownCourse).map((c) => (
                   <LeaderboardCard
                     key={c.id}
                     title={c.title}

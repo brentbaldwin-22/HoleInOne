@@ -233,6 +233,11 @@ def contests(db: Session = Depends(get_db)):
         daily_contests.append({
             "id": f"daily_ctp_{course.id}",
             "title": f"Closest to Pin — {course.name}",
+            # The course on its own, so the picker does not have to cut
+            # it back out of the title. Five courses is already more
+            # cards than fit on a phone, and the list only grows.
+            "course_id": course.id,
+            "course_name": course.name,
             "icon": "flag",
             "prize": settings.ctp_prize_label or "a prize",
             "rows": [
