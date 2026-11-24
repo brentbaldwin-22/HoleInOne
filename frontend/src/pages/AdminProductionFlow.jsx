@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
+import { readAdminPassword } from "../adminAuth.js";
 import { Brand } from "../components/Brand.jsx";
 
 /*
@@ -44,8 +45,10 @@ function fmtSecs(v) {
 }
 
 export default function AdminProductionFlow() {
-  const [adminPassword] = useState(
-    () => localStorage.getItem("adminPassword") || "");
+  // Read on every render, like its siblings: signing in on another tab
+  // should not need a reload here. NOT a useState initialiser, which
+  // snapshots whatever was stored the first time this mounted.
+  const adminPassword = readAdminPassword();
   const [tab, setTab] = useState("draft");
   const [tabs, setTabs] = useState([]);
   const [note, setNote] = useState("");

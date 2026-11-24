@@ -84,6 +84,32 @@ for (const f of withNav) {
         block.includes('to="/admin"') || /type="password"/.test(block));
 }
 
+console.log("\n5. and every page reads the password from the same place");
+{
+  // THE BUG THIS CAUGHT. Production Flow read
+  // localStorage["adminPassword"] -- a key nothing writes -- so it was
+  // signed out forever while every page beside it was signed in, and
+  // its Sign in button led to the Dashboard the operator was already
+  // signed into. A loop with no error in it anywhere.
+  const KNOWN = ["golfreelz.adminPassword", "parone.adminPassword"];
+  const re = /localStorage\.getItem\(\s*(?:"([^"]*)"|'([^']*)')\s*\)/g;
+  for (const f of files) {
+    let m;
+    const bad = [];
+    while ((m = re.exec(src[f])) !== null) {
+      const k = m[1] ?? m[2];
+      if (/admin|password|pw/i.test(k) && !KNOWN.includes(k)) bad.push(k);
+    }
+    if (!/admin/i.test(src[f])) continue;
+    check(`  ${f} invents no key of its own`, bad, []);
+  }
+  const helper = readFileSync(
+    join(ROOT, "frontend/src/adminAuth.js"), "utf8");
+  check("the shared reader knows both spellings",
+        KNOWN.every((k) => helper.includes(k)));
+  check("...and survives storage that throws", /catch/.test(helper));
+}
+
 console.log(`\n${failed.length
   ? `${failed.length} FAILED:\n  ${failed.join("\n  ")}` : "all ok"}`);
 process.exit(failed.length ? 1 : 0);
