@@ -516,7 +516,7 @@ def flow_run(row, src_path, db, progress=None) -> dict:
 
     from ..services.video import cut_segment
     from .admin import (
-        CLIPS_DIR, _clip_url_for, _cutter_times, _local_green, _trigger_zone,
+        CLIPS_DIR, _clip_url_for, _cutter_hits, _local_green, _trigger_zone,
         probe_fps,
     )
 
@@ -531,7 +531,12 @@ def flow_run(row, src_path, db, progress=None) -> dict:
     dbg: dict = {}
     fps = float(probe_fps(src_path) or 0.0) or 30.0
     try:
-        hits = _cutter_times("audio", db, row, src_path, fps, dbg) or []
+        # THE HITS, NOT THE TIMES. `_cutter_times` flattens them to bare
+        # floats, and the cuts column has to show WHAT WAS HEARD -- the
+        # ratio and the rise time that got each one through this tee
+        # box's gates. Calling the flattened version and then reading
+        # `.get("ratio")` off a float is exactly what this did.
+        hits = _cutter_hits("audio", db, row, src_path, fps, dbg) or []
     except Exception as exc:  # noqa: BLE001
         log.exception("flow: the cutter failed on %s: %s", row.id, exc)
         rep["reason"] = "the audio cutter failed: %s" % exc
@@ -578,6 +583,7 @@ def flow_run(row, src_path, db, progress=None) -> dict:
             progress("Cutting strike %d of %d" % (idx + 1, len(hits)),
                      idx, len(hits))
         _peak = _hit_peak_sec(hit)
+        _of = hit.get if isinstance(hit, dict) else (lambda _k: None)
         if _peak is None:
             continue
         _a = max(0.0, _peak - FLOW_CUT_PRE_SEC)
@@ -610,7 +616,7 @@ def flow_run(row, src_path, db, progress=None) -> dict:
         k = record_cut(
             db, upload=row, idx=idx, peak_time_sec=round(float(_peak), 2),
             start_sec=round(_a, 2), end_sec=round(_b, 2), detector="audio",
-            zone=_zone, ratio=hit.get("ratio"), attack_ms=hit.get("attack_ms"),
+            zone=_zone, ratio=_of("ratio"), attack_ms=_of("attack_ms"),
             tee_filename=("%s/%s" % (FLOW_CUTS_SUBDIR, _tee_name)
                           if _tee_ok else None),
             green_filename=("%s/%s" % (FLOW_CUTS_SUBDIR, _green_name)
@@ -619,7 +625,7 @@ def flow_run(row, src_path, db, progress=None) -> dict:
         rep["cuts"].append({
             "idx": idx, "peak_time_sec": round(float(_peak), 2),
             "start_sec": round(_a, 2), "end_sec": round(_b, 2),
-            "ratio": hit.get("ratio"), "attack_ms": hit.get("attack_ms"),
+            "ratio": _of("ratio"), "attack_ms": _of("attack_ms"),
             "tee_url": _clip_url_for("%s/%s" % (FLOW_CUTS_SUBDIR, _tee_name))
             if _tee_ok else None,
             "green_url": _clip_url_for("%s/%s" % (FLOW_CUTS_SUBDIR,

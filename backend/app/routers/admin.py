@@ -27970,6 +27970,30 @@ def _cutter_for(db, row, hole_hint=None) -> tuple[str, str]:
 def _cutter_times(name, db, row, src_path, fps, dbg):
     """Impact times (seconds) the named cutter finds, or [].
 
+    A FLATTENING OF `_cutter_hits`, which is where the work is. This
+    returns bare floats because that is all its callers ever wanted;
+    anything that needs WHAT WAS HEARD -- the ratio, the rise time,
+    the window -- should call `_cutter_hits` instead of reaching past
+    this for a second copy of the gate resolution.
+    """
+    out = []
+    for h in _cutter_hits(name, db, row, src_path, fps, dbg):
+        t = h.get("peak_time_sec")
+        if t is None:
+            # Not every cutter reports a peak; the middle of the window
+            # it would have cut is the same instant to within the
+            # padding `_around` adds anyway.
+            _s, _e = h.get("start_sec"), h.get("end_sec")
+            if _s is not None and _e is not None:
+                t = (float(_s) + float(_e)) / 2.0
+        if t is not None:
+            out.append(float(t))
+    return out
+
+
+def _cutter_hits(name, db, row, src_path, fps, dbg):
+    """Everything the named cutter reports, as it reports it.
+
     Every one of these is the SAME function Test Cut runs, imported
     rather than reimplemented -- the whole point of choosing a cutter
     here is that what was verified there is what runs, and a second
@@ -28021,19 +28045,7 @@ def _cutter_times(name, db, row, src_path, fps, dbg):
     else:
         return []
 
-    out = []
-    for h in hits:
-        t = h.get("peak_time_sec")
-        if t is None:
-            # Not every cutter reports a peak; the middle of the window
-            # it would have cut is the same instant to within the
-            # padding `_around` adds anyway.
-            _s, _e = h.get("start_sec"), h.get("end_sec")
-            if _s is not None and _e is not None:
-                t = (float(_s) + float(_e)) / 2.0
-        if t is not None:
-            out.append(float(t))
-    return out
+    return [h for h in hits if isinstance(h, dict)]
 
 
 def _verify_crop(db, row):
