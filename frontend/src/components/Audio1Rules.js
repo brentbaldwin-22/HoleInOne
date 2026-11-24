@@ -89,10 +89,39 @@ export function buildRules(fields) {
     label: f.label,
     cmp: f.cmp,
     step: STEP_FOR(f.reads),
+    lo: f.lo,
+    hi: f.hi,
     read: (p) => (p.gate_values ? p.gate_values[f.reads] : p[f.reads]),
-    help: `gate ${gate} · reads ${f.reads}`,
+    help: `gate ${gate} · reads ${f.reads}`
+      + (f.lo === undefined ? "" : ` · ${f.lo} to ${f.hi}`),
   }));
   return [...armable, ...EXTRA_RULES.map((r) => ({ ...r, gate: null }))];
+}
+
+/**
+ * What the detector would ACTUALLY enforce for this bar.
+ *
+ * THE RESOLVER CLAMPS AND SAYS NOTHING. `resolve_gates` does
+ * max(lo, min(hi, f)), so a bar typed outside a gate's range is
+ * stored, quietly moved, and enforced at a value nobody chose -- while
+ * the field it was typed into still shows what was typed. This is how
+ * the middle tee's ratio of 1.3 came to mean 1.5.
+ *
+ * Returns null when the bar is what it says it is, or the value that
+ * would really be enforced when it is not.
+ */
+export function clampedTo(rule, value) {
+  // A BLANK IS NOT A ZERO. Number("") is 0 and finite, so a rule
+  // switched on with nothing typed in it would report "runs as 1.2"
+  // -- while `evaluate` skips a blank bar and decides nothing with
+  // it. Two parts of the same screen disagreeing about what an empty
+  // field means.
+  if (value === "" || value === null || value === undefined) return null;
+  const v = Number(value);
+  if (!Number.isFinite(v)) return null;
+  if (rule.lo === undefined || rule.lo === null) return null;
+  const c = Math.max(Number(rule.lo), Math.min(Number(rule.hi), v));
+  return c === v ? null : c;
 }
 
 /** Does this peak clear every rule that is switched on? */

@@ -8966,7 +8966,23 @@ GATE_SPEC = {
     #
     # The defaults are app.config's, unchanged, so a hole that tunes
     # nothing behaves exactly as it does today.
-    "audio_min_ratio": (4.0, 1.5, 60.0, False),
+    # THE FLOOR WAS 1.5, AND THE MIDDLE TEE NEEDS 1.3.
+    #
+    # resolve_gates CLAMPS silently -- max(lo, min(hi, f)) -- so a
+    # middle-tee preset of 1.3 was stored, resolved to 1.5, and nothing
+    # anywhere said so. The operator would set the box to 1.3, see it
+    # accepted, watch the sandbox score the recoveries 1.3 would buy,
+    # and get a detector running 1.5. A setting that reads as applied
+    # and is not.
+    #
+    # 1.5 was chosen when ONE value served every tee box. It is the
+    # wrong floor now that a box a hundred yards from the microphone
+    # has its own: everything that scales with loudness has to come
+    # down for that box, and the ratio is the most of all. 1.2 keeps a
+    # real floor -- x1.0 is no threshold whatsoever, and the detector
+    # would find a peak in room tone -- while leaving the supplied 1.3
+    # reachable with a little room under it.
+    "audio_min_ratio": (4.0, 1.2, 60.0, False),
     "audio_min_separation_sec": (2.0, 0.2, 30.0, False),
     "audio_max_attack_ms": (25.0, 2.0, 200.0, False),
     # ── THE audio1 GATES ────────────────────────────────────────────

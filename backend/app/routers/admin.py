@@ -15936,22 +15936,57 @@ def audio_gate_presets():
     here cannot leave a stale copy in front of an operator.
     """
     from ..services import debug3 as _d3
+    # ── WITH EACH GATE'S RANGE, because the resolver CLAMPS ─────────
+    #
+    # resolve_gates does max(lo, min(hi, f)) and says nothing about
+    # it, so a bar typed outside a gate's range is stored, silently
+    # moved, and then enforced at a value the operator never chose --
+    # while the screen they typed it on still shows what they typed.
+    # The page can only warn about that if it knows the range.
     return {
         "presets": _d3.AUDIO_TEE_PRESETS,
-        "fields": {k: {"cmp": v[0], "reads": v[1], "label": v[2]}
-                   for k, v in _d3.AUDIO_GATE_FIELDS.items()},
+        "fields": {k: {"cmp": v[0], "reads": v[1], "label": v[2],
+                       "lo": _d3.GATE_SPEC[k][1],
+                       "hi": _d3.GATE_SPEC[k][2],
+                       "off": _audio_gate_off(k)}
+                   for k, v in _d3.AUDIO_GATE_FIELDS.items()
+                   if k in _d3.GATE_SPEC},
     }
+
+
+def _audio_gate_off(name: str):
+    """What switching this audio gate off has to be written as.
+
+    0.0 for a gate whose range starts at zero: that IS its off switch,
+    and every audio1 gate is built that way deliberately.
+
+    None -- which `set_gate_tuning` reads as "clear back to the
+    default" -- for a gate whose range does not reach zero. Two of
+    them do not: `audio_min_ratio` floors at 1.5 and
+    `audio_max_attack_ms` at 2.0, because they are the DETECTOR's own
+    thresholds and it cannot run without them. Writing 0.0 there would
+    either be rejected by the resolver or, worse, accepted as a
+    detector with no amplitude threshold.
+    """
+    from ..services import debug3 as _d3
+
+    _spec = _d3.GATE_SPEC.get(name)
+    try:
+        return 0.0 if _spec and float(_spec[1]) <= 0.0 else None
+    except (TypeError, ValueError, IndexError):
+        return None
 
 
 @router.post("/long-uploads/{upload_id}/audio-gate-preset")
 def apply_audio_gate_preset(
     upload_id: int,
-    preset: str = Form(...),
+    preset: str = Form(""),
     zone: str = Form(""),
     arm: bool = Form(False),
+    gates_json: str = Form(""),
     db: Session = Depends(get_db),
 ):
-    """Write a tee box's starting gates onto one zone of this hole.
+    """Write audio gates onto one zone of this hole.
 
     DATA, NOT A DEPLOY. It writes "gate@N" entries into the same
     per-hole tuning the editor already saves, so every value stays
@@ -15960,24 +15995,80 @@ def apply_audio_gate_preset(
 
     A zone of "" is the hole's own setting, which is what a camera
     with no zones drawn has.
+
+    EITHER A PRESET OR THE VALUES ON THE SCREEN. A preset is where a
+    tee box starts; what gets armed is almost never exactly that,
+    because the point of scoring it against labelled strikes is to
+    move the numbers that cost strikes. Writing only the preset would
+    mean the one set the operator had just validated was the one set
+    they could not save — "adjust, enable or disable each individual
+    gate per hole and tee box" is the request, and a sandbox you have
+    to retype somewhere else to use does not meet it.
+
+    A GATE SWITCHED OFF IS WRITTEN OFF, NOT OMITTED. Omitting it would
+    leave whatever was stored before in force, so turning a gate off on
+    screen and saving would not turn it off.
+
+    AND "OFF" IS NOT 0.0 FOR ALL OF THEM. Nine of the eleven are
+    audio1's own and default to zero, which is their off switch. The
+    other two are the DETECTOR's existing gates -- `audio_min_ratio`
+    floors at 1.5 and `audio_max_attack_ms` at 2.0 -- and zero is not
+    off there, it is out of range: a ratio gate of 0 would be a
+    detector with no amplitude threshold at all. Those are cleared
+    back to the default instead, which is what switching off a tuned
+    value means for a gate that cannot be absent.
     """
+    import json as _json
+
     from ..services import debug3 as _d3
 
     row = db.get(LongVideoUpload, upload_id)
     if not row:
         raise HTTPException(404, "long upload not found")
-    _p = _d3.AUDIO_TEE_PRESETS.get((preset or "").strip().lower())
-    if not _p:
-        raise HTTPException(
-            400, "unknown preset %r — one of: %s"
-            % (preset, ", ".join(sorted(_d3.AUDIO_TEE_PRESETS))))
     _suffix = ""
     if str(zone).strip() != "":
         try:
             _suffix = "@%d" % int(zone)
         except (TypeError, ValueError):
             raise HTTPException(400, "zone must be a whole number") from None
-    gates = {("%s%s" % (k, _suffix)): v for k, v in _p["gates"].items()}
+
+    if (gates_json or "").strip():
+        try:
+            _want = _json.loads(gates_json)
+        except ValueError as exc:
+            raise HTTPException(400, f"gates_json is not JSON: {exc}") from None
+        if not isinstance(_want, dict):
+            raise HTTPException(400, "gates_json must be an object")
+        _unknown = [k for k in _want if k not in _d3.AUDIO_GATE_FIELDS]
+        if _unknown:
+            raise HTTPException(
+                400, "not audio gates: %s" % ", ".join(sorted(_unknown)))
+        gates = {}
+        for _k in _d3.AUDIO_GATE_FIELDS:
+            _v = _want.get(_k)
+            if _v is None:
+                gates["%s%s" % (_k, _suffix)] = _audio_gate_off(_k)
+                continue
+            try:
+                gates["%s%s" % (_k, _suffix)] = float(_v)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    400, f"{_k} is not a number: {_v!r}") from None
+    else:
+        _p = _d3.AUDIO_TEE_PRESETS.get((preset or "").strip().lower())
+        if not _p:
+            raise HTTPException(
+                400, "unknown preset %r — one of: %s"
+                % (preset, ", ".join(sorted(_d3.AUDIO_TEE_PRESETS))))
+        # A preset names the gates it means and no others, so the rest
+        # of the audio gates are written off: applying "back tee" to a
+        # zone that was carrying a hand-tuned centroid gate should
+        # leave the back tee's gates in force, not the back tee's plus
+        # a leftover.
+        gates = {("%s%s" % (k, _suffix)): _audio_gate_off(k)
+                 for k in _d3.AUDIO_GATE_FIELDS}
+        gates.update({("%s%s" % (k, _suffix)): v
+                      for k, v in _p["gates"].items()})
     # ARMING RIDES WITH IT, so "apply and switch on" is one action and
     # "apply and watch" is the default. A preset that armed itself
     # would change what a course cuts the moment somebody looked at it.

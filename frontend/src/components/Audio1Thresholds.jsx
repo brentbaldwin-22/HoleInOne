@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { zoneName } from "../zones";
 import {
-  buildRules, classify, seedFromPreset,
+  buildRules, clampedTo, classify, seedFromPreset,
 } from "./Audio1Rules.js";
 
 /*
@@ -115,28 +115,31 @@ export default function Audio1Thresholds({
     () => classify(peaks, labels, rules, ruleList, blankFails),
     [peaks, labels, rules, ruleList, blankFails]);
 
+  // WHAT WOULD BE WRITTEN: every armable gate, with its value where it
+  // is switched on and null where it is not. Null rather than absent,
+  // because a gate left out of the payload keeps whatever was stored
+  // before -- so switching one off and saving would not switch it off.
   const proposalGates = useMemo(() => {
     const out = {};
     ruleList.forEach((q) => {
       if (!q.gate) return;
       const st = rules[q.key];
-      if (!st?.on) return;
-      const v = Number(st.value);
-      if (Number.isFinite(v)) out[q.gate] = v;
+      const v = st?.on ? Number(st.value) : NaN;
+      out[q.gate] = Number.isFinite(v) ? v : null;
     });
     return out;
   }, [rules, ruleList]);
+  const gatesOn = Object.entries(proposalGates).filter(([, v]) => v !== null);
 
   const anyOn = ruleList.some((q) => rules[q.key]?.on);
   const extrasOn = ruleList.some((q) => !q.gate && rules[q.key]?.on);
 
   async function apply() {
-    if (!seeded) return;
     setBusy(true);
     setApplied(null);
     try {
       const got = await api.applyAudioGatePreset(adminPassword, uploadId, {
-        preset: seeded, zone, arm });
+        preset: seeded, zone, arm, gates: proposalGates });
       setApplied({ ok: true, got });
     } catch (e) {
       setApplied({ ok: false, why: e.message });
@@ -199,28 +202,45 @@ export default function Audio1Thresholds({
                     gridTemplateColumns:
                       "repeat(auto-fill, minmax(236px, 1fr))",
                     gap: "2px 14px", marginTop: 8 }}>
-        {ruleList.map((q) => (
-          <label key={q.key} className="tiny" title={q.help}
-                 style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <input type="checkbox" checked={!!rules[q.key]?.on}
-                   onChange={(e) => set(q.key, { on: e.target.checked })}
-                   style={{ margin: 0 }} />
-            <span style={{ flex: 1, opacity: rules[q.key]?.on ? 1 : 0.6 }}>
-              {q.cmp === "max" ? "max " : "min "}{q.label}
-              {!q.gate && (
-                <span className="muted" title="no gate exists for this
-                  measurement, so it can be argued with here but not
-                  armed"> ·&nbsp;bench</span>
-              )}
-            </span>
-            <input type="text" inputMode="decimal"
-                   value={rules[q.key]?.value ?? ""}
-                   disabled={!rules[q.key]?.on}
-                   step={q.step}
-                   onChange={(e) => set(q.key, { value: e.target.value })}
-                   style={{ width: 58, fontSize: 11, padding: "1px 4px" }} />
-          </label>
-        ))}
+        {ruleList.map((q) => {
+          const moved = rules[q.key]?.on
+            ? clampedTo(q, rules[q.key]?.value) : null;
+          return (
+            <label key={q.key} className="tiny" title={q.help}
+                   style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <input type="checkbox" checked={!!rules[q.key]?.on}
+                     onChange={(e) => set(q.key, { on: e.target.checked })}
+                     style={{ margin: 0 }} />
+              <span style={{ flex: 1, opacity: rules[q.key]?.on ? 1 : 0.6 }}>
+                {q.cmp === "max" ? "max " : "min "}{q.label}
+                {!q.gate && (
+                  <span className="muted" title="no gate exists for this
+                    measurement, so it can be argued with here but not
+                    armed"> ·&nbsp;bench</span>
+                )}
+                {/* THE CLAMP, SAID OUT LOUD. Stored as typed, enforced
+                    at the edge of the range, and silent about it. */}
+                {moved !== null && (
+                  <span style={{ color: "var(--rose-700, #b4254b)" }}
+                        title={`this gate runs from ${q.lo} to ${q.hi}; `
+                               + `anything outside is moved to the edge `
+                               + `without warning, so this bar would be `
+                               + `enforced at ${moved}`}>
+                    {" "}· runs as {moved}
+                  </span>
+                )}
+              </span>
+              <input type="text" inputMode="decimal"
+                     value={rules[q.key]?.value ?? ""}
+                     disabled={!rules[q.key]?.on}
+                     step={q.step}
+                     onChange={(e) => set(q.key, { value: e.target.value })}
+                     style={{ width: 58, fontSize: 11, padding: "1px 4px",
+                              borderColor: moved !== null
+                                ? "var(--rose-700, #b4254b)" : undefined }} />
+            </label>
+          );
+        })}
       </div>
 
       <label className="tiny" style={{ display: "inline-flex", gap: 5,
@@ -420,27 +440,31 @@ export default function Audio1Thresholds({
             and act on them
           </label>
           <button type="button" className="btn small"
-                  disabled={!seeded || busy}
-                  title={seeded ? "" : "pick a tee box preset first"}
+                  disabled={busy}
+                  title={gatesOn.length
+                    ? "writes exactly the gates shown above"
+                    : "every gate is off — this writes them all off, "
+                      + "which is how a tee box is switched back"}
                   onClick={apply}>
-            {busy ? "writing…" : `apply ${seeded
-              ? presets[seeded].label.toLowerCase() : "preset"}`}
+            {busy ? "writing…" : (gatesOn.length
+              ? `write ${gatesOn.length} gate${gatesOn.length === 1
+                ? "" : "s"}`
+              : "write all gates off")}
           </button>
         </div>
         <div className="tiny muted" style={{ marginTop: 4 }}>
-          Applying writes this preset's gates onto that tee box, where
-          each one stays adjustable afterwards. Hand edits you made above
-          are not written — the preset is.
+          This writes the gates exactly as they stand above onto that tee
+          box — a preset is only where you start. A gate you switched off
+          is written off, so switching one off and writing turns it off.
           {extrasOn && (
             <> Gates marked <b>bench</b> have nothing behind them to arm,
               so they score here and are not written.</>
           )}
         </div>
-        {Object.keys(proposalGates).length > 0 && (
+        {gatesOn.length > 0 && (
           <div className="tiny muted" style={{ marginTop: 2 }}>
-            armable in your proposal:{" "}
-            {Object.entries(proposalGates)
-              .map(([g, v]) => `${g}=${v}`).join(", ")}
+            will be written:{" "}
+            {gatesOn.map(([g, v]) => `${g}=${v}`).join(", ")}
           </div>
         )}
         {applied && (

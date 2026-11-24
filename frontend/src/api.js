@@ -537,9 +537,15 @@ export const api = {
   audioGatePresets: (key) =>
     request("/api/admin/audio-gate-presets", { adminPassword: key }),
 
-  applyAudioGatePreset: (key, uploadId, { preset, zone, arm }) => {
+  applyAudioGatePreset: (key, uploadId, { preset, zone, arm, gates }) => {
     const fd = new FormData();
-    fd.append("preset", preset);
+    // EITHER THE VALUES ON THE SCREEN OR A PRESET. `gates` wins when
+    // given: a preset is where a tee box starts, and what gets armed
+    // is almost never exactly that. A gate the operator switched OFF
+    // is sent as null rather than left out, because omitting it would
+    // leave whatever was stored before in force.
+    if (gates) fd.append("gates_json", JSON.stringify(gates));
+    fd.append("preset", preset || "");
     // "" is the hole's own setting, which is what a camera with no
     // zones drawn has — so an empty zone is sent, not omitted.
     fd.append("zone", zone == null ? "" : String(zone));

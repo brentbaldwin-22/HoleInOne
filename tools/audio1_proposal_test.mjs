@@ -18,7 +18,7 @@
  *   node tools/audio1_proposal_test.mjs
  */
 import {
-  buildRules, classify, evaluate, seedFromPreset,
+  buildRules, clampedTo, classify, evaluate, seedFromPreset,
 } from "../frontend/src/components/Audio1Rules.js";
 
 const FAILED = [];
@@ -264,6 +264,29 @@ console.log("\n14. evaluate names every gate that failed, not just the first");
   check("two failures", ev.failed.length, 2);
   check("by gate name", ev.failed.map((f) => f.key).sort(),
         ["audio_min_crest", "audio_min_hf_snr_db"]);
+}
+
+console.log("\n15. a bar the resolver would move says so");
+{
+  // THE BUG THIS EXISTS FOR. resolve_gates clamps with
+  // max(lo, min(hi, f)) and reports nothing, so a middle-tee ratio of
+  // 1.3 under a floor of 1.5 was stored as 1.3, enforced as 1.5, and
+  // the field kept showing 1.3.
+  const RANGED = buildRules({
+    audio_min_ratio: { cmp: "min", reads: "peak_ratio", label: "peak ratio",
+                       lo: 1.2, hi: 60 },
+  });
+  const ratio = RANGED[0];
+  check("a bar inside the range is what it says", clampedTo(ratio, 3.5), null);
+  check("the floor exactly is not a clamp", clampedTo(ratio, 1.2), null);
+  check("below the floor reports what would really run",
+        clampedTo(ratio, 0.5), 1.2);
+  check("above the ceiling likewise", clampedTo(ratio, 99), 60);
+  check("and a blank is not a clamp", clampedTo(ratio, ""), null);
+  const noRange = buildRules({
+    x: { cmp: "min", reads: "peak_ratio", label: "x" } })[0];
+  check("a gate served without a range claims no clamp",
+        clampedTo(noRange, 999), null);
 }
 
 console.log("\n%s", FAILED.length
