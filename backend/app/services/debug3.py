@@ -8969,6 +8969,47 @@ GATE_SPEC = {
     "audio_min_ratio": (4.0, 1.5, 60.0, False),
     "audio_min_separation_sec": (2.0, 0.2, 30.0, False),
     "audio_max_attack_ms": (25.0, 2.0, 200.0, False),
+    # ── THE audio1 GATES ────────────────────────────────────────────
+    #
+    # Measurements the cutter has never had: a crest factor, a
+    # high-frequency signal-to-noise ratio, an absolute amplitude
+    # floor, and the rest of what audio1 takes. They live here so a
+    # tee box can carry its own set — "audio_min_hf_snr_db@2" is the
+    # zone the editor labels Zone 3 — using the same suffix every
+    # other gate already takes.
+    #
+    # ZERO MEANS OFF, for every one of them, and that is why the
+    # defaults are zero rather than the values from the field notes.
+    # A gate nobody has set must pass everything: these arrive on
+    # every hole at once, and a default that rejected anything would
+    # silently change what every course cuts on the deploy that added
+    # them. The presets in AUDIO_TEE_PRESETS are applied per zone,
+    # deliberately, by somebody who means it.
+    #
+    # A max-type gate reads 0 as off too. A maximum attack of 0 ms
+    # would reject every sound ever recorded, so there is no real
+    # setting it could be confused with.
+    "audio_min_hf_snr_db": (0.0, 0.0, 60.0, False),
+    "audio_min_crest": (0.0, 0.0, 40.0, False),
+    "audio_min_amplitude": (0.0, 0.0, 1.0, False),
+    "audio_max_raw_attack_ms": (0.0, 0.0, 200.0, False),
+    "audio_min_centroid_hz": (0.0, 0.0, 12000.0, False),
+    "audio_min_hf_concentration": (0.0, 0.0, 1.0, False),
+    "audio_min_isolation_db": (0.0, 0.0, 60.0, False),
+    "audio_max_decay_ms": (0.0, 0.0, 2000.0, False),
+    "audio_min_confidence": (0.0, 0.0, 100.0, False),
+    # ── THE SWITCH, PER TEE BOX ─────────────────────────────────────
+    #
+    # 0 = work the gates out and report what they WOULD do; 1 = act on
+    # them. A gate with a bar set and this off changes nothing that
+    # gets cut, which is how a tee box is tuned on real traffic before
+    # it is trusted with it.
+    #
+    # IT IS A GATE RATHER THAN A CONSTANT so arming is DATA: it takes
+    # a zone override like everything else — "audio1_armed@2" arms the
+    # box the editor labels Zone 3 and leaves the others reporting —
+    # and switching it needs no deploy, which is the whole point.
+    "audio1_armed": (0.0, 0.0, 1.0, True),
     # ── HOW BRIGHT A BALL AT ADDRESS HAS TO BE ──────────────────────
     #
     # `ADDRESS_MIN_CONTRAST`, which was a constant, and the wrong
@@ -9272,6 +9313,70 @@ GATE_VERDICT = {
 }
 
 GATE_DEFAULTS = {k: v[0] for k, v in GATE_SPEC.items()}
+
+
+# ── WHAT A TEE BOX STARTS FROM ──────────────────────────────────────
+#
+# THE SAME GATE CANNOT SERVE BOTH DECKS, and the reason is geometry
+# rather than taste: this camera stands behind the hitting area, so a
+# back tee is a few yards from the microphone and a forward tee is a
+# hundred. Everything that scales with loudness therefore scales with
+# WHICH BOX somebody is standing in — the peak ratio by a factor of
+# nearly three in these numbers, the amplitude floor by ten.
+#
+# Note what does NOT move between them: the attack gate, which is
+# about how fast a struck ball rises and not about how far away it
+# is. A preset that moved it would be tuning the wrong thing.
+#
+# These are starting points from the first labelled set, not settled
+# values. Applying one writes "gate@N" entries for one zone; it
+# changes nothing anywhere else and nothing at all until applied.
+AUDIO_TEE_PRESETS = {
+    "middle": {
+        "label": "Middle tee",
+        "why": "a hundred yards from the microphone: everything that "
+               "scales with loudness has to come down",
+        "gates": {
+            "audio_min_hf_snr_db": 12.0,
+            "audio_min_crest": 4.5,
+            "audio_max_attack_ms": 14.0,
+            "audio_min_ratio": 1.3,
+            "audio_min_amplitude": 0.005,
+        },
+    },
+    "back": {
+        "label": "Back tee",
+        "why": "a few yards from the microphone, so the same strike "
+               "arrives far louder and the gates can be far tighter",
+        "gates": {
+            "audio_min_hf_snr_db": 20.0,
+            "audio_min_crest": 7.0,
+            "audio_max_attack_ms": 14.0,
+            "audio_min_ratio": 3.5,
+            "audio_min_amplitude": 0.050,
+        },
+    },
+}
+
+# Every audio1 gate, and which measurement answers it. One table, so
+# the sandbox, the preset editor and anything that ever enforces them
+# cannot disagree about what a gate is asking.
+AUDIO_GATE_FIELDS = {
+    "audio_min_hf_snr_db": ("min", "hf_snr_db", "HF SNR (dB)"),
+    "audio_min_crest": ("min", "crest_factor", "crest factor"),
+    "audio_max_attack_ms": ("max", "detector_attack_ms",
+                            "detector attack (ms)"),
+    "audio_min_ratio": ("min", "peak_ratio", "peak ratio"),
+    "audio_min_amplitude": ("min", "peak_amplitude", "minimum amplitude"),
+    "audio_max_raw_attack_ms": ("max", "attack_ms", "raw 10-90 attack (ms)"),
+    "audio_min_centroid_hz": ("min", "spectral_centroid_hz",
+                              "spectral centroid (Hz)"),
+    "audio_min_hf_concentration": ("min", "hf_concentration",
+                                   "HF energy concentration"),
+    "audio_min_isolation_db": ("min", "isolation_db", "isolation (dB)"),
+    "audio_max_decay_ms": ("max", "decay_ms", "decay (ms)"),
+    "audio_min_confidence": ("min", "confidence_score", "confidence score"),
+}
 
 
 def split_gate_key(k):

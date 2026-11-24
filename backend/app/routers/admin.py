@@ -15927,6 +15927,64 @@ def save_audio_label(
             "label": rec.label, "kind": rec.kind}
 
 
+@router.get("/audio-gate-presets")
+def audio_gate_presets():
+    """The starting gates for each tee box, and what each gate asks.
+
+    Served rather than written into the page, for the same reason the
+    gate spec is: one definition of what exists, so a preset changed
+    here cannot leave a stale copy in front of an operator.
+    """
+    from ..services import debug3 as _d3
+    return {
+        "presets": _d3.AUDIO_TEE_PRESETS,
+        "fields": {k: {"cmp": v[0], "reads": v[1], "label": v[2]}
+                   for k, v in _d3.AUDIO_GATE_FIELDS.items()},
+    }
+
+
+@router.post("/long-uploads/{upload_id}/audio-gate-preset")
+def apply_audio_gate_preset(
+    upload_id: int,
+    preset: str = Form(...),
+    zone: str = Form(""),
+    arm: bool = Form(False),
+    db: Session = Depends(get_db),
+):
+    """Write a tee box's starting gates onto one zone of this hole.
+
+    DATA, NOT A DEPLOY. It writes "gate@N" entries into the same
+    per-hole tuning the editor already saves, so every value stays
+    adjustable one at a time afterwards and arming is a value like any
+    other. Nothing here is compiled in.
+
+    A zone of "" is the hole's own setting, which is what a camera
+    with no zones drawn has.
+    """
+    from ..services import debug3 as _d3
+
+    row = db.get(LongVideoUpload, upload_id)
+    if not row:
+        raise HTTPException(404, "long upload not found")
+    _p = _d3.AUDIO_TEE_PRESETS.get((preset or "").strip().lower())
+    if not _p:
+        raise HTTPException(
+            400, "unknown preset %r — one of: %s"
+            % (preset, ", ".join(sorted(_d3.AUDIO_TEE_PRESETS))))
+    _suffix = ""
+    if str(zone).strip() != "":
+        try:
+            _suffix = "@%d" % int(zone)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "zone must be a whole number") from None
+    gates = {("%s%s" % (k, _suffix)): v for k, v in _p["gates"].items()}
+    # ARMING RIDES WITH IT, so "apply and switch on" is one action and
+    # "apply and watch" is the default. A preset that armed itself
+    # would change what a course cuts the moment somebody looked at it.
+    gates["audio1_armed%s" % _suffix] = 1.0 if arm else 0.0
+    return set_gate_tuning(upload_id, {"gates": gates}, db=db)
+
+
 @router.post("/long-uploads/{upload_id}/audio-measure-at")
 def audio_measure_at(
     upload_id: int,
@@ -16023,6 +16081,164 @@ def export_audio_labels(upload_id: int = 0, db: Session = Depends(get_db)):
         headers={"Content-Disposition":
                  'attachment; filename="audio1-labels.csv"'},
     )
+
+
+def _audio1_enabled_gates(gates: dict) -> dict:
+    """The audio1 gates this zone has switched on. ZERO MEANS OFF.
+
+    Two of the eleven -- `audio_min_ratio` and `audio_max_attack_ms`
+    -- are the detector's OWN arguments and are already applied inside
+    it, per zone, by both produce paths. They are deliberately not
+    returned here: applying them a second time as a post-filter would
+    be a second opinion on a decision already taken, and the two could
+    drift apart.
+    """
+    from ..services import debug3 as _d3
+    out = {}
+    for name, (cmp_, field, label) in _d3.AUDIO_GATE_FIELDS.items():
+        if name in ("audio_min_ratio", "audio_max_attack_ms"):
+            continue
+        try:
+            v = float((gates or {}).get(name) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            out[name] = (cmp_, field, label, v)
+    return out
+
+
+def _audio1_value(m: dict, field: str):
+    """One measurement by the name a gate knows it by."""
+    if field == "hf_concentration":
+        return (m.get("concentration_hf") or {}).get("e20_over_e200")
+    if field == "confidence_score":
+        return (m.get("confidence") or {}).get("score")
+    return m.get(field)
+
+
+def _audio1_gate(db, row, src_path, hits, zone, dbg=None):
+    """Drop the peaks this tee box's audio1 gates refuse.
+
+    THE GATES ARE PER TEE BOX because the camera stands behind the
+    hitting area: a back tee is a few yards from the microphone and a
+    forward tee is a hundred, so everything that scales with loudness
+    scales with which box somebody is standing in.
+
+    FOUR THINGS THIS IS CAREFUL ABOUT, because it now decides whether
+    a shot gets produced:
+
+      NOTHING HAPPENS UNLESS A GATE IS SWITCHED ON. Every audio1 gate
+      defaults to zero, which is off, so a hole that has had no preset
+      applied behaves exactly as it did before this existed — and the
+      measurement pass does not even run.
+
+      AN UNMEASURABLE VALUE NEVER REJECTS. A quiet strike from a far
+      tee is exactly where HF SNR or a decay comes back blank, and a
+      gate that rejected what it could not measure would select
+      against distance — silently, and worst on the shots that are
+      hardest to catch.
+
+      A FAILURE KEEPS EVERYTHING. If the measurement pass throws or
+      the audio cannot be decoded, every hit survives. A diagnostic
+      that can delete a customer's shot because ffmpeg hiccuped is
+      not worth having.
+
+      EVERY REJECTION IS RECORDED, with the gate, the reading and the
+      bar. A threshold set wrong on one tee stops producing that
+      tee's shots, and the only thing standing between that and a
+      week of silence is a line somebody can read.
+    """
+    report = {"ran": False, "zone": zone, "n_in": len(hits or []),
+              "rejected": [], "kept": len(hits or []), "why": None}
+    try:
+        from ..services import debug3 as _d3
+        _g, _, _ = _gate_tuning_for(db, row)
+        gates = _d3.resolve_gates(_g, zone=zone)
+        enabled = _audio1_enabled_gates(gates)
+        armed = bool(float(gates.get("audio1_armed") or 0) >= 1)
+        report["armed"] = armed
+        if not enabled or not hits:
+            report["why"] = ("no audio1 gate is switched on for this tee"
+                             if not enabled else "no peaks to judge")
+            return hits, report
+        from ..services import audio1 as _a1
+        out = _a1.analyse(
+            Path(src_path),
+            [{"time_sec": float(h["peak_time_sec"]), "passed_gate": True}
+             for h in hits])
+        if not out.get("ok"):
+            report["why"] = ("could not measure this clip, so every peak "
+                             "was kept: " + str(out.get("reason")))
+            log.warning("audio1 gates: %s — keeping all %d peak(s)",
+                        report["why"], len(hits))
+            return hits, report
+        by_t = {round(float(m["peak_time_sec"]), 2): m
+                for m in (out.get("peaks") or [])}
+        report["ran"] = True
+        report["gates"] = {k: {"bar": v[3], "cmp": v[0], "of": v[2]}
+                           for k, v in enabled.items()}
+        kept = []
+        for h in hits:
+            t = round(float(h["peak_time_sec"]), 2)
+            m = by_t.get(t)
+            fails = []
+            blanks = []
+            for name, (cmp_, field, label, bar) in enabled.items():
+                v = _audio1_value(m or {}, field)
+                if v is None:
+                    blanks.append(label)
+                    continue
+                if (v < bar) if cmp_ == "min" else (v > bar):
+                    fails.append({"gate": name, "of": label,
+                                  "read": round(float(v), 3), "bar": bar,
+                                  "cmp": cmp_})
+            if fails:
+                report["rejected"].append(
+                    {"peak_time_sec": t, "ratio": h.get("ratio"),
+                     "failed": fails, "not_measured": blanks})
+            else:
+                kept.append(h)
+        report["kept"] = len(kept)
+        # ── REPORTING OR ACTING ─────────────────────────────────────
+        #
+        # Unarmed, the work is still done and still written down — the
+        # whole point is to see what a tee box's gates WOULD do on real
+        # traffic — but nothing is dropped. Arming is a stored value
+        # per zone, so this flips without a deploy and flips back the
+        # same way.
+        if not armed:
+            report["why"] = (
+                "these gates are not armed for this tee, so nothing was "
+                "dropped — %d peak(s) would have been"
+                % len(report["rejected"]))
+            log.info("audio1 gates: zone %s NOT armed — would have "
+                     "dropped %d of %d", zone, len(report["rejected"]),
+                     len(hits))
+            if dbg is not None:
+                dbg["audio1_gates"] = report
+            return hits, report
+        if report["rejected"]:
+            log.info(
+                "audio1 gates: zone %s dropped %d of %d peak(s) — %s",
+                zone, len(report["rejected"]), len(hits),
+                "; ".join("%.2fs %s" % (r["peak_time_sec"],
+                                        ", ".join("%s %s %s" % (f["of"],
+                                                                f["read"],
+                                                                f["bar"])
+                                                  for f in r["failed"]))
+                          for r in report["rejected"][:6]))
+        if dbg is not None:
+            dbg["audio1_gates"] = report
+        return kept, report
+    except Exception as exc:  # noqa: BLE001
+        # KEEP EVERYTHING. See the docstring: a measurement that fell
+        # over must never be the reason a shot was not produced.
+        log.exception("audio1 gates: failed, keeping all peaks: %s", exc)
+        report["why"] = "the gate pass failed (%s), so every peak was kept" \
+                        % exc
+        if dbg is not None:
+            dbg["audio1_gates"] = report
+        return hits, report
 
 
 def _audio1_peak_list(windows, debug) -> list:
@@ -27555,6 +27771,11 @@ def _cutter_times(name, db, row, src_path, fps, dbg):
                 if name == "combined"
                 else detect_swings_from_audio(src_path, **_kw,
                                               debug=dbg)) or []
+        # AND THIS TEE BOX'S audio1 GATES, if it has any switched on.
+        # Does nothing at all where none is — which is every hole
+        # until somebody applies a preset — and reports without
+        # dropping anything until that zone is armed.
+        hits, _ = _audio1_gate(db, row, src_path, hits, _az, dbg)
     elif name == "motion":
         hits = detect_swings_from_motion(src_path, fps=fps,
                                          debug=dbg) or []
@@ -27873,6 +28094,7 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
             max_attack_sec=float(_ag["audio_max_attack_ms"]) / 1000.0,
             debug=dbg,
         ) or []
+        hits, _ = _audio1_gate(db, row, src_path, hits, _az, dbg)
         dbg["gates_from"] = (
             "the hole's audio gates" if _az is None else
             "the hole's audio gates for zone %d (\"Zone %d\" on screen)"
