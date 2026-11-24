@@ -723,61 +723,26 @@ export default function AdminLongUpload() {
                         <option value="pi">pi (rig)</option>
                         <option value="ballgone">ball vanishes</option>
                       </select>
+                      {/* ── THE RATIO / SEP / ATTACK BOXES ARE GONE ──
+                          They were a second place to set the three
+                          values the gate sandbox already stores, and
+                          the stored ones are what PRODUCTION cuts
+                          with. A test cut verified at a ratio the
+                          cutter would never run at is the opposite of
+                          a test cut, so the detection now reads this
+                          hole's stored gates for its tee box and the
+                          run reports which values it used. Set them
+                          in the gate sandbox below. */}
                       {["audio", "audio2", "audio1"].includes(
                         testCutDetector[u.id] || "motion") && (
-                        <input
-                          type="number"
-                          min="1"
-                          step="0.5"
-                          value={audioMinRatio[u.id] ?? RIG_AUDIO.minRatio}
-                          onChange={(e) =>
-                            setAudioMinRatio((r) => ({ ...r, [u.id]: e.target.value }))
-                          }
-                          disabled={!!testCutting[u.id] || missing || busy}
-                          className="small"
-                          style={{ width: 60, fontSize: 12, padding: "2px 6px" }}
-                          title={`Minimum peak/median ratio. Higher = stricter (only the loudest thwacks). Defaults to what the rig runs: ${RIG_AUDIO.minRatio}.`}
-                        />
-                      )}
-                      {["audio", "audio2", "audio1"].includes(
-                        testCutDetector[u.id] || "motion") && (
-                        <label className="tiny muted"
-                               style={{ display: "inline-flex",
-                                        alignItems: "center", gap: 3 }}>
-                          sep
-                          <input
-                            type="number"
-                            min="0.2"
-                            step="0.5"
-                            value={audioMinSep[u.id] ?? RIG_AUDIO.minSeparationSec}
-                            onChange={(e) =>
-                              setAudioMinSep((r) => ({ ...r, [u.id]: e.target.value }))
-                            }
-                            disabled={!!testCutting[u.id] || missing || busy}
-                            className="small"
-                            style={{ width: 54, fontSize: 12, padding: "2px 6px" }}
-                            title="Seconds between accepted peaks. It exists to collapse the several detections ONE strike produces (often at the same timestamp), which needs well under a second — but at 6s it also discards a quieter real swing within six seconds of a louder peak. Try 1."
-                          />
-                        </label>
-                      )}
-                      {["audio", "audio2", "audio1"].includes(
-                        testCutDetector[u.id] || "motion") && (
-                        <label className="tiny muted"
-                               style={{ display: "inline-flex",
-                                        alignItems: "center", gap: 3 }}>
-                          atk
-                          <input
-                            type="number" min="1" step="1"
-                            value={audioMaxAttack[u.id] ?? RIG_AUDIO.maxAttackMs}
-                            onChange={(e) =>
-                              setAudioMaxAttack((r) => ({ ...r, [u.id]: e.target.value }))
-                            }
-                            disabled={!!testCutting[u.id] || missing || busy}
-                            className="small"
-                            style={{ width: 54, fontSize: 12, padding: "2px 6px" }}
-                            title="Milliseconds a sound may take to rise from ambience to its peak. A struck ball is 7-14ms here; voices and engines are 22-27ms. SET THIS TO WHAT THE RIG RUNS (max_attack_ms in config.yaml) or this tool will not predict it."
-                          />
-                        </label>
+                        <span className="tiny muted"
+                              title={"The ratio, separation and attack now "
+                                     + "come from this hole's stored gates "
+                                     + "for its tee box — the same ones "
+                                     + "production cuts with. Set them in "
+                                     + "the gate sandbox below the cuts."}>
+                          gates: stored, per tee box
+                        </span>
                       )}
                       {["audio", "audio2", "audio1"].includes(
                         testCutDetector[u.id] || "motion")
@@ -1291,6 +1256,18 @@ export default function AdminLongUpload() {
                                       color: "var(--amber-900, #6b4a00)" }}>
                           <b>lag not used</b> ·{" "}
                           {testCutResults[u.id].audio_lag_warning}
+                        </div>
+                      )}
+                      {/* WHICH GATES CUT THIS, said before anything
+                          else about the run. The three values moved
+                          out of the boxes above and into this hole's
+                          stored gates, so the run has to say what it
+                          read -- otherwise "are we cutting with the
+                          tee-box preset?" is unanswerable again. */}
+                      {testCutResults[u.id].debug?.audio_gates_from && (
+                        <div className="tiny" style={{ marginBottom: 6 }}>
+                          <span className="pill small">gates</span>{" "}
+                          {testCutResults[u.id].debug.audio_gates_from}
                         </div>
                       )}
                       {testCutResults[u.id].debug && (

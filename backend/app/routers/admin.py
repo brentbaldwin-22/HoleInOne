@@ -16634,14 +16634,49 @@ def _test_cut_run(
         # Measuring a second, differently-found set of peaks would
         # make the labels useless: a classification is only evidence
         # about the detector that found the thing classified.
-        windows = detect_swings_from_audio(
-            src_path,
-            fps=tee_fps,
-            min_peak_ratio=float(audio_min_peak_ratio),
-            min_separation_sec=float(audio_min_separation_sec),
-            max_attack_sec=float(audio_max_attack_ms) / 1000.0,
-            debug=debug,
-        )
+        # ── THE STORED GATES CUT THIS, NOT THE BOXES ON THE PAGE ───
+        #
+        # These three used to come off the form: a ratio, a separation
+        # and an attack typed beside the Test Cut button. That made
+        # two places to set one thing, and the one being tuned in the
+        # gate sandbox -- the one PRODUCTION reads -- was not the one
+        # the test cut used. So a cut could be verified at a ratio the
+        # cutter would never run at, which is the exact opposite of
+        # what a test cut is for.
+        #
+        # `_cutter_hits` is the one resolution: this hole, this tee
+        # box, the audio1 gates applied on top. The form values are
+        # still accepted so an older page does not 422, and are
+        # ignored; the report says which values actually ran.
+        _tc_dbg: dict = {}
+        try:
+            windows = _cutter_hits("audio", db, row, src_path, tee_fps,
+                                   _tc_dbg)
+            debug.update(_tc_dbg)
+            # THE SAME SENTENCE THE PRODUCTION FLOW PRINTS, from the
+            # same builder: two descriptions of one resolution is two
+            # chances to describe it wrongly.
+            from .production_flow import _gates_sentence as _gs
+            debug["audio_gates_from"] = _gs(_tc_dbg)
+        except Exception as _gx:  # noqa: BLE001
+            # A HOLE WITH NOWHERE TO STORE GATES still has to cut: an
+            # upload with no course or no identifiable hole has no
+            # tuning to resolve, and a diagnostic page that 500s on
+            # one is worse than a diagnostic page using the fallback
+            # and saying so. It SAYS so -- an unannounced fall back to
+            # the form values is how the two-sources problem gets
+            # rebuilt by accident.
+            log.warning("test cut: no stored gates for upload %s (%s) — "
+                        "falling back to the form values", upload_id, _gx)
+            windows = detect_swings_from_audio(
+                src_path, fps=tee_fps,
+                min_peak_ratio=float(audio_min_peak_ratio),
+                min_separation_sec=float(audio_min_separation_sec),
+                max_attack_sec=float(audio_max_attack_ms) / 1000.0,
+                debug=debug)
+            debug["audio_gates_from"] = (
+                "the boxes beside the button, because this upload has no "
+                "stored gates to read: %s" % _gx)
         if detector == "audio1":
             debug["audio1"] = _audio1_measure(
                 upload_id, src_path, windows, debug,
