@@ -16115,6 +16115,26 @@ def _test_cut_run(
 
     tee_fps = probe_fps(src_path) or 30.0
     detector = (detector or "motion").lower()
+    # ── audio1 ASKS NOTHING OF THE PICTURES ─────────────────────────
+    #
+    # "we don't have to do any swing judgments. i just want the audio
+    # scores." The verify pass is a VISION call per peak — the heat
+    # composite, the four frames, the AI judge — and on this detector
+    # it answers a question nobody is asking: whether a golfer is
+    # visible has no bearing on what a waveform looks like, and a
+    # verdict shown beside the audio numbers invites them to be read
+    # together.
+    #
+    # Forced off here rather than merely defaulted off, so it cannot
+    # be switched on from the page by habit and quietly spend a vision
+    # call per peak on every run.
+    _judged_off = None
+    if detector == "audio1" and (verify_swings or judge_with_frames):
+        _judged_off = ("audio1 does not run the swing judge — it is a "
+                       "vision call per peak about a question the audio "
+                       "numbers do not depend on")
+        verify_swings = False
+        judge_with_frames = False
     # ── THE LAG THIS RUN WILL USE ───────────────────────────────────
     #
     # Parsed ONCE, here, rather than per peak: a run in which two
@@ -17459,6 +17479,10 @@ def _test_cut_run(
         # pictures as evidence about 0.8.
         "audio_lag_sec": _lag_override,
         "audio_lag_warning": _lag_override_why,
+        # SAID OUT LOUD. A verify box left ticked with no verdicts
+        # under it reads as a judge that failed, not one that was
+        # never asked.
+        "judging_skipped": _judged_off,
         "debug": debug or None,
         "cuts": cuts,
     }

@@ -122,7 +122,31 @@ check("it does not raise", isinstance(bad, dict), True)
 check("it says it could not", bad["ok"], False)
 check("with a reason", bool(bad.get("reason")), True)
 
-print("\n6. the detector branch is shared, not forked")
+print("\n6. audio1 asks nothing of the pictures")
+# "we don't have to do any swing judgments. i just want the audio
+# scores." The verify pass is a VISION CALL PER PEAK, and whether a
+# golfer is visible has no bearing on what a waveform looks like.
+# Forced off in the runner rather than defaulted off, so it cannot be
+# switched on from the page by habit.
+_src = (ROOT / "backend/app/routers/admin.py").read_text()
+_r = _src[_src.index("def _test_cut_run("):]
+_r = _r[:_r.index("\ndef ", 10)]
+check("the runner turns it off for audio1",
+      'if detector == "audio1" and (verify_swings or judge_with_frames):'
+      in _r, True)
+check("...both of them", "verify_swings = False" in _r
+      and "judge_with_frames = False" in _r, True)
+check("...before the verify gate is reached",
+      _r.index("verify_swings = False")
+      < _r.index("if verify_swings and peak_time_sec is not None:"), True)
+check("and the run says it was skipped, not that it failed",
+      '"judging_skipped": _judged_off,' in _r, True)
+_jsx = (ROOT / "frontend/src/pages/AdminLongUpload.jsx").read_text()
+check("the page does not send it either",
+      'verifySwings[uploadId] && detector !== "audio1"' in _jsx, True)
+check("...and does not offer the box", "no swing judging" in _jsx, True)
+
+print("\n7. the detector branch is shared, not forked")
 SRC = (ROOT / "backend/app/routers/admin.py").read_text()
 check("audio1 runs the same detect_swings_from_audio call",
       'if detector in ("audio", "audio2", "audio1"):' in SRC, True)

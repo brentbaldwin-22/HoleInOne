@@ -36,56 +36,78 @@ const LABELS = [
 const LABEL_SHORT = Object.fromEntries(
   LABELS.map(([k, v]) => [k, v.replace(/^(True|Club hitting) /, "")]));
 
-// THE COLUMNS, AND THE ORDER THE REQUEST ASKED FOR THEM IN. `get`
-// returns undefined for anything unmeasured so the cell stays empty.
-const COLS = [
-  ["t", "time", (p) => p.peak_time_sec?.toFixed(2)],
-  ["cut", "cut", (p) => (p.passed_gate ? "yes" : "no")],
-  ["amp", "amp", (p) => fx(p.peak_amplitude, 3)],
-  ["ratio", "ratio", (p) => fx(p.peak_ratio, 1)],
-  ["atk0", "attack¹", (p) => fx(p.detector_attack_ms, 1)],
-  ["atk", "attack", (p) => fx(p.attack_ms, 1)],
-  // A † MEANS THE NUMBER IS ABOUT SOMETHING ELSE. Measured: a second
-  // sound 150 ms later turns a 145 ms decay into 262 ms, and a quiet
-  // strike over a noisy floor turns it into 1483 ms. Expand the row
-  // for which of those it was.
-  ["dec", "decay", (p) => {
-    const v = fx(p.decay_ms, 0);
-    if (v === undefined) return undefined;
-    const r = p.decay_end_reason || "";
-    return r.startsWith("fell and stayed") ? v : `${v}†`;
-  }],
-  ["dur", "transient", (p) => fx(p.transient_duration_ms, 0)],
-  ["low", "low%", (p) => fx(band(p, "low"), 0)],
-  ["mid", "mid%", (p) => fx(band(p, "mid"), 0)],
-  ["hi", ">1.5k%", (p) => fx(p.pct_above?.pct_above_1500, 0)],
-  ["hi3", ">3k%", (p) => fx(p.pct_above?.pct_above_3000, 0)],
-  ["hfsnr", "HF SNR", (p) => fx(p.hf_snr_db, 1)],
-  ["snr", "SNR", (p) => fx(p.snr_db, 1)],
-  ["cen", "centroid", (p) => fx(p.spectral_centroid_hz, 0)],
-  ["flux", "flux", (p) => fx(p.spectral_flux, 1)],
-  ["crest", "crest", (p) => fx(p.crest_factor, 1)],
-  ["sec", "2nd", (p) => (p.n_secondary_peaks ?? undefined)],
-  ["iso", "isolation", (p) => fx(p.isolation_db, 1)],
-  ["c20", "E20/E200", (p) => fx(p.concentration?.e20_over_e200, 2)],
-  ["c50", "E50/E200", (p) => fx(p.concentration?.e50_over_e200, 2)],
-  ["c10", "E10/E100", (p) => fx(p.concentration?.e10_over_e100, 2)],
-  ["c20h", "E20/E200ʜ", (p) => fx(p.concentration_hf?.e20_over_e200, 2)],
-  ["c50h", "E50/E200ʜ", (p) => fx(p.concentration_hf?.e50_over_e200, 2)],
-  // THE SHAPE OF WHAT FOLLOWS, as fractions of the first 20 ms. A
-  // strike empties out — 1 · 0.57 · 0.21 · 0.03 on a clean one. A
-  // voice does not: measured at 1 · 1.36 · 1.45 · 0.27. A number
-  // that climbs back up late is usually a second sound.
-  ["post", "post 20/50/100/200", (p) => {
-    const q = p.post_shape || {};
-    const k = ["ms0_20", "ms20_50", "ms50_100", "ms100_200"]
-      .map((n) => (q[n] === null || q[n] === undefined
-        ? "·" : Number(q[n]).toFixed(2)));
-    return k.every((v) => v === "·") ? undefined : k.join(" ");
-  }],
-  ["bg", "background", (p) => fx(p.background_level, 4)],
-  ["clip", "clipped", (p) => (p.clipped ? "YES" : "no")],
-  ["conf", "score", (p) => fx(p.confidence?.score, 0)],
+// ── THE COLUMNS, GROUPED SO THEY ALL FIT ────────────────────────────
+//
+// TWENTY-SIX NUMBERS, ONE PER COLUMN, DID NOT FIT ON A SCREEN. The
+// table scrolled sideways and the operator was reading five of them
+// at a time, which defeats the point of a table: the comparison is
+// ACROSS peaks, and a column you have to scroll to is a column you
+// cannot compare.
+//
+// So related numbers share a cell. Nothing is dropped and nothing
+// moves into the expander — every measurement is still on the row,
+// just packed the way it is read: the two attacks together because
+// they are two answers to one question, the four band percentages
+// together because they sum to a hundred, the three concentration
+// ratios together because their SHAPE is the finding and no single
+// one of them is.
+//
+// A MISSING VALUE IS A DOT, not a gap. In a shared cell an empty
+// string slides the next number into its place and the row silently
+// starts reading as a different measurement.
+const MISS = "·";
+
+const GROUPS = [
+  { key: "t", head: "", subs: ["time", "cut"], w: 86,
+    get: (p) => [p.peak_time_sec?.toFixed(2), p.passed_gate ? "yes" : "no"] },
+  { key: "pk", head: "peak", subs: ["amp", "ratio"], w: 78,
+    get: (p) => [fx(p.peak_amplitude, 3), fx(p.peak_ratio, 1)] },
+  { key: "atk", head: "attack ms", subs: ["det¹", "10-90"], w: 70,
+    get: (p) => [fx(p.detector_attack_ms, 1), fx(p.attack_ms, 1)] },
+  // A DAGGER MEANS THE DECAY IS ABOUT SOMETHING ELSE — a later sound,
+  // or a floor sitting inside the ambience. Expand the row for which.
+  { key: "dec", head: "decay ms", subs: ["decay", "trans"], w: 76,
+    get: (p) => {
+      const d = fx(p.decay_ms, 0);
+      const clean = (p.decay_end_reason || "").startsWith("fell and stayed");
+      return [d === undefined ? undefined : (clean ? d : d + "†"),
+              fx(p.transient_duration_ms, 0)];
+    } },
+  { key: "bands", head: "band %", subs: ["lo", "mid", "1.5-3k", "3-8k"],
+    w: 104,
+    get: (p) => [fx(band(p, "low"), 0), fx(band(p, "mid"), 0),
+                 fx(band(p, "impact"), 0), fx(band(p, "sharp"), 0)] },
+  { key: "above", head: "above %", subs: ["1.5k", "3k"], w: 62,
+    get: (p) => [fx(p.pct_above?.pct_above_1500, 0),
+                 fx(p.pct_above?.pct_above_3000, 0)] },
+  { key: "snr", head: "SNR dB", subs: ["all", "HF"], w: 66,
+    get: (p) => [fx(p.snr_db, 1), fx(p.hf_snr_db, 1)] },
+  { key: "sp", head: "spectrum", subs: ["centroid", "flux", "crest"],
+    w: 100,
+    get: (p) => [fx(p.spectral_centroid_hz, 0), fx(p.spectral_flux, 1),
+                 fx(p.crest_factor, 1)] },
+  { key: "aft", head: "after", subs: ["2nd", "iso dB"], w: 62,
+    get: (p) => [p.n_secondary_peaks ?? undefined, fx(p.isolation_db, 1)] },
+  { key: "conc", head: "concentration", subs: ["10/100", "20/200", "50/200"],
+    w: 96,
+    get: (p) => [fx(p.concentration?.e10_over_e100, 2),
+                 fx(p.concentration?.e20_over_e200, 2),
+                 fx(p.concentration?.e50_over_e200, 2)] },
+  { key: "conch", head: "…above 1.5 kHz",
+    subs: ["10/100", "20/200", "50/200"], w: 96,
+    get: (p) => [fx(p.concentration_hf?.e10_over_e100, 2),
+                 fx(p.concentration_hf?.e20_over_e200, 2),
+                 fx(p.concentration_hf?.e50_over_e200, 2)] },
+  // THE SHAPE IS THE POINT. A strike empties out — measured at
+  // 1 · 0.57 · 0.21 · 0.03. A voice holds up or climbs: 1 · 1.36 ·
+  // 1.45 · 0.27. A number that comes back up late is usually a
+  // second sound rather than this one still ringing.
+  { key: "post", head: "after the peak",
+    subs: ["0-20", "-50", "-100", "-200"], w: 110,
+    get: (p) => ["ms0_20", "ms20_50", "ms50_100", "ms100_200"]
+      .map((k) => fx(p.post_shape?.[k], 2)) },
+  { key: "sc", head: "", subs: ["score"], w: 46,
+    get: (p) => [fx(p.confidence?.score, 0)] },
 ];
 
 function band(p, name) {
@@ -226,18 +248,51 @@ export default function Audio1Panel({ uploadId, data, adminPassword }) {
         {err}
       </div>}
 
-      <div style={{ overflowX: "auto" }}>
-        <table className="tiny" style={{ borderCollapse: "collapse",
-                                         whiteSpace: "nowrap" }}>
+      {/* NO overflowX HERE ANY MORE. A table you scroll sideways is
+          a table you cannot compare across, which is the only reason
+          to have one. `table-layout: fixed` with a width per group
+          stops one long number widening a column and pushing the rest
+          off the edge. */}
+      <div>
+        <table className="tiny"
+               style={{ borderCollapse: "collapse", whiteSpace: "nowrap",
+                        tableLayout: "fixed", width: "100%",
+                        fontSize: 11 }}>
+          <colgroup>
+            <col style={{ width: 26 }} />
+            {GROUPS.map((g) => (
+              <col key={g.key} style={{ width: g.w }} />
+            ))}
+            <col style={{ width: 96 }} />
+          </colgroup>
           <thead>
+            {/* TWO HEADER ROWS, so a group can be named once and its
+                parts named under it. One row of headers for grouped
+                cells either repeats the group name three times or
+                omits it, and both read as a mistake. */}
             <tr className="muted">
-              <th style={{ textAlign: "left", paddingRight: 8 }}></th>
-              {COLS.map(([k, h]) => (
-                <th key={k} style={{ textAlign: "left", paddingRight: 10 }}>
-                  {h}
+              <th />
+              {GROUPS.map((g) => (
+                <th key={g.key}
+                    style={{ textAlign: "left", paddingRight: 8,
+                             fontWeight: 600, fontSize: 10,
+                             letterSpacing: "0.02em" }}>
+                  {g.head}
                 </th>
               ))}
-              <th style={{ textAlign: "left", paddingRight: 10 }}>label</th>
+              <th style={{ textAlign: "left", fontSize: 10 }}>label</th>
+            </tr>
+            <tr className="muted">
+              <th />
+              {GROUPS.map((g) => (
+                <th key={g.key}
+                    style={{ textAlign: "left", paddingRight: 8,
+                             fontWeight: 400, fontSize: 10, opacity: 0.75,
+                             paddingBottom: 2 }}>
+                  {g.subs.join(" ")}
+                </th>
+              ))}
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -249,37 +304,45 @@ export default function Audio1Panel({ uploadId, data, adminPassword }) {
                 <tr key={key}
                     style={{ opacity: p.passed_gate ? 1 : 0.72,
                              borderTop: "1px solid var(--line)" }}>
-                  <td style={{ paddingRight: 8 }}>
+                  <td>
                     <button type="button" className="secondary small"
-                            style={{ padding: "0 5px", fontSize: 11 }}
+                            style={{ padding: "0 4px", fontSize: 10 }}
                             onClick={() => setOpen(isOpen ? null : key)}>
                       {isOpen ? "−" : "+"}
                     </button>
                   </td>
-                  {COLS.map(([k, , get]) => {
-                    const v = get(p);
+                  {GROUPS.map((g) => {
+                    const vals = g.get(p) || [];
+                    const shown = vals.map(
+                      (v) => (v === undefined || v === null ? MISS
+                        : String(v)));
+                    const blank = shown.every((v) => v === MISS);
                     return (
-                      <td key={k}
+                      <td key={g.key}
                           style={{
-                            paddingRight: 10,
+                            paddingRight: 8,
                             fontVariantNumeric: "tabular-nums",
-                            color: k === "conf" && p.confidence?.band
-                              ? BAND_COLOUR[p.confidence.band] : undefined,
-                            fontWeight: k === "conf" ? 600 : undefined,
-                          }}>
-                        {v === undefined ? "" : v}
+                            overflow: "hidden", textOverflow: "ellipsis",
+                            color: g.key === "sc" && p.confidence?.band
+                              ? BAND_COLOUR[p.confidence.band]
+                              : (blank ? "var(--muted, #999)" : undefined),
+                            fontWeight: g.key === "sc" ? 600 : undefined,
+                          }}
+                          title={g.subs.map((sub, i) => `${sub} ${shown[i]}`)
+                            .join(" · ")}>
+                        {shown.join(" ")}
                       </td>
                     );
                   })}
-                  <td style={{ paddingRight: 10 }}>
+                  <td>
                     <select
                       value={lab?.kind === "detected" ? lab.label : ""}
                       disabled={busy === key}
                       onChange={(e) => e.target.value
                         && classify(p, e.target.value)}
-                      style={{ fontSize: 11, padding: "0 2px" }}
+                      style={{ fontSize: 10, padding: 0, width: "100%" }}
                     >
-                      <option value="">— unlabelled —</option>
+                      <option value="">—</option>
                       {LABELS.map(([v, t]) => (
                         <option key={v} value={v}>{t}</option>
                       ))}
@@ -289,7 +352,7 @@ export default function Audio1Panel({ uploadId, data, adminPassword }) {
               );
             })}
             {peaks.length === 0 && (
-              <tr><td colSpan={COLS.length + 2} className="muted tiny">
+              <tr><td colSpan={GROUPS.length + 2} className="muted tiny">
                 No peaks at all — not even below the gate. Nothing to
                 measure.
               </td></tr>

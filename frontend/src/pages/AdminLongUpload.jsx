@@ -352,7 +352,11 @@ export default function AdminLongUpload() {
     if ((audioLag[uploadId] || "").trim()) {
       opts.audioLagSec = audioLag[uploadId].trim();
     }
-    if (verifySwings[uploadId]) {
+    // audio1 ASKS NOTHING OF THE PICTURES. The server forces this off
+    // for it too; not sending it keeps the box and the run in
+    // agreement rather than having the screen claim something the
+    // server then refuses.
+    if (verifySwings[uploadId] && detector !== "audio1") {
       opts.verifySwings = true;
       opts.verifyWindowSec = 0.5;
       // undefined means "not set" -> the server's default (on).
@@ -956,6 +960,17 @@ export default function AdminLongUpload() {
                         />
                         detect only
                       </label>
+                      {(testCutDetector[u.id] || "motion") === "audio1" ? (
+                        <span className="tiny muted"
+                              title={"audio1 measures the waveform. "
+                                     + "Whether a golfer is visible has "
+                                     + "no bearing on what the audio "
+                                     + "looks like, and a verdict shown "
+                                     + "beside the numbers invites them "
+                                     + "to be read together."}>
+                          no swing judging
+                        </span>
+                      ) : (
                       <label
                         className="tiny"
                         style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
@@ -972,7 +987,9 @@ export default function AdminLongUpload() {
                         />
                         verify ±0.5s
                       </label>
-                      {verifySwings[u.id] && (
+                      )}
+                      {verifySwings[u.id]
+                        && (testCutDetector[u.id] || "motion") !== "audio1" && (
                         <label
                           className="tiny"
                           style={{
