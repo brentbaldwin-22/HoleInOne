@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
+import Audio1Thresholds from "./Audio1Thresholds.jsx";
 
 /*
  * audio1 — every number taken about every audio peak, and a place to
@@ -44,7 +45,16 @@ const COLS = [
   ["ratio", "ratio", (p) => fx(p.peak_ratio, 1)],
   ["atk0", "attack¹", (p) => fx(p.detector_attack_ms, 1)],
   ["atk", "attack", (p) => fx(p.attack_ms, 1)],
-  ["dec", "decay", (p) => fx(p.decay_ms, 0)],
+  // A † MEANS THE NUMBER IS ABOUT SOMETHING ELSE. Measured: a second
+  // sound 150 ms later turns a 145 ms decay into 262 ms, and a quiet
+  // strike over a noisy floor turns it into 1483 ms. Expand the row
+  // for which of those it was.
+  ["dec", "decay", (p) => {
+    const v = fx(p.decay_ms, 0);
+    if (v === undefined) return undefined;
+    const r = p.decay_end_reason || "";
+    return r.startsWith("fell and stayed") ? v : `${v}†`;
+  }],
   ["dur", "transient", (p) => fx(p.transient_duration_ms, 0)],
   ["low", "low%", (p) => fx(band(p, "low"), 0)],
   ["mid", "mid%", (p) => fx(band(p, "mid"), 0)],
@@ -57,6 +67,22 @@ const COLS = [
   ["crest", "crest", (p) => fx(p.crest_factor, 1)],
   ["sec", "2nd", (p) => (p.n_secondary_peaks ?? undefined)],
   ["iso", "isolation", (p) => fx(p.isolation_db, 1)],
+  ["c20", "E20/E200", (p) => fx(p.concentration?.e20_over_e200, 2)],
+  ["c50", "E50/E200", (p) => fx(p.concentration?.e50_over_e200, 2)],
+  ["c10", "E10/E100", (p) => fx(p.concentration?.e10_over_e100, 2)],
+  ["c20h", "E20/E200ʜ", (p) => fx(p.concentration_hf?.e20_over_e200, 2)],
+  ["c50h", "E50/E200ʜ", (p) => fx(p.concentration_hf?.e50_over_e200, 2)],
+  // THE SHAPE OF WHAT FOLLOWS, as fractions of the first 20 ms. A
+  // strike empties out — 1 · 0.57 · 0.21 · 0.03 on a clean one. A
+  // voice does not: measured at 1 · 1.36 · 1.45 · 0.27. A number
+  // that climbs back up late is usually a second sound.
+  ["post", "post 20/50/100/200", (p) => {
+    const q = p.post_shape || {};
+    const k = ["ms0_20", "ms20_50", "ms50_100", "ms100_200"]
+      .map((n) => (q[n] === null || q[n] === undefined
+        ? "·" : Number(q[n]).toFixed(2)));
+    return k.every((v) => v === "·") ? undefined : k.join(" ");
+  }],
   ["bg", "background", (p) => fx(p.background_level, 4)],
   ["clip", "clipped", (p) => (p.clipped ? "YES" : "no")],
   ["conf", "score", (p) => fx(p.confidence?.score, 0)],
@@ -308,6 +334,53 @@ export default function Audio1Panel({ uploadId, data, adminPassword }) {
             {p.confidence?.why && (
               <div className="tiny muted">{p.confidence.why}</div>
             )}
+            {p.decay_end_reason && (
+              <div className="tiny" style={{ marginTop: 4 }}>
+                <b>decay:</b>{" "}
+                <span className={p.decay_end_reason.startsWith("fell and")
+                                 ? "muted" : "err-text"}>
+                  {p.decay_end_reason}
+                </span>
+                {p.decay_first_cross_ms != null && (
+                  <span className="muted">
+                    {" "}· first crossing {p.decay_first_cross_ms} ms ·{" "}
+                    longest quiet {p.decay_longest_quiet_ms} ms ·{" "}
+                    {p.decay_crossings} crossing(s), {p.decay_resets} of
+                    them long enough to be a sound
+                  </span>
+                )}
+              </div>
+            )}
+            <div className="tiny muted" style={{ marginTop: 4 }}>
+              <b>energy, background-adjusted and integrated</b> — full:{" "}
+              {["w10", "w20", "w50", "w100", "w200"].map((k) => (
+                <span key={k} style={{ marginRight: 7 }}>
+                  {k.slice(1)}ms{" "}
+                  {p.energy?.[k] == null
+                    ? "—" : Number(p.energy[k]).toExponential(2)}
+                </span>
+              ))}
+              {" | "}above 1.5 kHz:{" "}
+              {["w10", "w20", "w50", "w100", "w200"].map((k) => (
+                <span key={k} style={{ marginRight: 7 }}>
+                  {k.slice(1)}ms{" "}
+                  {p.energy_hf?.[k] == null
+                    ? "—" : Number(p.energy_hf[k]).toExponential(2)}
+                </span>
+              ))}
+            </div>
+            <div className="tiny muted">
+              <b>after the peak</b>{" "}
+              {["ms0_20", "ms20_50", "ms50_100", "ms100_200"].map((k) => (
+                <span key={k} style={{ marginRight: 8 }}>
+                  {k.replace("ms", "").replace("_", "–")}ms{" "}
+                  {p.post?.[k] == null
+                    ? "—" : Number(p.post[k]).toExponential(2)}
+                  {p.post_hf?.[k] != null
+                    && ` (hf ${Number(p.post_hf[k]).toExponential(2)})`}
+                </span>
+              ))}
+            </div>
             {(p.notes || []).length > 0 && (
               <ul className="tiny muted" style={{ margin: "4px 0 0",
                                                   paddingLeft: 16 }}>
@@ -391,6 +464,43 @@ export default function Audio1Panel({ uploadId, data, adminPassword }) {
           </div>
         )}
       </div>
+
+      <Audio1Thresholds peaks={peaks} labels={labels} />
+
+      {/* HOW EVERY NUMBER ABOVE IS ARRIVED AT, served from the code
+          that takes it rather than written out here — a description
+          kept somewhere else drifts from the thing it describes, and
+          a wrong description of a measurement gets believed. */}
+      {(data.how_measured || []).length > 0 && (
+        <details style={{ marginTop: 10 }}>
+          <summary className="tiny" style={{ cursor: "pointer" }}>
+            how these are measured
+          </summary>
+          <div className="tiny muted" style={{ marginTop: 6 }}>
+            Not all of these are taken off the same signal. The{" "}
+            <b>original attack</b> is measured on the detector's audio,
+            resampled to 22050 Hz and high-passed at 1500 Hz before its
+            envelope is built; everything audio1 adds is measured at the
+            camera's own rate, unfiltered. Two attack figures in one row
+            are two measurements of two different signals.
+          </div>
+          {data.how_measured.map((h) => (
+            <div key={h.name} style={{ marginTop: 8 }}>
+              <div className="tiny"><b>{h.name}</b>{" "}
+                {h.where && <code className="muted">{h.where}</code>}
+              </div>
+              {["signal", "envelope", "how", "background", "cannot",
+                "note"].map((k) => (h[k] ? (
+                  <div key={k} className="tiny muted"
+                       style={{ paddingLeft: 10 }}>
+                    <i>{k === "cannot" ? "when it cannot be measured"
+                        : k}:</i> {h[k]}
+                  </div>
+                ) : null))}
+            </div>
+          ))}
+        </details>
+      )}
 
       <div className="tiny" style={{ marginTop: 8 }}>
         <a href={api.audioLabelsCsvUrl(0)} download>

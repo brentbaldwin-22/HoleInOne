@@ -100,6 +100,49 @@ class Audio1Config:
     # ...minus this much immediately before it, so the rise of the
     # impact itself is not counted as the background it rose from.
     background_guard_ms: float = 50.0
+    # ── ENERGY WINDOWS, CENTRED ON THE PEAK ─────────────────────────
+    #
+    # Nested, so the ratios between them are concentration: how much
+    # of the energy in 100 ms is inside the middle 10 ms. A strike is
+    # a spike; a voice, a mat and a gust are not.
+    energy_windows_ms: list = field(
+        default_factory=lambda: [10.0, 20.0, 50.0, 100.0, 200.0])
+    # Numerator over denominator, in milliseconds.
+    concentration_ratios: list = field(
+        default_factory=lambda: [(10.0, 100.0), (20.0, 200.0),
+                                 (50.0, 200.0)])
+    # Energy AFTER the peak, in [from, to) milliseconds.
+    post_intervals_ms: list = field(
+        default_factory=lambda: [(0.0, 20.0), (20.0, 50.0),
+                                 (50.0, 100.0), (100.0, 200.0)])
+    # Where "high frequency" starts, for the HF copy of all of it.
+    hf_cut_hz: float = 1500.0
+    # A decay longer than this is reported as suspect rather than as a
+    # measurement. See `decay_end_reason`: past about this point the
+    # number is almost always about a LATER sound, not this one.
+    decay_suspect_ms: float = 400.0
+    # HOW LONG AN EXCURSION BACK OVER THE FLOOR HAS TO LAST to count
+    # as a sound rather than as jitter.
+    #
+    # Without this the count is useless: an envelope sitting ON its
+    # floor crosses it every few samples, and the first version
+    # reported ELEVEN resets for a clean strike with nothing after it
+    # — then printed "this number times whatever followed", about
+    # nothing. 5 ms is far shorter than any real sound and far longer
+    # than the jitter.
+    decay_reset_min_ms: float = 5.0
+    # WHEN THE FLOOR IS INSIDE THE AMBIENCE, as a multiple of the hold.
+    #
+    # NOT A COUNT OF CROSSINGS. Counting them called a clean strike
+    # noisy: an envelope touches its floor a dozen times on the way
+    # down and settles immediately, which is fine. What separates the
+    # cases is how much QUIET there is to be had anywhere in the
+    # window — measured, on four synthetic clips: 1855 ms, 1738 ms and
+    # 686 ms for strikes that settled properly against 31 ms for the
+    # quiet strike over a noisy floor that reported 1483 ms. A longest
+    # quiet stretch barely longer than the hold means there was never
+    # any quiet to find.
+    decay_quiet_floor_mult: float = 3.0
     # Secondary peaks are looked for this far after the primary.
     secondary_window_ms: float = 200.0
     # ...and must be at least this fraction of it to count.
@@ -311,6 +354,44 @@ def _robust_floor(x):
     return float(np.median(x)), float(np.percentile(x, 25))
 
 
+def highpass_slice(seg, sr: int, cut_hz: float):
+    """`seg` with everything under `cut_hz` removed, same length.
+
+    FFT, ZERO THE LOW BINS, BACK AGAIN. Done per slice rather than
+    over the whole clip: the windows this feeds are at most 200 ms
+    wide, a slice a few times that costs nothing, and filtering eight
+    million samples to read 200 ms of them would be the expensive way
+    to get the same answer.
+
+    WHY FILTER AT ALL, when the band energies above come from one
+    FFT of one window: because the concentration ratios compare
+    DIFFERENT window lengths, and an FFT of each length has its own
+    bin spacing and its own normalisation. Energies taken in the time
+    domain off one filtered signal are directly comparable; energies
+    summed out of five different spectra are not, quite, and the
+    error would sit exactly where the ratio is read.
+    """
+    if seg.size < 8:
+        return None
+    sp = np.fft.rfft(seg)
+    fr = np.fft.rfftfreq(seg.size, 1.0 / sr)
+    sp[fr < cut_hz] = 0.0
+    return np.fft.irfft(sp, n=seg.size).astype(np.float32)
+
+
+def _energy(x):
+    """INTEGRATED energy, not average power.
+
+    Asked for by name, and the distinction is the whole point of the
+    ratios: mean power over 10 ms against mean power over 100 ms is
+    dominated by the window length and says almost nothing, where the
+    sums say what fraction of the sound is in the middle.
+    """
+    if x is None or x.size == 0:
+        return 0.0
+    return float(np.sum(x.astype(np.float64) ** 2))
+
+
 def _band_energy(mag, freqs, lo, hi):
     sel = (freqs >= lo) & (freqs < hi)
     if not np.any(sel):
@@ -411,33 +492,127 @@ def measure_peak(samples, sr: int, peak_sec: float, cfg: Audio1Config,
                 "another" % cfg.background_ms)
 
     # ── DECAY: back under 10% and staying there ─────────────────────
+    #
+    # AND WHY IT ENDED WHERE IT DID, which the first version of this
+    # did not say and should have. Measured on four synthetic cases:
+    #
+    #   clean strike, nothing after it ............ 145 ms, correct
+    #   second sound 150 ms later ................. 262 ms, WRONG —
+    #       the later sound lifts the envelope back over the floor and
+    #       resets the hold, so the number times that sound, not this
+    #   unrelated sound 600 ms later .............. 145 ms, correct —
+    #       the hold had already completed, so contamination is bounded
+    #       by how SOON the next sound lands, not by whether one does
+    #   quiet strike on a noisy floor ............ 1483 ms, WRONG —
+    #       10% of a small span sits inside the ambience, so the
+    #       envelope keeps being re-lifted by noise and it takes a
+    #       second and a half to find 20 ms of quiet
+    #
+    # The last one is the ">1000 ms" case, and the first version
+    # reported it with NO note at all: a failure wearing a
+    # measurement's clothes, which is the same shape as the 90.0 ms
+    # attack sentinel this repository has already been bitten by once.
+    #
+    # Nothing is rejected here — the numbers are all reported — but
+    # each one now says which of the four it is.
     m["decay_ms"] = None
     m["transient_duration_ms"] = None
+    m["decay_first_cross_ms"] = None
+    m["decay_resets"] = None
+    m["decay_reset_last_ms"] = None
+    m["decay_end_reason"] = None
+    m["decay_longest_quiet_ms"] = None
+    m["decay_crossings"] = None
     if span > 0:
         floor_v = base + cfg.decay_floor_frac * span
         hold = ms(cfg.decay_hold_ms)
-        j = i
-        end = min(n, i + ms(2000.0))
-        under_from = None
-        while j < end:
-            if env[j] <= floor_v:
-                if under_from is None:
-                    under_from = j
-                elif j - under_from >= hold:
-                    break
-            else:
-                under_from = None
-            j += 1
-        if under_from is not None and (j - under_from) >= hold:
-            m["decay_ms"] = round(1000.0 * (under_from - i) / sr, 2)
+        reset_min = max(1, ms(cfg.decay_reset_min_ms))
+        end_i = min(n, i + ms(2000.0))
+        under = (env[i:end_i] <= floor_v)
+        # RUN-LENGTH ENCODE IT. Walking sample by sample invites the
+        # jitter bug back; the question is about RUNS, so ask about
+        # runs.
+        runs = []
+        if under.size:
+            edges = np.flatnonzero(np.diff(under.astype(np.int8))) + 1
+            bounds = np.concatenate(([0], edges, [under.size]))
+            for a, b in zip(bounds[:-1], bounds[1:]):
+                runs.append((bool(under[a]), int(a), int(b)))
+        quiet = [(a, b) for u, a, b in runs if u]
+        if quiet:
+            m["decay_first_cross_ms"] = round(1000.0 * quiet[0][0] / sr, 2)
+            m["decay_longest_quiet_ms"] = round(
+                1000.0 * max(b - a for a, b in quiet) / sr, 2)
+        settle = next(((a, b) for a, b in quiet if b - a >= hold), None)
+        # A RESET IS A SOUND, NOT A SAMPLE. Only a stretch back over
+        # the floor long enough to be a sound counts, and only one
+        # that happens after the first crossing and before it settles.
+        cut_at = settle[0] if settle else under.size
+        resets = [(a, b) for u, a, b in runs
+                  if not u and b - a >= reset_min
+                  and quiet and a > quiet[0][0] and a < cut_at]
+        m["decay_resets"] = len(resets)
+        # ── AND THE CROSSINGS TOO SHORT TO BE SOUNDS ────────────────
+        #
+        # THE THIRD FAILURE MODE, and the one that produced 1483 ms on
+        # a quiet strike over a noisy floor. Every excursion there was
+        # a handful of samples long, so none counted as a sound and
+        # the reason read "fell and stayed down, first time" about an
+        # envelope that had churned on its own floor for a second and
+        # a half. The count of crossings says what the count of
+        # sounds cannot.
+        m["decay_crossings"] = sum(
+            1 for a, _b in quiet if a < cut_at)
+        if resets:
+            m["decay_reset_last_ms"] = round(
+                1000.0 * resets[-1][0] / sr, 2)
+        if settle:
+            m["decay_ms"] = round(1000.0 * settle[0] / sr, 2)
             if m["attack_ms"] is not None:
                 m["transient_duration_ms"] = round(
                     m["attack_ms"] + m["decay_ms"], 2)
+            _churn = ((m["decay_longest_quiet_ms"] or 0.0)
+                      < cfg.decay_quiet_floor_mult * cfg.decay_hold_ms)
+            if not resets and not _churn:
+                m["decay_end_reason"] = "fell and stayed down, first time"
+            elif not resets:
+                m["decay_end_reason"] = (
+                    "the floor is inside the ambience: it crossed %d "
+                    "times and the longest quiet stretch anywhere in 2 s "
+                    "was only %.0f ms, barely over the %.0f ms hold. "
+                    "This is a noise measurement, not a decay."
+                    % (m["decay_crossings"] or 0,
+                       m["decay_longest_quiet_ms"] or 0.0,
+                       cfg.decay_hold_ms))
+                m["notes"].append(m["decay_end_reason"])
+            else:
+                m["decay_end_reason"] = (
+                    "crossed at %.0f ms, then %d later sound(s) lifted it "
+                    "back over the floor — the last at %.0f ms. This "
+                    "number times the last of those, not this sound."
+                    % (m["decay_first_cross_ms"] or 0.0, len(resets),
+                       m["decay_reset_last_ms"] or 0.0))
+                m["notes"].append(m["decay_end_reason"])
+            if m["decay_ms"] > cfg.decay_suspect_ms:
+                m["notes"].append(
+                    "a %.0f ms decay is longer than a struck ball rings — "
+                    "read decay_resets before trusting it"
+                    % m["decay_ms"])
         else:
-            m["notes"].append(
-                "the sound had not fallen back under 10%% and stayed "
-                "there within 2 s — too long to be a transient, or "
-                "another sound followed it")
+            m["decay_crossings"] = len(quiet)
+            if not quiet:
+                m["decay_end_reason"] = (
+                    "never fell under 10%% of its own rise at all within "
+                    "2 s, so the floor is inside the ambience and there "
+                    "is no decay to time")
+            else:
+                m["decay_end_reason"] = (
+                    "crossed at %.0f ms but never stayed under for "
+                    "%.0f ms within 2 s — the longest quiet stretch was "
+                    "%.0f ms, broken by %d sound(s)"
+                    % (m["decay_first_cross_ms"], cfg.decay_hold_ms,
+                       m["decay_longest_quiet_ms"] or 0.0, len(resets)))
+            m["notes"].append(m["decay_end_reason"])
 
     # ── CREST FACTOR, over one consistent window ────────────────────
     w0 = max(0, i - ms(cfg.impact_window_ms / 2.0))
@@ -556,6 +731,92 @@ def measure_peak(samples, sr: int, peak_sec: float, cfg: Audio1Config,
                 best = max(best, float(np.sum(d[d > 0])))
             prev = fr
         m["spectral_flux"] = round(best, 4)
+
+    # ── ENERGY IN NESTED WINDOWS, CENTRED ON THE PEAK ───────────────
+    #
+    # BACKGROUND-ADJUSTED, so a loud room and a quiet one give the
+    # same answer about the same strike: the background's own energy
+    # density times the window length is taken off each one. Floored
+    # at zero — a window with less energy than the ambience around it
+    # has none of its own, and a negative energy is not a reading.
+    #
+    # INTEGRATED, NOT AVERAGED, which is the whole point of the
+    # ratios below. Mean power over 10 ms against mean power over
+    # 100 ms is mostly a statement about window lengths; the sums say
+    # what fraction of the sound is in the middle, which is what
+    # separates a spike from a voice.
+    m["energy"] = {}
+    m["energy_hf"] = {}
+    m["concentration"] = {}
+    m["concentration_hf"] = {}
+    m["post"] = {}
+    m["post_hf"] = {}
+    _maxw = max(list(cfg.energy_windows_ms)
+                + [b for _a, b in cfg.post_intervals_ms] + [200.0])
+    _pad = ms(_maxw) + ms(50.0)
+    e0, e1 = max(0, i - _pad), min(n, i + _pad)
+    wide = samples[e0:e1]
+    wide_hf = highpass_slice(wide, sr, cfg.hf_cut_hz)
+    # The background's energy PER SAMPLE, full band and high band, so
+    # the adjustment scales with however long a window is.
+    bg_seg = samples[bg_lo:bg_hi]
+    bg_den = bg_den_hf = None
+    if bg_seg.size >= 16:
+        bg_den = _energy(bg_seg) / float(bg_seg.size)
+        _bhf = highpass_slice(bg_seg, sr, cfg.hf_cut_hz)
+        if _bhf is not None:
+            bg_den_hf = _energy(_bhf) / float(_bhf.size)
+    m["background_energy_per_sample"] = (
+        None if bg_den is None else float(bg_den))
+    m["background_energy_per_sample_hf"] = (
+        None if bg_den_hf is None else float(bg_den_hf))
+
+    def _adj(x, den):
+        if x is None or x.size == 0:
+            return None
+        e = _energy(x)
+        if den is None:
+            return e
+        return max(0.0, e - den * float(x.size))
+
+    def _slice(lo_ms, hi_ms, arr, off):
+        a = i + ms(lo_ms) - off
+        b = i + ms(hi_ms) - off
+        a, b = max(0, a), min(arr.size, b)
+        return arr[a:b] if b > a else None
+
+    for wms in cfg.energy_windows_ms:
+        half = wms / 2.0
+        m["energy"]["w%d" % int(wms)] = _adj(
+            _slice(-half, half, wide, e0), bg_den)
+        m["energy_hf"]["w%d" % int(wms)] = (
+            None if wide_hf is None
+            else _adj(_slice(-half, half, wide_hf, e0), bg_den_hf))
+
+    def _ratio(d, num, den):
+        a, b = d.get("w%d" % int(num)), d.get("w%d" % int(den))
+        if a is None or b is None or b <= 0:
+            return None
+        return round(a / b, 4)
+
+    for num, den in cfg.concentration_ratios:
+        key = "e%d_over_e%d" % (int(num), int(den))
+        m["concentration"][key] = _ratio(m["energy"], num, den)
+        m["concentration_hf"][key] = _ratio(m["energy_hf"], num, den)
+
+    # ── ENERGY AFTER THE PEAK, interval by interval ─────────────────
+    for a_ms, b_ms in cfg.post_intervals_ms:
+        key = "ms%d_%d" % (int(a_ms), int(b_ms))
+        m["post"][key] = _adj(_slice(a_ms, b_ms, wide, e0), bg_den)
+        m["post_hf"][key] = (None if wide_hf is None
+                             else _adj(_slice(a_ms, b_ms, wide_hf, e0),
+                                       bg_den_hf))
+    # AND AS A SHAPE, not just four numbers: each interval against the
+    # first one. A strike empties out; a voice or a gust does not.
+    _first = m["post"].get("ms0_20")
+    m["post_shape"] = {
+        k: (None if (v is None or not _first) else round(v / _first, 4))
+        for k, v in m["post"].items()}
 
     # ── LOW-FREQUENCY (WIND) ENERGY IN THE BACKGROUND ───────────────
     m["wind_pct"] = None
@@ -775,7 +1036,10 @@ def analyse(path: Path, peaks: list, cfg: Audio1Config = DEFAULT_CONFIG,
     Decides nothing, changes nothing, and never raises.
     """
     out: dict = {"ok": False, "reason": None, "probe": None,
-                 "config": cfg.to_json(), "bands": None, "peaks": []}
+                 "config": cfg.to_json(), "bands": None, "peaks": [],
+                 # SERVED FROM THE CODE, so the page cannot describe a
+                 # measurement the running build does not take.
+                 "how_measured": HOW_MEASURED}
     probe = probe_audio(path)
     out["probe"] = probe
     if not probe["ok"]:
@@ -818,6 +1082,139 @@ def analyse(path: Path, peaks: list, cfg: Audio1Config = DEFAULT_CONFIG,
     return out
 
 
+# ── HOW EACH NUMBER IS ACTUALLY ARRIVED AT ──────────────────────────
+#
+# ASKED FOR DIRECTLY: "Document exactly how the existing isolation,
+# original attack, SNR and HF SNR measurements are calculated."
+#
+# It lives here, next to the code, and is served to the page — because
+# a description kept anywhere else drifts from the thing it describes,
+# and a wrong description of a measurement is worse than none: it gets
+# believed.
+#
+# THE ONE THAT CATCHES PEOPLE OUT is that these are not all taken off
+# the same signal. The original attack is measured on the DETECTOR's
+# audio, which is resampled to 22050 Hz and HIGH-PASSED AT 1500 Hz
+# before its envelope is built. Everything audio1 adds is measured on
+# the camera's own rate, unfiltered. Two attack figures in the same
+# row are therefore two different measurements of two different
+# signals, which is why both are shown.
+
+HOW_MEASURED = [
+    {
+        "name": "original attack (attack¹)",
+        "where": "ai_tracer.detect_swings_from_audio -> _attack_at",
+        "signal": "22050 Hz mono, HIGH-PASSED at 1500 Hz by ffmpeg "
+                  "before anything else runs",
+        "envelope": "moving average of |x| over 10 ms",
+        "how": "A reference level is set at max(0.10 x peak, 2.0 x the "
+               "clip's median envelope). Walking back from the peak up "
+               "to max(10 ms, 3 x max_attack) samples, the attack is "
+               "the time since the most recent sample BELOW that "
+               "reference.",
+        "cannot": "When the reference reaches half the peak there is no "
+                  "rise left to time and it returns a sentinel "
+                  "((lookback+1)/rate) rather than a number. That is "
+                  "'could not measure', not 'slow' — the two were once "
+                  "indistinguishable and a filter was silently dropping "
+                  "quiet strikes because of it.",
+    },
+    {
+        "name": "attack (10-90%)",
+        "where": "audio1.measure_peak",
+        "signal": "the camera's own sample rate, UNFILTERED",
+        "envelope": "moving average of |x| over 2 ms",
+        "how": "Background-adjusted: span = peak envelope - background "
+               "median. Walking back from the peak, the time between "
+               "the last crossing of background + 10% of span and the "
+               "last crossing of background + 90% of span.",
+        "cannot": "None when the envelope never drops to 10% within "
+                  "500 ms before the peak — a sustained sound, or one "
+                  "riding on another.",
+    },
+    {
+        "name": "SNR",
+        "where": "audio1.measure_peak",
+        "signal": "the camera's own rate, unfiltered; 2 ms envelope",
+        "how": "20 x log10(peak envelope / background median). An "
+               "AMPLITUDE ratio, hence 20x.",
+        "background": "The median of the envelope over the 500 ms "
+                      "ending 50 ms before the peak. The guard matters: "
+                      "without it the impact's own rise is counted as "
+                      "part of the quiet it rose out of. The median is "
+                      "used rather than the mean so one earlier bang "
+                      "cannot lift the floor; the 25th percentile is "
+                      "reported beside it, and a big gap between the "
+                      "two means a busy background.",
+        "cannot": "None when the background measures zero.",
+    },
+    {
+        "name": "HF SNR",
+        "where": "audio1.measure_peak",
+        "signal": "the camera's own rate, unfiltered",
+        "how": "10 x log10(E_peak / E_background), where E is the sum "
+               "of |rfft|^2 from 1500 Hz up to Nyquist. An ENERGY "
+               "ratio, hence 10x — so it is on the same dB scale as "
+               "the SNR above and measures a different thing: band "
+               "energy in a 50 ms window against broadband envelope "
+               "amplitude.",
+        "background": "A slice of exactly the same length, ending where "
+                      "the background window ends, Hann-windowed the "
+                      "same way. Equal lengths matter: two FFTs of "
+                      "different lengths are not directly comparable.",
+        "cannot": "None when either side has no energy above 1500 Hz, "
+                  "or when there is less background than one impact "
+                  "window to compare against.",
+    },
+    {
+        "name": "isolation",
+        "where": "audio1.measure_peak",
+        "signal": "the 2 ms envelope",
+        "how": "20 x log10(peak envelope / the loudest envelope value "
+               "between 10 ms and 200 ms AFTER the peak). High means "
+               "nothing followed it; low means something did.",
+        "cannot": "None when there is no audio after the peak, or when "
+                  "the loudest thing after it measures zero.",
+        "note": "It looks only FORWARD. A sound 100 ms BEFORE the peak "
+                "does not reduce isolation; it shows up in the "
+                "background figures instead.",
+    },
+    {
+        "name": "decay, and why it is sometimes huge or absent",
+        "where": "audio1.measure_peak",
+        "how": "Time from the peak until the envelope has been under "
+               "background + 10% of span for 20 ms without coming back, "
+               "searched up to 2 s.",
+        "cannot": "Measured on four synthetic cases: a clean strike "
+                  "gives 145 ms; a second sound 150 ms later gives "
+                  "262 ms, because that sound lifts the envelope back "
+                  "over the floor and resets the hold; an unrelated "
+                  "sound 600 ms later changes nothing, because the hold "
+                  "had already completed; and a quiet strike over a "
+                  "noisy floor gives 1483 ms, because 10% of a small "
+                  "span sits inside the ambience. Every row now says "
+                  "which of those it is in decay_end_reason, with the "
+                  "crossing count and the longest quiet stretch beside "
+                  "it.",
+    },
+    {
+        "name": "energy windows and concentration ratios",
+        "where": "audio1.measure_peak",
+        "how": "INTEGRATED energy (sum of x^2), not average power, in "
+               "windows of 10/20/50/100/200 ms CENTRED on the peak, "
+               "with the background's energy-per-sample x the window "
+               "length subtracted and the result floored at zero. The "
+               "ratios are E10/E100, E20/E200 and E50/E200. The "
+               "high-frequency copy is the same arithmetic on the same "
+               "windows after an FFT high-pass at 1500 Hz — filtered "
+               "in the time domain rather than summed out of five "
+               "different spectra, because windows of different "
+               "lengths have different bin spacings and the error "
+               "would land exactly where the ratio is read.",
+    },
+]
+
+
 # ── THE FLAT VIEW ───────────────────────────────────────────────────
 #
 # ONE DEFINITION OF THE COLUMNS, used by the CSV export and by the
@@ -850,6 +1247,25 @@ CSV_COLUMNS = [
     ("spectral_flux", "flux"),
     ("crest_factor", "crest"),
     ("n_secondary_peaks", "secondary peaks"),
+    ("decay_end_reason", "decay reason"),
+    ("decay_first_cross_ms", "decay first cross (ms)"),
+    ("decay_resets", "decay resets"),
+    ("decay_crossings", "decay crossings"),
+    ("decay_longest_quiet_ms", "longest quiet (ms)"),
+    ("e10", "E 10ms"), ("e20", "E 20ms"), ("e50", "E 50ms"),
+    ("e100", "E 100ms"), ("e200", "E 200ms"),
+    ("e10hf", "E 10ms HF"), ("e20hf", "E 20ms HF"),
+    ("e50hf", "E 50ms HF"), ("e100hf", "E 100ms HF"),
+    ("e200hf", "E 200ms HF"),
+    ("c10_100", "E10/E100"), ("c20_200", "E20/E200"),
+    ("c50_200", "E50/E200"),
+    ("c10_100hf", "E10/E100 HF"), ("c20_200hf", "E20/E200 HF"),
+    ("c50_200hf", "E50/E200 HF"),
+    ("p0_20", "post 0-20ms"), ("p20_50", "post 20-50ms"),
+    ("p50_100", "post 50-100ms"), ("p100_200", "post 100-200ms"),
+    ("p0_20hf", "post 0-20ms HF"), ("p20_50hf", "post 20-50ms HF"),
+    ("p50_100hf", "post 50-100ms HF"),
+    ("p100_200hf", "post 100-200ms HF"),
     ("isolation_db", "isolation (dB)"),
     ("background_level", "background"),
     ("background_sustained", "background sustained"),
@@ -919,4 +1335,22 @@ def flat_row(m: dict, *, upload_id=None, kind="detected", label=None,
     for k in ("frequency", "peak_to_background", "attack", "decay",
               "duration", "isolation"):
         row["c_" + k] = comps.get(k)
+    # ── THE WINDOWED ENERGIES AND WHAT THEY MAKE ────────────────────
+    for k in ("decay_end_reason", "decay_first_cross_ms", "decay_resets",
+              "decay_crossings", "decay_longest_quiet_ms"):
+        row[k] = m.get(k)
+    _e, _ehf = m.get("energy") or {}, m.get("energy_hf") or {}
+    _c, _chf = m.get("concentration") or {}, m.get("concentration_hf") or {}
+    _p, _phf = m.get("post") or {}, m.get("post_hf") or {}
+    for w in (10, 20, 50, 100, 200):
+        row["e%d" % w] = _e.get("w%d" % w)
+        row["e%dhf" % w] = _ehf.get("w%d" % w)
+    for num, den in ((10, 100), (20, 200), (50, 200)):
+        key = "e%d_over_e%d" % (num, den)
+        row["c%d_%d" % (num, den)] = _c.get(key)
+        row["c%d_%dhf" % (num, den)] = _chf.get(key)
+    for a, b in ((0, 20), (20, 50), (50, 100), (100, 200)):
+        key = "ms%d_%d" % (a, b)
+        row["p%d_%d" % (a, b)] = _p.get(key)
+        row["p%d_%dhf" % (a, b)] = _phf.get(key)
     return row
