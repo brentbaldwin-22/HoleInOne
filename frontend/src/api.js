@@ -492,6 +492,24 @@ export const api = {
   },
 
   // ---- production flow ----
+  flowRaw: (key, { courseId = 0, limit = 40, offset = 0 } = {}) => {
+    const p = new URLSearchParams({ course_id: String(courseId),
+                                    limit: String(limit),
+                                    offset: String(offset) });
+    return request(`/api/admin/flow/raw?${p}`, { adminPassword: key });
+  },
+
+  flowStart: (key, uploadId) =>
+    request(`/api/admin/flow/raw/${uploadId}/start`,
+            { method: "POST", adminPassword: key }),
+
+  flowStatus: (key, uploadId) =>
+    request(`/api/admin/flow/raw/${uploadId}/status`, { adminPassword: key }),
+
+  flowDeleteClip: (key, clipId) =>
+    request(`/api/admin/flow/clips/${clipId}`,
+            { method: "DELETE", adminPassword: key }),
+
   flowCounts: (key) => request("/api/admin/flow/counts",
                                { adminPassword: key }),
   flowClips: (key, { stage = "draft", broadcast = "", courseId = 0,

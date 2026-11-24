@@ -235,8 +235,14 @@ link_produced_cut(db, upload=up, idx=2, clip=c, start_sec=36.0, end_sec=48.0)
 unlinked = a_clip(db, 2)
 got = {r["id"]: r["cut_idx"] for r in flow_clips(db=db)["clips"]}
 check("the swing index travels to the page, not the row id", got[1], 2)
-check("and a clip with no cut says so rather than guessing",
-      got[2], None)
+# THE DEFAULT VIEW HIDES IT. A clip with no cut did not come from this
+# flow, and the columns show only what this flow produced -- so asking
+# what the page says about its swing number means asking for
+# everything first.
+check("a clip from no cut is not in the flow's own view", 2 in got, False)
+_all = {r["id"]: r["cut_idx"] for r in flow_clips(flow_only=0, db=db)["clips"]}
+check("and when everything is asked for, it says so rather than guessing",
+      _all[2], None)
 
 print("\n%s" % ("all ok" if not FAILED else "%d FAILED:\n  %s" % (
     len(FAILED), "\n  ".join(FAILED))))

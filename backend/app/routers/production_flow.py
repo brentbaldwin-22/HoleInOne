@@ -110,7 +110,11 @@ def flow_counts(db: Session = Depends(get_db)):
     """
     n_raw = db.query(func.count(LongVideoUpload.id)).scalar() or 0
     n_cuts = db.query(func.count(AudioCut.id)).scalar() or 0
-    q = db.query(VideoClip)
+    # COUNTED THE SAME WAY THE COLUMNS SHOW IT. The clip columns show
+    # only what this flow produced; a header counting all thousand
+    # clips in the database over a column holding two is a number that
+    # contradicts the thing underneath it.
+    q = db.query(VideoClip).filter(VideoClip.audio_cut_id.isnot(None))
     n_draft = q.filter((VideoClip.stage == "draft")
                        | (VideoClip.stage.is_(None))).count()
     n_final = q.filter(VideoClip.stage == "final").count()
@@ -145,9 +149,22 @@ def flow_counts(db: Session = Depends(get_db)):
 @router.get("/clips")
 def flow_clips(stage: str = "draft", broadcast: str = "",
                course_id: int = 0, limit: int = 60, offset: int = 0,
+               flow_only: int = 1,
                db: Session = Depends(get_db)):
-    """Clips in one stage. `broadcast` filters on the independent fact."""
+    """Clips in one stage. `broadcast` filters on the independent fact.
+
+    `flow_only` (the default) shows ONLY what this flow produced.
+
+    WHY THAT IS THE DEFAULT. There are a thousand clips in this
+    database from every pipeline the console has ever had, and a
+    column headed "Draft produced" that opens full of them says
+    nothing about the flow and buries the two clips somebody is
+    actually looking at. A clip produced through here carries the cut
+    it came from; nothing else does.
+    """
     q = db.query(VideoClip)
+    if flow_only:
+        q = q.filter(VideoClip.audio_cut_id.isnot(None))
     if stage == "broadcast":
         q = q.filter(VideoClip.broadcast_at.isnot(None))
     elif stage == "draft":
@@ -174,9 +191,15 @@ def flow_clips(stage: str = "draft", broadcast: str = "",
     idxs = (dict(db.query(AudioCut.id, AudioCut.idx)
                  .filter(AudioCut.id.in_(cut_ids)).all())
             if cut_ids else {})
+    out = [_clip_row(c, names.get(c.course_id), idxs.get(c.audio_cut_id))
+           for c in rows]
+    # The day and group each clip belongs to, worked out over the page
+    # that is being shown. Said once, on the server, because a second
+    # implementation of "which group is this" in the browser is a
+    # second answer to it.
+    assign_groups(out)
     return {"stage": stage, "offset": offset, "limit": limit,
-            "clips": [_clip_row(c, names.get(c.course_id),
-                                idxs.get(c.audio_cut_id)) for c in rows]}
+            "flow_only": bool(flow_only), "clips": out}
 
 
 @router.get("/cuts")
@@ -370,3 +393,447 @@ def link_produced_cut(db, *, upload, idx, clip, start_sec=None, end_sec=None,
         log.warning("flow: could not link upload %s swing %s to its cut: %s",
                     getattr(upload, "id", None), idx, exc)
         return None
+
+
+# ── COLUMN 1: THE RAW RECORDINGS ───────────────────────────────────
+
+def _raw_row(db, row, info_of) -> dict:
+    """One recording, with what the operator needs to judge it.
+
+    Capture time, how long it runs, which tee box fired it, and both
+    angles — the two files are the thing being looked at, so they are
+    URLs the console's own viewer can open rather than a download.
+    """
+    from .admin import _clip_url_for, _trigger_zone
+
+    _tee, _green = None, None
+    try:
+        _tee = _clip_url_for(row.tee_filename)
+        _green = _clip_url_for(row.green_filename)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("flow: no url for upload %s: %s", row.id, exc)
+    _zone = None
+    try:
+        _zone = _trigger_zone(db, row)
+    except Exception:  # noqa: BLE001
+        pass
+    return {
+        "id": row.id,
+        "course_id": row.course_id,
+        "hole_number": getattr(row, "hole_number", None),
+        "captured_at": (row.base_captured_at.isoformat()
+                        if row.base_captured_at else None),
+        "duration_sec": info_of(row),
+        "trigger_zone": _zone,
+        "tee_url": _tee,
+        "green_url": _green,
+        "has_green": bool(row.green_filename),
+        "processing_status": row.processing_status,
+    }
+
+
+@router.get("/raw")
+def flow_raw(course_id: int = 0, limit: int = 40, offset: int = 0,
+             db: Session = Depends(get_db)):
+    """The recordings this flow can be started on, newest first."""
+    from .admin import _local_tee
+
+    q = db.query(LongVideoUpload)
+    if course_id:
+        q = q.filter(LongVideoUpload.course_id == course_id)
+    rows = (q.order_by(LongVideoUpload.base_captured_at.desc())
+            .offset(max(0, offset)).limit(max(1, min(200, limit))).all())
+
+    def _dur(r):
+        # PROBED, AND NEVER AT THE COST OF THE LIST. The duration is
+        # not on the row; it comes from the file. A probe that fails
+        # or a file that is no longer on disk must leave a gap in one
+        # card, not an error where the column should be.
+        try:
+            from ..services.video import probe_video_info
+            _p = _local_tee(r)
+            if not _p or not _p.exists():
+                return None
+            _d = (probe_video_info(_p) or {}).get("duration")
+            return round(float(_d), 1) if _d else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    names = {c.id: c.name for c in db.query(Course).all()}
+    out = []
+    for r in rows:
+        _row = _raw_row(db, r, _dur)
+        _row["course_name"] = names.get(r.course_id)
+        _row["cuts"] = (db.query(func.count(AudioCut.id))
+                        .filter(AudioCut.long_upload_id == r.id).scalar() or 0)
+        out.append(_row)
+    return {"offset": offset, "limit": limit, "raw": out}
+
+
+# ── THE RUN: ONE RECORDING, ALL THE WAY TO DRAFTS ──────────────────
+#
+# TWO PHASES, AND THE SECOND IS NOT NEW CODE. Producing from an audio
+# impact -- find the strike, take its impact frame, sweep the frames
+# just after it for the ball leaving, look for it coming down, render
+# the tracer and the graphics -- is what `_produce_run` already does:
+# its step 1 asks the cutter where the swings are and takes an impact
+# frame from each, and steps 2 to 4 run once per swing. Writing a
+# second pipeline shaped like it would mean two answers to "how did
+# this clip get made", and the one the operator was reading would
+# drift from the one that ran.
+#
+# What this adds is the part the console never had: the swing-sized
+# cuts kept as artifacts in their own right, so the operator can see
+# WHAT WAS HEARD before and regardless of what was produced from it --
+# and a clock on each phase.
+
+# Four seconds before the strike and eight after: long enough to see
+# the swing and the ball away, short enough that two angles per swing
+# of a round is not the whole disk.
+FLOW_CUT_PRE_SEC = 4.0
+FLOW_CUT_POST_SEC = 8.0
+
+# ITS OWN FOLDER, NOT THE TEST CUTTER'S. `_testcuts` is scratch -- every
+# test-cut run wipes the previous one's files -- and a flow cut has to
+# outlive the next time somebody presses Test Cut.
+FLOW_CUTS_SUBDIR = "_flowcuts"
+
+
+def _flow_phase(rep, name, title, secs, detail="", count=None, units=None):
+    rep["phases"].append({"name": name, "title": title,
+                          "secs": round(float(secs), 2), "detail": detail,
+                          "count": count, "units": units})
+
+
+def flow_run(row, src_path, db, progress=None) -> dict:
+    """Cut this recording on audio, then produce a draft from each cut.
+
+    Never raises: it is handed to the console's background runner, and
+    a traceback there is a spinner that never stops.
+    """
+    import time as _time
+    from pathlib import Path
+
+    from ..services.video import cut_segment
+    from .admin import (
+        CLIPS_DIR, _clip_url_for, _cutter_times, _local_green, _trigger_zone,
+        probe_fps,
+    )
+
+    rep: dict = {"ok": False, "upload_id": row.id, "phases": [],
+                 "cuts": [], "n_cuts": 0, "n_clips": 0, "reason": None}
+    _t_run = _time.monotonic()
+
+    # ══ PHASE 1. WHAT THE MICROPHONE HEARD ════════════════════════
+    _t = _time.monotonic()
+    if progress:
+        progress("Listening for strikes", 0, 0)
+    dbg: dict = {}
+    fps = float(probe_fps(src_path) or 0.0) or 30.0
+    try:
+        hits = _cutter_times("audio", db, row, src_path, fps, dbg) or []
+    except Exception as exc:  # noqa: BLE001
+        log.exception("flow: the cutter failed on %s: %s", row.id, exc)
+        rep["reason"] = "the audio cutter failed: %s" % exc
+        _flow_phase(rep, "audio", "Listening for strikes",
+                    _time.monotonic() - _t, detail=str(exc))
+        return rep
+    _zone = None
+    try:
+        _zone = _trigger_zone(db, row)
+    except Exception:  # noqa: BLE001
+        pass
+    _t_audio = _time.monotonic() - _t
+
+    if not hits:
+        _flow_phase(rep, "audio", "Listening for strikes", _t_audio,
+                    detail=str(dbg.get("reason")
+                              or "nothing cleared this tee box's gates"),
+                    count=0, units="strikes")
+        rep["reason"] = (dbg.get("reason")
+                         or "no strike cleared this tee box's audio gates")
+        rep["ok"] = True
+        rep["debug"] = _json_small(dbg)
+        return rep
+
+    # ══ PHASE 2. CUT BOTH ANGLES AROUND EACH STRIKE ═══════════════
+    _t = _time.monotonic()
+    _green_src = None
+    try:
+        _g = _local_green(row)
+        _green_src = _g if (_g and _g.exists()) else None
+    except Exception:  # noqa: BLE001
+        _green_src = None
+    _sub = CLIPS_DIR / FLOW_CUTS_SUBDIR
+    _sub.mkdir(parents=True, exist_ok=True)
+    _dur = None
+    try:
+        from ..services.video import probe_video_info
+        _dur = (probe_video_info(Path(src_path)) or {}).get("duration")
+    except Exception:  # noqa: BLE001
+        pass
+
+    for idx, hit in enumerate(hits):
+        if progress:
+            progress("Cutting strike %d of %d" % (idx + 1, len(hits)),
+                     idx, len(hits))
+        _peak = _hit_peak_sec(hit)
+        if _peak is None:
+            continue
+        _a = max(0.0, _peak - FLOW_CUT_PRE_SEC)
+        _b = _peak + FLOW_CUT_POST_SEC
+        if _dur:
+            _b = min(_b, float(_dur))
+        _tok = "%d-%02d" % (row.id, idx)
+        _tee_name = "flowcut-%s-tee.mp4" % _tok
+        _green_name = "flowcut-%s-green.mp4" % _tok
+        _tee_ok = _green_ok = False
+        try:
+            _tee_ok = bool(cut_segment(src_path, _sub / _tee_name,
+                                       _a, _b, fast=True))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("flow: tee cut %s of %s failed: %s", idx, row.id, exc)
+        if _green_src is not None:
+            try:
+                _green_ok = bool(cut_segment(_green_src,
+                                             _sub / _green_name,
+                                             _a, _b, fast=True))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("flow: green cut %s of %s failed: %s",
+                            idx, row.id, exc)
+        _size = None
+        try:
+            _p = _sub / _tee_name
+            _size = round(_p.stat().st_size / 1e6, 2) if _p.exists() else None
+        except OSError:
+            pass
+        k = record_cut(
+            db, upload=row, idx=idx, peak_time_sec=round(float(_peak), 2),
+            start_sec=round(_a, 2), end_sec=round(_b, 2), detector="audio",
+            zone=_zone, ratio=hit.get("ratio"), attack_ms=hit.get("attack_ms"),
+            tee_filename=("%s/%s" % (FLOW_CUTS_SUBDIR, _tee_name)
+                          if _tee_ok else None),
+            green_filename=("%s/%s" % (FLOW_CUTS_SUBDIR, _green_name)
+                            if _green_ok else None),
+            duration_sec=round(_b - _a, 2), size_mb=_size)
+        rep["cuts"].append({
+            "idx": idx, "peak_time_sec": round(float(_peak), 2),
+            "start_sec": round(_a, 2), "end_sec": round(_b, 2),
+            "ratio": hit.get("ratio"), "attack_ms": hit.get("attack_ms"),
+            "tee_url": _clip_url_for("%s/%s" % (FLOW_CUTS_SUBDIR, _tee_name))
+            if _tee_ok else None,
+            "green_url": _clip_url_for("%s/%s" % (FLOW_CUTS_SUBDIR,
+                                                  _green_name))
+            if _green_ok else None,
+            "id": getattr(k, "id", None),
+        })
+    rep["n_cuts"] = len(rep["cuts"])
+    _flow_phase(rep, "cut", "Cutting both angles around each strike",
+                _time.monotonic() - _t, count=rep["n_cuts"], units="cuts")
+    _flow_phase(rep, "audio", "Listening for strikes", _t_audio,
+                detail=str(dbg.get("gates_from") or ""),
+                count=len(hits), units="strikes")
+    rep["phases"].sort(key=lambda p: 0 if p["name"] == "audio" else 1)
+
+    # ══ PHASE 3. PRODUCE A DRAFT FROM EACH ════════════════════════
+    _t = _time.monotonic()
+    if progress:
+        progress("Producing", 0, 0)
+    try:
+        from .admin import _produce_run
+        _pr = _produce_run(row, src_path, db, progress=progress)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("flow: produce failed on %s: %s", row.id, exc)
+        _pr = {"ok": False, "reason": "%s: %s" % (type(exc).__name__, exc)}
+    rep["produce"] = _json_small(_pr)
+    rep["n_clips"] = int(_pr.get("n_produced") or 0)
+    _flow_phase(rep, "produce", "Producing a draft from each cut",
+                _time.monotonic() - _t, count=rep["n_clips"], units="clips",
+                detail=str(_pr.get("reason") or ""))
+    # THE PRODUCE'S OWN STAGES, carried through rather than summarised.
+    # "Production took 94 seconds" is not actionable; "the descent
+    # crawl took 71 of them" is.
+    for st in (_pr.get("stages") or []):
+        if st.get("secs") is None:
+            continue
+        _flow_phase(rep, "produce.%s" % st.get("n"),
+                    str(st.get("title") or "")[:120], st["secs"],
+                    count=st.get("count"), units=st.get("units"))
+
+    rep["total_sec"] = round(_time.monotonic() - _t_run, 2)
+    rep["ok"] = True
+    return rep
+
+
+def _hit_peak_sec(hit):
+    """The strike's time, whatever shape the cutter reported it in."""
+    if hit is None:
+        return None
+    if isinstance(hit, (int, float)):
+        return float(hit)
+    for k in ("peak_time_sec", "peak_sec", "time_sec", "t"):
+        v = hit.get(k) if isinstance(hit, dict) else None
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _json_small(d, cap=20000):
+    """Enough of a debug blob to read, never enough to wedge a page."""
+    try:
+        import json as _json
+        s = _json.dumps(d, default=str)
+        return d if len(s) <= cap else {"truncated": True, "head": s[:cap]}
+    except Exception:  # noqa: BLE001
+        return {"unserialisable": True}
+
+
+@router.post("/raw/{upload_id}/start")
+def flow_start(upload_id: int, db: Session = Depends(get_db)):
+    """Start the flow on one recording: cut on audio, then produce.
+
+    Runs on a thread through the console's own background runner, so
+    the answer here is "started", not the result. A produce is minutes
+    of work and an HTTP request that waits for one is a request that
+    times out somewhere the operator cannot see.
+    """
+    from .admin import _debugx_start
+
+    row = db.get(LongVideoUpload, upload_id)
+    if not row:
+        raise HTTPException(404, "long upload not found")
+    return _debugx_start("flow", upload_id, _flow_runner)
+
+
+def _flow_runner(row, src_path, db, progress=None):
+    return flow_run(row, src_path, db, progress=progress)
+
+
+@router.get("/raw/{upload_id}/status")
+def flow_status(upload_id: int):
+    """How the run is going, or how it went."""
+    from .admin import _debugx_status, _json_safe
+
+    return _json_safe(_debugx_status("flow", upload_id))
+
+
+# ── GROUPS: A ROUND'S SWINGS, AS THE DAY WENT ──────────────────────
+#
+# "Tuesday, November 24th — Group 1". A group is the swings inside
+# seven minutes of the FIRST swing in it, numbered from 1 as the day
+# goes on.
+#
+# SEVEN MINUTES FROM THE GROUP'S START, not from the previous swing.
+# A rolling gap would let a group run for hours whenever swings
+# happened to arrive every six minutes -- the window would never
+# close, and "Group 1" would mean the morning. From the start, a group
+# is at most seven minutes long, which is what makes the number worth
+# printing beside a clip.
+#
+# IN THE COURSE'S OWN DAY, not UTC. The columns are naive UTC; a swing
+# at 19:30 Central is the 25th in UTC and the 24th to everybody who
+# was standing there. Grouping on the UTC date would split one evening
+# across two days and number both from 1.
+GROUP_WINDOW_SEC = 7 * 60
+GROUP_TZ = "America/Chicago"
+
+
+def _ordinal(n: int) -> str:
+    if 11 <= (n % 100) <= 13:
+        return "%dth" % n
+    return "%d%s" % (n, {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th"))
+
+
+def _local_dt(dt):
+    """A naive-UTC column as the time it was where the camera stands."""
+    if dt is None:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        _d = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return _d.astimezone(ZoneInfo(GROUP_TZ))
+    except Exception:  # noqa: BLE001
+        return dt
+
+
+def assign_groups(rows):
+    """Number each row's group, in place, oldest first.
+
+    `rows` are dicts carrying `captured_at`; each gets `group_number`
+    and `group_label`. A row with no capture time gets neither — it
+    cannot be placed in a day, and putting it in Group 1 would make it
+    look like the first swing of the morning.
+    """
+    from datetime import datetime as _dt
+
+    def _parse(s):
+        if not s:
+            return None
+        try:
+            return _dt.fromisoformat(str(s).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    dated = sorted(
+        ((r, _local_dt(_parse(r.get("captured_at")))) for r in rows),
+        key=lambda p: (p[1] is None, p[1] or 0))
+    by_day: dict = {}
+    for r, when in dated:
+        if when is None:
+            continue
+        day = when.date()
+        st = by_day.get(day)
+        if st is None or (when - st["start"]).total_seconds() > GROUP_WINDOW_SEC:
+            st = {"n": (st["n"] + 1) if st else 1, "start": when}
+            by_day[day] = st
+        r["group_number"] = st["n"]
+        r["group_label"] = "%s, %s %s — Group %d" % (
+            when.strftime("%A"), when.strftime("%B"),
+            _ordinal(when.day), st["n"])
+    return rows
+
+
+@router.delete("/clips/{clip_id}")
+def delete_flow_clip(clip_id: int, db: Session = Depends(get_db)):
+    """Throw a draft away.
+
+    THE FILES GO WITH IT. A clip row removed while its mp4 stays on
+    disk is a file nothing points at, which the retention sweep then
+    protects forever — `protected_names` is built from the rows, so a
+    deleted row makes its own footage immortal and invisible.
+    """
+    from .admin import CLIPS_DIR
+
+    c = db.get(VideoClip, clip_id)
+    if not c:
+        raise HTTPException(404, "clip not found")
+    if c.broadcast_at is not None:
+        raise HTTPException(
+            409, "this clip has been broadcast — un-broadcast it first if "
+                 "you really mean to delete it")
+    gone = []
+    for url in (c.source_url, c.tracer_url, c.vertical_url, c.tee_clip_url,
+                c.thumbnail_url):
+        name = (url or "").split("?")[0].rstrip("/").rsplit("/", 1)[-1]
+        if not name:
+            continue
+        try:
+            p = (CLIPS_DIR / name).resolve()
+            if CLIPS_DIR.resolve() in p.parents and p.is_file():
+                p.unlink()
+                gone.append(name)
+        except OSError as exc:
+            log.warning("flow: could not delete %s: %s", name, exc)
+    # The cut it came from survives, and goes back to unproduced: the
+    # swing still happened, and it is now a swing nothing was made
+    # from, which is exactly what the cuts column is for.
+    if c.audio_cut_id:
+        k = db.get(AudioCut, c.audio_cut_id)
+        if k is not None:
+            k.produced = False
+    db.delete(c)
+    db.commit()
+    return {"ok": True, "deleted": clip_id, "files": gone}

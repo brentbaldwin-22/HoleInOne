@@ -1,107 +1,181 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
 import { readAdminPassword } from "../adminAuth.js";
 import { Brand } from "../components/Brand.jsx";
+import { VideoLightbox } from "../components/VideoLightbox.jsx";
+import { zoneName } from "../zones.js";
 
 /*
- * Production flow — one recording, its cuts, and what became of them.
+ * The production flow, left to right: one recording becomes drafts.
  *
- * FIVE VIEWS OF ONE PIPELINE:
+ *   raw     a recording off a camera pair, both angles openable
+ *   cuts    what the microphone heard, cut to size, nothing judged
+ *   draft   produced automatically, nobody has looked
+ *   final   somebody looked and approved it
  *
- *   raw        a recording off a camera pair, minutes long
- *   cuts       the swing-sized pieces the cutter heard in it, both
- *              angles, nothing drawn on them
- *   draft      produced automatically; nobody has looked
- *   final      an administrator looked and accepted it
- *   broadcast  it went out
+ * COLUMNS, NOT TABS, because the question the operator is asking is
+ * "what happened to this recording" and the answer is spread across
+ * all four. Tabs made them check four screens and hold the join in
+ * their head.
  *
- * TWO DIFFERENT UNITS, AND THE STRIP SAYS SO. The first two tabs
- * count recordings and cuts; the last three count CLIPS. One
- * recording holding four swings is one row in `raw` and four in
- * `draft`, so these numbers are not a funnel and are not meant to
- * subtract. A reader who tries should be told, not left to work it
- * out from the arithmetic failing.
+ * NOTHING FROM BEFORE THIS FLOW IS SHOWN. There are a thousand clips
+ * in the database from every pipeline the console has ever had. A
+ * column headed "Draft produced" that opens full of them says nothing
+ * about the flow and buries the two clips somebody is looking at. The
+ * server filters on provenance -- a clip produced through here knows
+ * which cut it came from, and nothing else does.
  *
- * BROADCAST IS NOT A STAGE. A clip can go out from draft or from
- * final, so it is shown as an independent fact with its own
- * timestamp. Were it a stage, "final" would stop meaning "a person
- * approved this" and start meaning "approved or went out", and
- * neither question could be answered afterwards.
+ * THE VIDEOS OPEN IN THE CONSOLE'S OWN VIEWER, the same one Production
+ * uses, because a new browser tab loses the wall clock and the frame
+ * number -- which are the two things an operator opens a raw angle to
+ * read.
  */
 
-const CLIP_TABS = { draft: 1, final: 1, broadcast: 1 };
+const POLL_MS = 2500;
 
 function fmtWhen(iso) {
   if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch { return iso; }
+  const d = new Date(iso.endsWith("Z") ? iso : `${iso}Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    month: "short", day: "numeric",
+    hour: "numeric", minute: "2-digit", second: "2-digit",
+  });
 }
 
-function fmtSecs(v) {
-  return v == null ? "—" : `${Number(v).toFixed(1)}s`;
+function fmtDur(sec) {
+  if (sec === null || sec === undefined) return "—";
+  const s = Number(sec);
+  if (!Number.isFinite(s)) return "—";
+  if (s < 60) return `${s.toFixed(s < 10 ? 1 : 0)}s`;
+  return `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, "0")}s`;
+}
+
+function Column({ title, unit, count, blurb, children }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <div className="card tight" style={{ margin: 0, marginBottom: 8 }}>
+        <div className="small"><b>{title}</b>{" "}
+          <span className="pill small" style={{ marginLeft: 4 }}>
+            {count ?? "—"} {unit}
+          </span>
+        </div>
+        <div className="tiny muted" style={{ marginTop: 2 }}>{blurb}</div>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** A phase timing table. "94 seconds" is not actionable; which phase is. */
+function Phases({ phases, total }) {
+  if (!phases?.length) return null;
+  return (
+    <table className="tiny" style={{ borderCollapse: "collapse",
+                                     marginTop: 4, width: "100%" }}>
+      <tbody>
+        {phases.map((p) => (
+          <tr key={p.name}>
+            <td className="muted" style={{ paddingRight: 8,
+                                           whiteSpace: "normal" }}>
+              {p.title}
+              {p.count != null && (
+                <span className="muted"> · {p.count} {p.units}</span>
+              )}
+            </td>
+            <td style={{ textAlign: "right", fontVariantNumeric:
+                         "tabular-nums", whiteSpace: "nowrap" }}>
+              {fmtDur(p.secs)}
+            </td>
+          </tr>
+        ))}
+        {total != null && (
+          <tr style={{ borderTop: "1px solid var(--line)" }}>
+            <td className="muted" style={{ paddingRight: 8 }}>total</td>
+            <td style={{ textAlign: "right", fontWeight: 600,
+                         fontVariantNumeric: "tabular-nums" }}>
+              {fmtDur(total)}
+            </td>
+          </tr>
+        )}
+      </tbody>
+    </table>
+  );
 }
 
 export default function AdminProductionFlow() {
-  // Read on every render, like its siblings: signing in on another tab
-  // should not need a reload here. NOT a useState initialiser, which
-  // snapshots whatever was stored the first time this mounted.
   const adminPassword = readAdminPassword();
-  const [tab, setTab] = useState("draft");
-  const [tabs, setTabs] = useState([]);
-  const [note, setNote] = useState("");
-  const [rows, setRows] = useState([]);
-  const [cuts, setCuts] = useState([]);
-  const [busy, setBusy] = useState(false);
-  const [acting, setActing] = useState(null);
-  const [err, setErr] = useState(null);
-  // A cut nothing was produced from is the interesting one: either a
-  // swing the producer failed on or a sound that was never a swing,
-  // and neither is visible in a list of produced clips.
-  const [onlyUnproduced, setOnlyUnproduced] = useState(false);
 
-  const loadCounts = useCallback(async () => {
-    try {
-      const d = await api.flowCounts(adminPassword);
-      setTabs(d.tabs || []);
-      setNote(d.note || "");
-    } catch (e) { setErr(e.message); }
-  }, [adminPassword]);
+  const [counts, setCounts] = useState(null);
+  const [raw, setRaw] = useState(null);
+  const [cuts, setCuts] = useState(null);
+  const [drafts, setDrafts] = useState(null);
+  const [finals, setFinals] = useState(null);
+  const [err, setErr] = useState(null);
+  const [acting, setActing] = useState(null);
+  const [runs, setRuns] = useState({});       // uploadId -> status blob
+  const [viewer, setViewer] = useState(null);
+  const [focus, setFocus] = useState(0);      // which recording, 0 = all
+  const polling = useRef(new Set());
 
   const load = useCallback(async () => {
     if (!adminPassword) return;
-    setBusy(true); setErr(null);
     try {
-      if (tab === "cuts") {
-        const d = await api.flowCuts(adminPassword, {
-          produced: onlyUnproduced ? "0" : "" });
-        setCuts(d.cuts || []);
-      } else if (CLIP_TABS[tab]) {
-        const d = await api.flowClips(adminPassword, { stage: tab });
-        setRows(d.clips || []);
-      } else {
-        setRows([]);
-      }
-    } catch (e) { setErr(e.message); } finally { setBusy(false); }
-  }, [adminPassword, tab, onlyUnproduced]);
+      const [c, r, k, d, f] = await Promise.all([
+        api.flowCounts(adminPassword),
+        api.flowRaw(adminPassword, { limit: 40 }),
+        api.flowCuts(adminPassword, { limit: 120 }),
+        api.flowClips(adminPassword, { stage: "draft", limit: 60 }),
+        api.flowClips(adminPassword, { stage: "final", limit: 60 }),
+      ]);
+      setCounts(c); setRaw(r.raw); setCuts(k.cuts);
+      setDrafts(d.clips); setFinals(f.clips);
+      setErr(null);
+    } catch (e) { setErr(e.message); }
+  }, [adminPassword]);
 
-  useEffect(() => { loadCounts(); }, [loadCounts]);
   useEffect(() => { load(); }, [load]);
 
-  async function act(fn, id, ...rest) {
-    setActing(id); setErr(null);
+  // A run is minutes of work on a thread, so the page asks how it is
+  // going rather than waiting on the request that started it.
+  const poll = useCallback((uploadId) => {
+    if (polling.current.has(uploadId)) return;
+    polling.current.add(uploadId);
+    const tick = async () => {
+      try {
+        const st = await api.flowStatus(adminPassword, uploadId);
+        setRuns((s) => ({ ...s, [uploadId]: st }));
+        if (st?.running) { setTimeout(tick, POLL_MS); return; }
+        polling.current.delete(uploadId);
+        await load();
+      } catch {
+        polling.current.delete(uploadId);
+      }
+    };
+    setTimeout(tick, 600);
+  }, [adminPassword, load]);
+
+  async function start(uploadId) {
+    setActing(`raw-${uploadId}`); setErr(null);
     try {
-      await fn(adminPassword, id, ...rest);
-      await Promise.all([load(), loadCounts()]);
+      const got = await api.flowStart(adminPassword, uploadId);
+      setRuns((s) => ({ ...s, [uploadId]: { ...got, running: true } }));
+      poll(uploadId);
+      setFocus(uploadId);
     } catch (e) { setErr(e.message); } finally { setActing(null); }
   }
 
-  // THE SAME WAY OUT EVERY OTHER ADMIN PAGE GIVES. This said "sign in
-  // on an admin page first" and offered no link to one -- and the
-  // page carried no nav either, so a signed-out operator landing here
-  // had prose, no sign-in, and no way back to a page that has one.
+  async function act(key, fn, ...args) {
+    setActing(key); setErr(null);
+    try { await fn(adminPassword, ...args); await load(); }
+    catch (e) { setErr(e.message); } finally { setActing(null); }
+  }
+
   if (!adminPassword) {
     return (
       <div className="wrap">
@@ -116,7 +190,14 @@ export default function AdminProductionFlow() {
     );
   }
 
-  const current = tabs.find((t) => t.key === tab);
+  const countOf = (k) =>
+    counts?.tabs?.find((t) => t.key === k)?.count;
+  const keep = (list, uploadId) =>
+    (focus ? (list || []).filter((x) => uploadId(x) === focus) : (list || []));
+
+  const shownCuts = keep(cuts, (k) => k.long_upload_id);
+  const shownDrafts = keep(drafts, (c) => c.long_upload_id);
+  const shownFinals = keep(finals, (c) => c.long_upload_id);
 
   return (
     <div className="wrap wide">
@@ -135,206 +216,309 @@ export default function AdminProductionFlow() {
         <Link to="/admin/cameras">Cameras</Link>
         <PlayerIdLink />
       </div>
-      <div className="card">
-        <h2 style={{ marginBottom: 2 }}>Production flow</h2>
-        <p className="small muted" style={{ marginBottom: 10 }}>
-          {note || "One recording, the swings cut out of it, and what "
-                 + "became of each."}
-        </p>
 
-        <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-          {tabs.map((t) => (
-            <button
-              key={t.key}
-              type="button"
-              className={t.key === tab ? "" : "secondary"}
-              onClick={() => setTab(t.key)}
-              title={t.detail}
-              style={{ padding: "4px 10px" }}
-            >
-              {t.label}{" "}
-              <span className="pill small" style={{ marginLeft: 4 }}>
-                {t.count}
-              </span>
+      <div className="card tight">
+        <div className="row" style={{ justifyContent: "space-between",
+                                      flexWrap: "wrap", gap: 8 }}>
+          <div className="small">
+            <b>Production flow</b>{" "}
+            <span className="muted tiny">
+              · one recording, left to right · only what this flow made
+            </span>
+          </div>
+          <div className="row" style={{ gap: 8, alignItems: "center" }}>
+            {focus > 0 && (
+              <button type="button" className="btn ghost small"
+                      onClick={() => setFocus(0)}>
+                showing recording #{focus} — show all
+              </button>
+            )}
+            <button type="button" className="btn ghost small" onClick={load}>
+              refresh
             </button>
-          ))}
+          </div>
         </div>
-        {current && (
-          <p className="tiny muted" style={{ marginTop: 6 }}>
-            {current.detail} · counted in <b>{current.unit}</b>
-          </p>
-        )}
-        {err && <p className="tiny err-text">{err}</p>}
       </div>
 
-      {tab === "raw" && (
-        <div className="card">
-          <p className="small muted">
-            Raw recordings live on the{" "}
-            <a href="/admin/long-upload">Long upload</a> screen, which
-            already lists them with their sources, test cutter and audio
-            diagnostics. They are counted here so the strip is complete;
-            duplicating that list would give two places to delete a
-            recording from and two chances to disagree about what exists.
-          </p>
-        </div>
-      )}
+      {err && <div className="card err-text small">{err}</div>}
 
-      {tab === "cuts" && (
-        <div className="card">
-          <label className="tiny"
-                 style={{ display: "inline-flex", gap: 5,
-                          alignItems: "center", marginBottom: 8 }}>
-            <input type="checkbox" checked={onlyUnproduced}
-                   onChange={(e) => setOnlyUnproduced(e.target.checked)}
-                   style={{ margin: 0 }} />
-            only cuts nothing was produced from
-          </label>
-          {busy && <p className="tiny muted">loading…</p>}
-          {!busy && cuts.length === 0 && (
-            <p className="small muted">
-              No cuts kept yet. They are recorded when a recording is test
-              cut; each one is a swing the cutter heard, with both camera
-              angles and nothing drawn on them.
-            </p>
+      <div style={{ display: "grid", gap: 12, alignItems: "start",
+                    gridTemplateColumns:
+                      "repeat(auto-fit, minmax(265px, 1fr))" }}>
+
+        {/* ── 1. RAW ───────────────────────────────────────────── */}
+        <Column title="Raw clips" unit="recordings" count={countOf("raw")}
+                blurb="Both angles off the camera pair. Open either in the
+                       console's viewer, then start the flow on it.">
+          {raw === null && <div className="card tight"><div className="shimmer"
+            style={{ height: 90 }} /></div>}
+          {raw?.length === 0 && (
+            <div className="card tight"><p className="tiny muted">
+              No recordings.</p></div>
           )}
-          <div style={{ display: "grid", gap: 10,
-                        gridTemplateColumns:
-                          "repeat(auto-fill, minmax(300px, 1fr))" }}>
-            {cuts.map((k) => (
-              <div key={k.id} className="card tight"
-                   style={{ margin: 0, background: "var(--surface-alt)" }}>
+          {(raw || []).map((r) => {
+            const run = runs[r.id];
+            const busy = !!run?.running;
+            return (
+              <div key={r.id} className="card tight"
+                   style={{ margin: 0,
+                            outline: focus === r.id
+                              ? "2px solid var(--accent, #1a56db)" : "none" }}>
                 <div className="small">
-                  <b>#{k.long_upload_id}</b>
-                  <span className="muted"> · cut {k.idx + 1}</span>
-                  {k.trigger_zone != null && (
-                    <span className="muted">
-                      {" "}· Zone {k.trigger_zone + 1}
-                    </span>
-                  )}
-                  {k.produced
-                    ? <span className="pill ok small"
-                            style={{ marginLeft: 6 }}>produced</span>
-                    : <span className="pill warn small"
-                            style={{ marginLeft: 6 }}>no clip</span>}
+                  <b>#{r.id}</b>
+                  {r.hole_number ? <> · Hole {r.hole_number}</> : null}
+                  <span className="muted">
+                    {" "}· {r.course_name || `course #${r.course_id}`}
+                  </span>
                 </div>
                 <div className="tiny muted">
-                  peak {fmtSecs(k.peak_time_sec)} · {fmtSecs(k.duration_sec)}
-                  {k.detector ? ` · ${k.detector}` : ""}
-                  {k.ratio != null ? ` · ×${Number(k.ratio).toFixed(1)}` : ""}
+                  {fmtWhen(r.captured_at)} · {fmtDur(r.duration_sec)}
+                  {" · "}
+                  {r.trigger_zone == null
+                    ? "no zone recorded"
+                    : zoneName(r.trigger_zone)}
                 </div>
-                <div className="row" style={{ gap: 6, marginTop: 6,
+                <div className="row" style={{ gap: 6, marginTop: 5,
                                               flexWrap: "wrap" }}>
-                  {k.tee_url && (
-                    <video src={k.tee_url} controls preload="metadata"
-                           style={{ width: 142, borderRadius: 6,
-                                    background: "#000" }} />
-                  )}
-                  {k.green_url && (
-                    <video src={k.green_url} controls preload="metadata"
-                           style={{ width: 142, borderRadius: 6,
-                                    background: "#000" }} />
-                  )}
-                  {!k.green_url && (
-                    <span className="tiny muted" style={{ alignSelf: "center" }}>
-                      tee only
-                    </span>
-                  )}
+                  <button type="button" className="btn ghost small"
+                          disabled={!r.tee_url}
+                          onClick={() => setViewer({
+                            url: r.tee_url, title: `#${r.id} tee angle`,
+                            startedAt: r.captured_at })}>
+                    tee angle
+                  </button>
+                  <button type="button" className="btn ghost small"
+                          disabled={!r.green_url}
+                          title={r.has_green ? "" : "this pair has no green"}
+                          onClick={() => setViewer({
+                            url: r.green_url, title: `#${r.id} green angle`,
+                            startedAt: r.captured_at })}>
+                    green angle
+                  </button>
                 </div>
-                {k.produce_error && (
-                  <div className="tiny err-text" style={{ marginTop: 4 }}>
-                    {k.produce_error}
+                <button type="button" className="btn small"
+                        style={{ marginTop: 6, width: "100%" }}
+                        disabled={busy || acting === `raw-${r.id}`}
+                        onClick={() => start(r.id)}>
+                  {busy ? "running…"
+                    : acting === `raw-${r.id}` ? "starting…"
+                      : "Start production flow"}
+                </button>
+                {busy && (
+                  <div className="tiny muted" style={{ marginTop: 4 }}>
+                    {run?.stage || "working"}
+                    {run?.total ? ` · ${run.done ?? 0} of ${run.total}` : ""}
                   </div>
                 )}
+                {/* `report`, which is what the runner stores. It was
+                    `result` here -- a field nothing writes, so a
+                    finished run showed no timings and no counts and
+                    looked like a run that had done nothing. */}
+                {!busy && run?.error && (
+                  <div className="tiny err-text" style={{ marginTop: 4 }}>
+                    {run.error}
+                  </div>
+                )}
+                {!busy && run?.report && (
+                  <>
+                    <div className="tiny" style={{ marginTop: 4 }}>
+                      {run.report.n_cuts ?? 0} cut
+                      {run.report.n_cuts === 1 ? "" : "s"} ·{" "}
+                      {run.report.n_clips ?? 0} draft
+                      {run.report.n_clips === 1 ? "" : "s"}
+                    </div>
+                    {run.report.reason && (
+                      <div className="tiny muted" style={{ marginTop: 2 }}>
+                        {run.report.reason}
+                      </div>
+                    )}
+                    <Phases phases={run.report.phases}
+                            total={run.report.total_sec} />
+                  </>
+                )}
+                {r.cuts > 0 && (
+                  <button type="button" className="btn ghost small"
+                          style={{ marginTop: 5, width: "100%" }}
+                          onClick={() => setFocus(focus === r.id ? 0 : r.id)}>
+                    {focus === r.id ? "showing this one" : "follow this one"}
+                  </button>
+                )}
               </div>
-            ))}
-          </div>
-        </div>
-      )}
+            );
+          })}
+        </Column>
 
-      {CLIP_TABS[tab] && (
-        <div className="card">
-          {busy && <p className="tiny muted">loading…</p>}
-          {!busy && rows.length === 0 && (
-            <p className="small muted">
-              Nothing here yet.
-            </p>
+        {/* ── 2. AUDIO CUTS ────────────────────────────────────── */}
+        <Column title="Audio cuts" unit="cuts" count={countOf("cuts")}
+                blurb="What the microphone heard, cut to size on both
+                       angles. No swing judgement — only that it cleared
+                       this tee box's gates.">
+          {cuts === null && <div className="card tight"><div className="shimmer"
+            style={{ height: 90 }} /></div>}
+          {cuts?.length === 0 && (
+            <div className="card tight"><p className="tiny muted">
+              Nothing cut yet. Start the flow on a recording.</p></div>
           )}
-          <div style={{ display: "grid", gap: 10,
-                        gridTemplateColumns:
-                          "repeat(auto-fill, minmax(260px, 1fr))" }}>
-            {rows.map((c) => (
-              <div key={c.id} className="card tight"
-                   style={{ margin: 0, background: "var(--surface-alt)" }}>
-                <div className="small">
-                  <b>Hole {c.hole_number}</b>
-                  <span className="muted">
-                    {" "}· {c.course_name || `course #${c.course_id}`}
-                  </span>
-                  {c.stage === "final"
-                    ? <span className="pill ok small"
-                            style={{ marginLeft: 6 }}>final</span>
-                    : <span className="pill small"
-                            style={{ marginLeft: 6 }}>draft</span>}
-                  {c.broadcast_at && (
-                    <span className="pill small" style={{ marginLeft: 4 }}>
-                      broadcast
-                    </span>
-                  )}
-                </div>
-                <div className="tiny muted">
-                  {fmtWhen(c.captured_at)}
-                  {c.long_upload_id ? ` · from #${c.long_upload_id}` : ""}
-                  {c.cut_idx != null ? ` · swing ${c.cut_idx + 1}` : ""}
-                </div>
-                {c.url && (
-                  <video src={c.url} controls preload="metadata"
-                         poster={c.thumbnail_url || undefined}
-                         style={{ width: "100%", marginTop: 6,
+          {shownCuts.map((k) => (
+            <div key={k.id} className="card tight" style={{ margin: 0 }}>
+              <div className="small">
+                <b>#{k.long_upload_id} · swing {k.idx + 1}</b>
+                {k.produced
+                  ? <span className="pill ok small"
+                          style={{ marginLeft: 6 }}>produced</span>
+                  : <span className="pill small"
+                          style={{ marginLeft: 6 }}>no clip</span>}
+              </div>
+              <div className="tiny muted">
+                impact at {k.peak_time_sec?.toFixed?.(2) ?? "—"}s
+                {k.ratio != null ? ` · ×${Number(k.ratio).toFixed(1)}` : ""}
+                {k.attack_ms != null
+                  ? ` · ${Number(k.attack_ms).toFixed(0)}ms attack` : ""}
+              </div>
+              <div className="tiny muted">
+                {k.start_sec?.toFixed?.(1)}s–{k.end_sec?.toFixed?.(1)}s
+                {k.trigger_zone != null
+                  ? ` · ${zoneName(k.trigger_zone)}` : ""}
+              </div>
+              <div className="row" style={{ gap: 6, marginTop: 5,
+                                            flexWrap: "wrap" }}>
+                {k.tee_url && (
+                  <video src={k.tee_url} controls preload="metadata"
+                         style={{ width: "48%", minWidth: 110,
                                   borderRadius: 6, background: "#000" }} />
                 )}
-                {c.accepted_at && (
-                  <div className="tiny muted" style={{ marginTop: 4 }}>
-                    accepted {fmtWhen(c.accepted_at)}
-                    {c.accepted_by ? ` by ${c.accepted_by}` : ""}
-                  </div>
+                {k.green_url ? (
+                  <video src={k.green_url} controls preload="metadata"
+                         style={{ width: "48%", minWidth: 110,
+                                  borderRadius: 6, background: "#000" }} />
+                ) : (
+                  <span className="tiny muted" style={{ alignSelf: "center" }}>
+                    tee only
+                  </span>
                 )}
-                {c.broadcast_at && (
-                  <div className="tiny muted">
-                    broadcast {fmtWhen(c.broadcast_at)}
-                  </div>
-                )}
-                <div className="row" style={{ gap: 6, marginTop: 6,
-                                              flexWrap: "wrap" }}>
-                  {c.stage !== "final" ? (
-                    <button type="button" className="small"
-                            disabled={acting === c.id}
-                            onClick={() => act(api.flowAccept, c.id)}>
-                      accept
-                    </button>
-                  ) : (
-                    <button type="button" className="secondary small"
-                            disabled={acting === c.id}
-                            onClick={() => act(api.flowUnaccept, c.id)}>
-                      back to draft
-                    </button>
-                  )}
-                  {/* FROM EITHER STAGE, deliberately. A draft that goes
-                      out is still a draft nobody approved. */}
-                  <button type="button" className="secondary small"
-                          disabled={acting === c.id}
-                          onClick={() => act(api.flowBroadcast, c.id,
-                                             !c.broadcast_at)}>
-                    {c.broadcast_at ? "un-broadcast" : "broadcast"}
+              </div>
+              {k.produce_error && (
+                <div className="tiny err-text" style={{ marginTop: 4 }}>
+                  {k.produce_error}
+                </div>
+              )}
+            </div>
+          ))}
+        </Column>
+
+        {/* ── 3. DRAFT ─────────────────────────────────────────── */}
+        <Column title="Draft produced" unit="clips" count={countOf("draft")}
+                blurb="Produced automatically from the audio impact —
+                       ascent, then the ball on the green if it is
+                       there, then tracer and graphics. Nobody has
+                       looked yet.">
+          {drafts === null && <div className="card tight">
+            <div className="shimmer" style={{ height: 120 }} /></div>}
+          {drafts?.length === 0 && (
+            <div className="card tight"><p className="tiny muted">
+              No drafts yet.</p></div>
+          )}
+          {shownDrafts.map((c) => (
+            <div key={c.id} className="card tight" style={{ margin: 0 }}>
+              {c.url && (
+                <video src={c.url} controls preload="metadata"
+                       poster={c.thumbnail_url || undefined}
+                       style={{ width: "100%", borderRadius: 6,
+                                background: "#000" }} />
+              )}
+              <div className="small" style={{ marginTop: 5 }}>
+                <b>Hole {c.hole_number}</b>
+                {c.cut_idx != null ? (
+                  <span className="muted"> · swing {c.cut_idx + 1} of
+                    {" "}#{c.long_upload_id}</span>
+                ) : null}
+              </div>
+              <div className="tiny muted">{fmtWhen(c.captured_at)}</div>
+              <div className="row" style={{ gap: 6, marginTop: 6,
+                                            flexWrap: "wrap" }}>
+                {/* The same editor Production opens for a produced
+                    clip -- the plot map -- not a second one. */}
+                <Link to={`/admin/production?edit=${c.long_upload_id}`
+                          + `&clip=${c.id}`}>
+                  <button type="button" className="btn ghost small">
+                    edit
                   </button>
-                  <a className="tiny" href="/admin/production"
-                     style={{ alignSelf: "center" }}>edit</a>
+                </Link>
+                <button type="button" className="btn ghost small"
+                        disabled={acting === `del-${c.id}`}
+                        onClick={() => act(`del-${c.id}`,
+                                           api.flowDeleteClip, c.id)}>
+                  {acting === `del-${c.id}` ? "deleting…" : "delete"}
+                </button>
+                <button type="button" className="btn small"
+                        disabled={acting === `ok-${c.id}`}
+                        onClick={() => act(`ok-${c.id}`, api.flowAccept,
+                                           c.id, "admin")}>
+                  {acting === `ok-${c.id}` ? "approving…" : "approve"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </Column>
+
+        {/* ── 4. FINAL ─────────────────────────────────────────── */}
+        <Column title="Final produced" unit="clips" count={countOf("final")}
+                blurb="Approved. Grouped by the seven minutes around the
+                       first swing in each group.">
+          {finals === null && <div className="card tight">
+            <div className="shimmer" style={{ height: 120 }} /></div>}
+          {finals?.length === 0 && (
+            <div className="card tight"><p className="tiny muted">
+              Nothing approved yet.</p></div>
+          )}
+          {shownFinals.map((c, i) => {
+            const prev = shownFinals[i - 1];
+            const newGroup = !prev || prev.group_label !== c.group_label;
+            return (
+              <div key={c.id}>
+                {newGroup && c.group_label && (
+                  <div className="small" style={{ margin: "4px 0 6px",
+                                                  fontWeight: 600 }}>
+                    {c.group_label}
+                  </div>
+                )}
+                <div className="card tight" style={{ margin: 0 }}>
+                  {c.url && (
+                    <video src={c.url} controls preload="metadata"
+                           poster={c.thumbnail_url || undefined}
+                           style={{ width: "100%", borderRadius: 6,
+                                    background: "#000" }} />
+                  )}
+                  <div className="tiny muted" style={{ marginTop: 4 }}>
+                    {fmtWhen(c.captured_at)}
+                    {c.broadcast_at && (
+                      <span className="pill small"
+                            style={{ marginLeft: 6 }}>broadcast</span>
+                    )}
+                  </div>
+                  <button type="button"
+                          className={c.broadcast_at ? "btn ghost small"
+                            : "btn small"}
+                          style={{ marginTop: 6, width: "100%" }}
+                          disabled={acting === `b-${c.id}`}
+                          onClick={() => act(`b-${c.id}`, api.flowBroadcast,
+                                             c.id, !c.broadcast_at)}>
+                    {acting === `b-${c.id}` ? "…"
+                      : c.broadcast_at ? "un-broadcast" : "Broadcast"}
+                  </button>
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
+            );
+          })}
+        </Column>
+      </div>
+
+      <VideoLightbox
+        url={viewer?.url}
+        title={viewer?.title}
+        startedAt={viewer?.startedAt}
+        onClose={() => setViewer(null)}
+      />
     </div>
   );
 }

@@ -57,12 +57,35 @@ db.add(up)
 db.commit()
 
 
+# EVERY CLIP HERE CAME FROM A CUT, because the columns show only what
+# this flow produced and a clip produced through it knows which cut it
+# came from. A test clip without one is a clip from some other
+# pipeline, which the flow is supposed to hide -- so building them
+# that way would be testing the five views against rows none of them
+# is meant to show.
+_seed_cut = record_cut(db, upload=up, idx=0, peak_time_sec=1.0)
+
+
 def clip(n, **kw):
+    kw.setdefault("audio_cut_id", _seed_cut.id)
     c = VideoClip(course_id=1, hole_number=n, captured_at=datetime.now(),
                   source_url="u%d.mp4" % n, long_upload_id=5, **kw)
     db.add(c)
     db.commit()
     return c
+
+
+print("\n0. and a clip from another pipeline is not in any of them")
+_other = VideoClip(course_id=1, hole_number=99, captured_at=datetime.now(),
+                   source_url="old.mp4", long_upload_id=5)
+db.add(_other)
+db.commit()
+check("it exists", bool(db.get(VideoClip, _other.id)), True)
+check("but the draft view does not show it",
+      [c["id"] for c in flow_clips(db=db)["clips"]], [])
+check("...and asking for everything does",
+      [c["id"] for c in flow_clips(flow_only=0, db=db)["clips"]],
+      [_other.id])
 
 
 print("\n1. a clip starts as a draft, because nobody has looked")
