@@ -491,6 +491,39 @@ export const api = {
     );
   },
 
+  // ---- production flow ----
+  flowCounts: (key) => request("/api/admin/flow/counts",
+                               { adminPassword: key }),
+  flowClips: (key, { stage = "draft", broadcast = "", courseId = 0,
+                     limit = 60, offset = 0 } = {}) => {
+    const p = new URLSearchParams({ stage, limit, offset });
+    if (broadcast !== "") p.set("broadcast", broadcast);
+    if (courseId) p.set("course_id", courseId);
+    return request(`/api/admin/flow/clips?${p}`, { adminPassword: key });
+  },
+  flowCuts: (key, { uploadId = 0, produced = "", limit = 80,
+                    offset = 0 } = {}) => {
+    const p = new URLSearchParams({ limit, offset });
+    if (uploadId) p.set("upload_id", uploadId);
+    if (produced !== "") p.set("produced", produced);
+    return request(`/api/admin/flow/cuts?${p}`, { adminPassword: key });
+  },
+  flowAccept: (key, clipId, by) => {
+    const fd = new FormData();
+    if (by) fd.append("by", by);
+    return request(`/api/admin/flow/clips/${clipId}/accept`,
+                   { method: "POST", body: fd, adminPassword: key });
+  },
+  flowUnaccept: (key, clipId) =>
+    request(`/api/admin/flow/clips/${clipId}/unaccept`,
+            { method: "POST", adminPassword: key }),
+  flowBroadcast: (key, clipId, on) => {
+    const fd = new FormData();
+    fd.append("on", on ? "true" : "false");
+    return request(`/api/admin/flow/clips/${clipId}/broadcast`,
+                   { method: "POST", body: fd, adminPassword: key });
+  },
+
   // ---- audio1 labels ----
   //
   // THE POINT OF audio1. Everything it measures is a guess about

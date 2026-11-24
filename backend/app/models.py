@@ -260,6 +260,43 @@ class VideoClip(Base):
     #     "model": str, "ts": iso8601
     #   }
     tracer_diagnostics: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # ── WHERE THIS CLIP IS IN THE PRODUCTION FLOW ───────────────────
+    #
+    # A COLUMN, NOT AN INFERENCE. "Produced" has been read off
+    # `last_n_succeeded`, `processing_status` and whether clip rows
+    # exist, and a state you have to deduce is one that will
+    # eventually be deduced wrongly — this session has already found
+    # three bugs of exactly that shape, flags set by the act of saving
+    # rather than by anyone deciding anything.
+    #
+    #   draft  produced automatically, nobody has looked
+    #   final  an administrator looked and accepted it
+    #
+    # BROADCAST IS NOT A STAGE, deliberately. A clip can be broadcast
+    # from draft or from final, so making it a third stage would mean
+    # "final" stopped meaning "a person approved this" and started
+    # meaning "approved or went out", and neither question could then
+    # be answered. It is an independent fact with its own timestamp.
+    # NULLABLE, AND NULL MEANS DRAFT. Every clip produced before this
+    # column existed gets NULL from the in-place ALTER, which adds no
+    # default and no NOT NULL — so declaring it non-null here would
+    # make a freshly created database disagree with every migrated
+    # one about its own schema. Readers treat NULL as draft, which is
+    # what those clips are: produced automatically, nobody has looked.
+    stage: Mapped[Optional[str]] = mapped_column(
+        String(16), default="draft", nullable=True, index=True)
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True)
+    accepted_by: Mapped[Optional[str]] = mapped_column(
+        String(120), nullable=True)
+    broadcast_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True, index=True)
+    # WHICH AUDIO CUT THIS WAS MADE FROM, so one three-minute recording
+    # can be followed through its four twelve-second cuts to the clips
+    # they became. Null for anything produced before cuts were kept.
+    audio_cut_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("audio_cuts.id", ondelete="SET NULL"), nullable=True,
+        index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     participant: Mapped[Optional[Participant]] = relationship(back_populates="clips")
@@ -1087,3 +1124,72 @@ class AudioPeakLabel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow)
+
+
+class AudioCut(Base):
+    """One swing-sized cut of a long recording, before anything is drawn.
+
+    THE SECOND TAB OF THE PRODUCTION FLOW, and the only one that
+    needed a table. Raw recordings, draft clips, final clips and
+    broadcast ones are all rows that already exist somewhere; the
+    twelve-second cuts were scratch MP4s under `_testcuts/` that every
+    run deleted before making its own. A tab over those would have
+    emptied itself whenever anybody pressed Test Cut.
+
+    ONE ROW PER SWING THE CUTTER HEARD, holding both camera angles and
+    nothing else: no tracer, no overlay, no production. A three-minute
+    recording with four strikes in it becomes four of these, and each
+    can become a produced clip or not.
+
+    THE CUT IS NOT THE CLIP. `produced` says whether one was made from
+    this cut, and a cut with none is the interesting case — it is
+    either a swing the producer failed on or a sound that was never a
+    swing, and both are invisible if only produced clips are listed.
+
+    `expires_at` because these are bulky and most are never used: two
+    camera angles per swing, every swing of every round. Retention
+    sweeps them; the produced clips they became are not touched.
+    """
+
+    __tablename__ = "audio_cuts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    long_upload_id: Mapped[int] = mapped_column(
+        ForeignKey("long_video_uploads.id", ondelete="CASCADE"), index=True)
+    course_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("courses.id"), nullable=True)
+    hole_number: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True)
+    # Position within the recording, from 0, in time order.
+    idx: Mapped[int] = mapped_column(Integer, default=0)
+    # WHAT THE CUTTER HEARD, and where it put the boundaries.
+    peak_time_sec: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True)
+    start_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    end_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Which cutter, and which tee box fired it: a cut is only
+    # comparable with another from the same detector on the same deck.
+    detector: Mapped[Optional[str]] = mapped_column(
+        String(24), nullable=True)
+    trigger_zone: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True, index=True)
+    ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    attack_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # BOTH ANGLES. Green is null when the pair had no green half, which
+    # is a real and ordinary state — a tee-only cut is still a cut.
+    tee_filename: Mapped[Optional[str]] = mapped_column(
+        String(300), nullable=True)
+    green_filename: Mapped[Optional[str]] = mapped_column(
+        String(300), nullable=True)
+    duration_sec: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True)
+    size_mb: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Whether anything was produced from it, so a cut nobody turned
+    # into a clip can be found. Set when a produce succeeds.
+    produced: Mapped[bool] = mapped_column(Boolean, default=False,
+                                           index=True)
+    produce_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow,
+                                                 index=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True, index=True)

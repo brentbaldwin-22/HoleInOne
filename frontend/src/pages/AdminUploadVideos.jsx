@@ -105,6 +105,7 @@ export default function AdminUploadVideos() {
         <Link to="/admin/courses">Courses</Link>
         <Link to="/admin/upload-videos" className="active">Upload</Link>
         <Link to="/admin/production">Production</Link>
+        <Link to="/admin/production-flow">Production Flow</Link>
         <Link to="/admin/produced-clips">Produced Clips</Link>
         <Link to="/admin/broadcast-clips">Broadcast</Link>
         <Link to="/admin/cameras">Cameras</Link>

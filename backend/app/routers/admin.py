@@ -17733,7 +17733,55 @@ def _test_cut_run(
                 "green_ok": green_ok,
             }
         )
+        # ── KEEP IT, so the production flow has a cuts tab at all ───
+        #
+        # These MP4s have always existed and have always been scratch:
+        # every run wipes the previous one's. A row per cut outlives
+        # that, is idempotent on (upload, idx) so re-cutting a
+        # recording does not turn the tab into a history of
+        # experiments, and carries which tee box and which detector
+        # produced it — a cut is only comparable with another from the
+        # same deck and the same cutter.
+        if tee_ok:
+            try:
+                from .production_flow import record_cut as _rec
+                _rec(db, upload=row, idx=idx,
+                     peak_time_sec=cut_entry.get("peak_time_sec"),
+                     start_sec=start_sec, end_sec=end_sec,
+                     detector=detector, zone=_trigger_zone(db, row),
+                     ratio=cut_entry.get("ratio"),
+                     attack_ms=cut_entry.get("attack_ms"),
+                     tee_filename="%s/%s" % (TESTCUTS_SUBDIR, tee_name),
+                     green_filename=("%s/%s" % (TESTCUTS_SUBDIR, green_name)
+                                     if green_ok else None),
+                     duration_sec=round(float(end_sec - start_sec), 2),
+                     size_mb=(round(tee_out.stat().st_size / 1e6, 2)
+                              if tee_out.exists() else None))
+            except Exception as _rx:  # noqa: BLE001
+                log.warning("flow: could not keep cut %s of upload %s: %s",
+                            idx, upload_id, _rx)
         cuts.append(cut_entry)
+
+    # ── AND DROP THE ROWS THIS RUN NO LONGER HAS CUTS FOR ───────────
+    #
+    # A recording re-cut with a tighter gate yields fewer swings, and
+    # the rows for the indices that have gone would otherwise point at
+    # files the wipe at the start of this run deleted. A cuts tab full
+    # of dead links is worse than a short one.
+    if cut_clips:
+        try:
+            from ..models import AudioCut as _AC
+            _gone = (db.query(_AC)
+                     .filter(_AC.long_upload_id == upload_id,
+                             _AC.idx >= len(cuts))
+                     .delete(synchronize_session=False))
+            if _gone:
+                db.commit()
+                log.info("flow: dropped %d stale cut row(s) for upload %s",
+                         _gone, upload_id)
+        except Exception as _dx:  # noqa: BLE001
+            db.rollback()
+            log.warning("flow: could not tidy stale cut rows: %s", _dx)
 
     # NOW the quiet period, as a contest between candidates that have
     # all been looked at rather than a gate on looking.
