@@ -523,6 +523,17 @@ export const api = {
     request(`/api/admin/long-uploads/${uploadId}/audio-labels/${labelId}`,
             { method: "DELETE", adminPassword: key }),
 
+  // MEASURE WHERE A PERSON POINTS, for a strike the detector never
+  // found. Comes back with source "manual" and how far it snapped.
+  audioMeasureAt: (key, uploadId, atSec, snapMs) => {
+    const fd = new FormData();
+    fd.append("at_sec", String(atSec));
+    if (snapMs != null) fd.append("snap_ms", String(snapMs));
+    return request(
+      `/api/admin/long-uploads/${uploadId}/audio-measure-at`,
+      { method: "POST", body: fd, adminPassword: key });
+  },
+
   // A plain link, so the browser downloads it. `upload_id=0` is every
   // upload, which is the normal case: one clip is never a training
   // set.
@@ -1367,6 +1378,9 @@ export const api = {
       if (opts.audioLagSec != null && String(opts.audioLagSec).trim()) {
         fd.append("audio_lag_sec", String(opts.audioLagSec).trim());
       }
+      // Only when asked: an older server has never heard of it and
+      // behaves as if it were off, which is the same answer.
+      if (opts.audio1Hf) fd.append("audio1_hf", "true");
       // The rig's knobs go up under the rig's own names, so what is
       // dialled in here can be copied into the Pi's config.yaml
       // verbatim instead of translated.

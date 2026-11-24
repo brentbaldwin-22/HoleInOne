@@ -46,6 +46,31 @@ from pathlib import Path
 
 log = logging.getLogger("golfreelz.audio1")
 
+# ── WHICH ARITHMETIC TOOK THESE NUMBERS ─────────────────────────────
+#
+# YES, THE CONCENTRATION CALCULATION CHANGED. Asked directly, and the
+# answer is yes — between the first runs and the ones after it:
+#
+#   v1  each nested window had the background subtracted WHOLE:
+#       E_adj(w) = max(0, E(w) - den * n_w). On uniform noise that
+#       leaves the same signal energy at every scale, so every ratio
+#       came out at 1.00; and where the turf round a peak was quieter
+#       than the 500 ms the background came from, the wide windows
+#       over-subtracted and ratios went PAST 1 — 1.10, 1.22, 2.07 in
+#       the field, 7.6 in simulation.
+#
+#   v2  each RING is adjusted on its own and floored at zero, and the
+#       windows are the running sum. Non-decreasing by construction,
+#       so a ratio cannot exceed 1, and a ratio AT 1 is flagged as
+#       saturated rather than read as concentration.
+#
+# Rows taken under v1 and v2 are NOT comparable, so the version goes
+# in the measurements, into every stored label and out to the CSV. A
+# training set that silently mixes two definitions of its own column
+# is worse than a smaller one.
+MEASUREMENT_VERSION = 2
+
+
 try:
     import numpy as np
     HAS_NP = True
@@ -1080,11 +1105,168 @@ def render_peak_png(samples, sr: int, peak_sec: float, out_path: Path,
         return None
 
 
+# ── AN INDEPENDENT CANDIDATE SEARCH, ON HIGH-FREQUENCY ENERGY ───────
+
+def hf_candidates(samples, sr: int, cfg: Audio1Config = DEFAULT_CONFIG,
+                  min_ratio: float = 4.0, min_gap_sec: float = 0.25,
+                  bg_sec: float = 1.0, max_out: int = 60) -> list:
+    """Times where energy above 1500 Hz rises over its LOCAL background.
+
+    A SECOND OPINION, NOT A SECOND CUTTER. The existing detector
+    thresholds a broadband envelope against the median of the WHOLE
+    clip, so a strike from a far tee on a windy hole competes with the
+    loudest thing in ninety seconds. This asks a different question —
+    is there more high-frequency energy here than there was a second
+    ago — and it asks it against a rolling floor, so a quiet stretch
+    is judged against quiet.
+
+    IT EXISTS TO FIND WHAT THE DETECTOR MISSES. Every candidate it
+    returns is a row to label, nothing more; none of them is cut, and
+    `source: "hf"` keeps them apart from the detector's own peaks in
+    every table and every export.
+
+    Done on STFT frames rather than by filtering the whole clip: one
+    pass, no megabyte-scale intermediate, and the band sum is exactly
+    what is wanted. Returns [] rather than raising.
+    """
+    if not HAS_NP or samples is None or samples.size < 2048:
+        return []
+    try:
+        nfft = 256
+        while nfft < sr * 0.012:
+            nfft *= 2
+        hop = max(1, nfft // 2)
+        n_frames = 1 + (samples.size - nfft) // hop
+        if n_frames < 8:
+            return []
+        w = np.hanning(nfft).astype(np.float32)
+        # Framed with a stride trick: one view, no copy of the clip.
+        idx = np.arange(nfft)[None, :] + hop * np.arange(n_frames)[:, None]
+        frames = samples[idx] * w
+        mag = np.abs(np.fft.rfft(frames, axis=1))
+        freqs = np.fft.rfftfreq(nfft, 1.0 / sr)
+        hi = freqs >= min(cfg.hf_cut_hz, sr / 2.0 - 1.0)
+        if not np.any(hi):
+            return []
+        e = np.sum(mag[:, hi] ** 2, axis=1)
+        # ── THE ROLLING FLOOR ───────────────────────────────────────
+        #
+        # A MEDIAN, NOT A MEAN, and over a second rather than the
+        # clip: the mean is lifted by the very transients being looked
+        # for, and a clip-wide floor is what makes a quiet tee
+        # un-findable in the first place.
+        k = max(3, int(bg_sec * sr / hop) | 1)
+        pad = k // 2
+        padded = np.pad(e, pad, mode="edge")
+        strides = np.lib.stride_tricks.sliding_window_view(padded, k)
+        floor = np.median(strides, axis=1)
+        floor = np.maximum(floor, 1e-12)
+        ratio = e / floor
+        gap = max(1, int(min_gap_sec * sr / hop))
+        out = []
+        order = np.argsort(-ratio)
+        taken: list = []
+        for j in order:
+            if ratio[j] < min_ratio:
+                break
+            if any(abs(int(j) - t) < gap for t in taken):
+                continue
+            taken.append(int(j))
+            out.append({
+                "time_sec": round(float(j * hop + nfft / 2.0) / sr, 3),
+                "hf_ratio": round(float(ratio[j]), 2),
+                "hf_energy": float(e[j]),
+                "hf_background": float(floor[j]),
+            })
+            if len(out) >= max_out:
+                break
+        return sorted(out, key=lambda z: z["time_sec"])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("audio1: the high-frequency search failed: %s", exc)
+        return []
+
+
+# ── MEASURING WHERE A PERSON POINTS ─────────────────────────────────
+
+def measure_at(path: Path, at_sec: float, cfg: Audio1Config = DEFAULT_CONFIG,
+               snap_ms: float = 150.0, images_dir: Path | None = None,
+               image_prefix: str = "a1m", url_of=None) -> dict:
+    """The full measurement set centred on a time a PERSON typed.
+
+    FOR A STRIKE THE DETECTOR NEVER FOUND, which is the only way a
+    false negative carries any numbers at all. Until now a missed
+    strike was a row with a time and nothing else — the finding, but
+    not a comparable one.
+
+    IT SNAPS, AND SAYS HOW FAR. Attack, decay and every concentration
+    ratio assume the peak is in the middle of the window; a time typed
+    to the nearest second would put it 400 ms off and every one of
+    them would be measuring turf. So the loudest envelope sample
+    within +/-`snap_ms` is taken as the centre, and `snapped_by_ms`
+    records the distance. A big snap is itself worth reading: it means
+    the sound is not where it was remembered.
+
+    `source` is "manual" on the way out, and stays on the row and in
+    the export. A measurement centred by hand is weaker evidence than
+    one centred on a detection and must never be mistaken for it.
+    """
+    out = {"ok": False, "reason": None, "requested_sec": round(at_sec, 3)}
+    probe = probe_audio(path)
+    out["probe"] = probe
+    if not probe["ok"]:
+        out["reason"] = probe["reason"]
+        return out
+    sr = int(probe["sample_rate"])
+    samples, why = decode_audio(path, sr)
+    if samples is None:
+        out["reason"] = why
+        return out
+    env = envelope_of(samples, sr, cfg.envelope_ms)
+    if env is None:
+        out["reason"] = "the clip is shorter than one envelope window"
+        return out
+    i = int(round(at_sec * sr))
+    if i < 0 or i >= samples.size:
+        out["reason"] = ("%.2fs is outside this clip, which is %.1fs long"
+                         % (at_sec, samples.size / float(sr)))
+        return out
+    half = int(snap_ms / 1000.0 * sr)
+    lo, hi = max(0, i - half), min(env.size, i + half + 1)
+    j = int(lo + np.argmax(env[lo:hi])) if hi > lo else i
+    bands = usable_bands(cfg, sr / 2.0)
+    m = measure_peak(samples, sr, j / float(sr), cfg, bands, env=env)
+    m["source"] = "manual"
+    m["passed_gate"] = False
+    m["requested_sec"] = round(at_sec, 3)
+    m["snapped_by_ms"] = round(1000.0 * (j - i) / sr, 1)
+    m["snap_window_ms"] = snap_ms
+    if abs(m["snapped_by_ms"]) > snap_ms * 0.9:
+        m["notes"].append(
+            "the loudest thing within %.0f ms sits at the very edge of "
+            "that window, so the sound may be further away than this "
+            "measurement assumes" % snap_ms)
+    m["version"] = MEASUREMENT_VERSION
+    m["confidence"] = confidence(m, cfg)
+    if images_dir is not None:
+        fn = images_dir / ("%s-%s.png" % (image_prefix,
+                                          str(round(j / float(sr), 3))
+                                          .replace(".", "_")))
+        got = render_peak_png(samples, sr, j / float(sr), fn, cfg)
+        if got:
+            m["image_url"] = url_of(Path(got).name) if url_of else got
+    out["ok"] = True
+    out["version"] = MEASUREMENT_VERSION
+    out["bands"] = bands
+    out["measurement"] = m
+    return out
+
+
 # ── THE WHOLE RUN ───────────────────────────────────────────────────
 
 def analyse(path: Path, peaks: list, cfg: Audio1Config = DEFAULT_CONFIG,
             images_dir: Path | None = None, image_prefix: str = "a1",
-            url_of=None, max_images: int = 24) -> dict:
+            url_of=None, max_images: int = 24, hf_search: bool = False,
+            hf_min_ratio: float = 4.0) -> dict:
     """Measure every peak in `peaks` on the audio of `path`.
 
     `peaks` is a list of {time_sec, passed_gate, ...} — whatever the
@@ -1096,6 +1278,7 @@ def analyse(path: Path, peaks: list, cfg: Audio1Config = DEFAULT_CONFIG,
     Decides nothing, changes nothing, and never raises.
     """
     out: dict = {"ok": False, "reason": None, "probe": None,
+                 "version": MEASUREMENT_VERSION,
                  "config": cfg.to_json(), "bands": None, "peaks": [],
                  # SERVED FROM THE CODE, so the page cannot describe a
                  # measurement the running build does not take.
@@ -1115,8 +1298,27 @@ def analyse(path: Path, peaks: list, cfg: Audio1Config = DEFAULT_CONFIG,
     if env is None:
         out["reason"] = "the clip is shorter than one envelope window"
         return out
+    # ── AND A SECOND OPINION THE DETECTOR DID NOT ASK FOR ───────────
+    #
+    # Added to the list rather than replacing it, and only where the
+    # detector has nothing within a frame or two — a candidate both
+    # found is one sound and must stay one row.
+    _peaks = list(peaks or [])
+    if hf_search:
+        _have = {round(float(q.get("time_sec") or -1), 1) for q in _peaks}
+        for c in hf_candidates(samples, sr, cfg, min_ratio=hf_min_ratio):
+            if any(abs(c["time_sec"] - float(q.get("time_sec") or -99))
+                   < 0.12 for q in _peaks):
+                continue
+            if round(c["time_sec"], 1) in _have:
+                continue
+            _peaks.append({"time_sec": c["time_sec"], "passed_gate": False,
+                           "source": "hf", "hf_ratio": c["hf_ratio"]})
+        _peaks.sort(key=lambda z: float(z.get("time_sec") or 0.0))
+        out["n_hf_extra"] = sum(1 for q in _peaks
+                                if q.get("source") == "hf")
     n_img = 0
-    for p in (peaks or []):
+    for p in (_peaks):
         try:
             t = float(p.get("time_sec"))
         except (TypeError, ValueError, AttributeError):
@@ -1124,9 +1326,24 @@ def analyse(path: Path, peaks: list, cfg: Audio1Config = DEFAULT_CONFIG,
         m = measure_peak(samples, sr, t, cfg, out["bands"], env=env)
         m["passed_gate"] = bool(p.get("passed_gate"))
         m["source"] = p.get("source") or "detector"
-        for k in ("ratio", "attack_ms"):
+        if p.get("hf_ratio") is not None:
+            m["hf_ratio"] = p["hf_ratio"]
+        for k in ("ratio", "attack_ms", "attack_measured"):
             if p.get(k) is not None:
                 m["detector_" + k] = p[k]
+        # THE SENTINEL, SAID OUT LOUD RATHER THAN PRINTED AS A TIME.
+        if p.get("attack_measured") is False:
+            m["notes"].append(
+                "the detector could not measure a rise time here — the "
+                "%s it reports is its sentinel ((lookback+1)/22050, "
+                "three times the attack gate), not a measurement. It "
+                "happens whenever the peak is under about 4x the clip's "
+                "median, so a whole clip of quiet candidates shows one "
+                "identical value."
+                % ("%.1f ms" % p["attack_sentinel_ms"]
+                   if p.get("attack_sentinel_ms") is not None
+                   else "value"))
+        m["version"] = MEASUREMENT_VERSION
         m["confidence"] = confidence(m, cfg)
         if images_dir is not None and n_img < max_images:
             fn = images_dir / ("%s-%s.png" % (image_prefix,
@@ -1347,6 +1564,8 @@ CSV_COLUMNS = [
     ("c_duration", "c: duration"),
     ("c_isolation", "c: isolation"),
     ("sample_rate", "sample rate"),
+    ("version", "measurement version"),
+    ("source", "found by"),
     ("note", "note"),
 ]
 
@@ -1397,6 +1616,12 @@ def flat_row(m: dict, *, upload_id=None, kind="detected", label=None,
         "confidence_score": conf.get("score"),
         "confidence_band": conf.get("band"),
         "sample_rate": sample_rate,
+        # UNVERSIONED MEANS v1. Rows stored before the version existed
+        # were taken under the old whole-window arithmetic, and
+        # guessing them as "current" would be the one mistake this
+        # field exists to prevent.
+        "version": m.get("version") or 1,
+        "source": m.get("source"),
         "note": note,
     }
     for k in ("frequency", "peak_to_background", "attack", "decay",

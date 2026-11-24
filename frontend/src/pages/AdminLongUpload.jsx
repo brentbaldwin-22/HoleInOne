@@ -173,6 +173,9 @@ export default function AdminLongUpload() {
   // mean "the hole's own gate", and 0 is a real lag (the sound IS the
   // strike), so there is no number free to stand for "unset".
   const [audioLag, setAudioLag] = useState({});
+  // The independent high-frequency candidate search. Off by default:
+  // it finds rows to label, not clips to cut.
+  const [audio1Hf, setAudio1Hf] = useState({});
   // HOW CLOSE TWO ACCEPTED PEAKS MAY BE. It collapses the several
   // detections one strike produces -- one impact came back seven
   // times at the same timestamp on a 126s clip -- but at 6s it also
@@ -352,6 +355,7 @@ export default function AdminLongUpload() {
     if ((audioLag[uploadId] || "").trim()) {
       opts.audioLagSec = audioLag[uploadId].trim();
     }
+    if (detector === "audio1" && audio1Hf[uploadId]) opts.audio1Hf = true;
     // audio1 ASKS NOTHING OF THE PICTURES. The server forces this off
     // for it too; not sending it keeps the box and the run in
     // agreement rather than having the screen claim something the
@@ -970,6 +974,29 @@ export default function AdminLongUpload() {
                                      + "to be read together."}>
                           no swing judging
                         </span>
+                      ) : null}
+                      {(testCutDetector[u.id] || "motion") === "audio1" ? (
+                        <label className="tiny"
+                               style={{ display: "inline-flex", gap: 4,
+                                        alignItems: "center" }}
+                               title={"A SECOND OPINION the detector did "
+                                      + "not ask for: energy above "
+                                      + "1500 Hz against a ROLLING local "
+                                      + "floor rather than the clip's "
+                                      + "median, so a quiet strike on a "
+                                      + "windy hole is judged against "
+                                      + "the quiet around it.\n\nEvery "
+                                      + "candidate it finds is a row to "
+                                      + "label. None of them is cut."}>
+                          <input type="checkbox"
+                                 checked={!!audio1Hf[u.id]}
+                                 onChange={(e) => setAudio1Hf(
+                                   (d) => ({ ...d, [u.id]: e.target.checked }))}
+                                 disabled={!!testCutting[u.id] || missing
+                                           || busy}
+                                 style={{ margin: 0 }} />
+                          HF search
+                        </label>
                       ) : (
                       <label
                         className="tiny"

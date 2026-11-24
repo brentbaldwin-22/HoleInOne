@@ -15741,6 +15741,11 @@ def test_cut_long_upload(
     # is the strike) and every sentinel number is a number somebody
     # can type by accident.
     audio_lag_sec: str = Form(""),
+    # A SECOND OPINION, OFF BY DEFAULT. Energy above 1500 Hz against a
+    # ROLLING local floor rather than the clip's median, so a quiet
+    # strike on a windy hole is judged against the quiet around it.
+    # Everything it finds is a row to label; none of it is cut.
+    audio1_hf: bool = Form(False),
     db: Session = Depends(get_db),
 ):
     """Dry-run the swing-cutting half of the pipeline.
@@ -15780,6 +15785,7 @@ def test_cut_long_upload(
         pi_known_swings=pi_known_swings,
         pi_compare_signals=pi_compare_signals,
         audio_lag_sec=audio_lag_sec,
+        audio1_hf=audio1_hf,
         db=db,
     )
 
@@ -15886,8 +15892,18 @@ def save_audio_label(
                         "measurements; keeping the label without them",
                         upload_id, peak_time_sec)
             _m = None
-    # A MISSED STRIKE HAS NOTHING TO MEASURE, and that is the finding.
-    if kind == "missed":
+    # ── A MISSED STRIKE CAN NOW CARRY NUMBERS ───────────────────────
+    #
+    # It could not before, and that was right while nothing could
+    # measure a point the detector never found: "nothing to measure"
+    # WAS the finding. `measure_at` changes that — it centres on the
+    # loudest sample within 150 ms of the typed time and marks the
+    # result `manual`.
+    #
+    # ONLY A MANUAL MEASUREMENT, though. Anything else arriving on a
+    # missed row would be numbers from some other peak attached to a
+    # time nobody detected, which is a worse lie than an empty row.
+    if kind == "missed" and (_m or {}).get("source") != "manual":
         _m = None
     _t = round(float(peak_time_sec), 2)
     rec = (db.query(AudioPeakLabel)
@@ -15909,6 +15925,46 @@ def save_audio_label(
     db.commit()
     return {"ok": True, "id": rec.id, "peak_time_sec": rec.peak_time_sec,
             "label": rec.label, "kind": rec.kind}
+
+
+@router.post("/long-uploads/{upload_id}/audio-measure-at")
+def audio_measure_at(
+    upload_id: int,
+    at_sec: float = Form(...),
+    snap_ms: float = Form(150.0),
+    db: Session = Depends(get_db),
+):
+    """Measure the audio around a time a PERSON typed.
+
+    FOR A STRIKE THE DETECTOR NEVER FOUND. A missed strike used to be
+    a row with a time and nothing else — the finding, but not a
+    comparable one, so a false negative could never be put beside the
+    true positives it should look like.
+
+    It snaps to the loudest point within a window and reports how far
+    it moved, because attack, decay and every concentration ratio
+    assume the peak is in the middle. `source` comes back "manual" and
+    stays on the row and in the export: a measurement centred by hand
+    is weaker evidence than one centred on a detection.
+    """
+    row = db.get(LongVideoUpload, upload_id)
+    if not row:
+        raise HTTPException(404, "long upload not found")
+    src = _local_tee(row)
+    if not src.exists():
+        raise HTTPException(404, "the tee source file is not on disk")
+    try:
+        from ..services import audio1 as _a1
+        return _a1.measure_at(
+            src, float(at_sec), snap_ms=float(snap_ms),
+            images_dir=CLIPS_DIR,
+            image_prefix=f"audio1m-{upload_id}-{secrets.token_hex(3)}",
+            url_of=_clip_url_for)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.exception("audio1: measure-at failed on %s: %s", upload_id, exc)
+        raise HTTPException(500, f"{type(exc).__name__}: {exc}") from None
 
 
 @router.delete("/long-uploads/{upload_id}/audio-labels/{label_id}")
@@ -15986,7 +16042,8 @@ def _audio1_peak_list(windows, debug) -> list:
     """
     seen: dict = {}
 
-    def _add(t, passed, src, ratio=None, attack_ms=None):
+    def _add(t, passed, src, ratio=None, attack_ms=None,
+             attack_measured=None):
         if t is None:
             return
         k = round(float(t), 2)
@@ -16008,22 +16065,46 @@ def _audio1_peak_list(windows, debug) -> list:
                 return
             if prior["passed_gate"] and not passed:
                 return
+        # ── 53.9 ms IS NOT A RISE TIME ──────────────────────────────
+        #
+        # `_attack_at` returns a SENTINEL when it cannot measure one:
+        # (attack_lookback + 1) / 22050, where attack_lookback is
+        # 3 x the attack gate in samples. With the gate at 18 ms that
+        # is exactly 53.9 ms; at the default 30 ms it is 90.0 ms —
+        # the number ai_tracer's own comment records as having hidden
+        # this once already: "every drop showed the same 90.0 ms and
+        # nobody reads one number as a tell".
+        #
+        # The detector publishes `attack_measured` beside it saying
+        # so. This did not carry it, so the sentinel was printed in a
+        # column headed "attack ms" and a whole clip read as though
+        # every candidate rose in the same 53.9 ms. One value, never a
+        # spread, is what a failure looks like and what a measurement
+        # does not.
+        _am = attack_measured
         seen[k] = {"time_sec": float(t), "passed_gate": bool(passed),
-                   "source": src, "ratio": ratio, "attack_ms": attack_ms}
+                   "source": src, "ratio": ratio,
+                   "attack_ms": (None if _am is False else attack_ms),
+                   "attack_measured": _am,
+                   "attack_sentinel_ms": (round(float(attack_ms), 1)
+                                          if _am is False
+                                          and attack_ms is not None
+                                          else None)}
 
     for w in (windows or []):
         _add(w.get("peak_time_sec"), True, "cut", w.get("ratio"),
-             w.get("attack_ms"))
+             w.get("attack_ms"), w.get("attack_measured"))
     for q in ((debug or {}).get("top_peaks") or []):
         _add(q.get("peak_sec"), bool(q.get("kept")), "raw",
-             q.get("ratio"), q.get("attack_ms"))
+             q.get("ratio"), q.get("attack_ms"), q.get("attack_measured"))
     for q in ((debug or {}).get("below_gate_peaks") or []):
         _add(q.get("peak_sec"), False, "below gate", q.get("ratio"),
-             q.get("attack_ms"))
+             q.get("attack_ms"), q.get("attack_measured"))
     return sorted(seen.values(), key=lambda z: z["time_sec"])
 
 
-def _audio1_measure(upload_id, src_path, windows, debug) -> dict:
+def _audio1_measure(upload_id, src_path, windows, debug,
+                    hf_search: bool = False) -> dict:
     """Run the audio1 measurement pass. Never raises, never decides.
 
     A measurement pass that can take down a test cut is worse than no
@@ -16036,7 +16117,7 @@ def _audio1_measure(upload_id, src_path, windows, debug) -> dict:
             Path(src_path), peaks,
             images_dir=CLIPS_DIR,
             image_prefix=f"audio1-{upload_id}-{secrets.token_hex(3)}",
-            url_of=_clip_url_for)
+            url_of=_clip_url_for, hf_search=hf_search)
         out["n_cut"] = sum(1 for p in peaks if p["passed_gate"])
         out["n_refused"] = sum(1 for p in peaks if not p["passed_gate"])
         return out
@@ -16075,6 +16156,7 @@ def _test_cut_run(
     pi_known_swings='',
     pi_compare_signals=False,
     audio_lag_sec='',
+    audio1_hf=False,
     db=None,
 ):
     """Dry-run the swing-cutting half of the long-upload pipeline.
@@ -16189,7 +16271,8 @@ def _test_cut_run(
         )
         if detector == "audio1":
             debug["audio1"] = _audio1_measure(
-                upload_id, src_path, windows, debug)
+                upload_id, src_path, windows, debug,
+                hf_search=bool(audio1_hf))
     elif detector == "ballgone":
         from ..services.ball_vanish import find_ball_vanish
 

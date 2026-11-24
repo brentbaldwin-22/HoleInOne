@@ -58,12 +58,27 @@ const LABEL_SHORT = Object.fromEntries(
 const MISS = "·";
 
 const GROUPS = [
-  { key: "t", head: "", subs: ["time", "cut"], w: 86,
-    get: (p) => [p.peak_time_sec?.toFixed(2), p.passed_gate ? "yes" : "no"] },
+  // WHERE THE ROW CAME FROM, never left to be inferred. "cut" is the
+  // detector's own; "raw" it found and refused; "hf" the independent
+  // high-frequency search turned up; "manual" a person typed the time
+  // and the measurement was centred by hand. They are four different
+  // strengths of evidence and must not read alike.
+  { key: "t", head: "", subs: ["time", "found by"], w: 104,
+    get: (p) => [p.peak_time_sec?.toFixed(2),
+                 p.source === "cut" ? "cut"
+                   : p.source === "manual" ? "manual"
+                   : p.source === "hf" ? "HF"
+                   : p.passed_gate ? "cut" : "refused"] },
   { key: "pk", head: "peak", subs: ["amp", "ratio"], w: 78,
     get: (p) => [fx(p.peak_amplitude, 3), fx(p.peak_ratio, 1)] },
+  // det¹ IS BLANK WHEN THE DETECTOR COULD NOT MEASURE ONE. It returns
+  // a sentinel — (lookback+1)/22050, three times the attack gate —
+  // and printing it made a whole clip read as though every candidate
+  // rose in the same 53.9 ms. Expand the row for the reason.
   { key: "atk", head: "attack ms", subs: ["det¹", "10-90"], w: 70,
-    get: (p) => [fx(p.detector_attack_ms, 1), fx(p.attack_ms, 1)] },
+    get: (p) => [p.detector_attack_measured === false
+                   ? undefined : fx(p.detector_attack_ms, 1),
+                 fx(p.attack_ms, 1)] },
   // A DAGGER MEANS THE DECAY IS ABOUT SOMETHING ELSE — a later sound,
   // or a floor sitting inside the ambience. Expand the row for which.
   { key: "dec", head: "decay ms", subs: ["decay", "trans"], w: 76,
@@ -185,9 +200,32 @@ export default function Audio1Panel({ uploadId, data, adminPassword }) {
     }
     setBusy("missed"); setErr(null);
     try {
+      // MEASURE IT, don't just record the time. A missed strike with
+      // no numbers is the finding but not a comparable one — it can
+      // never be put beside the true positives it ought to resemble.
+      // The measurement is centred by hand and says so; if it cannot
+      // be taken, the label still goes in, because the person
+      // listening is the scarce part.
+      let meas = null;
+      let snapped = null;
+      try {
+        const r = await api.audioMeasureAt(adminPassword, uploadId, t);
+        if (r?.ok && r.measurement) {
+          meas = { ...r.measurement, probe: r.probe };
+          snapped = r.measurement.snapped_by_ms;
+        }
+      } catch (e) {
+        console.warn("could not measure the missed strike", e);
+      }
       await api.saveAudioLabel(adminPassword, uploadId, {
-        peakTimeSec: t, label: missLabel, kind: "missed",
-        note: note.missed || "",
+        peakTimeSec: meas?.peak_time_sec ?? t, label: missLabel,
+        kind: "missed",
+        note: [note.missed || "",
+               snapped != null && Math.abs(snapped) >= 1
+                 ? `(typed ${t.toFixed(2)}s, measured ${snapped > 0
+                     ? "+" : ""}${snapped}ms away)` : ""]
+          .filter(Boolean).join(" "),
+        measurements: meas,
       });
       setMissAt(""); setNote((n) => ({ ...n, missed: "" }));
       await refresh();
@@ -531,6 +569,12 @@ export default function Audio1Panel({ uploadId, data, adminPassword }) {
                   disabled={busy === "missed"} onClick={addMissed}>
             {busy === "missed" ? "saving…" : "mark missed"}
           </button>
+        </div>
+        <div className="muted" style={{ marginTop: 3 }}>
+          The audio around that time is measured too, centred on the
+          loudest point within 150 ms of it and marked <b>manual</b> —
+          so a strike the detector never found can still be compared
+          with the ones it did.
         </div>
         {missed.length > 0 && (
           <div className="muted" style={{ marginTop: 4 }}>

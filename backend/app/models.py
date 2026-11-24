@@ -1033,9 +1033,13 @@ class AudioPeakLabel(Base):
                        person. `measurements` is what audio1 measured
                        at that peak.
       kind='missed'    a strike a person can hear that produced NO
-                       peak. There is nothing to measure — that IS the
-                       finding — so `measurements` is null and the
-                       time is where they say it happened.
+                       peak. The time is where they say it happened,
+                       and `measurements` holds what `measure_at`
+                       found around it — centred on the loudest sample
+                       within 150 ms and marked `source: "manual"`, so
+                       it is never mistaken for a detection. Null when
+                       the measurement could not be taken, which was
+                       the only possibility before measure_at existed.
 
     A false negative can only ever be recorded the second way, and a
     table that could not hold one would quietly only ever learn about

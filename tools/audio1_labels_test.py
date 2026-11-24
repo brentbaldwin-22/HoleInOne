@@ -195,15 +195,54 @@ except Exception as exc:  # noqa: BLE001
     check("a label on another upload cannot be deleted",
           "not found on this upload" in str(exc), True)
 
-print("\n10. exporting everything is the normal case")
+print("\n10. A MANUAL MEASUREMENT CAN RIDE ON A MISSED STRIKE")
+MAN = dict(MEAS, source="manual", passed_gate=False, version=2,
+           requested_sec=19.8, snapped_by_ms=-34.0, peak_time_sec=19.77)
+save(77, peak_time_sec=19.77, label="strike", kind="missed",
+     measurements_json=json.dumps(MAN), db=db)
+_mr = (db.query(AudioPeakLabel)
+       .filter(AudioPeakLabel.peak_time_sec == 19.77).one())
+check("the numbers are kept", _mr.measurements["attack_ms"], 6.4)
+check("...marked manual", _mr.measurements["source"], "manual")
+check("...and not as a cut", _mr.passed_gate, False)
+# ANYTHING ELSE ON A MISSED ROW IS NUMBERS FROM A DIFFERENT PEAK.
+save(77, peak_time_sec=21.0, label="strike", kind="missed",
+     measurements_json=json.dumps(MEAS), db=db)
+check("a NON-manual measurement on a missed row is refused",
+      (db.query(AudioPeakLabel)
+       .filter(AudioPeakLabel.peak_time_sec == 21.0).one().measurements),
+      None)
+
+print("\n11. the consolidated export: every recording, every kind")
 db.add(LongVideoUpload(id=78, course_id=1, base_captured_at=datetime.now(),
                        tee_filename="u.mp4"))
 db.commit()
 save(78, peak_time_sec=3.0, label="wind", db=db)
-allrows = list(csv.reader(io.StringIO(
-    export_audio_labels(upload_id=0, db=db).body.decode())))[1:]
+# A REFUSED CANDIDATE — the detector found it and did not cut it.
+save(78, peak_time_sec=6.0, label="voice",
+     measurements_json=json.dumps(dict(MEAS, passed_gate=False,
+                                       source="raw", version=2)), db=db)
+_all = list(csv.reader(io.StringIO(
+    export_audio_labels(upload_id=0, db=db).body.decode())))
+_h, allrows = _all[0], _all[1:]
 check("both uploads are in it",
       sorted({r[0] for r in allrows}), ["77", "78"])
+check("the recording id is the first column", _h[0], "upload")
+_kinds = {r[_h.index("kind")] for r in allrows}
+check("detected and missed events are both there",
+      sorted(_kinds), ["detected", "missed"])
+_cuts = {r[_h.index("cut by detector")] for r in allrows}
+check("cut and refused candidates are both there",
+      "True" in _cuts and "False" in _cuts, True)
+_srcs = {r[_h.index("found by")] for r in allrows if r[_h.index("found by")]}
+check("and where each was found", sorted(_srcs), ["manual", "raw"])
+check("every row says which arithmetic measured it",
+      all(r[_h.index("measurement version")] in ("1", "2")
+          for r in allrows), True)
+# THE ONE THAT WOULD POISON THE SET: rows taken under two different
+# definitions of the same column, with nothing saying which.
+check("...including the ones stored before the version existed",
+      "1" in {r[_h.index("measurement version")] for r in allrows}, True)
 
 print()
 if FAILED:
