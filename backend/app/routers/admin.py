@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import functools
+import io
 import itertools
 import json
 import logging
@@ -78,6 +80,7 @@ from .cameras import link_status as _link_status
 from .cameras import _focus_remaining as _cam_focus_remaining
 from ..models import (
     AuditLog,
+    AudioPeakLabel,
     Camera,
     CameraEvent,
     ClipProcessingStatus,
@@ -15821,6 +15824,230 @@ def _wipe_test_cuts(upload_id) -> int:
     return _n
 
 
+# ── LABELS: what a person says each peak actually was ───────────────
+#
+# AUDIO1 MEASURES; THESE ENDPOINTS RECORD WHAT IT WAS. Nothing here
+# reaches the detector, the cutter or any threshold — it builds the
+# labelled set that would let somebody decide, later, whether any of
+# those measurements is worth deciding on.
+
+AUDIO1_LABELS = ("strike", "ground", "wind", "voice", "other", "uncertain")
+
+
+@router.get("/long-uploads/{upload_id}/audio-labels")
+def list_audio_labels(upload_id: int, db: Session = Depends(get_db)):
+    """Every label stored against this upload."""
+    rows = (db.query(AudioPeakLabel)
+            .filter(AudioPeakLabel.long_upload_id == upload_id)
+            .order_by(AudioPeakLabel.peak_time_sec.asc())
+            .all())
+    return [{"id": r.id, "peak_time_sec": r.peak_time_sec,
+             "kind": r.kind, "label": r.label, "note": r.note,
+             "passed_gate": r.passed_gate,
+             "confidence_score": r.confidence_score,
+             "confidence_band": r.confidence_band,
+             "updated_at": r.updated_at.isoformat() if r.updated_at else None}
+            for r in rows]
+
+
+@router.post("/long-uploads/{upload_id}/audio-labels")
+def save_audio_label(
+    upload_id: int,
+    peak_time_sec: float = Form(...),
+    label: str = Form(...),
+    kind: str = Form("detected"),
+    note: str = Form(""),
+    # The measurements as audio1 took them, as JSON. FROZEN HERE: the
+    # run that produced them is a test cut, which is not stored and is
+    # re-run with different knobs ten minutes later. A label whose
+    # evidence can move underneath it is not evidence.
+    measurements_json: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    row = db.get(LongVideoUpload, upload_id)
+    if not row:
+        raise HTTPException(404, "long upload not found")
+    label = (label or "").strip().lower()
+    if label not in AUDIO1_LABELS:
+        raise HTTPException(
+            400, "label must be one of: " + ", ".join(AUDIO1_LABELS))
+    kind = "missed" if str(kind).strip().lower() == "missed" else "detected"
+    _m = None
+    if (measurements_json or "").strip():
+        try:
+            _m = json.loads(measurements_json)
+            if not isinstance(_m, dict):
+                _m = None
+        except ValueError:
+            # NOT FATAL. The label is the scarce thing here — a person
+            # sat and listened — and losing it because its numbers
+            # arrived malformed would be the wrong trade entirely.
+            log.warning("audio1: upload %s label at %.2fs had unreadable "
+                        "measurements; keeping the label without them",
+                        upload_id, peak_time_sec)
+            _m = None
+    # A MISSED STRIKE HAS NOTHING TO MEASURE, and that is the finding.
+    if kind == "missed":
+        _m = None
+    _t = round(float(peak_time_sec), 2)
+    rec = (db.query(AudioPeakLabel)
+           .filter(AudioPeakLabel.long_upload_id == upload_id,
+                   AudioPeakLabel.peak_time_sec == _t)
+           .one_or_none())
+    if rec is None:
+        rec = AudioPeakLabel(long_upload_id=upload_id, peak_time_sec=_t)
+        db.add(rec)
+    rec.kind = kind
+    rec.label = label
+    rec.note = (note or "").strip()[:2000] or None
+    if _m is not None:
+        rec.measurements = _m
+        _c = (_m.get("confidence") or {})
+        rec.confidence_score = _c.get("score")
+        rec.confidence_band = _c.get("band")
+        rec.passed_gate = _m.get("passed_gate")
+    db.commit()
+    return {"ok": True, "id": rec.id, "peak_time_sec": rec.peak_time_sec,
+            "label": rec.label, "kind": rec.kind}
+
+
+@router.delete("/long-uploads/{upload_id}/audio-labels/{label_id}")
+def delete_audio_label(upload_id: int, label_id: int,
+                       db: Session = Depends(get_db)):
+    rec = db.get(AudioPeakLabel, label_id)
+    if rec is None or rec.long_upload_id != upload_id:
+        raise HTTPException(404, "label not found on this upload")
+    db.delete(rec)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/audio-labels.csv")
+def export_audio_labels(upload_id: int = 0, db: Session = Depends(get_db)):
+    """Every stored label with the numbers taken beside it.
+
+    THE DELIVERABLE OF THE WHOLE EXERCISE. Everything else is a way of
+    filling this file in: measurements in columns, a human's verdict
+    beside them, and enough rows to say which columns separate a
+    strike from a voice.
+
+    `upload_id=0` exports the lot, which is the normal case — one
+    upload is never a training set.
+    """
+    from ..services import audio1 as _a1
+
+    q = db.query(AudioPeakLabel)
+    if upload_id:
+        q = q.filter(AudioPeakLabel.long_upload_id == upload_id)
+    rows = q.order_by(AudioPeakLabel.long_upload_id.asc(),
+                      AudioPeakLabel.peak_time_sec.asc()).all()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([h for _k, h in _a1.CSV_COLUMNS])
+    for r in rows:
+        _m = dict(r.measurements or {})
+        # THE STORED LABEL WINS over anything inside the frozen
+        # measurements: the numbers were taken by a machine, the
+        # verdict was given by a person, and if they ever disagree the
+        # person is the one being recorded.
+        flat = _a1.flat_row(
+            _m, upload_id=r.long_upload_id, kind=r.kind, label=r.label,
+            note=r.note,
+            sample_rate=((_m.get("probe") or {}).get("sample_rate")
+                         if isinstance(_m.get("probe"), dict) else None))
+        flat["peak_time_sec"] = r.peak_time_sec
+        flat["passed_gate"] = r.passed_gate
+        flat["confidence_score"] = r.confidence_score
+        flat["confidence_band"] = r.confidence_band
+        w.writerow([("" if flat.get(k) is None else flat.get(k))
+                    for k, _h in _a1.CSV_COLUMNS])
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition":
+                 'attachment; filename="audio1-labels.csv"'},
+    )
+
+
+def _audio1_peak_list(windows, debug) -> list:
+    """Every peak the detector saw, kept or refused, once each.
+
+    THE REFUSED ONES ARE HALF THE POINT. A missed strike only ever
+    appears among the peaks the gate threw away, so a diagnostic that
+    measures the accepted windows alone can show false positives and
+    can never show a false negative. `top_peaks` carries the loudest
+    fifteen raw peaks whether or not they survived; `below_gate_peaks`
+    carries the near misses on a clip where nothing survived at all.
+
+    Deduplicated by time to a hundredth of a second, because an
+    accepted window and its own entry in `top_peaks` are the same
+    sound, and labelling one sound twice would put two rows in the
+    training set that must agree and need not.
+    """
+    seen: dict = {}
+
+    def _add(t, passed, src, ratio=None, attack_ms=None):
+        if t is None:
+            return
+        k = round(float(t), 2)
+        prior = seen.get(k)
+        # WHICH SIGHTING OF ONE SOUND WINS, in order:
+        #
+        #   "cut" is final. It is the detector's own output — the
+        #   window it built, with the ratio and attack it recorded —
+        #   and `top_peaks` holds a rounded copy of the same peak. The
+        #   rounded copy used to overwrite it, so a peak that WAS cut
+        #   reported its source as "raw" and carried the rounded
+        #   numbers, which is a diagnostic quietly disagreeing with
+        #   the run it describes.
+        #
+        #   Otherwise an accepted sighting outranks a refused one,
+        #   because only one of the two lists knows it was kept.
+        if prior is not None:
+            if prior["source"] == "cut":
+                return
+            if prior["passed_gate"] and not passed:
+                return
+        seen[k] = {"time_sec": float(t), "passed_gate": bool(passed),
+                   "source": src, "ratio": ratio, "attack_ms": attack_ms}
+
+    for w in (windows or []):
+        _add(w.get("peak_time_sec"), True, "cut", w.get("ratio"),
+             w.get("attack_ms"))
+    for q in ((debug or {}).get("top_peaks") or []):
+        _add(q.get("peak_sec"), bool(q.get("kept")), "raw",
+             q.get("ratio"), q.get("attack_ms"))
+    for q in ((debug or {}).get("below_gate_peaks") or []):
+        _add(q.get("peak_sec"), False, "below gate", q.get("ratio"),
+             q.get("attack_ms"))
+    return sorted(seen.values(), key=lambda z: z["time_sec"])
+
+
+def _audio1_measure(upload_id, src_path, windows, debug) -> dict:
+    """Run the audio1 measurement pass. Never raises, never decides.
+
+    A measurement pass that can take down a test cut is worse than no
+    measurement pass: the cut is the thing the operator came for.
+    """
+    try:
+        from ..services import audio1 as _a1
+        peaks = _audio1_peak_list(windows, debug)
+        out = _a1.analyse(
+            Path(src_path), peaks,
+            images_dir=CLIPS_DIR,
+            image_prefix=f"audio1-{upload_id}-{secrets.token_hex(3)}",
+            url_of=_clip_url_for)
+        out["n_cut"] = sum(1 for p in peaks if p["passed_gate"])
+        out["n_refused"] = sum(1 for p in peaks if not p["passed_gate"])
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.exception("audio1: the measurement pass failed on %s: %s",
+                      upload_id, exc)
+        return {"ok": False,
+                "reason": "%s: %s" % (type(exc).__name__, exc),
+                "peaks": []}
+
+
 def _test_cut_run(
     upload_id: int,
     detector='motion',
@@ -15919,7 +16146,19 @@ def _test_cut_run(
     # the detection is the point -- two verification processes over
     # the same candidate list is a comparison; over two candidate
     # lists it is an argument about which peaks were real.
-    if detector in ("audio", "audio2"):
+    if detector in ("audio", "audio2", "audio1"):
+        # ── audio1 RUNS THE SAME DETECTOR, DELIBERATELY ─────────────
+        #
+        # It is a MEASUREMENT PASS, not a second cutter. The request
+        # was explicit: "Preserve the existing audio detection and
+        # clip-cutting behavior. Do not introduce new rejection
+        # thresholds yet." So the peaks, the windows and the clips are
+        # whatever `audio` would have produced on the same knobs, bit
+        # for bit, and everything audio1 adds is written beside them.
+        #
+        # Measuring a second, differently-found set of peaks would
+        # make the labels useless: a classification is only evidence
+        # about the detector that found the thing classified.
         windows = detect_swings_from_audio(
             src_path,
             fps=tee_fps,
@@ -15928,6 +16167,9 @@ def _test_cut_run(
             max_attack_sec=float(audio_max_attack_ms) / 1000.0,
             debug=debug,
         )
+        if detector == "audio1":
+            debug["audio1"] = _audio1_measure(
+                upload_id, src_path, windows, debug)
     elif detector == "ballgone":
         from ..services.ball_vanish import find_ball_vanish
 

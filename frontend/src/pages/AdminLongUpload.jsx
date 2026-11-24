@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { growZoneOptions, zoneName } from "../zones";
 import { Link } from "react-router-dom";
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
+import Audio1Panel from "../components/Audio1Panel.jsx";
 import { api } from "../api.js";
 import { MotionGraph } from "../components/MotionGraph.jsx";
 import { PiTestZones } from "../components/PiTestZones.jsx";
@@ -303,7 +304,8 @@ export default function AdminLongUpload() {
   async function testCutPrior(uploadId) {
     const detector = testCutDetector[uploadId] || "motion";
     const opts = {};
-    if (detector === "audio" || detector === "audio2") {
+    if (detector === "audio" || detector === "audio2"
+        || detector === "audio1") {
       const ratio = parseFloat(
         audioMinRatio[uploadId] ?? RIG_AUDIO.minRatio);
       if (Number.isFinite(ratio) && ratio > 0) opts.audioMinPeakRatio = ratio;
@@ -701,11 +703,18 @@ export default function AdminLongUpload() {
                         <option value="motion">motion</option>
                         <option value="audio">audio</option>
                         <option value="audio2">audio 2</option>
+                        {/* SAME PEAKS, MORE NUMBERS. audio1 runs the
+                            audio detector unchanged and measures
+                            every peak it finds — kept and refused
+                            alike — so the clips it cuts are exactly
+                            the ones `audio` cuts. It decides
+                            nothing. */}
+                        <option value="audio1">audio 1 — measure every peak</option>
                         <option value="combined">combined</option>
                         <option value="pi">pi (rig)</option>
                         <option value="ballgone">ball vanishes</option>
                       </select>
-                      {["audio", "audio2"].includes(
+                      {["audio", "audio2", "audio1"].includes(
                         testCutDetector[u.id] || "motion") && (
                         <input
                           type="number"
@@ -721,7 +730,7 @@ export default function AdminLongUpload() {
                           title={`Minimum peak/median ratio. Higher = stricter (only the loudest thwacks). Defaults to what the rig runs: ${RIG_AUDIO.minRatio}.`}
                         />
                       )}
-                      {["audio", "audio2"].includes(
+                      {["audio", "audio2", "audio1"].includes(
                         testCutDetector[u.id] || "motion") && (
                         <label className="tiny muted"
                                style={{ display: "inline-flex",
@@ -742,7 +751,7 @@ export default function AdminLongUpload() {
                           />
                         </label>
                       )}
-                      {["audio", "audio2"].includes(
+                      {["audio", "audio2", "audio1"].includes(
                         testCutDetector[u.id] || "motion") && (
                         <label className="tiny muted"
                                style={{ display: "inline-flex",
@@ -761,7 +770,7 @@ export default function AdminLongUpload() {
                           />
                         </label>
                       )}
-                      {["audio", "audio2"].includes(
+                      {["audio", "audio2", "audio1"].includes(
                         testCutDetector[u.id] || "motion")
                         && verifySwings[u.id] && (
                         <label className="tiny muted"
@@ -1213,6 +1222,17 @@ export default function AdminLongUpload() {
                           )}
                         </span>
                       </div>
+                      {/* EVERY NUMBER audio1 TOOK, under the run that
+                          took them. It is a measurement pass: the
+                          windows and clips above are whatever the
+                          audio detector cut, and nothing in this
+                          panel changed them. */}
+                      {testCutResults[u.id].debug?.audio1 && (
+                        <Audio1Panel
+                          uploadId={u.id}
+                          data={testCutResults[u.id].debug.audio1}
+                          adminPassword={adminPassword} />
+                      )}
                       {/* A REFUSED LAG HAS TO BE LOUDER THAN AN ACCEPTED
                           ONE. Type 0.8, get the hole's 0.6 in silence,
                           and every picture below is read as evidence

@@ -491,6 +491,44 @@ export const api = {
     );
   },
 
+  // ---- audio1 labels ----
+  //
+  // THE POINT OF audio1. Everything it measures is a guess about
+  // which numbers separate a strike from a voice; only a person
+  // saying which was which settles it, and these three calls are how
+  // that gets written down.
+  listAudioLabels: (key, uploadId) =>
+    request(`/api/admin/long-uploads/${uploadId}/audio-labels`,
+            { adminPassword: key }),
+
+  saveAudioLabel: (key, uploadId, { peakTimeSec, label, kind, note,
+                                    measurements }) => {
+    const fd = new FormData();
+    fd.append("peak_time_sec", String(peakTimeSec));
+    fd.append("label", label);
+    if (kind) fd.append("kind", kind);
+    if (note) fd.append("note", note);
+    // FROZEN WITH THE LABEL. The run that produced these is a test
+    // cut — not stored, and re-run with different knobs ten minutes
+    // later — so the numbers travel with the verdict rather than
+    // being looked up against a run that has since moved.
+    if (measurements) {
+      fd.append("measurements_json", JSON.stringify(measurements));
+    }
+    return request(`/api/admin/long-uploads/${uploadId}/audio-labels`,
+                   { method: "POST", body: fd, adminPassword: key });
+  },
+
+  deleteAudioLabel: (key, uploadId, labelId) =>
+    request(`/api/admin/long-uploads/${uploadId}/audio-labels/${labelId}`,
+            { method: "DELETE", adminPassword: key }),
+
+  // A plain link, so the browser downloads it. `upload_id=0` is every
+  // upload, which is the normal case: one clip is never a training
+  // set.
+  audioLabelsCsvUrl: (uploadId = 0) =>
+    `${API_BASE}/api/admin/audio-labels.csv?upload_id=${uploadId}`,
+
   // ---- Swing audit ----
   // A LONG TIMEOUT ON PURPOSE. The first call decodes every clip to
   // build its frame strip and measure its heat; after that the

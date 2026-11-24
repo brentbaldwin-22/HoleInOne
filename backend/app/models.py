@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -1013,5 +1014,72 @@ class AppSetting(Base):
 
     key: Mapped[str] = mapped_column(String(60), primary_key=True)
     value: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow)
+
+
+class AudioPeakLabel(Base):
+    """What a person says a detected audio peak actually was.
+
+    THE WHOLE POINT OF audio1 IS THIS TABLE. Every measurement that
+    pass takes is a guess about which numbers separate a club-on-ball
+    strike from a plosive, a mat, a gust or a cart door — and nothing
+    settles that but a human saying which was which, next to the
+    numbers taken at the time.
+
+    TWO SHAPES, AND THEY ARE DIFFERENT EVIDENCE:
+
+      kind='detected'  a peak the detector found, labelled by a
+                       person. `measurements` is what audio1 measured
+                       at that peak.
+      kind='missed'    a strike a person can hear that produced NO
+                       peak. There is nothing to measure — that IS the
+                       finding — so `measurements` is null and the
+                       time is where they say it happened.
+
+    A false negative can only ever be recorded the second way, and a
+    table that could not hold one would quietly only ever learn about
+    sounds we already catch.
+
+    MEASUREMENTS ARE COPIED IN, NOT REFERENCED. The run that produced
+    them is a test cut: it is not stored, it is re-run with different
+    knobs ten minutes later, and the numbers would move underneath the
+    label. A label whose evidence can change is not evidence.
+    """
+
+    __tablename__ = "audio_peak_labels"
+    __table_args__ = (
+        # ONE LABEL PER PEAK. Relabelling updates in place; without
+        # this a change of mind leaves two rows that disagree and the
+        # export silently counts the sound twice.
+        UniqueConstraint("long_upload_id", "peak_time_sec",
+                         name="uq_audio_peak_label_upload_time"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    long_upload_id: Mapped[int] = mapped_column(
+        ForeignKey("long_video_uploads.id", ondelete="CASCADE"), index=True)
+    # Rounded to a hundredth by the caller so the same sound labelled
+    # from two runs is the same row.
+    peak_time_sec: Mapped[float] = mapped_column(Float)
+    # detected | missed
+    kind: Mapped[str] = mapped_column(String(16), default="detected")
+    # strike | ground | wind | voice | other | uncertain
+    label: Mapped[str] = mapped_column(String(24))
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The full audio1 measurement dict, frozen at labelling time.
+    measurements: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # Denormalised out of `measurements` so the export and any future
+    # "show me every low-confidence strike" can be answered in SQL.
+    confidence_score: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True)
+    confidence_band: Mapped[Optional[str]] = mapped_column(
+        String(10), nullable=True)
+    # Whether the detector cut a clip for this peak, so true positives,
+    # false positives and false negatives can be counted without
+    # re-deriving it from the measurements.
+    passed_gate: Mapped[Optional[bool]] = mapped_column(
+        Boolean, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow)
