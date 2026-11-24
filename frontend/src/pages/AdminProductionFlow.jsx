@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
+import { Brand } from "../components/Brand.jsx";
 
 /*
  * Production flow — one recording, its cuts, and what became of them.
@@ -92,13 +95,20 @@ export default function AdminProductionFlow() {
     } catch (e) { setErr(e.message); } finally { setActing(null); }
   }
 
+  // THE SAME WAY OUT EVERY OTHER ADMIN PAGE GIVES. This said "sign in
+  // on an admin page first" and offered no link to one -- and the
+  // page carried no nav either, so a signed-out operator landing here
+  // had prose, no sign-in, and no way back to a page that has one.
   if (!adminPassword) {
     return (
-      <div className="card">
-        <p className="small">
-          Sign in on an admin page first — this screen reads the same
-          stored password.
-        </p>
+      <div className="wrap">
+        <Brand subtitle="Operator Console" />
+        <div className="card center">
+          <h2>Admin password required</h2>
+          <Link to="/admin">
+            <button style={{ marginTop: 10 }}>Sign in</button>
+          </Link>
+        </div>
       </div>
     );
   }
@@ -106,7 +116,22 @@ export default function AdminProductionFlow() {
   const current = tabs.find((t) => t.key === tab);
 
   return (
-    <div className="stack" style={{ gap: 12 }}>
+    <div className="wrap wide">
+      <Brand subtitle="Operator Console" />
+      <div className="nav">
+        <Link to="/admin">Dashboard</Link>
+        <Link to="/admin/participants">Players</Link>
+        <Link to="/admin/courses">Courses</Link>
+        <Link to="/admin/upload-videos">Upload</Link>
+        <Link to="/admin/production">Production</Link>
+        <Link to="/admin/production-flow" className="active">
+          Production Flow
+        </Link>
+        <Link to="/admin/produced-clips">Produced Clips</Link>
+        <Link to="/admin/broadcast-clips">Broadcast</Link>
+        <Link to="/admin/cameras">Cameras</Link>
+        <PlayerIdLink />
+      </div>
       <div className="card">
         <h2 style={{ marginBottom: 2 }}>Production flow</h2>
         <p className="small muted" style={{ marginBottom: 10 }}>
