@@ -215,36 +215,72 @@ def contests(db: Session = Depends(get_db)):
 
     assigned = ClipProcessingStatus.assigned.value
 
-    # Daily — one Closest-to-Pin contest per course
-    daily_contests = []
-    for course in db.query(Course).order_by(Course.name).all():
-        ctp_rows = (
-            db.query(Participant.name, VideoClip.hole_number, VideoClip.distance_from_pin_feet)
-            .join(VideoClip, VideoClip.participant_id == Participant.id)
-            .join(TeeTime, TeeTime.id == Participant.tee_time_id)
-            .filter(TeeTime.course_id == course.id)
-            .filter(VideoClip.distance_from_pin_feet.isnot(None))
-            .filter(VideoClip.processing_status == assigned)
-            .filter(VideoClip.captured_at >= day_start)
-            .order_by(VideoClip.distance_from_pin_feet.asc())  # closest = smallest distance
-            .limit(5)
-            .all()
+    # Daily — ONE Closest-to-Pin across every course.
+    #
+    # It used to be a contest per course, which on five courses was
+    # five cards all reading "No entries yet" and a leaderboard nobody
+    # could be top of. A single board is a real contest: the closest
+    # shot anyone hit anywhere today, and a tenth place worth chasing.
+    # The course moves from the card's title onto the row, because it
+    # is now a property of the shot rather than of the board.
+    ctp_rows = (
+        db.query(
+            Participant.name,
+            Course.name,
+            VideoClip.hole_number,
+            VideoClip.distance_from_pin_feet,
         )
-        daily_contests.append({
-            "id": f"daily_ctp_{course.id}",
-            "title": f"Closest to Pin — {course.name}",
-            "icon": "flag",
-            "prize": settings.ctp_prize_label or "a prize",
-            "rows": [
-                {"golfer": _short_name(name), "hole": hole, "value": dist, "unit": "ft"}
-                for (name, hole, dist) in ctp_rows
-            ],
-        })
+        .join(VideoClip, VideoClip.participant_id == Participant.id)
+        .join(TeeTime, TeeTime.id == Participant.tee_time_id)
+        .join(Course, Course.id == TeeTime.course_id)
+        .filter(VideoClip.distance_from_pin_feet.isnot(None))
+        .filter(VideoClip.processing_status == assigned)
+        .filter(VideoClip.captured_at >= day_start)
+        .filter(VideoClip.captured_at < day_end)
+        .order_by(VideoClip.distance_from_pin_feet.asc())  # closest first
+        .limit(10)
+        .all()
+    )
+    daily_contests = [{
+        "id": "daily_ctp",
+        "title": "Closest to the Pin — every course",
+        "icon": "flag",
+        "prize": settings.ctp_prize_label or "a prize",
+        "rows": [
+            {
+                "golfer": _short_name(name),
+                "course": course_name,
+                "hole": hole,
+                "value": dist,
+                "unit": "ft",
+            }
+            for (name, course_name, hole, dist) in ctp_rows
+        ],
+    }]
+
+    # THE WALL. Not a contest: no timer, no prize, and it has never
+    # been reset. That is the point of it next to a board that resets
+    # at midnight.
+    from ..services import aces as _aces
+    _wall = _aces.all_time_board(db)
 
     return {
         "daily": {
             "ends_at": day_end.isoformat() + "Z",
             "contests": daily_contests,
+        },
+        "alltime": {
+            "id": "alltime_aces",
+            "title": "Most hole-in-ones",
+            "icon": "dollar",
+            "rows": [
+                {
+                    "golfer": _short_name(p["name"]),
+                    "value": p["aces"],
+                    "unit": "ace" if p["aces"] == 1 else "aces",
+                }
+                for p in _wall
+            ],
         },
     }
 

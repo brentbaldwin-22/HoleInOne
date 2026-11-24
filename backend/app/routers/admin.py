@@ -2035,7 +2035,6 @@ def make_clip_vertical(
                         opening_t=(
                             _tsx.get("t") if _tsx else None
                         ),
-                        green_track=(_gb or {}).get("track"),
                     )
                     # WHAT THE PATH ACTUALLY SAYS AT THE CUT. gball
                     # has been found, reported and not framed, and
@@ -5456,8 +5455,7 @@ def _process_long_upload_segments(
                             opening_t=(
                                 _tsx.get("t") if _tsx else None
                             ),
-                            green_track=(_gb or {}).get("track"),
-                        )
+                            )
                         _made = make_vertical_pan(
                             _vert_src, _vert_path, _ppath, cut_sec=_cut,
                         )
@@ -6465,8 +6463,14 @@ def _launch_focus_x(track, frame_w):
 # How the green half plays: land on the ball, let it register, then
 # walk to the hole. Tuned by eye on a 12s clip; constants so the feel
 # can be changed without touching the path maths.
-_GREEN_BALL_HOLD_SEC = 1.7
+# How long the green half sits on the ball before it walks to the flag.
+# 3.5s is Ben's call off real clips: long enough to read where the shot
+# finished, short enough that the walk still lands before the clip ends.
+_GREEN_BALL_HOLD_SEC = 3.5
 _GREEN_PIN_PAN_SEC = 2.0
+# A pan shorter than this is a cut, not a move. Floors the squeeze when
+# the green half is too short for the full three beats.
+_GREEN_PIN_PAN_MIN_SEC = 0.7
 _GREEN_END_HOLD_SEC = 0.2
 
 
@@ -7122,7 +7126,7 @@ def _green_ball_x(swing, frame_w):
 def _vertical_pan_path(
     track, rest_xy, fps, frame_w, cut_dur=None, golfer_x=None,
     impact_t=None, green_x=None, ball_green_x=None, total_dur=None,
-    opening_x=None, opening_t=None, green_track=None,
+    opening_x=None, opening_t=None,
 ):
     """Waypoints (time_sec, x_fraction) for the vertical follow-pan:
     hold on the golfer through address/swing, glide along the tracked
@@ -7242,61 +7246,47 @@ def _vertical_pan_path(
         _ball_x = None if ball_green_x is None else min(
             1.0, max(0.0, float(ball_green_x)),
         )
-        _room = (
-            float(total_dur) - float(cut_dur)
-            if total_dur is not None else 0.0
+        # THE GREEN HALF, IN THREE BEATS: land on the ball, hold on
+        # it, then walk to the flag and stay there.
+        #
+        # OPENING ON THE BALL IS NOT CONDITIONAL. It used to sit behind
+        # `_room > hold + pan`, and `_room` is 0.0 whenever `total_dur`
+        # is unknown -- so a clip whose duration failed to probe went
+        # straight to the pin and never showed where the shot finished
+        # at all. On clip 1684 that read `gball 0.323 · open@cut
+        # 0.679(1pt)`: the ball was found, and thrown away. Knowing the
+        # ball is the only thing that should decide whether we open on
+        # it. Time only decides how LONG the beats are.
+        _avail = (
+            float(total_dur) - float(cut_dur) - _GREEN_END_HOLD_SEC
+            if total_dur is not None else None
         )
-        if (
-            _ball_x is not None and _pin_x is not None
-            and _room > _GREEN_BALL_HOLD_SEC + _GREEN_PIN_PAN_SEC
-        ):
-            # LAND ON THE BALL, THEN WALK TO THE HOLE. Snapping
-            # straight to the flag says where the hole is but never
-            # how close the shot finished, and those are the two
-            # things the payoff half exists to show. They can sit a
-            # third of a frame apart -- more than the 9:16 window is
-            # wide -- so no single framing holds both and only a
-            # move between them reads as a distance.
-            _pan_end = min(
-                float(total_dur) - _GREEN_END_HOLD_SEC,
-                float(cut_dur) + _GREEN_BALL_HOLD_SEC
-                + _GREEN_PIN_PAN_SEC,
-            )
-            # FOLLOW THE STROKE, DO NOT JUMP TO WHERE IT ENDS.
-            # `_ball_x` is the tracer's LOWEST point, which is where
-            # the ball comes down -- but the ball is still descending
-            # when the picture cuts, so the stroke is somewhere else
-            # entirely at that moment and framing its landing leaves it
-            # off to one side for the whole descent. `green_track` is
-            # where the stroke actually was, frame by frame, so the
-            # crop rides it down and the tracer stays centred. The
-            # landing is simply its last point, which is where the hold
-            # and the walk to the pin then begin.
-            _gt = [
-                (float(t), min(1.0, max(0.0, float(x))))
-                for t, x in (green_track or [])
-                if float(cut_dur) <= float(t) < _pan_end
-            ]
-            if _gt:
-                path.append((float(cut_dur), _gt[0][1]))
-                path.extend(_gt)
-                _land_t, _land_x = _gt[-1]
-            else:
-                path.append((float(cut_dur), _ball_x))
-                _land_t, _land_x = float(cut_dur), _ball_x
-            path.append(
-                (_land_t + _GREEN_BALL_HOLD_SEC, _land_x),
-            )
-            path.append((max(_pan_end, _land_t + _GREEN_BALL_HOLD_SEC
-                             + 0.01), _pin_x))
+        if _ball_x is None:
+            # Nothing to open on. The flag, or the middle of the frame.
+            path.append((
+                float(cut_dur),
+                _pin_x if _pin_x is not None else 0.5,
+            ))
+        elif _pin_x is None or abs(_pin_x - _ball_x) < 0.01:
+            # Nowhere to walk to, or the flag is already in shot.
+            path.append((float(cut_dur), _ball_x))
         else:
-            # Not enough green half to move in, or one end unknown:
-            # the old single framing, flag first, ball if that is
-            # all we have.
-            _gx_end = _pin_x if _pin_x is not None else (
-                _ball_x if _ball_x is not None else 0.5
-            )
-            path.append((float(cut_dur), _gx_end))
+            _hold, _pan = _GREEN_BALL_HOLD_SEC, _GREEN_PIN_PAN_SEC
+            if _avail is not None and _avail < _hold + _pan:
+                # A SHORT GREEN HALF SHRINKS THE BEATS, it does not
+                # skip one. Dropping the ball framing to make room for
+                # the walk loses the thing the payoff exists to show;
+                # a quicker version of both keeps it. The pan has a
+                # floor so it still reads as a camera move rather than
+                # a second cut.
+                _scale = max(0.0, _avail) / float(_hold + _pan)
+                _pan = max(_GREEN_PIN_PAN_MIN_SEC, _pan * _scale)
+                _hold = max(0.0, max(0.0, _avail) - _pan)
+            path.append((float(cut_dur), _ball_x))
+            path.append((float(cut_dur) + _hold, _ball_x))
+            path.append((float(cut_dur) + _hold + _pan, _pin_x))
+            # Nothing after this: interpolation extends the final
+            # waypoint, so the flag is held to the end of the clip.
     # No cut known: hold x_last to the end of the clip (implicit —
     # interpolation extends the final waypoint).
     return path
