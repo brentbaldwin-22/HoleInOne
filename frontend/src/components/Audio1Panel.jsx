@@ -150,7 +150,8 @@ const BAND_COLOUR = {
   low: "var(--muted, #888)",
 };
 
-export default function Audio1Panel({ uploadId, data, adminPassword }) {
+export default function Audio1Panel({ uploadId, data, adminPassword,
+                                      zoneOptions }) {
   const [labels, setLabels] = useState({});
   const [open, setOpen] = useState(null);
   const [busy, setBusy] = useState(null);
@@ -592,7 +593,9 @@ export default function Audio1Panel({ uploadId, data, adminPassword }) {
         )}
       </div>
 
-      <Audio1Thresholds peaks={peaks} labels={labels} />
+      <Audio1Thresholds peaks={peaks} labels={labels}
+                        uploadId={uploadId} adminPassword={adminPassword}
+                        zoneOptions={zoneOptions} />
 
       {/* HOW EVERY NUMBER ABOVE IS ARRIVED AT, served from the code
           that takes it rather than written out here — a description

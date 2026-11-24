@@ -134,6 +134,42 @@ check("...and a preset can be applied without arming",
       'gates["audio1_armed%s" % _suffix] = 1.0 if arm else 0.0' in SRC,
       True)
 
+# ── EVERY GATE READS SOMETHING THAT EXISTS ──────────────────────────
+#
+# AUDIO_GATE_FIELDS is a table of names, and nothing in it is checked
+# against a real measurement row. Two of the eleven do not read a flat
+# key at all -- `hf_concentration` is nested under `concentration_hf`
+# and `confidence_score` under `confidence` -- so a gate whose `reads`
+# is misspelled, or whose measurement is renamed, resolves to None on
+# every peak. And None NEVER REJECTS, by design. The gate would be
+# armed, switched on, visibly set to a bar, and silently decide
+# nothing at all, which is the worst of the three possible outcomes:
+# it reads as a gate that is working and finding nothing wrong.
+print("\nevery gate resolves on a real measurement")
+import numpy as np  # noqa: E402
+
+from app.services.audio1 import (  # noqa: E402
+    Audio1Config, confidence, measure_peak, usable_bands,
+)
+
+_SR = 48000
+_rng = np.random.default_rng(7)
+_cfg = Audio1Config()
+_x = _rng.normal(0, 0.002, int(_SR * 3.0)).astype(np.float32)
+_i, _nd = int(1.5 * _SR), int(_SR * 0.18)
+_t = np.arange(_nd) / _SR
+_x[_i:_i + _nd] += (
+    0.45 * np.exp(-_t / 0.06)
+    * (np.sin(2 * np.pi * 2600 * _t) + 0.6 * np.sin(2 * np.pi * 5200 * _t))
+).astype(np.float32)
+_m = measure_peak(_x, _SR, 1.5, _cfg, usable_bands(_cfg, _SR / 2.0))
+_m["confidence"] = confidence(_m, _cfg)
+# The two the detector contributes; measure_peak cannot know them.
+_m["detector_ratio"], _m["detector_attack_ms"] = 7.0, 11.0
+for _name, (_cmp, _field, _label) in d3.AUDIO_GATE_FIELDS.items():
+    check("  %s reads %s" % (_name, _field),
+          _audio1_value(_m, _field) is not None, True)
+
 print()
 if FAILED:
     print("FAILED (%d):" % len(FAILED))

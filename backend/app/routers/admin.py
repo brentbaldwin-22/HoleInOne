@@ -16259,7 +16259,7 @@ def _audio1_peak_list(windows, debug) -> list:
     seen: dict = {}
 
     def _add(t, passed, src, ratio=None, attack_ms=None,
-             attack_measured=None):
+             attack_measured=None, refused_by=None):
         if t is None:
             return
         k = round(float(t), 2)
@@ -16298,7 +16298,28 @@ def _audio1_peak_list(windows, debug) -> list:
         # spread, is what a failure looks like and what a measurement
         # does not.
         _am = attack_measured
+        # ── AND WHY IT WAS REFUSED, WHICH IS NOT THE SAME QUESTION ──
+        #
+        # "The detector did not cut this" has three different answers
+        # and they do not behave alike when a gate is retuned:
+        #
+        #   "attack"  it failed the attack gate. A looser gate cuts it.
+        #   "ratio"   it never reached the amplitude threshold, so the
+        #             attack filter never saw it. A lower ratio gate
+        #             cuts it.
+        #   "nms"     it passed both and a LOUDER PEAK WITHIN THE
+        #             MINIMUM SEPARATION won instead. No gate value
+        #             recovers this one; it is suppression, not a bar.
+        #
+        # Without this the three are one undifferentiated "refused",
+        # and a sandbox counting "strikes a tighter tee preset would
+        # recover" would promise back the suppressed ones too — a
+        # recall figure that cannot happen, reported as though it
+        # could. The operator asked for exactly this distinction:
+        # candidates that FAIL the new gates against candidates that
+        # never reach them.
         seen[k] = {"time_sec": float(t), "passed_gate": bool(passed),
+                   "refused_by": (None if passed else refused_by),
                    "source": src, "ratio": ratio,
                    "attack_ms": (None if _am is False else attack_ms),
                    "attack_measured": _am,
@@ -16311,11 +16332,25 @@ def _audio1_peak_list(windows, debug) -> list:
         _add(w.get("peak_time_sec"), True, "cut", w.get("ratio"),
              w.get("attack_ms"), w.get("attack_measured"))
     for q in ((debug or {}).get("top_peaks") or []):
-        _add(q.get("peak_sec"), bool(q.get("kept")), "raw",
-             q.get("ratio"), q.get("attack_ms"), q.get("attack_measured"))
+        _kept = bool(q.get("kept"))
+        # `passes_attack` absent is not the same as False. An older
+        # debug blob that never carried it would otherwise have every
+        # refusal read as a suppression — the one reason no retuning
+        # can recover — which is a guess printed as a finding.
+        _pa = q.get("passes_attack")
+        _add(q.get("peak_sec"), _kept, "raw",
+             q.get("ratio"), q.get("attack_ms"), q.get("attack_measured"),
+             refused_by=(None if _kept else
+                         ("attack" if _pa is False else
+                          "nms" if _pa is True else "unknown")))
     for q in ((debug or {}).get("below_gate_peaks") or []):
+        # This list exists only on a clip where NOTHING survived, so a
+        # peak below the amplitude gate on a clip that did produce a
+        # swing is not reported at all. The sandbox says so rather
+        # than counting the silence as "nothing to recover".
         _add(q.get("peak_sec"), False, "below gate", q.get("ratio"),
-             q.get("attack_ms"), q.get("attack_measured"))
+             q.get("attack_ms"), q.get("attack_measured"),
+             refused_by="ratio")
     return sorted(seen.values(), key=lambda z: z["time_sec"])
 
 
@@ -16336,6 +16371,37 @@ def _audio1_measure(upload_id, src_path, windows, debug,
             url_of=_clip_url_for, hf_search=hf_search)
         out["n_cut"] = sum(1 for p in peaks if p["passed_gate"])
         out["n_refused"] = sum(1 for p in peaks if not p["passed_gate"])
+        # ── WHY THE DETECTOR REFUSED EACH ONE, CARRIED THROUGH ──────
+        #
+        # `analyse` copies `passed_gate` onto the measurement row but
+        # knows nothing about the reason, and the reason is what tells
+        # a recoverable refusal from a suppressed one.
+        _why = {round(float(q["time_sec"]), 2): q.get("refused_by")
+                for q in peaks if q.get("time_sec") is not None}
+        # ── AND EACH GATE'S VALUE UNDER THE NAME THE GATE KNOWS ─────
+        #
+        # Two of the eleven gates do not read a flat key:
+        # `hf_concentration` is nested under `concentration_hf` and
+        # `confidence_score` under `confidence`. `_audio1_value` is
+        # the one place that knows that, and the sandbox in the
+        # browser must not become a second place that thinks it does
+        # — AUDIO_GATE_FIELDS says in as many words that one
+        # definition is the point. So the resolver runs here and the
+        # page is handed the answers.
+        from ..services import debug3 as _d3x
+        for m in (out.get("peaks") or []):
+            # `peak_time_sec` on a measurement row, `time_sec` on the
+            # detector's peak. Two names for one instant, and reading
+            # the wrong one here matches nothing and leaves every
+            # reason None -- which reads as "no refusal had a known
+            # cause" rather than as a lookup that missed.
+            _t = m.get("peak_time_sec")
+            if _t is not None:
+                m["refused_by"] = _why.get(round(float(_t), 2))
+            m["gate_values"] = {
+                _f: _audio1_value(m, _f)
+                for (_c, _f, _l) in _d3x.AUDIO_GATE_FIELDS.values()
+            }
         return out
     except Exception as exc:  # noqa: BLE001
         log.exception("audio1: the measurement pass failed on %s: %s",

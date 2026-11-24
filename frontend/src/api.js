@@ -530,6 +530,24 @@ export const api = {
   // which numbers separate a strike from a voice; only a person
   // saying which was which settles it, and these three calls are how
   // that gets written down.
+  // THE STARTING GATES FOR EACH TEE BOX, and what each gate asks.
+  // Served rather than written into the page: one definition of what
+  // a gate reads, so a preset changed on the server cannot leave a
+  // stale copy in front of an operator.
+  audioGatePresets: (key) =>
+    request("/api/admin/audio-gate-presets", { adminPassword: key }),
+
+  applyAudioGatePreset: (key, uploadId, { preset, zone, arm }) => {
+    const fd = new FormData();
+    fd.append("preset", preset);
+    // "" is the hole's own setting, which is what a camera with no
+    // zones drawn has — so an empty zone is sent, not omitted.
+    fd.append("zone", zone == null ? "" : String(zone));
+    fd.append("arm", arm ? "true" : "false");
+    return request(`/api/admin/long-uploads/${uploadId}/audio-gate-preset`,
+                   { method: "POST", body: fd, adminPassword: key });
+  },
+
   listAudioLabels: (key, uploadId) =>
     request(`/api/admin/long-uploads/${uploadId}/audio-labels`,
             { adminPassword: key }),

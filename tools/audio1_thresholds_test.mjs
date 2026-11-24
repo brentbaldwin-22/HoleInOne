@@ -1,35 +1,28 @@
 #!/usr/bin/env node
 /*
- * The threshold sandbox's arithmetic.
+ * Every measurement the operator asked to gate on is reachable, and
+ * each gate is applied the right way round.
  *
- * THIS IS THE PART THAT WOULD FLATTER A BAD RULE. Every one of these
- * cases is a way of making a threshold look better than it is:
+ * THE ARITHMETIC MOVED. This file used to carry the sandbox's counting
+ * rules, extracted out of the .jsx with esbuild because they lived
+ * inside the component. They now live in Audio1Rules.js with their own
+ * test -- tools/audio1_proposal_test.mjs -- which covers the ways a
+ * proposed gate set flatters itself, recovery included. What is left
+ * here is the part that test cannot see: that the LIST of gates is
+ * complete, and that min and max are not transposed.
  *
- *   A STRIKE THE DETECTOR ALREADY REFUSED IS STILL MISSED. Thresholds
- *   can only ever TAKE CLIPS AWAY; none of them can bring back a peak
- *   the gate dropped. Counting those as "not my rule's fault" would
- *   make recall read 100% on a clip whose strike never got cut.
- *
- *   A STRIKE THAT MADE NO PEAK IS STILL MISSED. It cannot appear in
- *   the peak list at all, so a denominator built from peaks alone
- *   would never count it and recall would be a measure of the sounds
- *   we already catch.
- *
- *   A FALSE POSITIVE THE DETECTOR ALREADY REFUSED IS NOT "ELIMINATED"
- *   by your rule. It was never cut; taking credit for it is how a
- *   threshold that does nothing scores well.
- *
- *   AN UNMEASURABLE VALUE IS NOT A FAILURE BY DEFAULT. A quiet strike
- *   from a far tee is exactly where HF SNR comes back blank, and
- *   rejecting what could not be measured selects against distance.
+ * WHY THE LIST NEEDS GUARDING. The armable gates are built from the
+ * server's own table, so a gate added there appears here without an
+ * edit -- which is the point, and also means a gate RENAMED there
+ * silently disappears from the page rather than breaking it. A missing
+ * gate is a bar nobody can set, shown as a sandbox that simply does
+ * not offer it.
  *
  *   node tools/audio1_thresholds_test.mjs
  */
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { buildRules, evaluate } from
+  "../frontend/src/components/Audio1Rules.js";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const failed = [];
 const check = (label, got, want = true) => {
   const ok = JSON.stringify(got) === JSON.stringify(want);
@@ -37,114 +30,122 @@ const check = (label, got, want = true) => {
   if (!ok) failed.push(label);
 };
 
-// The real module, through esbuild's JSX transform — not a copy.
-const SRC = readFileSync(
-  join(ROOT, "frontend/src/components/Audio1Thresholds.jsx"), "utf8");
-const { transform } = await import(
-  join(ROOT, "frontend/node_modules/esbuild/lib/main.js"));
-// Only the exported helpers are needed; the component itself pulls in
-// React, which this has no business loading.
-const cut = SRC.slice(0, SRC.indexOf("export default function"));
-const out = await transform(cut.replace(/^import .*$/gm, ""), {
-  loader: "jsx", jsx: "transform", jsxFactory: "h",
-});
-const { RULES, evaluate } = await import(
-  "data:text/javascript," + encodeURIComponent(
-    "const useMemo=()=>{},useState=()=>{};\n" + out.code));
+// The server's table, verbatim from debug3.AUDIO_GATE_FIELDS. Kept
+// here deliberately: if the two disagree, this test is the place that
+// says so.
+const FIELDS = {
+  audio_min_hf_snr_db: { cmp: "min", reads: "hf_snr_db", label: "HF SNR (dB)" },
+  audio_min_crest: { cmp: "min", reads: "crest_factor", label: "crest factor" },
+  audio_max_attack_ms: { cmp: "max", reads: "detector_attack_ms",
+                         label: "detector attack (ms)" },
+  audio_min_ratio: { cmp: "min", reads: "peak_ratio", label: "peak ratio" },
+  audio_min_amplitude: { cmp: "min", reads: "peak_amplitude",
+                         label: "minimum amplitude" },
+  audio_max_raw_attack_ms: { cmp: "max", reads: "attack_ms",
+                             label: "raw 10-90 attack (ms)" },
+  audio_min_centroid_hz: { cmp: "min", reads: "spectral_centroid_hz",
+                           label: "spectral centroid (Hz)" },
+  audio_min_hf_concentration: { cmp: "min", reads: "hf_concentration",
+                                label: "HF energy concentration" },
+  audio_min_isolation_db: { cmp: "min", reads: "isolation_db",
+                            label: "isolation (dB)" },
+  audio_max_decay_ms: { cmp: "max", reads: "decay_ms", label: "decay (ms)" },
+  audio_min_confidence: { cmp: "min", reads: "confidence_score",
+                          label: "confidence score" },
+};
+const RULES = buildRules(FIELDS);
 
-const peak = (o) => ({ peak_time_sec: 1, passed_gate: true, ...o });
-
-console.log("\n1. the six the request named are all there");
-for (const want of ["min peak ratio", "min SNR", "max original attack",
-                    "min HF SNR", "min isolation"]) {
-  check(`  ${want}`, RULES.some((r) => r.label.startsWith(want)));
+console.log("\n0. the table above still matches the server's");
+{
+  // THE DRIFT THIS FILE CLAIMS TO CATCH. A copy of the server's table
+  // that nothing compares is not a guard, it is a second opinion --
+  // so read the real one and diff it.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { dirname, join } = await import("node:path");
+  const src = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)),
+         "..", "backend/app/services/debug3.py"), "utf8");
+  const body = src.slice(src.indexOf("AUDIO_GATE_FIELDS = {"));
+  const block = body.slice(0, body.indexOf("\n}\n"));
+  const got = {};
+  const re = /"(audio_[a-z0-9_]+)":\s*\(\s*"(min|max)"\s*,\s*"([a-z0-9_]+)"/g;
+  let m;
+  while ((m = re.exec(block)) !== null) got[m[1]] = { cmp: m[2], reads: m[3] };
+  check("the same gates, no more and no fewer",
+        Object.keys(got).sort(), Object.keys(FIELDS).sort());
+  for (const k of Object.keys(got)) {
+    if (!FIELDS[k]) continue;
+    check(`  ${k} reads ${got[k].reads} as ${got[k].cmp}`,
+          [FIELDS[k].cmp, FIELDS[k].reads], [got[k].cmp, got[k].reads]);
+  }
 }
-check("  and the energy concentration ratios",
-      RULES.filter((r) => r.label.includes("E20/E200")
-                       || r.label.includes("E50/E200")
-                       || r.label.includes("E10/E100")).length, 5);
 
-console.log("\n2. a rule that is off does nothing at all");
-const off = Object.fromEntries(RULES.map((r) => [r.key, { on: false, value: "99" }]));
-check("every rule off, a hopeless peak passes",
-      evaluate(peak({ snr_db: 1, peak_ratio: 1 }), off, false).pass, true);
+const byKey = Object.fromEntries(RULES.map((r) => [r.key, r]));
+const on = (k, v) => ({ [k]: { on: true, value: String(v) } });
+const peak = (gv, flat) => ({ peak_time_sec: 1, passed_gate: true,
+                              gate_values: gv || {}, ...(flat || {}) });
+
+console.log("\n1. every gate the server defines is offered");
+for (const k of Object.keys(FIELDS)) {
+  check(`  ${k}`, !!byKey[k]);
+}
+check("  and each is armable", RULES.filter((r) => r.gate).length, 11);
+
+console.log("\n2. the measurements with no gate are still argued with");
+for (const k of ["x_snr_db", "x_c20_200", "x_c50_200", "x_c10_100",
+                 "x_c50_200_hf"]) {
+  check(`  ${k}`, !!byKey[k]);
+}
+check("  and none of them claims to be armable",
+      RULES.filter((r) => !r.gate).every((r) => r.gate === null));
 
 console.log("\n3. min and max are applied the right way round");
-const on = (k, v) => ({ ...off, [k]: { on: true, value: v } });
-check("min SNR 20 keeps 30", evaluate(peak({ snr_db: 30 }), on("snr", 20), false).pass, true);
-check("min SNR 20 drops 10", evaluate(peak({ snr_db: 10 }), on("snr", 20), false).pass, false);
+check("min HF SNR 20 keeps 30",
+      evaluate(peak({ hf_snr_db: 30 }), on("audio_min_hf_snr_db", 20),
+               RULES, false).pass, true);
+check("min HF SNR 20 drops 10",
+      evaluate(peak({ hf_snr_db: 10 }), on("audio_min_hf_snr_db", 20),
+               RULES, false).pass, false);
 check("max attack 20 keeps 8",
-      evaluate(peak({ detector_attack_ms: 8 }), on("atk0", 20), false).pass, true);
+      evaluate(peak({ detector_attack_ms: 8 }), on("audio_max_attack_ms", 20),
+               RULES, false).pass, true);
 check("max attack 20 drops 40",
-      evaluate(peak({ detector_attack_ms: 40 }), on("atk0", 20), false).pass, false);
+      evaluate(peak({ detector_attack_ms: 40 }), on("audio_max_attack_ms", 20),
+               RULES, false).pass, false);
+check("a bar met exactly is not a failure",
+      evaluate(peak({ peak_ratio: 3.5 }), on("audio_min_ratio", 3.5),
+               RULES, false).pass, true);
 
-console.log("\n4. a nested value is read, not ignored");
-const p20 = peak({ concentration: { e20_over_e200: 0.42 } });
-check("E20/E200 0.42 clears a 0.30 bar",
-      evaluate(p20, on("c20", 0.3), false).pass, true);
-check("...and fails a 0.50 bar", evaluate(p20, on("c20", 0.5), false).pass, false);
-check("the HF ratio is a separate rule",
-      evaluate(peak({ concentration_hf: { e20_over_e200: 0.1 } }),
-               on("c20hf", 0.3), false).pass, false);
+console.log("\n4. a gate reads the server's resolved value, not a flat key");
+// `hf_concentration` is nested under `concentration_hf` on a
+// measurement row; the server resolves it onto `gate_values` so this
+// page never has to know that.
+check("the resolved value decides",
+      evaluate(peak({ hf_concentration: 0.42 }),
+               on("audio_min_hf_concentration", 0.3), RULES, false).pass, true);
+check("...and a bar above it fails",
+      evaluate(peak({ hf_concentration: 0.42 }),
+               on("audio_min_hf_concentration", 0.5), RULES, false).pass, false);
 
-console.log("\n5. AN UNMEASURABLE VALUE DOES NOT FAIL BY DEFAULT");
-const blank = peak({ hf_snr_db: null });
-check("blank HF SNR passes a rule it cannot be judged by",
-      evaluate(blank, on("hfsnr", 10), false).pass, true);
-check("...and is counted, so the operator can see it happened",
-      evaluate(blank, on("hfsnr", 10), false).blanks, 1);
-check("...and fails only when that is switched on",
-      evaluate(blank, on("hfsnr", 10), true).pass, false);
-check("...saying it was not measured, not that it was low",
-      evaluate(blank, on("hfsnr", 10), true).failed[0].includes("not measured"),
-      true);
+console.log("\n5. a bench rule reads the measurement row directly");
+check("broadband SNR is off the row, not the gate view",
+      evaluate(peak({}, { snr_db: 30 }), on("x_snr_db", 20),
+               RULES, false).pass, true);
+check("a nested ratio likewise",
+      evaluate(peak({}, { concentration: { e20_over_e200: 0.42 } }),
+               on("x_c20_200", 0.5), RULES, false).pass, false);
 
-console.log("\n6. the failures it reports are the ones that fired");
-const multi = evaluate(peak({ snr_db: 5, peak_ratio: 2 }),
-                       { ...on("snr", 20), ratio: { on: true, value: 10 } },
-                       false);
+console.log("\n6. every failure is named, with what was read");
+const multi = evaluate(peak({ hf_snr_db: 5, crest_factor: 2 }),
+                       { ...on("audio_min_hf_snr_db", 20),
+                         ...on("audio_min_crest", 7) }, RULES, false);
 check("both named", multi.failed.length, 2);
-// Reported in RULES order, not in the order they were switched on.
 check("with the measured value in each",
-      multi.failed.join(" | ").includes("5.00")
-      && multi.failed.join(" | ").includes("2.00"), true);
+      multi.failed.map((f) => f.read).sort(), [2, 5]);
+check("and the bar it was judged against",
+      multi.failed.map((f) => f.want).sort(), [20, 7].sort());
 
-console.log("\n7. the counting rules, as the component states them");
-// Read off the component source: these are the claims that keep the
-// score honest, and each is a sentence somebody could quietly delete.
-const body = SRC.slice(SRC.indexOf("export default function"));
-check("a strike the gate refused is counted missed, separately",
-      body.includes("trueMissedByGate"), true);
-check("a strike with no peak at all is counted missed",
-      body.includes("trueNoPeak"), true);
-check("...and is in the recall denominator",
-      /strikes\s*=\s*r\.trueRetained\.length[\s\S]{0,160}trueNoPeak\.length/
-        .test(body), true);
-check("a false positive the gate refused is NOT credited to the rules",
-      body.includes("fpAlreadyRefused"), true);
-check("retained means the gate cut it AND the rules passed it",
-      body.includes("const retained = !!p.passed_gate && ev.pass"), true);
-check("'uncertain' is excluded from both figures",
-      body.includes('if (lab.label === "uncertain")'), true);
-check("precision is over retained cuts only",
-      body.includes("const cuts = r.trueRetained.length + r.fpRetained.length"),
-      true);
-
-console.log("\n8. and nothing here can reach the cutter");
-// THE WORD "save" IN A COMMENT IS NOT A NETWORK CALL. Testing for
-// the prose was testing my own comments; these are the things that
-// would actually reach a server.
-for (const [what, re] of [["fetch", /\bfetch\s*\(/],
-                          ["an api helper", /\bapi\./],
-                          ["XMLHttpRequest", /XMLHttpRequest/],
-                          ["an import of the api module", /from "\.\.\/api/]]) {
-  check(`no ${what}`, re.test(SRC), false);
-}
-
-console.log();
-if (failed.length) {
-  console.log(`FAILED (${failed.length}):`);
-  failed.forEach((f) => console.log("  -", f));
-  process.exit(1);
-}
-console.log("all ok");
+console.log(`\n${failed.length
+  ? `${failed.length} FAILED:\n  ${failed.join("\n  ")}` : "all ok"}`);
+process.exit(failed.length ? 1 : 0);

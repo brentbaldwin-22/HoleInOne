@@ -1276,7 +1276,8 @@ export default function AdminLongUpload() {
                         <Audio1Panel
                           uploadId={u.id}
                           data={testCutResults[u.id].debug.audio1}
-                          adminPassword={adminPassword} />
+                          adminPassword={adminPassword}
+                          zoneOptions={zoneOpts} />
                       )}
                       {/* A REFUSED LAG HAS TO BE LOUDER THAN AN ACCEPTED
                           ONE. Type 0.8, get the hole's 0.6 in silence,
