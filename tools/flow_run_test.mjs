@@ -69,8 +69,20 @@ for (const f of ["name", "title", "secs", "count", "units"]) {
   check(`  ${f}`, new RegExp(`"${f}":`).test(flow));
 }
 check("the page renders each of them",
-      ["title", "secs", "count", "units"].every(
+      ["title", "secs", "count", "units", "detail"].every(
         (f) => new RegExp(`p\\.${f}`).test(page)));
+// THE AUDIO PHASE'S DETAIL IS THE ANSWER TO "which gates cut this",
+// and a field the server fills that the page drops is a question with
+// no answer on the screen that raised it.
+check("the run records the gates it actually used",
+      /dbg\["gates_used"\]/.test(admin));
+check("...whether audio1 is armed", /dbg\["audio1_armed"\]/.test(admin));
+check("...and which audio1 gates are set", /dbg\["audio1_on"\]/.test(admin));
+check("the flow turns them into words", /_gates_sentence\(dbg\)/.test(flow));
+check("...and says plainly when they are only the defaults",
+      /not a tee-box preset/.test(flow));
+check("...and when they are set but not armed",
+      /set but NOT armed/.test(flow));
 
 console.log("\n3b. the produce's stages are read by the names it writes");
 {

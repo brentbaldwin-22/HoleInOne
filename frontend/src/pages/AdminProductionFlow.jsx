@@ -119,9 +119,18 @@ function Phases({ phases, total }) {
               {p.count != null && (
                 <span className="muted"> · {p.count} {p.units}</span>
               )}
+              {/* WHAT THE PHASE ACTUALLY DID, which for the audio
+                  phase is the gates it ran at. The row carried this
+                  all along and nothing rendered it, so "are we
+                  cutting with the tee-box preset?" had no answer on
+                  the page that was doing the cutting. */}
+              {p.detail && (
+                <div style={{ opacity: 0.75, marginTop: 1 }}>{p.detail}</div>
+              )}
             </td>
             <td style={{ textAlign: "right", fontVariantNumeric:
-                         "tabular-nums", whiteSpace: "nowrap" }}>
+                         "tabular-nums", whiteSpace: "nowrap",
+                         verticalAlign: "top" }}>
               {fmtDur(p.secs)}
             </td>
           </tr>

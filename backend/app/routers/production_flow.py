@@ -579,8 +579,10 @@ def flow_run(row, src_path, db, progress=None) -> dict:
 
     if not hits:
         _flow_phase(rep, "audio", "Listening for strikes", _t_audio,
-                    detail=str(dbg.get("reason")
-                              or "nothing cleared this tee box's gates"),
+                    detail="%s — %s" % (
+                        _gates_sentence(dbg),
+                        dbg.get("reason")
+                        or "nothing cleared this tee box's gates"),
                     count=0, units="strikes")
         rep["reason"] = (dbg.get("reason")
                          or "no strike cleared this tee box's audio gates")
@@ -665,7 +667,7 @@ def flow_run(row, src_path, db, progress=None) -> dict:
     _flow_phase(rep, "cut", "Cutting both angles around each strike",
                 _time.monotonic() - _t, count=rep["n_cuts"], units="cuts")
     _flow_phase(rep, "audio", "Listening for strikes", _t_audio,
-                detail=str(dbg.get("gates_from") or ""),
+                detail=_gates_sentence(dbg),
                 count=len(hits), units="strikes")
     rep["phases"].sort(key=lambda p: 0 if p["name"] == "audio" else 1)
 
@@ -772,6 +774,37 @@ def _claim_clips(db, row, cuts) -> tuple[int, int]:
     log.info("flow: upload %s -- claimed %d clip(s), matched %d to a cut",
              row.id, claimed, matched)
     return (claimed, matched)
+
+
+def _gates_sentence(dbg) -> str:
+    """The gates this cut actually ran at, in words.
+
+    SO THE QUESTION DOES NOT HAVE TO BE ASKED. "Are we cutting with
+    the back-tee preset?" could only be answered by noticing a 22 ms
+    attack surviving a gate that is supposed to refuse anything over
+    14. The run now says what it used, and says plainly when those are
+    the module defaults -- which is every hole nobody has applied a
+    preset to.
+    """
+    g = (dbg or {}).get("gates_used") or {}
+    if not g:
+        return str((dbg or {}).get("gates_from") or "")
+    bits = ["×%g ratio" % g.get("audio_min_ratio", 0),
+            "≤%gms attack" % g.get("audio_max_attack_ms", 0),
+            "%gs apart" % g.get("audio_min_separation_sec", 0)]
+    on = (dbg or {}).get("audio1_on") or []
+    if not on:
+        bits.append("no audio1 gate is set — these are the defaults, "
+                    "not a tee-box preset")
+    elif not (dbg or {}).get("audio1_armed"):
+        bits.append("%d audio1 gate%s set but NOT armed, so they "
+                    "reported and refused nothing"
+                    % (len(on), "" if len(on) == 1 else "s"))
+    else:
+        bits.append("%d audio1 gate%s armed: %s"
+                    % (len(on), "" if len(on) == 1 else "s",
+                       ", ".join(k.replace("audio_", "") for k in on)))
+    return " · ".join(bits)
 
 
 def _hit_peak_sec(hit):

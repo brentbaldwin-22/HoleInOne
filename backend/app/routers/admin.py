@@ -28009,6 +28009,26 @@ def _cutter_hits(name, db, row, src_path, fps, dbg):
         _ag, _, _ = _gate_tuning_for(db, row)
         _az = _trigger_zone(db, row)
         _ag = _d3.resolve_gates(_ag, zone=_az)
+        # ── THE VALUES, NOT JUST WHERE THEY CAME FROM ───────────────
+        #
+        # "the hole's audio gates for zone 1" does not say whether
+        # that hole has ever been tuned, and an untuned hole runs the
+        # module defaults. That is the answer to "are we cutting with
+        # the tee-box presets?" and it was not written down anywhere a
+        # caller could read it -- so the only way to find out was to
+        # notice a 22 ms attack surviving a gate that is supposed to
+        # refuse anything over 14.
+        dbg["gates_used"] = {
+            "audio_min_ratio": float(_ag["audio_min_ratio"]),
+            "audio_max_attack_ms": float(_ag["audio_max_attack_ms"]),
+            "audio_min_separation_sec": float(
+                _ag["audio_min_separation_sec"]),
+        }
+        dbg["audio1_armed"] = bool(_ag.get("audio1_armed"))
+        dbg["audio1_on"] = sorted(
+            k for k in _d3.AUDIO_GATE_FIELDS
+            if k not in ("audio_min_ratio", "audio_max_attack_ms")
+            and float(_ag.get(k) or 0.0) > 0.0)
         dbg["gates_from"] = (
             "the hole's audio gates" if _az is None else
             "the hole's audio gates for zone %d (\"Zone %d\" on screen)"
