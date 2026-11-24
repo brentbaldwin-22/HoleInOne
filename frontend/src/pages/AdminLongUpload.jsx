@@ -52,6 +52,49 @@ const RIG_AUDIO = {
   refractorySec: 12,
 };
 
+/*
+ * THE RAW FILE, AS A LINK WHERE THERE IS ONE.
+ *
+ * The filename has been printed here all along and there was no way
+ * to open the thing it names: "Show source" draws a muted,
+ * metadata-only preview inline, which answers "is the tee/green
+ * labelling right" and not "let me watch the three minutes this was
+ * cut out of".
+ *
+ * NOT EVERY ROW CAN HAVE ONE, and the two reasons are different.
+ * `tee_url` is null when the file is not on this box's disk — which
+ * is EITHER gone for good (`tee_missing`, already shouted about in
+ * red beside this) OR sitting in the bucket, perfectly fine, and
+ * fetched on demand by whatever next needs it. Printing a bare
+ * filename for the second case makes a healthy upload look like the
+ * broken one, so it says which it is.
+ */
+function RawFile({ name, url, missing }) {
+  if (!name) return <code>—</code>;
+  if (url) {
+    return (
+      <a href={url} target="_blank" rel="noreferrer"
+         title="Open the raw video this was cut from, in a new tab">
+        <code>{name}</code>
+      </a>
+    );
+  }
+  return (
+    <>
+      <code>{name}</code>
+      {!missing && (
+        <span className="muted"
+              title={"The file is in storage rather than on this "
+                     + "server's disk, so there is nothing to link to "
+                     + "yet. Test Cut or Reprocess fetches it."}>
+          {" "}(in storage)
+        </span>
+      )}
+    </>
+  );
+}
+
+
 export default function AdminLongUpload() {
   const adminPassword =
     localStorage.getItem(ADMIN_PW_STORAGE) ||
@@ -601,14 +644,19 @@ export default function AdminLongUpload() {
                         {u.dual_camera && <> · <span className="pill small">dual-cam</span></>}
                       </span>
                       <div className="tiny muted" style={{ marginTop: 2 }}>
-                        tee: <code>{u.tee_original_filename || u.tee_filename}</code>
+                        tee: <RawFile
+                          name={u.tee_original_filename || u.tee_filename}
+                          url={u.tee_url} missing={u.tee_missing} />
                         {fmtDuration(u.tee_duration_sec) && <> · {fmtDuration(u.tee_duration_sec)}</>}
                         {u.tee_size_mb != null && <> · {u.tee_size_mb} MB</>}
                         {u.tee_missing && <> · <span className="err-text">missing on disk</span></>}
                         {u.dual_camera && (
                           <>
                             <br />
-                            green: <code>{u.green_original_filename || u.green_filename}</code>
+                            green: <RawFile
+                              name={u.green_original_filename
+                                    || u.green_filename}
+                              url={u.green_url} missing={u.green_missing} />
                             {fmtDuration(u.green_duration_sec) && <> · {fmtDuration(u.green_duration_sec)}</>}
                             {u.green_size_mb != null && <> · {u.green_size_mb} MB</>}
                             {u.green_missing && <> · <span className="err-text">missing on disk</span></>}
@@ -1078,7 +1126,9 @@ export default function AdminLongUpload() {
                       <div className="small" style={{ marginBottom: 6 }}>
                         <b>Source preview{u.dual_camera ? "s" : ""}</b>{" "}
                         <span className="tiny muted">
-                          · first-frame thumbnails so you can verify the tee/green labels match the footage
+                          · first-frame thumbnails so you can verify the
+                          tee/green labels match the footage. The filename
+                          opens the full raw video.
                         </span>
                       </div>
                       <div
@@ -1092,7 +1142,10 @@ export default function AdminLongUpload() {
                         {u.tee_url && (
                           <div style={{ width: 240 }}>
                             <div className="tiny muted" style={{ marginBottom: 2 }}>
-                              <b>tee</b> · <code>{u.tee_original_filename || u.tee_filename}</code>
+                              <b>tee</b> · <RawFile
+                                name={u.tee_original_filename
+                                      || u.tee_filename}
+                                url={u.tee_url} missing={u.tee_missing} />
                             </div>
                             <video
                               src={u.tee_url}
@@ -1106,7 +1159,10 @@ export default function AdminLongUpload() {
                         {u.dual_camera && u.green_url && (
                           <div style={{ width: 240 }}>
                             <div className="tiny muted" style={{ marginBottom: 2 }}>
-                              <b>green</b> · <code>{u.green_original_filename || u.green_filename}</code>
+                              <b>green</b> · <RawFile
+                                name={u.green_original_filename
+                                      || u.green_filename}
+                                url={u.green_url} missing={u.green_missing} />
                             </div>
                             <video
                               src={u.green_url}
