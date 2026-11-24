@@ -94,6 +94,51 @@ check("each is at least as big as the one inside it",
 c = m["concentration"]
 check("every ratio is between 0 and 1",
       all(0.0 <= v <= 1.0 for v in c.values()), True)
+# ── THE BUG THIS REPLACED ───────────────────────────────────────────
+#
+# Subtracting the background from each window WHOLE broke the very
+# thing the ratios measure. On uniform noise E(w) = S + den·n_w for
+# every w, so taking den·n_w off leaves S at every scale and every
+# ratio is exactly 1.00 — nothing left to say. And when the turf
+# round the peak is quieter than the 500 ms the background came from,
+# the wide windows over-subtract and the ratio goes PAST 1, which a
+# nested window cannot do. The field data showed 1.10, 1.22, 2.07.
+#
+# Each ring is adjusted on its own now and floored at zero, so the
+# windows are a running sum and cannot go backwards.
+print("\n2b. no ratio can exceed 1, whatever the background does")
+for _lbl, _bg, _quiet in (("background matches the turf", 0.004, 0.004),
+                          ("turf quieter than the background", 0.02, 0.001),
+                          ("turf louder than the background", 0.001, 0.02)):
+    _r = np.random.default_rng(11)
+    _x = _r.normal(0, _quiet, SR * 5).astype(np.float32)
+    _x[int(0.9 * SR):int(1.44 * SR)] += _r.normal(
+        0, _bg, int(0.54 * SR)).astype(np.float32)
+    _i = int(1.5 * SR)
+    _t = np.arange(int(SR * 0.03)) / SR
+    _x[_i:_i + _t.size] += (0.3 * np.exp(-_t / 0.006)
+                            * np.sin(2 * np.pi * 2400 * _t)).astype(np.float32)
+    _m = measure_peak(_x, SR, 1.5, CFG, B)
+    _vals = [v for v in _m["concentration"].values() if v is not None]
+    check("  %s: every ratio <= 1" % _lbl,
+          all(v <= 1.0 for v in _vals), True)
+    check("  ...and the windows never go backwards",
+          all(_m["energy"]["w%d" % a] <= _m["energy"]["w%d" % b] + 1e-9
+              for a, b in ((10, 20), (20, 50), (50, 100), (100, 200))), True)
+
+print("\n2c. a ratio of 1 is named, not passed off as concentration")
+# A three-sample click: over before the 20 ms window even opens, so
+# "0.998 of its energy is in the middle" is not a finding about
+# concentration — it is a finding about duration.
+_click = np.random.default_rng(5).normal(0, 0.003, SR * 4).astype(np.float32)
+_click[int(1.5 * SR):int(1.5 * SR) + 3] += 0.4
+_mc = measure_peak(_click, SR, 1.5, CFG, B)
+check("the click's ratios are at the ceiling",
+      all(v > 0.95 for v in _mc["concentration"].values()), True)
+check("the raw ratios are reported beside them",
+      all(v is not None for v in _mc["concentration_raw"].values()), True)
+check("a real strike is NOT flagged as saturated",
+      m["concentration_saturated"], [])
 check("the three the request named",
       sorted(c.keys()),
       ["e10_over_e100", "e20_over_e200", "e50_over_e200"])

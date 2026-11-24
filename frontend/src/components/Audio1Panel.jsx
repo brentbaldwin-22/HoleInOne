@@ -73,7 +73,7 @@ const GROUPS = [
       return [d === undefined ? undefined : (clean ? d : d + "†"),
               fx(p.transient_duration_ms, 0)];
     } },
-  { key: "bands", head: "band %", subs: ["lo", "mid", "1.5-3k", "3-8k"],
+  { key: "bands", head: "band %", subs: ["lo", "mid", "imp", "shrp"],
     w: 104,
     get: (p) => [fx(band(p, "low"), 0), fx(band(p, "mid"), 0),
                  fx(band(p, "impact"), 0), fx(band(p, "sharp"), 0)] },
@@ -82,17 +82,26 @@ const GROUPS = [
                  fx(p.pct_above?.pct_above_3000, 0)] },
   { key: "snr", head: "SNR dB", subs: ["all", "HF"], w: 66,
     get: (p) => [fx(p.snr_db, 1), fx(p.hf_snr_db, 1)] },
-  { key: "sp", head: "spectrum", subs: ["centroid", "flux", "crest"],
+  { key: "sp", head: "spectrum", subs: ["cent", "flux", "crest"],
     w: 100,
     get: (p) => [fx(p.spectral_centroid_hz, 0), fx(p.spectral_flux, 1),
                  fx(p.crest_factor, 1)] },
-  { key: "aft", head: "after", subs: ["2nd", "iso dB"], w: 62,
+  { key: "aft", head: "after", subs: ["2nd", "iso"], w: 62,
     get: (p) => [p.n_secondary_peaks ?? undefined, fx(p.isolation_db, 1)] },
+  // A RATIO OF 1 IS NOT A CONCENTRATION READING — it means every ring
+  // past the inner window was at or under the background, so the
+  // sound was over before the outer window opened. Marked with ‡ so
+  // it is not read as "98% of the energy is in the middle".
   { key: "conc", head: "concentration", subs: ["10/100", "20/200", "50/200"],
     w: 96,
-    get: (p) => [fx(p.concentration?.e10_over_e100, 2),
-                 fx(p.concentration?.e20_over_e200, 2),
-                 fx(p.concentration?.e50_over_e200, 2)] },
+    get: (p) => {
+      const sat = new Set(p.concentration_saturated || []);
+      return [["e10_over_e100", 2], ["e20_over_e200", 2],
+              ["e50_over_e200", 2]].map(([k, dp]) => {
+        const v = fx(p.concentration?.[k], dp);
+        return v === undefined ? undefined : (sat.has(k) ? v + "‡" : v);
+      });
+    } },
   { key: "conch", head: "…above 1.5 kHz",
     subs: ["10/100", "20/200", "50/200"], w: 96,
     get: (p) => [fx(p.concentration_hf?.e10_over_e100, 2),
@@ -106,7 +115,7 @@ const GROUPS = [
     subs: ["0-20", "-50", "-100", "-200"], w: 110,
     get: (p) => ["ms0_20", "ms20_50", "ms50_100", "ms100_200"]
       .map((k) => fx(p.post_shape?.[k], 2)) },
-  { key: "sc", head: "", subs: ["score"], w: 46,
+  { key: "sc", head: "score", subs: [""], w: 46,
     get: (p) => [fx(p.confidence?.score, 0)] },
 ];
 
@@ -276,7 +285,8 @@ export default function Audio1Panel({ uploadId, data, adminPassword }) {
                 <th key={g.key}
                     style={{ textAlign: "left", paddingRight: 8,
                              fontWeight: 600, fontSize: 10,
-                             letterSpacing: "0.02em" }}>
+                             letterSpacing: "0.02em",
+                             whiteSpace: "normal", lineHeight: 1.25 }}>
                   {g.head}
                 </th>
               ))}
@@ -288,7 +298,17 @@ export default function Audio1Panel({ uploadId, data, adminPassword }) {
                 <th key={g.key}
                     style={{ textAlign: "left", paddingRight: 8,
                              fontWeight: 400, fontSize: 10, opacity: 0.75,
-                             paddingBottom: 2 }}>
+                             paddingBottom: 2,
+                             // WRAP, DO NOT RUN OVER. These inherited
+                             // `nowrap` from the table and overflowed
+                             // their cells, so the header read
+                             // "DECAY TRANSO MID 1.5-3K" — two
+                             // columns' labels printed on top of each
+                             // other. A header that cannot be trusted
+                             // is worse than none: it names the wrong
+                             // number.
+                             whiteSpace: "normal", lineHeight: 1.25,
+                             wordBreak: "break-word" }}>
                   {g.subs.join(" ")}
                 </th>
               ))}

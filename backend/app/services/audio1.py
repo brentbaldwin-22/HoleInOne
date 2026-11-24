@@ -779,19 +779,70 @@ def measure_peak(samples, sr: int, peak_sec: float, cfg: Audio1Config,
             return e
         return max(0.0, e - den * float(x.size))
 
+    def _nested(arr, off, den):
+        """Adjusted energy in each nested window, RING BY RING.
+
+        THE FIRST VERSION SUBTRACTED THE BACKGROUND FROM EACH WINDOW
+        WHOLE, and that quietly broke the ratios it feeds:
+
+          On uniform noise, E(w) = S + den*n_w for every w, so taking
+          den*n_w off leaves S at every scale and EVERY ratio is 1.00.
+          The measurement had nothing left to say.
+
+          Worse, when the turf around the peak is quieter than the
+          500 ms used to estimate the background, the wide windows
+          over-subtract and the ratio goes PAST 1 — nonsense for
+          nested windows, and on the field data it read 1.10, 1.22,
+          2.07, and once 7.6 in simulation.
+
+        Each ring is adjusted on its own and floored at zero instead:
+        a ring with less energy than the ambience contributed none of
+        its own. The windows are then the running sum, which is
+        non-decreasing by construction, so a ratio can no longer
+        exceed 1 — and a ratio AT 1 now means something real: every
+        ring past the first was at or under the background, so the
+        sound was over before that window opened.
+        """
+        out, prev_hi, acc = {}, 0.0, 0.0
+        for wms in cfg.energy_windows_ms:
+            half = wms / 2.0
+            lo = _slice(-half, -prev_hi, arr, off) if prev_hi else None
+            hi = _slice(prev_hi, half, arr, off)
+            ring = 0.0
+            n_ring = 0
+            for part in ((lo, hi) if prev_hi else (hi,)):
+                if part is not None and part.size:
+                    ring += _energy(part)
+                    n_ring += part.size
+            if n_ring == 0:
+                out["w%d" % int(wms)] = acc if acc else None
+                continue
+            if den is not None:
+                ring = max(0.0, ring - den * float(n_ring))
+            acc += ring
+            out["w%d" % int(wms)] = acc
+            prev_hi = half
+        return out
+
     def _slice(lo_ms, hi_ms, arr, off):
         a = i + ms(lo_ms) - off
         b = i + ms(hi_ms) - off
         a, b = max(0, a), min(arr.size, b)
         return arr[a:b] if b > a else None
 
+    m["energy"] = _nested(wide, e0, bg_den)
+    m["energy_hf"] = ({} if wide_hf is None
+                      else _nested(wide_hf, e0, bg_den_hf))
+    # THE UNADJUSTED ENERGIES TOO, because the gap between the two is
+    # itself a reading: a ratio that is low raw and 1.00 adjusted says
+    # the window was mostly ambience, and a sound shorter than 10 ms
+    # cannot be told from one 50 ms long once the noise is removed.
+    m["energy_raw"] = {}
+    m["concentration_raw"] = {}
     for wms in cfg.energy_windows_ms:
         half = wms / 2.0
-        m["energy"]["w%d" % int(wms)] = _adj(
-            _slice(-half, half, wide, e0), bg_den)
-        m["energy_hf"]["w%d" % int(wms)] = (
-            None if wide_hf is None
-            else _adj(_slice(-half, half, wide_hf, e0), bg_den_hf))
+        m["energy_raw"]["w%d" % int(wms)] = _adj(
+            _slice(-half, half, wide, e0), None)
 
     def _ratio(d, num, den):
         a, b = d.get("w%d" % int(num)), d.get("w%d" % int(den))
@@ -803,6 +854,15 @@ def measure_peak(samples, sr: int, peak_sec: float, cfg: Audio1Config,
         key = "e%d_over_e%d" % (int(num), int(den))
         m["concentration"][key] = _ratio(m["energy"], num, den)
         m["concentration_hf"][key] = _ratio(m["energy_hf"], num, den)
+        m["concentration_raw"][key] = _ratio(m["energy_raw"], num, den)
+    # A RATIO OF EXACTLY 1 IS NOT A MEASUREMENT OF CONCENTRATION. It
+    # means every ring past the inner window was at or under the
+    # background, so the sound had finished before the outer window
+    # opened — which is worth knowing and is NOT the same statement as
+    # "0.98 of its energy is in the middle".
+    m["concentration_saturated"] = sorted(
+        k for k, v in m["concentration"].items() if v is not None
+        and v >= 0.9999)
 
     # ── ENERGY AFTER THE PEAK, interval by interval ─────────────────
     for a_ms, b_ms in cfg.post_intervals_ms:
@@ -1261,6 +1321,13 @@ CSV_COLUMNS = [
     ("c50_200", "E50/E200"),
     ("c10_100hf", "E10/E100 HF"), ("c20_200hf", "E20/E200 HF"),
     ("c50_200hf", "E50/E200 HF"),
+    # THE UNADJUSTED RATIOS TOO. The gap between a raw ratio and its
+    # adjusted twin says how much of the window was ambience — and a
+    # ratio that reads 1.00 adjusted is not a concentration figure at
+    # all, which `conc_saturated` names outright.
+    ("c10_100raw", "E10/E100 raw"), ("c20_200raw", "E20/E200 raw"),
+    ("c50_200raw", "E50/E200 raw"),
+    ("conc_saturated", "concentration saturated"),
     ("p0_20", "post 0-20ms"), ("p20_50", "post 20-50ms"),
     ("p50_100", "post 50-100ms"), ("p100_200", "post 100-200ms"),
     ("p0_20hf", "post 0-20ms HF"), ("p20_50hf", "post 20-50ms HF"),
@@ -1345,10 +1412,14 @@ def flat_row(m: dict, *, upload_id=None, kind="detected", label=None,
     for w in (10, 20, 50, 100, 200):
         row["e%d" % w] = _e.get("w%d" % w)
         row["e%dhf" % w] = _ehf.get("w%d" % w)
+    _craw = m.get("concentration_raw") or {}
     for num, den in ((10, 100), (20, 200), (50, 200)):
         key = "e%d_over_e%d" % (num, den)
         row["c%d_%d" % (num, den)] = _c.get(key)
         row["c%d_%dhf" % (num, den)] = _chf.get(key)
+        row["c%d_%draw" % (num, den)] = _craw.get(key)
+    row["conc_saturated"] = ("|".join(m.get("concentration_saturated") or [])
+                             or None)
     for a, b in ((0, 20), (20, 50), (50, 100), (100, 200)):
         key = "ms%d_%d" % (a, b)
         row["p%d_%d" % (a, b)] = _p.get(key)
