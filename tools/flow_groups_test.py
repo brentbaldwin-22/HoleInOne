@@ -115,7 +115,10 @@ def clip(n, **kw):
 
 
 old = clip(1)                        # every other pipeline ever
-mine = clip(2, audio_cut_id=k.id)    # this flow
+# THE FLOW STAMP IS WHAT THE COLUMNS FILTER ON, not the swing link:
+# a clip whose swing could not be identified is still a clip the flow
+# produced, and hiding it was the bug.
+mine = clip(2, audio_cut_id=k.id, flow_run_at=datetime.utcnow())
 got = flow_clips(db=db)
 check("a clip from another pipeline is not shown",
       [c["id"] for c in got["clips"]], [2])
@@ -127,6 +130,58 @@ check("the count over the column agrees with the column",
            if t["key"] == "draft"), 1)
 check("and the clip carries its group",
       got["clips"][0]["group_label"], "Tuesday, November 24th — Group 1")
+
+print("\n6b. the run claims what it produced, even when the swing is unclear")
+# THE BUG. The columns filtered on `audio_cut_id`, which is set only
+# when the clip can be matched to a cut with confidence. A clip the
+# flow had just produced vanished whenever the swing was uncertain:
+# the run reported "1 draft" and the column reported "0 clips".
+from app.routers.production_flow import _claim_clips  # noqa: E402
+
+eng2 = create_engine("sqlite://")
+Base.metadata.create_all(eng2)
+db2 = sessionmaker(bind=eng2)()
+db2.add(Course(id=1, name="Rivertowne"))
+base = datetime(2026, 11, 20, 17, 4, 39)
+up2 = LongVideoUpload(id=1916, course_id=1, tee_filename="t.mp4",
+                      base_captured_at=base)
+db2.add(up2)
+db2.commit()
+k2 = record_cut(db2, upload=up2, idx=4, peak_time_sec=47.88,
+                start_sec=43.9, end_sec=55.9)
+cuts = [{"id": k2.id, "idx": 4, "start_sec": 43.9, "end_sec": 55.9}]
+
+
+def at(n, offset):
+    from datetime import timedelta as _td
+    c = VideoClip(id=n, course_id=1, hole_number=4, camera_type="tee",
+                  captured_at=base + _td(seconds=offset), long_upload_id=1916,
+                  source_url="http://x/%d.mp4" % n)
+    db2.add(c)
+    db2.commit()
+    return c
+
+
+inside = at(10, 45.0)     # starts inside the cut's window
+outside = at(11, 120.0)   # nowhere near any cut
+claimed, matched = _claim_clips(db2, up2, cuts)
+check("both clips are claimed by the run", claimed, 2)
+check("one of them is matched to its swing", matched, 1)
+db2.refresh(inside); db2.refresh(outside)
+check("the matched clip knows its swing", inside.audio_cut_id, k2.id)
+check("...and the cut is no longer unproduced",
+      bool(db2.query(AudioCut).one().produced), True)
+check("the unmatched clip is still claimed", outside.flow_run_at is not None,
+      True)
+check("...but is NOT given a swing it cannot be shown to be",
+      outside.audio_cut_id, None)
+check("and it is visible in the column anyway, which is the point",
+      sorted(c["id"] for c in flow_clips(db=db2)["clips"]), [10, 11])
+check("the count agrees with the column",
+      next(t["count"] for t in flow_counts(db=db2)["tabs"]
+           if t["key"] == "draft"), 2)
+check("a second run does not re-match what is already matched",
+      _claim_clips(db2, up2, cuts)[1], 0)
 
 print("\n7. deleting a draft takes its files and frees its cut")
 with TemporaryDirectory() as tmp:

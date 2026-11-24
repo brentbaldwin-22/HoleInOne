@@ -68,6 +68,7 @@ _seed_cut = record_cut(db, upload=up, idx=0, peak_time_sec=1.0)
 
 def clip(n, **kw):
     kw.setdefault("audio_cut_id", _seed_cut.id)
+    kw.setdefault("flow_run_at", datetime.now())
     c = VideoClip(course_id=1, hole_number=n, captured_at=datetime.now(),
                   source_url="u%d.mp4" % n, long_upload_id=5, **kw)
     db.add(c)

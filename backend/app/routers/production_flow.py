@@ -114,7 +114,7 @@ def flow_counts(db: Session = Depends(get_db)):
     # only what this flow produced; a header counting all thousand
     # clips in the database over a column holding two is a number that
     # contradicts the thing underneath it.
-    q = db.query(VideoClip).filter(VideoClip.audio_cut_id.isnot(None))
+    q = db.query(VideoClip).filter(VideoClip.flow_run_at.isnot(None))
     n_draft = q.filter((VideoClip.stage == "draft")
                        | (VideoClip.stage.is_(None))).count()
     n_final = q.filter(VideoClip.stage == "final").count()
@@ -164,7 +164,10 @@ def flow_clips(stage: str = "draft", broadcast: str = "",
     """
     q = db.query(VideoClip)
     if flow_only:
-        q = q.filter(VideoClip.audio_cut_id.isnot(None))
+        # THE FLOW STAMP, NOT THE SWING LINK. Filtering on the cut id
+        # hid every clip whose swing could not be identified -- which
+        # is exactly the clip an operator most wants to look at.
+        q = q.filter(VideoClip.flow_run_at.isnot(None))
     if stage == "broadcast":
         q = q.filter(VideoClip.broadcast_at.isnot(None))
     elif stage == "draft":
@@ -657,18 +660,90 @@ def flow_run(row, src_path, db, progress=None) -> dict:
                 _time.monotonic() - _t, count=rep["n_clips"], units="clips",
                 detail=str(_pr.get("reason") or ""))
     # THE PRODUCE'S OWN STAGES, carried through rather than summarised.
-    # "Production took 94 seconds" is not actionable; "the descent
-    # crawl took 71 of them" is.
+    # "Production took 4m 29s" is not actionable; "the descent crawl
+    # took 3m of it" is.
+    #
+    # `seconds` AND `counts`, which is what the produce writes. This
+    # read `secs` and `units` -- the names THIS file uses -- and every
+    # stage was dropped by the `is None` guard below, so the operator
+    # got one four-minute row labelled "producing" and no way to see
+    # which part of it was slow. Nothing failed; the breakdown simply
+    # was not there.
     for st in (_pr.get("stages") or []):
-        if st.get("secs") is None:
+        _sec = st.get("seconds")
+        if _sec is None:
             continue
         _flow_phase(rep, "produce.%s" % st.get("n"),
-                    str(st.get("title") or "")[:120], st["secs"],
-                    count=st.get("count"), units=st.get("units"))
+                    str(st.get("title") or st.get("name") or "")[:120],
+                    _sec, count=st.get("count"), units=st.get("counts"))
 
+    # ══ PHASE 4. CLAIM WHAT THE RUN PRODUCED ═════════════════════
+    #
+    # DONE HERE, NOT DEEP IN THE PRODUCE. The produce path creates a
+    # clip, and then more than one later step can replace or supersede
+    # it; a link stamped at the moment of creation did not survive to
+    # the page. This runs after the produce has finished and settled,
+    # looks at what is actually there, and makes two separate claims
+    # about each clip:
+    #
+    #   flow_run_at   the flow produced this. Certain, and what the
+    #                 columns filter on.
+    #   audio_cut_id  this is swing N. Best effort, by time, and left
+    #                 unset when no cut window contains the clip --
+    #                 an empty swing number is a visible gap, a wrong
+    #                 one is not.
+    rep["n_claimed"], rep["n_matched"] = _claim_clips(db, row, rep["cuts"])
     rep["total_sec"] = round(_time.monotonic() - _t_run, 2)
     rep["ok"] = True
     return rep
+
+
+def _claim_clips(db, row, cuts) -> tuple[int, int]:
+    """Stamp this run's clips, and match each to its cut where it can."""
+    from datetime import datetime as _dt
+    try:
+        clips = (db.query(VideoClip)
+                 .filter(VideoClip.long_upload_id == row.id).all())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("flow: could not claim clips on %s: %s", row.id, exc)
+        return (0, 0)
+    base = row.base_captured_at
+    claimed = matched = 0
+    for c in clips:
+        c.flow_run_at = _dt.utcnow()
+        claimed += 1
+        if c.audio_cut_id or base is None or c.captured_at is None:
+            continue
+        # The clip's capture time is the recording's start plus where
+        # in it the clip begins, so the difference is its offset on the
+        # same clock the cuts were measured on.
+        try:
+            off = (c.captured_at - base).total_seconds()
+        except TypeError:
+            continue
+        # `cut`, not `hit`: a hit is what the DETECTOR reported and a
+        # cut is what was written from it. They are one line apart in
+        # this file and carry different keys.
+        cut = next((q for q in cuts
+                    if q.get("start_sec") is not None
+                    and float(q["start_sec"]) - 1.0 <= off
+                    <= float(q["end_sec"]) + 1.0), None)
+        if cut is None or cut.get("id") is None:
+            continue
+        c.audio_cut_id = cut["id"]
+        k = db.get(AudioCut, cut["id"])
+        if k is not None:
+            k.produced = True
+        matched += 1
+    try:
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        log.warning("flow: could not save the claim on %s: %s", row.id, exc)
+        return (0, 0)
+    log.info("flow: upload %s -- claimed %d clip(s), matched %d to a cut",
+             row.id, claimed, matched)
+    return (claimed, matched)
 
 
 def _hit_peak_sec(hit):

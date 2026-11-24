@@ -285,6 +285,19 @@ class VideoClip(Base):
     # what those clips are: produced automatically, nobody has looked.
     stage: Mapped[Optional[str]] = mapped_column(
         String(16), default="draft", nullable=True, index=True)
+    # ── PRODUCED BY THE PRODUCTION FLOW, as a fact of its own ───────
+    #
+    # SEPARATE FROM `audio_cut_id` BECAUSE THEY ARE DIFFERENT CLAIMS.
+    # This one says "the flow made this"; the cut id says "this is
+    # swing 3 of that recording". The second is best-effort -- it is
+    # refused outright when the swing cannot be identified with
+    # confidence, which is the right call -- and hanging the COLUMN
+    # on it meant a clip the flow had just produced vanished from the
+    # page whenever the swing was uncertain. The run said "1 draft"
+    # and the column said "0 clips", which is the page contradicting
+    # itself about work it had just done.
+    flow_run_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True, index=True)
     accepted_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True)
     accepted_by: Mapped[Optional[str]] = mapped_column(

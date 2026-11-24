@@ -72,6 +72,41 @@ check("the page renders each of them",
       ["title", "secs", "count", "units"].every(
         (f) => new RegExp(`p\\.${f}`).test(page)));
 
+console.log("\n3b. the produce's stages are read by the names it writes");
+{
+  // THE THIRD FIELD-NAME MISS ON THIS PAGE IN A WEEK. The produce
+  // writes `seconds` and `counts`; this file's own phases use `secs`
+  // and `units`. Reading the local names off a produce stage dropped
+  // every one of them through an `is None` guard, so a four-minute
+  // produce reported as a single unbroken row.
+  // EVERY append, not the first. They do not all carry the same keys
+  // -- one names its step `name` and the rest `title` -- and slicing
+  // to the first reported `name` as a key the produce never writes.
+  const written = [];
+  for (const m of admin.matchAll(/rep\["stages"\]\.append\(\{/g)) {
+    const blk = admin.slice(m.index, m.index + 600);
+    const end = blk.indexOf("})");
+    for (const k of (end > 0 ? blk.slice(0, end) : blk)
+      .matchAll(/"([a-z_]+)":/g)) {
+      if (!written.includes(k[1])) written.push(k[1]);
+    }
+  }
+  check("the produce's stage shapes were found", written.length > 4);
+  for (const f of ["n", "detail", "count", "counts", "seconds"]) {
+    check(`  it writes ${f}`, written.includes(f));
+  }
+  // What this file reads off one.
+  const read = [...flow.matchAll(/\bst\.get\("([a-z_]+)"\)/g)]
+    .map((m) => m[1]);
+  check("the flow reads something off a stage", read.length > 0);
+  check("and reads only names the produce writes",
+        read.filter((f) => !written.includes(f)), []);
+  check("...including the clock", read.includes("seconds"));
+  check("...and the unit", read.includes("counts"));
+  check("it does NOT read this file's own spelling",
+        /st\.get\("secs"\)|st\.get\("units"\)/.test(flow), false);
+}
+
 console.log("\n4. the cuts column prints fields the cut row serves");
 const cutKeys = new Set(
   [...page.matchAll(/\bk\.([a-z_]+)/g)].map((m) => m[1]));

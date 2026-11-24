@@ -62,9 +62,10 @@ def fresh():
     return db
 
 
-def a_clip(db, n=1):
+def a_clip(db, n=1, flow=True):
     c = VideoClip(id=n, course_id=1, hole_number=4, camera_type="tee",
                   captured_at=datetime.now(), long_upload_id=5,
+                  flow_run_at=datetime.utcnow() if flow else None,
                   source_url="http://x/%d.mp4" % n)
     db.add(c)
     db.commit()
@@ -239,10 +240,11 @@ check("the swing index travels to the page, not the row id", got[1], 2)
 # flow, and the columns show only what this flow produced -- so asking
 # what the page says about its swing number means asking for
 # everything first.
-check("a clip from no cut is not in the flow's own view", 2 in got, False)
+check("a clip the flow produced is shown even with no swing matched",
+      2 in got, True)
+check("...and says so rather than guessing a swing", got[2], None)
 _all = {r["id"]: r["cut_idx"] for r in flow_clips(flow_only=0, db=db)["clips"]}
-check("and when everything is asked for, it says so rather than guessing",
-      _all[2], None)
+check("and everything includes it too", 2 in _all, True)
 
 print("\n%s" % ("all ok" if not FAILED else "%d FAILED:\n  %s" % (
     len(FAILED), "\n  ".join(FAILED))))

@@ -380,17 +380,29 @@ export default function AdminProductionFlow() {
                 {k.trigger_zone != null
                   ? ` · ${zoneName(k.trigger_zone)}` : ""}
               </div>
+              {/* LINKS, NOT THUMBNAILS. A pair of 110px tiles of a
+                  dark tee box tells the operator nothing they could
+                  not read from the numbers above, and costs two video
+                  decodes per cut on a column that can hold dozens.
+                  The viewer is where a cut is actually watched. */}
               <div className="row" style={{ gap: 6, marginTop: 5,
                                             flexWrap: "wrap" }}>
-                {k.tee_url && (
-                  <video src={k.tee_url} controls preload="metadata"
-                         style={{ width: "48%", minWidth: 110,
-                                  borderRadius: 6, background: "#000" }} />
-                )}
+                <button type="button" className="btn ghost small"
+                        disabled={!k.tee_url}
+                        onClick={() => setViewer({
+                          url: k.tee_url,
+                          title: `#${k.long_upload_id} swing ${k.idx + 1}`
+                                 + " — tee" })}>
+                  tee angle
+                </button>
                 {k.green_url ? (
-                  <video src={k.green_url} controls preload="metadata"
-                         style={{ width: "48%", minWidth: 110,
-                                  borderRadius: 6, background: "#000" }} />
+                  <button type="button" className="btn ghost small"
+                          onClick={() => setViewer({
+                            url: k.green_url,
+                            title: `#${k.long_upload_id} swing ${k.idx + 1}`
+                                   + " — green" })}>
+                    green angle
+                  </button>
                 ) : (
                   <span className="tiny muted" style={{ alignSelf: "center" }}>
                     tee only
