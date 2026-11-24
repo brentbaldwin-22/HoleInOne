@@ -257,6 +257,7 @@ export default function AdminProductionFlow() {
                 <div className="tiny muted">
                   {fmtWhen(c.captured_at)}
                   {c.long_upload_id ? ` · from #${c.long_upload_id}` : ""}
+                  {c.cut_idx != null ? ` · swing ${c.cut_idx + 1}` : ""}
                 </div>
                 {c.url && (
                   <video src={c.url} controls preload="metadata"

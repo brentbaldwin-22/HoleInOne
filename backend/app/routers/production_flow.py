@@ -51,7 +51,7 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _clip_row(c: VideoClip, course_name=None) -> dict:
+def _clip_row(c: VideoClip, course_name=None, cut_idx=None) -> dict:
     return {
         "id": c.id,
         "hole_number": c.hole_number,
@@ -64,6 +64,13 @@ def _clip_row(c: VideoClip, course_name=None) -> dict:
         "vertical_url": c.vertical_url,
         "long_upload_id": c.long_upload_id,
         "audio_cut_id": c.audio_cut_id,
+        # WHICH SWING, not which cut row. The id is a database key and
+        # means nothing to the operator; "swing 3 of recording 118" is
+        # the fact they are after, and it is the whole reason the link
+        # exists. None where the produce path never recorded one --
+        # every clip produced before this existed, and any whose index
+        # join was refused as unsound.
+        "cut_idx": cut_idx,
         "stage": c.stage or "draft",
         "accepted_at": c.accepted_at.isoformat() if c.accepted_at else None,
         "accepted_by": c.accepted_by,
@@ -162,8 +169,14 @@ def flow_clips(stage: str = "draft", broadcast: str = "",
     rows = (q.order_by(VideoClip.captured_at.desc())
             .offset(max(0, offset)).limit(max(1, min(200, limit))).all())
     names = {c.id: c.name for c in db.query(Course).all()}
+    # One query for the page, not one per clip.
+    cut_ids = [c.audio_cut_id for c in rows if c.audio_cut_id]
+    idxs = (dict(db.query(AudioCut.id, AudioCut.idx)
+                 .filter(AudioCut.id.in_(cut_ids)).all())
+            if cut_ids else {})
     return {"stage": stage, "offset": offset, "limit": limit,
-            "clips": [_clip_row(c, names.get(c.course_id)) for c in rows]}
+            "clips": [_clip_row(c, names.get(c.course_id),
+                                idxs.get(c.audio_cut_id)) for c in rows]}
 
 
 @router.get("/cuts")
@@ -293,5 +306,67 @@ def record_cut(db, *, upload, idx, peak_time_sec=None, start_sec=None,
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         log.warning("flow: could not record the cut for upload %s idx %s: %s",
+                    getattr(upload, "id", None), idx, exc)
+        return None
+
+
+def link_produced_cut(db, *, upload, idx, clip, start_sec=None, end_sec=None,
+                      detector=None, zone=None) -> AudioCut | None:
+    """Tie a produced clip back to the swing it was cut from. Never raises.
+
+    Called from the produce path, which is the only place that knows
+    both halves of the fact. Two things follow from it: the cuts tab
+    can answer "what did nothing get made from?", which is the whole
+    reason that tab exists, and a produced clip can say which swing of
+    a three-minute recording it is rather than only which recording.
+
+    THE INDEX JOIN IS CHECKED, NOT ASSUMED. `idx` is the swing's slot
+    in edit_metrics; the cuts were keyed on the audio window that found
+    the swing. Those are the same number because the swings are built
+    from the windows -- but if they ever drift apart, linking anyway
+    would hand the operator a clip labelled with another swing's tee
+    box and time, which reads exactly like a correct answer. So when a
+    stored cut's peak sits outside the window this clip was produced
+    from, the mismatch is logged and NOTHING is linked. An empty cuts
+    column is a visible gap; a wrong one is not.
+    """
+    try:
+        k = (db.query(AudioCut)
+             .filter(AudioCut.long_upload_id == upload.id,
+                     AudioCut.idx == int(idx))
+             .one_or_none())
+        if (k is not None and k.peak_time_sec is not None
+                and start_sec is not None and end_sec is not None):
+            # A one-second margin, because the produce window is
+            # derived from the launch frame and the cut window from the
+            # audio peak: they are built differently and are not
+            # required to agree to the frame.
+            lo, hi = float(start_sec) - 1.0, float(end_sec) + 1.0
+            if not (lo <= float(k.peak_time_sec) <= hi):
+                log.warning(
+                    "flow: NOT linking upload %s swing %s to cut %s -- the "
+                    "cut's peak is at %.2fs but the clip was produced from "
+                    "%.2fs..%.2fs. The swing slots and the audio windows "
+                    "have drifted apart; the cuts tab will show this swing "
+                    "as unproduced rather than name the wrong one.",
+                    upload.id, idx, k.id, float(k.peak_time_sec),
+                    float(start_sec), float(end_sec))
+                return None
+        k = record_cut(db, upload=upload, idx=idx, start_sec=start_sec,
+                       end_sec=end_sec, detector=detector, zone=zone,
+                       duration_sec=(round(float(end_sec) - float(start_sec), 2)
+                                     if start_sec is not None
+                                     and end_sec is not None else None))
+        if k is None:
+            return None
+        k.produced = True
+        k.produce_error = None
+        if clip is not None and getattr(clip, "id", None) is not None:
+            clip.audio_cut_id = k.id
+        db.commit()
+        return k
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        log.warning("flow: could not link upload %s swing %s to its cut: %s",
                     getattr(upload, "id", None), idx, exc)
         return None

@@ -21626,6 +21626,29 @@ def run_image_sweep(
     return retention.sweep_derived_images(hours=hours, dry_run=dry_run)
 
 
+@router.post("/storage/cuts")
+def run_cut_sweep(
+    dry_run: bool = True,
+    db: Session = Depends(get_db),
+):
+    """Delete audio cuts past their expiry, and the MP4s they point at.
+
+    The three sweeps beside this one walk the clips folder with
+    `iterdir()`, so none of them has ever looked inside the test-cut
+    subdirectory -- which meant the expiry stamped on every cut was
+    decoration, and two camera angles per swing accumulated there with
+    nothing to remove them.
+
+    Keeps a row a produced clip points at, without its files: the
+    footage is scratch, but which swing of a three-minute recording a
+    clip came from is the one thing in the row worth a few bytes. Dry
+    run by default, like its siblings.
+    """
+    from ..services import retention
+
+    return retention.sweep_audio_cuts(db, dry_run=dry_run)
+
+
 @router.get("/storage")
 def storage_usage():
     """Disk headroom and what is sitting on it, by category.
@@ -38965,6 +38988,32 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
             db.add(clip)
             db.flush()
             participant = match_clip(db, clip)
+
+            # ── AND TIE IT BACK TO THE SWING IT WAS CUT FROM ──────
+            #
+            # One three-minute recording can spawn four produced
+            # clips, so "which upload" stopped identifying a clip the
+            # moment multi-swing produce existed. This records which
+            # SWING it is, which is what lets the cuts tab answer the
+            # question it exists for: which swings did nothing get
+            # made from?
+            #
+            # `_slot`, not `i`: a single-swing produce hands over one
+            # swing that may be number seven, and `i` would be 0.
+            # Detector is left unset rather than filled in with the
+            # name of this code path -- that column names the cutter
+            # that FOUND the swing, and inventing a value for it would
+            # make produced cuts incomparable with the ones a cutter
+            # actually recorded.
+            try:
+                from .production_flow import link_produced_cut as _link
+                _link(db, upload=row, idx=_slot, clip=clip,
+                      start_sec=round(float(t0), 2),
+                      end_sec=round(float(t1), 2),
+                      zone=_trigger_zone(db, row))
+            except Exception as _lx:  # noqa: BLE001
+                log.warning("d3 produce: swing %s: could not record the "
+                            "cut it came from: %s", i, _lx)
 
             # ── graphics ──────────────────────────────────────────
             # What the course says about this hole -- its par and its

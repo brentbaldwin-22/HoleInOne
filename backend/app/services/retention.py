@@ -479,6 +479,121 @@ def sweep_to_headroom(
     return report
 
 
+def sweep_audio_cuts(
+    db: Session,
+    *,
+    dry_run: bool = True,
+    clips_dir: Path | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Drop audio cuts past their expiry, and the MP4s they point at.
+
+    These live in a SUBDIRECTORY of the clips folder, and all three
+    sweeps above walk `iterdir()`, not `rglob()` -- so nothing up there
+    has ever seen a test cut, and before this the expiry on an
+    AudioCut row was decoration. Two camera angles per swing at a few
+    megabytes each is the bulkiest thing in the flow that nobody
+    intends to keep.
+
+    CLEARS THE COLUMNS IT EMPTIES. The cuts tab builds a playable URL
+    from whatever `tee_filename` holds, so a row left pointing at a
+    file this sweep deleted would offer the operator a link that looks
+    like a cut and plays nothing.
+
+    AND KEEPS A ROW A PRODUCED CLIP POINTS AT. The footage is scratch;
+    the record of which swing of a three-minute recording a clip came
+    from is not, and it costs a row. Such a row survives the sweep
+    without its files.
+    """
+    from ..models import AudioCut, VideoClip
+
+    directory = clips_dir or CLIPS_DIR
+    stamp = now or datetime.utcnow()
+    report: dict = {
+        "dry_run": dry_run, "clips_dir": str(directory),
+        "expired": 0, "rows_deleted": 0, "rows_kept_for_clips": 0,
+        "files_deleted": 0, "bytes": 0, "errors": 0, "sample": [],
+    }
+
+    try:
+        expired = (db.query(AudioCut)
+                   .filter(AudioCut.expires_at.isnot(None),
+                           AudioCut.expires_at <= stamp)
+                   .all())
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        report["skipped"] = f"could not read the cuts: {exc}"
+        log.warning("retention: %s", report["skipped"])
+        return report
+
+    report["expired"] = len(expired)
+    if not expired:
+        return report
+
+    linked = {
+        cid for (cid,) in db.query(VideoClip.audio_cut_id)
+        .filter(VideoClip.audio_cut_id.isnot(None)).distinct()
+    }
+
+    for k in expired:
+        for field in ("tee_filename", "green_filename"):
+            name = getattr(k, field, None)
+            if not name:
+                continue
+            try:
+                path = (directory / name).resolve()
+                # The column is written by this application, but it
+                # names a path on disk: a value with a `..` in it must
+                # not reach outside the clips folder.
+                if directory.resolve() not in path.parents:
+                    log.warning("retention: refusing to delete %s -- "
+                                "outside %s", path, directory)
+                    report["errors"] += 1
+                    continue
+                if path.is_file():
+                    size = path.stat().st_size
+                    if len(report["sample"]) < 25:
+                        report["sample"].append(
+                            {"cut": k.id, "name": name,
+                             "mb": round(size / 1e6, 2)})
+                    if not dry_run:
+                        path.unlink()
+                    report["files_deleted"] += 1
+                    report["bytes"] += size
+                if not dry_run:
+                    setattr(k, field, None)
+            except OSError as exc:
+                report["errors"] += 1
+                log.warning("retention: could not delete cut file %s: %s",
+                            name, exc)
+
+        if k.id in linked:
+            report["rows_kept_for_clips"] += 1
+            continue
+        report["rows_deleted"] += 1
+        if not dry_run:
+            db.delete(k)
+
+    if not dry_run:
+        try:
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            report["errors"] += 1
+            report["skipped"] = f"could not save: {exc}"
+            log.warning("retention: cut sweep could not save: %s", exc)
+            return report
+
+    report["gb"] = round(report["bytes"] / 1e9, 3)
+    log.info(
+        "retention: cuts %s -- %d expired, %d row(s) dropped, %d kept for "
+        "produced clips, %d file(s) / %.2f GB, %d error(s)",
+        "dry run" if dry_run else "sweep", report["expired"],
+        report["rows_deleted"], report["rows_kept_for_clips"],
+        report["files_deleted"], report["bytes"] / 1e9, report["errors"])
+    return report
+
+
 def start_retention_sweeper(interval_sec: float = SWEEP_INTERVAL_SEC) -> None:
     """Run sweep_clips on a loop. Idempotent to start.
 
@@ -514,6 +629,11 @@ def start_retention_sweeper(interval_sec: float = SWEEP_INTERVAL_SEC) -> None:
                 # below usually find the disk already fine, and a round
                 # of golf is never deleted to make room for a cache.
                 sweep_derived_images(dry_run=False)
+                # EXPIRED CUTS NEXT, for the same reason: a cut past
+                # its expiry is footage nobody intends to keep, so it
+                # goes before anything that is still inside its
+                # horizon.
+                sweep_audio_cuts(db, dry_run=False)
                 sweep_clips(db, dry_run=False)
                 # AGE FIRST, THEN SIZE. The horizon expresses what is
                 # worth keeping; the floor expresses what is
