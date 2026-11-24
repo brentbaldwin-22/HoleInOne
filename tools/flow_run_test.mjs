@@ -107,6 +107,61 @@ console.log("\n3b. the produce's stages are read by the names it writes");
         /st\.get\("secs"\)|st\.get\("units"\)/.test(flow), false);
 }
 
+console.log("\n3c. every status line says which column it belongs to");
+{
+  // ONE STRING, FOUR COLUMNS. The background runner carries a single
+  // `stage`, so the runner tags each line with its phase and the page
+  // splits on it. If the two ever disagree about the separator or the
+  // names, every line lands on the recording's card and the columns
+  // narrate nothing -- which looks exactly like a run that is not
+  // reporting progress.
+  const tagged = [...flow.matchAll(/_phased\(progress, "([a-z]+)"\)/g)]
+    .map((m) => m[1]);
+  check("the run tags its phases", tagged.sort(), ["audio", "cut", "produce"]);
+  check("the produce's own lines are tagged too",
+        /_produce_run\(row, src_path, db, progress=_say\)/.test(flow));
+  check("the tag is a prefix on the stage string",
+        /progress\("%s\|%s" % \(phase, stage\)/.test(flow));
+  // And the page splits on the same character.
+  check("the page splits on it", /indexOf\("\|"\)/.test(page));
+  const want = [...page.matchAll(/phase="([a-z]+)"/g)].map((m) => m[1]);
+  check("and listens for exactly those phases",
+        [...new Set(want)].sort(), ["audio", "cut", "produce"]);
+  check("an untagged line keeps its whole text",
+        /return \{ phase: null, text: stage \|\| "" \}/.test(page));
+}
+
+console.log("\n3d. the columns refresh while the run is still going");
+{
+  check("there is a light tick, not a full reload",
+        /const loadLive = useCallback/.test(page));
+  check("it refetches the cuts", /api\.flowCuts\(adminPassword[\s\S]{0,120}?\)/
+    .test(page.slice(page.indexOf("const loadLive"),
+                     page.indexOf("const loadLive") + 700)));
+  check("...and runs on every poll while running",
+        /if \(st\?\.running\) \{\s*\n\s*await loadLive\(uploadId\);/
+          .test(page));
+  check("...and is dropped when the run ends",
+        /setLiveDrafts\(null\);/.test(page));
+  // The drafts are asked for unfiltered BY UPLOAD during a run,
+  // because the flow stamp is not applied until the run settles.
+  check("live drafts are asked for by upload", /uploadId, flowOnly: false/
+    .test(page));
+  // AND ONLY SHOWN ONCE THE PRODUCE HAS STARTED. The unfiltered fetch
+  // is safe only because a produce clears the upload's old clips --
+  // which happens when the PRODUCE starts, not when the run does.
+  // Shown during the cutting phase it would put another pipeline's
+  // clips under a heading that says this run made them.
+  check("...and only used once the produce has started",
+        /phaseOf\(liveRun\?\.stage\)\.phase === "produce"/.test(page));
+  check("...which is what gates the draft source",
+        /producing && liveDrafts \? liveDrafts : drafts/.test(page));
+  check("and the endpoint accepts that filter",
+        /upload_id: int = 0/.test(flow));
+  check("...and applies it",
+        /VideoClip\.long_upload_id == upload_id/.test(flow));
+}
+
 console.log("\n4. the cuts column prints fields the cut row serves");
 const cutKeys = new Set(
   [...page.matchAll(/\bk\.([a-z_]+)/g)].map((m) => m[1]));

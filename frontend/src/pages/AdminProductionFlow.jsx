@@ -36,6 +36,38 @@ import { zoneName } from "../zones.js";
 
 const POLL_MS = 2500;
 
+/*
+ * WHICH COLUMN A STATUS LINE BELONGS TO.
+ *
+ * The background runner carries one `stage` string and this page has
+ * four columns, so the runner tags each line with its phase --
+ * "cut|Cutting strike 2 of 5". Untagged lines are the runner's own
+ * ("starting", "queued behind 2 uploads"), which belong on the
+ * recording's card where the button was pressed.
+ */
+function phaseOf(stage) {
+  const i = (stage || "").indexOf("|");
+  if (i < 0) return { phase: null, text: stage || "" };
+  return { phase: stage.slice(0, i), text: stage.slice(i + 1) };
+}
+
+/** The live status line for one column, or null. */
+function Working({ run, phase }) {
+  if (!run?.running) return null;
+  const { phase: p, text } = phaseOf(run.stage);
+  if (p !== phase) return null;
+  return (
+    <div className="card tight" style={{ margin: 0 }}>
+      <div className="tiny">
+        <span className="pill small">working</span>{" "}
+        {text || "…"}
+        {run.total ? ` · ${run.done ?? 0} of ${run.total}` : ""}
+      </div>
+      <div className="shimmer" style={{ height: 3, marginTop: 6 }} />
+    </div>
+  );
+}
+
 function fmtWhen(iso) {
   if (!iso) return "—";
   const d = new Date(iso.endsWith("Z") ? iso : `${iso}Z`);
@@ -119,6 +151,7 @@ export default function AdminProductionFlow() {
   const [err, setErr] = useState(null);
   const [acting, setActing] = useState(null);
   const [runs, setRuns] = useState({});       // uploadId -> status blob
+  const [liveDrafts, setLiveDrafts] = useState(null);
   const [viewer, setViewer] = useState(null);
   const [focus, setFocus] = useState(0);      // which recording, 0 = all
   const polling = useRef(new Set());
@@ -141,6 +174,32 @@ export default function AdminProductionFlow() {
 
   useEffect(() => { load(); }, [load]);
 
+  // WHILE A RUN IS GOING, only the two columns it is filling.
+  //
+  // The point of the tick is that the operator can watch the cuts
+  // arrive and review them while the produce is still running, so it
+  // has to be cheap enough to run every couple of seconds: the raw
+  // list probes a video file per row for its duration and has not
+  // changed anyway.
+  //
+  // THE DRAFTS ARE ASKED FOR BY UPLOAD AND UNFILTERED, because the
+  // flow stamp is not applied until the run finishes and settles --
+  // deliberately, since a clip row can be superseded on its way
+  // there. A produce CLEARS the upload's existing clips before it
+  // writes any, so while one is running every clip on that upload is
+  // this run's work, and showing them is not a guess.
+  const loadLive = useCallback(async (uploadId) => {
+    try {
+      const [c, k, d] = await Promise.all([
+        api.flowCounts(adminPassword),
+        api.flowCuts(adminPassword, { limit: 120 }),
+        api.flowClips(adminPassword, { stage: "draft", limit: 60,
+                                       uploadId, flowOnly: false }),
+      ]);
+      setCounts(c); setCuts(k.cuts); setLiveDrafts(d.clips);
+    } catch { /* a tick that fails is a tick; the next one will do */ }
+  }, [adminPassword]);
+
   // A run is minutes of work on a thread, so the page asks how it is
   // going rather than waiting on the request that started it.
   const poll = useCallback((uploadId) => {
@@ -150,15 +209,20 @@ export default function AdminProductionFlow() {
       try {
         const st = await api.flowStatus(adminPassword, uploadId);
         setRuns((s) => ({ ...s, [uploadId]: st }));
-        if (st?.running) { setTimeout(tick, POLL_MS); return; }
+        if (st?.running) {
+          await loadLive(uploadId);
+          setTimeout(tick, POLL_MS);
+          return;
+        }
         polling.current.delete(uploadId);
+        setLiveDrafts(null);
         await load();
       } catch {
         polling.current.delete(uploadId);
       }
     };
     setTimeout(tick, 600);
-  }, [adminPassword, load]);
+  }, [adminPassword, load, loadLive]);
 
   async function start(uploadId) {
     setActing(`raw-${uploadId}`); setErr(null);
@@ -195,8 +259,27 @@ export default function AdminProductionFlow() {
   const keep = (list, uploadId) =>
     (focus ? (list || []).filter((x) => uploadId(x) === focus) : (list || []));
 
+  // The run the columns are narrating: the one being followed, or
+  // whichever is going if nothing is.
+  const liveId = Number(
+    Object.keys(runs).find((id) => runs[id]?.running
+      && (!focus || Number(id) === focus)) || 0);
+  const liveRun = liveId ? runs[liveId] : null;
+
   const shownCuts = keep(cuts, (k) => k.long_upload_id);
-  const shownDrafts = keep(drafts, (c) => c.long_upload_id);
+  // ONLY ONCE IT IS ACTUALLY PRODUCING.
+  //
+  // The live draft fetch is unfiltered by design: the flow stamp the
+  // column normally filters on is not applied until the run settles.
+  // That is only safe to show because a produce CLEARS the upload's
+  // existing clips before it writes any -- and it does that when the
+  // produce STARTS, not when the run does. Using it during the audio
+  // and cutting phases would put clips from some older pipeline in a
+  // column headed "produced by this run", for as long as those phases
+  // take.
+  const producing = phaseOf(liveRun?.stage).phase === "produce";
+  const draftSource = producing && liveDrafts ? liveDrafts : drafts;
+  const shownDrafts = keep(draftSource, (c) => c.long_upload_id);
   const shownFinals = keep(finals, (c) => c.long_upload_id);
 
   return (
@@ -304,10 +387,21 @@ export default function AdminProductionFlow() {
                     : acting === `raw-${r.id}` ? "starting…"
                       : "Start production flow"}
                 </button>
-                {busy && (
+                {/* Only the runner's OWN lines -- "starting", "queued
+                    behind 2 uploads". Everything tagged with a phase
+                    belongs over the column doing that work, which is
+                    the point of following a run across the page. */}
+                {busy && !phaseOf(run?.stage).phase && (
                   <div className="tiny muted" style={{ marginTop: 4 }}>
-                    {run?.stage || "working"}
+                    {phaseOf(run?.stage).text || "working"}
                     {run?.total ? ` · ${run.done ?? 0} of ${run.total}` : ""}
+                  </div>
+                )}
+                {busy && phaseOf(run?.stage).phase && (
+                  <div className="tiny muted" style={{ marginTop: 4 }}>
+                    running · see the{" "}
+                    {phaseOf(run?.stage).phase === "produce"
+                      ? "draft" : "cuts"} column
                   </div>
                 )}
                 {/* `report`, which is what the runner stores. It was
@@ -353,9 +447,11 @@ export default function AdminProductionFlow() {
                 blurb="What the microphone heard, cut to size on both
                        angles. No swing judgement — only that it cleared
                        this tee box's gates.">
+          <Working run={liveRun} phase="audio" />
+          <Working run={liveRun} phase="cut" />
           {cuts === null && <div className="card tight"><div className="shimmer"
             style={{ height: 90 }} /></div>}
-          {cuts?.length === 0 && (
+          {cuts?.length === 0 && !liveRun && (
             <div className="card tight"><p className="tiny muted">
               Nothing cut yet. Start the flow on a recording.</p></div>
           )}
@@ -424,9 +520,10 @@ export default function AdminProductionFlow() {
                        ascent, then the ball on the green if it is
                        there, then tracer and graphics. Nobody has
                        looked yet.">
+          <Working run={liveRun} phase="produce" />
           {drafts === null && <div className="card tight">
             <div className="shimmer" style={{ height: 120 }} /></div>}
-          {drafts?.length === 0 && (
+          {shownDrafts.length === 0 && !liveRun && (
             <div className="card tight"><p className="tiny muted">
               No drafts yet.</p></div>
           )}

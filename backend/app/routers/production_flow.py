@@ -149,7 +149,7 @@ def flow_counts(db: Session = Depends(get_db)):
 @router.get("/clips")
 def flow_clips(stage: str = "draft", broadcast: str = "",
                course_id: int = 0, limit: int = 60, offset: int = 0,
-               flow_only: int = 1,
+               flow_only: int = 1, upload_id: int = 0,
                db: Session = Depends(get_db)):
     """Clips in one stage. `broadcast` filters on the independent fact.
 
@@ -163,6 +163,8 @@ def flow_clips(stage: str = "draft", broadcast: str = "",
     it came from; nothing else does.
     """
     q = db.query(VideoClip)
+    if upload_id:
+        q = q.filter(VideoClip.long_upload_id == upload_id)
     if flow_only:
         # THE FLOW STAMP, NOT THE SWING LINK. Filtering on the cut id
         # hid every clip whose swing could not be identified -- which
@@ -502,6 +504,27 @@ FLOW_CUT_POST_SEC = 8.0
 FLOW_CUTS_SUBDIR = "_flowcuts"
 
 
+def _phased(progress, phase):
+    """Tag every progress line with the column it belongs to.
+
+    The runner reports one `stage` string and the page has four
+    columns. Without a tag the operator gets "Cutting strike 2 of 5"
+    floating over a card in the first column while the work it
+    describes belongs in the second, and once the produce starts its
+    own lines arrive with no way to tell them from the cutter's.
+
+    A prefix rather than a new field because the background runner
+    carries exactly one string; adding a field would mean changing the
+    runner every other job in the console shares.
+    """
+    if progress is None:
+        return None
+
+    def _p(stage, done=0, total=0):
+        progress("%s|%s" % (phase, stage), done, total)
+    return _p
+
+
 def _flow_phase(rep, name, title, secs, detail="", count=None, units=None):
     rep["phases"].append({"name": name, "title": title,
                           "secs": round(float(secs), 2), "detail": detail,
@@ -529,8 +552,9 @@ def flow_run(row, src_path, db, progress=None) -> dict:
 
     # ══ PHASE 1. WHAT THE MICROPHONE HEARD ════════════════════════
     _t = _time.monotonic()
-    if progress:
-        progress("Listening for strikes", 0, 0)
+    _say = _phased(progress, "audio")
+    if _say:
+        _say("Listening for strikes", 0, 0)
     dbg: dict = {}
     fps = float(probe_fps(src_path) or 0.0) or 30.0
     try:
@@ -581,10 +605,11 @@ def flow_run(row, src_path, db, progress=None) -> dict:
     except Exception:  # noqa: BLE001
         pass
 
+    _say = _phased(progress, "cut")
     for idx, hit in enumerate(hits):
-        if progress:
-            progress("Cutting strike %d of %d" % (idx + 1, len(hits)),
-                     idx, len(hits))
+        if _say:
+            _say("Cutting strike %d of %d" % (idx + 1, len(hits)),
+                 idx, len(hits))
         _peak = _hit_peak_sec(hit)
         _of = hit.get if isinstance(hit, dict) else (lambda _k: None)
         if _peak is None:
@@ -646,11 +671,14 @@ def flow_run(row, src_path, db, progress=None) -> dict:
 
     # ══ PHASE 3. PRODUCE A DRAFT FROM EACH ════════════════════════
     _t = _time.monotonic()
-    if progress:
-        progress("Producing", 0, 0)
+    _say = _phased(progress, "produce")
+    if _say:
+        _say("Producing", 0, 0)
     try:
         from .admin import _produce_run
-        _pr = _produce_run(row, src_path, db, progress=progress)
+        # The produce's own lines come through tagged too, so they land
+        # in the draft column rather than under the cutter.
+        _pr = _produce_run(row, src_path, db, progress=_say)
     except Exception as exc:  # noqa: BLE001
         log.exception("flow: produce failed on %s: %s", row.id, exc)
         _pr = {"ok": False, "reason": "%s: %s" % (type(exc).__name__, exc)}

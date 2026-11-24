@@ -513,10 +513,13 @@ export const api = {
   flowCounts: (key) => request("/api/admin/flow/counts",
                                { adminPassword: key }),
   flowClips: (key, { stage = "draft", broadcast = "", courseId = 0,
-                     limit = 60, offset = 0 } = {}) => {
+                     limit = 60, offset = 0, uploadId = 0,
+                     flowOnly = null } = {}) => {
     const p = new URLSearchParams({ stage, limit, offset });
     if (broadcast !== "") p.set("broadcast", broadcast);
     if (courseId) p.set("course_id", courseId);
+    if (uploadId) p.set("upload_id", uploadId);
+    if (flowOnly !== null) p.set("flow_only", flowOnly ? "1" : "0");
     return request(`/api/admin/flow/clips?${p}`, { adminPassword: key });
   },
   flowCuts: (key, { uploadId = 0, produced = "", limit = 80,
