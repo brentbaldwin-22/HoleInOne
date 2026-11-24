@@ -30,9 +30,17 @@ function grab(name) {
   throw new Error(`${name} did not close`);
 }
 
+// `zoneWords` moved to frontend/src/zones.js when the Long upload /
+// Test Cut page grew a zone filter of its own. IMPORTED, not scraped:
+// it is a real module now, so the test can load the thing that ships
+// rather than a copy cut out of a page by brace-counting.
+const { zoneWords } = await import(
+  new URL("../frontend/src/zones.js", import.meta.url).href);
 const mod = await import(
   "data:text/javascript," + encodeURIComponent(
-    `${grab("zoneWords")}\n${grab("rigTrigger")}\n`
+    `import { zoneWords } from ${JSON.stringify(
+      new URL("../frontend/src/zones.js", import.meta.url).href)};\n`
+    + `${grab("rigTrigger")}\n`
     + `export { rigTrigger, zoneWords };`));
 
 const zoneWordsOf = (d) => mod.zoneWords(d);

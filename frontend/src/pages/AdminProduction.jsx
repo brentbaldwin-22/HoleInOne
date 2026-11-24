@@ -19,6 +19,7 @@
  */
 import { Component, useCallback, useEffect, useMemo, useRef, useState }
   from "react";
+import { growZoneOptions, zoneWords } from "../zones";
 import { Link } from "react-router-dom";
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
@@ -9865,13 +9866,11 @@ function DistanceToPinModal({ row, slot, adminPassword, onClose, onSaved }) {
  * a different piece of grass. Only the on-screen number is any use
  * here, because it is the one printed on the box they drew.
  */
-function zoneWords(detail) {
-  if (!detail) return null;
-  const { zone, zone_label: label } = detail;
-  const onScreen = zone == null ? null : `Zone ${Number(zone) + 1}`;
-  if (label && onScreen) return `${label} (${onScreen})`;
-  return label || onScreen || null;
-}
+// `zoneWords` now lives in ../zones, shared with the Long upload /
+// Test Cut page, which grew a zone filter of its own. Two copies of a
+// +1 convention is two chances to drift, and a filter whose options
+// are labelled differently from the one on the next screen is worse
+// than no filter: both look authoritative.
 
 function rigTrigger(detail) {
   if (!detail || typeof detail !== "object") return null;
@@ -19034,25 +19033,8 @@ export default function AdminProduction() {
   const zonesSeenRef = useRef(new Map());
   const [zoneOpts, setZoneOpts] = useState([]);
   useEffect(() => {
-    if (!Array.isArray(rows)) return;
-    let grew = false;
-    for (const r of rows) {
-      const d = r?.source?.trigger_detail;
-      // ZONE 0 IS A ZONE; `if (!d?.zone)` would drop it.
-      if (!d || d.zone == null) continue;
-      const k = String(d.zone);
-      const label = d.zone_label || "";
-      const prev = zonesSeenRef.current.get(k);
-      if (prev === undefined || (!prev && label)) {
-        zonesSeenRef.current.set(k, label);
-        grew = true;
-      }
-    }
-    if (grew) {
-      setZoneOpts(
-        Array.from(zonesSeenRef.current.entries())
-          .sort((a, b) => Number(a[0]) - Number(b[0])));
-    }
+    const grown = growZoneOptions(zonesSeenRef.current, rows);
+    if (grown) setZoneOpts(grown);
   }, [rows]);
   const events = eventsList.items;
   // Hide uploads whose raw source is gone (e.g. a dev deployment that

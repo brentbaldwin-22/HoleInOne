@@ -14,11 +14,11 @@
 import { readFileSync } from "node:fs";
 
 const src = readFileSync(
-  new URL("../frontend/src/pages/AdminCameras.jsx", import.meta.url), "utf8");
+  new URL("../frontend/src/components/TriggerLine.jsx", import.meta.url), "utf8");
 
 function grab(name) {
   const i = src.indexOf(`function ${name}(`);
-  if (i < 0) throw new Error(`${name} not found in AdminCameras.jsx`);
+  if (i < 0) throw new Error(`${name} not found in components/TriggerLine.jsx`);
   let d = 0, started = false;
   for (let j = i; j < src.length; j++) {
     if (src[j] === "{") { d++; started = true; }

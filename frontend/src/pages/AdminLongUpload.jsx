@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { growZoneOptions, zoneName } from "../zones";
 import { Link } from "react-router-dom";
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
@@ -78,6 +79,21 @@ export default function AdminLongUpload() {
   // paginated, so filtering the rows already loaded would answer
   // "audio" with however many of those happened to be audio.
   const [triggerKind, setTriggerKind] = useState("");
+  // ── WHICH BOX ON THE TEE FIRED IT ───────────────────────────────
+  //
+  // ANSWERED IN SQL, NOT IN THE BROWSER, for the same reason the
+  // trigger filter is: this list is capped at a hundred rows, so a
+  // filter applied to the rows already loaded would answer "zone 3"
+  // with however many of THOSE were zone 3 and call it the lot.
+  //
+  // The options are built from the rows that come back rather than
+  // from the camera's zone list: a zone that has never fired is a
+  // filter that can only ever return nothing, and the zones are
+  // redrawn most mornings so yesterday's numbering is not a safe
+  // thing to print.
+  const [zoneFilter, setZoneFilter] = useState("");
+  const [zoneOpts, setZoneOpts] = useState([]);
+  const zonesSeenRef = useRef(new Map());
   const [reprocessing, setReprocessing] = useState({}); // {id: true}
   const [testCutting, setTestCutting] = useState({}); // {id: true}
   const [testCutResults, setTestCutResults] = useState({}); // {id: {detector, cuts, ...}}
@@ -157,7 +173,7 @@ export default function AdminLongUpload() {
     if (!adminPassword) return;
     refreshPriorUploads();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [triggerKind]);
+  }, [triggerKind, zoneFilter]);
 
   useEffect(() => {
     if (!adminPassword || !anyProcessing) return;
@@ -170,8 +186,15 @@ export default function AdminLongUpload() {
     try {
       const list = await api.listLongUploads(adminPassword, 100, 0, {
         trigger: triggerKind,
+        zone: zoneFilter,
       });
       setPriorUploads(list);
+      // GROWN, NEVER REBUILT. Once the list is narrowed to one zone
+      // the reply only contains that zone, and rebuilding the options
+      // from it would leave the select holding the single value that
+      // is already chosen — no way back without a reload.
+      const grown = growZoneOptions(zonesSeenRef.current, list);
+      if (grown) setZoneOpts(grown);
     } catch (e) {
       // Non-fatal — fall back to the upload form alone.
       setPriorUploads([]);
@@ -467,7 +490,8 @@ export default function AdminLongUpload() {
         </div>
       )}
 
-      {priorUploads && (priorUploads.length > 0 || triggerKind) && (
+      {priorUploads
+        && (priorUploads.length > 0 || triggerKind || zoneFilter !== "") && (
         <div className="card">
           <h3 style={{ marginBottom: 6 }}>Previous long uploads</h3>
           <p className="small muted" style={{ marginBottom: 10 }}>
@@ -496,16 +520,62 @@ export default function AdminLongUpload() {
               <option value="manual">Manual trigger</option>
             </select>
           </label>
-          {triggerKind && (
+          {/* ONLY THE ZONES THAT HAVE ACTUALLY FIRED. A select listing
+              every box drawn on the camera offers filters that can
+              only return nothing, and the boxes are redrawn most
+              mornings, so the camera's current numbering is not a
+              safe thing to print beside clips cut last week. */}
+          {zoneOpts.length > 0 && (
+            <label
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                marginBottom: 10, marginLeft: 12,
+              }}
+            >
+              <span className="tiny upper muted">Zone</span>
+              <select
+                value={zoneFilter}
+                onChange={(e) => setZoneFilter(e.target.value)}
+                className="small"
+                style={{ width: "auto" }}
+                title={
+                  "Which trigger box on the tee fired the clip.\n\n"
+                  + "The numbers are the ones printed on the boxes in "
+                  + "the zone editor. The rig stores them counting "
+                  + "from 0, so what it logs as 'zone 2' is the box "
+                  + "labelled Zone 3 here."
+                }
+              >
+                <option value="">All zones</option>
+                {zoneOpts.map(([idx, label]) => (
+                  <option key={idx} value={idx}>
+                    {zoneName(idx, label)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {(triggerKind || zoneFilter !== "") && (
             <p className="small muted" style={{ marginBottom: 10 }}>
-              Showing only {triggerKind}-triggered clips. An upload with no
-              recorded trigger — anything put here by hand — is not in this
-              list.
+              Showing only
+              {triggerKind ? ` ${triggerKind}-triggered` : ""}
+              {zoneFilter !== ""
+                ? ` ${zoneName(zoneFilter,
+                               (zoneOpts.find(
+                                 ([i]) => i === zoneFilter) || [])[1])}`
+                : ""}
+              {" "}clips. An upload with no recorded
+              {zoneFilter !== "" ? " zone" : " trigger"} — anything put
+              here by hand — is not in this list.
             </p>
           )}
           {priorUploads.length === 0 && (
             <p className="small muted">
-              No {triggerKind}-triggered uploads.
+              No uploads match
+              {triggerKind ? ` ${triggerKind}` : ""}
+              {zoneFilter !== ""
+                ? ` ${zoneName(zoneFilter)}`
+                : ""}.
             </p>
           )}
           <div className="stack" style={{ gap: 8 }}>
