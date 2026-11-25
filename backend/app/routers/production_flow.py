@@ -196,8 +196,43 @@ def flow_clips(stage: str = "draft", broadcast: str = "",
     idxs = (dict(db.query(AudioCut.id, AudioCut.idx)
                  .filter(AudioCut.id.in_(cut_ids)).all())
             if cut_ids else {})
-    out = [_clip_row(c, names.get(c.course_id), idxs.get(c.audio_cut_id))
-           for c in rows]
+    # ── WHICH FRAMES EACH DRAFT WAS CUT FROM ───────────────────────
+    #
+    # The clip's own record of the window it covers and the impact it
+    # is a record of. Put on the card because "did the produce cut the
+    # right seconds?" was otherwise answerable only by opening the
+    # edit wizard and reading a scrubber against a panel -- which is
+    # how a clip cut around another swing's ascent went unnoticed
+    # through several runs.
+    _ups = {r.long_upload_id for r in rows if r.long_upload_id}
+    _sw_by_clip: dict = {}
+    if _ups:
+        for _u in (db.query(LongVideoUpload)
+                   .filter(LongVideoUpload.id.in_(_ups)).all()):
+            for _sw in ((_u.edit_metrics or {}).get("swings") or []):
+                _cid = _sw.get("clip_id")
+                if _cid is not None:
+                    _sw_by_clip[int(_cid)] = _sw
+    out = []
+    for c in rows:
+        _r = _clip_row(c, names.get(c.course_id), idxs.get(c.audio_cut_id))
+        _sw = _sw_by_clip.get(c.id) or {}
+        _r["cut_frames"] = ([_sw.get("start_frame"), _sw.get("end_frame")]
+                            if _sw.get("start_frame") is not None else None)
+        _r["impact_frame"] = _sw.get("impact_frame")
+        # THE CONTRADICTION, ON THE CARD. Worked out here rather than
+        # read off the record: a flag the produce stamped only appears
+        # on clips produced since it existed, and the clip somebody is
+        # staring at is usually an older one.
+        _i, _lo, _hi = (_sw.get("impact_frame"), _sw.get("start_frame"),
+                        _sw.get("end_frame"))
+        _r["frames_disagree"] = None
+        if _i is not None and _lo is not None and _hi is not None:
+            if not (int(_lo) <= int(_i) <= int(_hi)):
+                _r["frames_disagree"] = (
+                    "cut f%d–f%d, which does not contain its own impact "
+                    "at f%d" % (int(_lo), int(_hi), int(_i)))
+        out.append(_r)
     # The day and group each clip belongs to, worked out over the page
     # that is being shown. Said once, on the server, because a second
     # implementation of "which group is this" in the browser is a

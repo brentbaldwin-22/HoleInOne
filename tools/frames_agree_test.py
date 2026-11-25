@@ -95,6 +95,29 @@ check("...beside the impact frame it contradicts",
       PAGE.index("swing?.frames_disagree")
       < PAGE.index('label="Impact frame"'), True)
 
+print("\n6. the screens work it out, rather than reading a stored flag")
+# A FLAG THE PRODUCE STAMPED ONLY APPEARS ON CLIPS PRODUCED SINCE IT
+# EXISTED, and the clip somebody is staring at is usually an older
+# one. Both screens compute it from the three numbers they already
+# have, so an old record is judged on what it says, not on whether
+# the produce that wrote it knew to check.
+PAGE = (ROOT / "frontend/src/pages/AdminProduction.jsx").read_text()
+check("the wizard computes it", "const framesDisagree = (() => {" in PAGE)
+check("...from the swing's own numbers",
+      "swing?.start_frame" in PAGE and "swing?.impact_frame" in PAGE)
+check("...and still honours a stored one as a fallback",
+      "swing?.frames_disagree || null" in PAGE)
+FLOW = (ROOT / "backend/app/routers/production_flow.py").read_text()
+check("the flow's clip row carries the window",
+      '_r["cut_frames"]' in FLOW)
+check("...and the impact it claims", '_r["impact_frame"]' in FLOW)
+check("...and works the contradiction out itself",
+      'int(_lo) <= int(_i) <= int(_hi)' in FLOW)
+CARD = (ROOT / "frontend/src/pages/AdminProductionFlow.jsx").read_text()
+check("the draft card prints the window", "cut f{c.cut_frames[0]}" in CARD)
+check("...and says when it does not contain its own impact",
+      "c.frames_disagree" in CARD)
+
 print("\n%s" % ("all ok" if not FAILED else "%d FAILED:\n  %s" % (
     len(FAILED), "\n  ".join(FAILED))))
 sys.exit(1 if FAILED else 0)

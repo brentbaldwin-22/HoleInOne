@@ -2298,6 +2298,39 @@ export function ClickToPlotModal({
     },
     [adminPassword, row.id],
   );
+  // ── WORKED OUT HERE, NOT READ OFF THE RECORD ──────────────────
+  //
+  // The produce stamps `frames_disagree` on the swings it writes,
+  // which is useless for the swing an operator is actually looking
+  // at: that one was written by whatever produced it, often before
+  // the check existed. The contradiction is visible in the three
+  // numbers this screen already has, so it is computed from them.
+  //
+  // A stored flag answers "did the produce think so"; this answers
+  // "is it so", and the second is the question in front of the
+  // operator.
+  const framesDisagree = (() => {
+    const i = swing?.impact_frame;
+    const l = swing?.launch_frame;
+    const lo = swing?.start_frame;
+    const hi = swing?.end_frame;
+    const f = Number(swing?.fps) || 30;
+    if (i == null) return null;
+    if (l != null && Number(l) < Number(i)) {
+      return `the ball was first seen leaving at f${l}, `
+        + `${((Number(i) - Number(l)) / f).toFixed(2)}s BEFORE the impact `
+        + `at f${i} — a ball cannot leave before it is struck, so this `
+        + "ascent chain is most likely another swing's";
+    }
+    if (lo != null && hi != null
+        && !(Number(lo) <= Number(i) && Number(i) <= Number(hi))) {
+      return `the impact at f${i} is outside the frames this clip was `
+        + `cut from (f${lo}–f${hi}), so the clip does not contain the `
+        + "strike it is a record of";
+    }
+    return swing?.frames_disagree || null;
+  })();
+
   const winLo = impactF == null ? null : impactF - PLOT_WINDOW_PRE;
   const winHi = impactF == null ? null : impactF + PLOT_WINDOW_POST;
   const inWindow = (arr) =>
@@ -4382,13 +4415,13 @@ export function ClickToPlotModal({
               covered f1527-f1781 with an impact of f1920 and the
               wizard showed both, side by side, with nothing saying
               they contradict each other. */}
-          {swing?.frames_disagree && (
+          {framesDisagree && (
             <div className="tiny err-text"
                  style={{ margin: "0 0 6px", padding: "4px 8px",
                           borderRadius: 4,
                           background: "var(--warn-bg, #fdf3d7)" }}>
               <b>This swing's frames contradict each other.</b>{" "}
-              {swing.frames_disagree}
+              {framesDisagree}
             </div>
           )}
           <PlotField

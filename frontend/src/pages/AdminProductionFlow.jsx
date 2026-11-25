@@ -524,6 +524,22 @@ export default function AdminProductionFlow() {
         )}
       </div>
       <div className="tiny muted">{fmtWhen(c.captured_at)}</div>
+      {/* WHICH FRAMES THIS WAS CUT FROM, on the card. Otherwise the
+          only way to see that a clip was cut around another swing's
+          ascent is to open the wizard and read a scrubber against a
+          panel -- which is how it went unnoticed through several
+          runs. */}
+      {c.cut_frames && (
+        <div className="tiny muted">
+          cut f{c.cut_frames[0]}–f{c.cut_frames[1]}
+          {c.impact_frame != null && <> · impact f{c.impact_frame}</>}
+        </div>
+      )}
+      {c.frames_disagree && (
+        <div className="tiny err-text" style={{ marginTop: 2 }}>
+          {c.frames_disagree}
+        </div>
+      )}
       <div className="row" style={{ gap: 6, marginTop: 6, flexWrap: "wrap" }}>
         {/* The same editor Production opens for a produced clip. */}
         {/* OPENS HERE. No navigation: the operator came to change one
