@@ -88,7 +88,76 @@ check("the wizard says it too", "swing?.no_tracer" in WIZ)
 check("...and points at the control that fixes it",
       "Plot the ascent by hand" in WIZ)
 
-print("\n4. a normal produce is untouched")
+print("\n4. the renderer accepts a swing with no flight")
+# THE BUG THIS SECTION EXISTS FOR, and the reason every check above
+# it passed while nothing worked: the substitution was built, the
+# "cutting a tracerless draft" line was logged -- and then the
+# renderer's own swing filter, which required a flight
+# unconditionally, dropped the swing and returned "no swing with a
+# flight to produce". Sections 1-3 read the source; this one asks the
+# predicate.
+from app.routers.admin import _d3_producible_swing as _ok  # noqa: E402
+
+_traced = {"ball": [900, 700], "launch_frame": 1930, "impact_frame": 1920,
+           "flight": [{"frame": 1930, "x": 900.0, "y": 690.0},
+                      {"frame": 1936, "x": 905.0, "y": 600.0}]}
+check("a traced swing is producible", _ok(_traced))
+check("a swing with only an impact frame is producible",
+      _ok({"impact_frame": 1920, "flight": [], "no_tracer": "nothing found"}))
+check("...with no ball at all", _ok({"impact_frame": 1920}))
+check("...and no launch frame", _ok({"impact_frame": 1920, "flight": []}))
+check("a swing with nothing to cut around is NOT",
+      _ok({"ball": [900, 700], "flight": []}), False)
+check("...nor one that is not a swing record at all", _ok(None), False)
+check("an impact frame of f0 still counts",
+      _ok({"impact_frame": 0}), True)
+
+print("\n5. no chain is not no swing")
+_run = SRC[SRC.index("def _ascent_run("):]
+_run = _run[:_run.index("\ndef ", 10)]
+# A CHAIN PER SWING, POSITIONALLY. `_asc` holds only the chains that
+# were FOUND, so indexing it by swing number paired an earlier swing
+# with a later swing's line the moment any swing came back empty --
+# a clip cut at one strike with another strike's tracer on it.
+check("the per-swing chain list exists", "_asc_by_swing" in _run)
+check("...and gets a slot even where nothing was found",
+      "_asc_by_swing.append(None)" in _run)
+_run_code = "\n".join(
+    _l.split("#", 1)[0] for _l in _run.splitlines())
+check("nothing pairs swings against the found-only list",
+      "_asc[" not in _run_code, True)
+# AND THE RUN CARRIES ON. This returned the moment no chain was
+# found anywhere, which threw away the strikes along with the lines.
+check("an empty search no longer ends a produce",
+      "if not _asc and not (produce and rep[\"swings\"]):" in _run)
+check("the tee-spot row is built per swing, not per chain",
+      'for i, _swing in enumerate(rep["swings"]):' in _run)
+check("...and says why a swing has no line",
+      '_entry["no_tracer"]' in _run)
+check("step 4 no longer skips a swing with no ball",
+      'if not c.get("ball"):\n            continue' not in _run, True)
+check("...it skips only one with no impact frame",
+      'if c.get("impact_frame") is None:' in _run)
+check("and hands the reason to the job", "no_tracer=_tracerless," in _run)
+
+print("\n6. nothing is invented to fill the gap")
+# A ball nobody measured, written onto the record, is the worst
+# possible repair: `_d3_save_swing` merges with update(), so it would
+# outlive the run and the wizard would open on a placed ball.
+check("the job refuses a missing ball unless it is deliberate",
+      'if ball_xy is None and not no_tracer:' in _job)
+check("the swing it builds carries None, not [None, None]",
+      '"ball": ([_bx, _by] if _bx is not None else None),' in _job)
+check("the saved record omits the ball rather than nulling it",
+      'if ball:\n                _sw_rec["ball"] =' in _fp)
+check("...and the ascent run's record does too",
+      'if c.get("ball"):\n                _rec["ball"] =' in _run)
+# max() of an empty flight raises, several hundred lines before the
+# render branch that knows what to do with one.
+check("the timing block survives an empty flight",
+      'if pts\n                           else int(launch_f))' in _fp)
+
+print("\n7. a normal produce is untouched")
 # The substitution only fires on a REFUSED flight, and the render
 # only skips on an empty one. A swing with points takes the same path
 # it always did.

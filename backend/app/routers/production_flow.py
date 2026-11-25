@@ -1056,6 +1056,14 @@ def delete_flow_clip(clip_id: int, db: Session = Depends(get_db)):
     the cut it came from goes back to unproduced -- the swing still
     happened, and it is now a swing nothing was made from, which is
     what the cuts column is for.
+
+    AND THE SWING STAYS (`keep_swing`). On the Broadcast page the tile
+    an operator deletes IS the swing; here it is a DRAFT of one, and
+    the swing is the audio cut beside it. Removing the swing from the
+    recording's edit list would mean a deleted draft could only be
+    replaced by re-running the whole flow, audio detection included --
+    so the entry stays, minus its `clip_id`, and the draft can be made
+    again from what is already measured.
     """
     from .admin import delete_clip
 
@@ -1069,7 +1077,7 @@ def delete_flow_clip(clip_id: int, db: Session = Depends(get_db)):
     # BEFORE THE DELETE, because afterwards there is no row to read the
     # cut id off.
     _cut_id = c.audio_cut_id
-    out = delete_clip(clip_id, db=db)
+    out = delete_clip(clip_id, keep_swing=True, db=db)
     if _cut_id:
         k = db.get(AudioCut, _cut_id)
         if k is not None:

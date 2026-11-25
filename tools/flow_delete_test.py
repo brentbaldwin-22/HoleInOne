@@ -66,6 +66,13 @@ def a_produced_draft(db, clip_id=5, broadcast=False):
         db.add(up)
         db.commit()
     k = record_cut(db, upload=up, idx=clip_id, peak_time_sec=33.48)
+    # THE SWING THE PRODUCE LEFT ON THE RECORDING, pointing at the
+    # clip it made. This is what the edit wizard opens on.
+    up.edit_metrics = dict(up.edit_metrics or {}, swings=[
+        {"idx": 0, "impact_frame": 1920, "clip_id": clip_id,
+         "ball": {"x": 900, "y": 700}},
+    ])
+    db.commit()
     c = VideoClip(id=clip_id, course_id=1, hole_number=8, camera_type="tee",
                   captured_at=datetime.now(), long_upload_id=up.id,
                   audio_cut_id=k.id, flow_run_at=datetime.utcnow(),
@@ -100,6 +107,17 @@ check("the event that pointed at it is still there",
 check("...with its pointer cleared, not dangling",
       db.get(CameraEvent, ev_id).produced_clip_id, None)
 
+# THE SWING STAYS. On the Broadcast page the tile an operator
+# deletes IS the swing; here it is a DRAFT of one. Taking the swing
+# out of the edit list would mean the only way back to a draft is to
+# re-run the whole flow, audio detection included.
+_em = db.get(LongVideoUpload, 1916).edit_metrics or {}
+_sw = (_em.get("swings") or [])
+check("the swing is still in the recording's edit list", len(_sw), 1)
+check("...and no longer points at the clip that is gone",
+      "clip_id" in (_sw[0] if _sw else {}), False)
+check("...but keeps what was measured", _sw[0].get("impact_frame"), 1920)
+
 # THE CUT GOES BACK IN THE QUEUE. Deleting the draft is how you ask
 # for a different one, so the swing has to be producible again.
 db.refresh(k)
@@ -120,6 +138,20 @@ except HTTPException as e:
           True)
 check("...and the clip is still there", db2.get(VideoClip, 7) is not None,
       True)
+
+# AND THE CONSOLE'S OWN DELETE IS UNCHANGED. There the tile an
+# operator deletes IS the swing -- leaving it in the edit list meant
+# the wizard still offered both swings after one had been deleted and
+# the next produce put the clip straight back. `keep_swing` is off by
+# default for exactly that reason.
+from app.routers.admin import delete_clip  # noqa: E402
+
+db3 = a_db()
+a_produced_draft(db3, clip_id=9)
+delete_clip(9, db=db3)
+_em3 = db3.get(LongVideoUpload, 1916).edit_metrics or {}
+check("the broadcast page's delete still takes the swing with it",
+      len(_em3.get("swings") or []), 0)
 
 try:
     delete_flow_clip(404, db=db2)

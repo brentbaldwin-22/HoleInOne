@@ -5696,7 +5696,8 @@ def _process_long_upload_segments(
 
 
 @router.delete("/clips/{clip_id}")
-def delete_clip(clip_id: int, db: Session = Depends(get_db)):
+def delete_clip(clip_id: int, keep_swing: bool = False,
+                db: Session = Depends(get_db)):
     """Delete a VideoClip row plus the underlying source / tracer /
     thumbnail / per-clip AI tracer files on disk. Used from the
     Broadcast review page when an auto-cut composite is bad.
@@ -5798,12 +5799,43 @@ def delete_clip(clip_id: int, db: Session = Depends(get_db)):
     # only when NO swing on the row carries one -- a mixed row means the
     # positions have already shifted and a guess would delete the wrong
     # swing's work.
+    # ── KEEP IT WHERE THE SWING IS NOT WHAT IS BEING DELETED ───────
+    #
+    # `keep_swing` is Production Flow. There the trash icon is on a
+    # DRAFT, and deleting one means "that draft is no good, make
+    # another" -- the swing is the audio cut it was made from and it
+    # stays, unproduced, in the cuts column. Removing it from the edit
+    # list as well would mean a deleted draft could only be replaced
+    # by re-running the whole flow, detection included.
+    #
+    # Default off, because on the Broadcast page the tile IS the
+    # swing: see the note below.
     swing_removed = False
     if clip.long_upload_id:
         _up = db.get(LongVideoUpload, clip.long_upload_id)
         _em = dict(_up.edit_metrics or {}) if _up else {}
         _swings = _em.get("swings")
-        if isinstance(_swings, list) and _swings:
+        if keep_swing and isinstance(_swings, list) and _up is not None:
+            # The clip is gone, so the swing no longer points at one.
+            # Left as it was, the edit list claims a clip id that 404s
+            # and `openEditor` matches a swing to a clip that is not
+            # there.
+            #
+            # REBUILT, NOT POPPED IN PLACE. `_em` is a shallow copy, so
+            # mutating a swing dict inside it also mutates the one
+            # SQLAlchemy kept as this attribute's loaded value -- the
+            # assignment below then compares EQUAL to the "old" value,
+            # no change is detected, and the commit writes nothing.
+            # The edit list came back with the dead clip_id still on
+            # it and the delete looked like it had ignored the flag.
+            _em["swings"] = [
+                ({_k: _v for _k, _v in _s.items() if _k != "clip_id"}
+                 if isinstance(_s, dict) and _s.get("clip_id") == clip_id
+                 else _s)
+                for _s in _swings
+            ]
+            _up.edit_metrics = _em
+        elif isinstance(_swings, list) and _swings:
             _keep = None
             if any(
                 isinstance(s, dict) and s.get("clip_id") == clip_id
@@ -15594,6 +15626,19 @@ def wizard_produce(
             "swing_idx": swing_idx,
             "points": points,
             "launch_frame": launch_frame,
+            # ── ALWAYS None FROM HERE, AND SAID OUT LOUD ───────────
+            #
+            # `no_tracer` is a caller's assertion that the ascent
+            # search has ALREADY come back empty, and the job skips
+            # find_flight on the strength of it. This is the edit
+            # wizard: an operator has just placed the ball and the
+            # impact frame by hand, which is the best input the
+            # search ever gets. So it runs -- and if it still finds
+            # nothing, the job's own fallback cuts the tracerless
+            # draft from inside, with the real reason. Asserting it
+            # here would refuse to look on the one path where
+            # looking works best.
+            "no_tracer": None,
         },
         name=f"wizard-produce-{upload_id}",
     )
@@ -30024,6 +30069,21 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
         return (len(c.get("why") or []), -int(c.get("n_points") or 0))
 
     _asc = []
+    # ── ONE SLOT PER SWING, WHETHER OR NOT A CHAIN WAS FOUND ───────
+    #
+    # `_asc` holds only the chains that were found, and everything
+    # downstream paired it with the swings BY POSITION ("step 2 appends
+    # one chain per swing in swing order, so index i is swing i"). That
+    # is true only while every swing finds one. On a clip where swing 1
+    # found nothing and swing 2 did, `_asc[0]` was swing 2's chain and
+    # it got paired with swing 1's measured ball and swing 1's impact
+    # frame -- a clip cut at one strike with another strike's line
+    # drawn on it, and nothing on screen saying so.
+    #
+    # So the pairing gets its own list, positional by construction:
+    # the swing's chain, or None where there is none. `_asc` keeps its
+    # old meaning (what was found) because the stage counts report it.
+    _asc_by_swing: list = []
     _spans = []
     _span_max = int(round(float(fps or 30.0) * ASCENT_SPAN_MAX_SEC))
     _span_lead = int(round(float(fps or 30.0) * ASCENT_SPAN_LEAD_SEC))
@@ -30094,6 +30154,7 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
             # reads as a whole-clip sweep.
             _sw["ascent_image_url"] = _best.get("image_url")
             _asc.append(_best)
+            _asc_by_swing.append(_best)
             continue
         # ── 2b. NOTHING ABOVE THE SKYLINE: SEARCH THE CONE ──────────
         #
@@ -30125,7 +30186,9 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                              "last_frame": _acc_chain.get("last_frame"),
                              "n_points": _sw["ascent_n_points"]}
             _asc.append(_acc_chain)
+            _asc_by_swing.append(_acc_chain)
         else:
+            _asc_by_swing.append(None)
             _sw["ascent"] = None
             _sw["ascent_from"] = (
                 "nothing found: no chain above the skyline in this "
@@ -30214,7 +30277,25 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
            # summary here repeats one of them and contradicts the
            # other the moment they disagree.
            len(_asc), "seen leaving", time.perf_counter() - _t)
-    if not _asc:
+    # ── NO CHAIN IS NOT NO SWING ───────────────────────────────────
+    #
+    # This returned here, and that threw away the strike as well as
+    # the tracer. The microphone heard a ball struck, the cut was made
+    # around it, and the produce then declined to make a clip of it
+    # because a sky search had come back empty -- so an audio cut that
+    # plainly contains a swing showed no draft at all, with the reason
+    # in a report nobody had a clip to open.
+    #
+    # The clip does not depend on the chain. It is cut around the
+    # impact frame, and the tracer is a drawing on it. So the run
+    # carries on to step 4 and produces a tracerless draft per swing,
+    # and the chain's absence is a sentence on the card rather than a
+    # missing row.
+    #
+    # It still stops where there is nothing to produce FROM: a find
+    # run (`produce` off) has no clips to make, and no swings means no
+    # impact frames to cut around.
+    if not _asc and not (produce and rep["swings"]):
         rep["reason"] = "no ball was seen leaving the tee in this clip"
         _ball_scan_finish_timing(rep, _t_run)
         return rep
@@ -30236,10 +30317,17 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     # line, a tee that stays bright after the ball has gone.
     _t = time.perf_counter()
     _n_measured_spot = 0
-    for i, a in enumerate(_asc):
+    # ONCE PER SWING, NOT ONCE PER CHAIN. `rep["clips"]` is what step
+    # 4 produces from and what the per-swing cards read, so a swing
+    # with no chain needs a row here or it cannot be produced and
+    # cannot be explained. Enumerating `_asc` gave neither: the swing
+    # vanished, and on a clip where an earlier swing failed the rows
+    # that remained were paired with the wrong swings' impact frames.
+    for i, _swing in enumerate(rep["swings"]):
+        a = (_asc_by_swing[i] if i < len(_asc_by_swing) else None) or {}
         if progress:
-            progress(f"Placing the tee spot for swing {i + 1} of {len(_asc)}",
-                     i, len(_asc))
+            progress("Placing the tee spot for swing %d of %d"
+                     % (i + 1, len(rep["swings"])), i, len(rep["swings"]))
         _entry = {"n": i + 1, "seen_frame": a.get("first_frame"),
                   "seen_sec": a.get("first_sec"),
                   # THE LAST FRAME THE BALL WAS SEEN ON THIS CAMERA.
@@ -30251,8 +30339,19 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                   "last_frame": a.get("last_frame"),
                   "last_sec": a.get("last_sec"), "ok": False,
                   "reason": None}
-        _spot = _ascent_tee_spot(row, src_path, db, a, fps, _roi.get("roi"))
-        _entry.update(_spot)
+        # NOTHING TO RUN THE CHAIN BACK FROM. `_ascent_tee_spot`
+        # extrapolates along a chain's heading; with no chain there is
+        # no heading, and the only honest answer is to say so. The
+        # measured ball below can still supply one.
+        if a:
+            _spot = _ascent_tee_spot(row, src_path, db, a, fps,
+                                     _roi.get("roi"))
+            _entry.update(_spot)
+        else:
+            _entry["reason"] = (
+                str(_swing.get("ascent_from")
+                    or "no ball was seen leaving the tee on this swing"))
+            _entry["no_tracer"] = _entry["reason"]
         # THE SWING THIS CHAIN BELONGS TO, by position: step 2 appends
         # one chain per swing in swing order, so index i is swing i.
         _sw = (rep["swings"][i] if i < len(rep["swings"]) else {}) or {}
@@ -30353,12 +30452,13 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                for d in (_desc.get("descents_back") or [])}
     rep["swing_steps"] = []
     for _i, _c4 in enumerate(rep.get("clips") or []):
-        # THE SWEEP'S ENTRY FOR THIS SAME SWING. rep["clips"] is built
-        # by enumerating _asc in order, so the indices line up -- and
-        # this is the whole point of removing the column search: step
-        # 2 now shows the sweep's picture, so a chain the report calls
-        # good and a chain the step shows cannot disagree.
-        _asc4 = (_asc[_i] if _i < len(_asc) else {}) or {}
+        # THE SWEEP'S ENTRY FOR THIS SAME SWING. Read off the
+        # per-swing list, which is positional by construction --
+        # `_asc` is only the chains that were FOUND, so indexing it by
+        # swing showed an earlier swing the chain of a later one the
+        # moment any swing came back empty.
+        _asc4 = ((_asc_by_swing[_i] if _i < len(_asc_by_swing) else {})
+                 or {})
         _steps = [
             {"name": "rest",
              "title": "1 · The ball at rest, and the frame it left",
@@ -30605,7 +30705,23 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
     _t = time.perf_counter()
     _idx = 0
     for _ci, c in enumerate(rep["clips"]):
-        if not c.get("ball"):
+        # ── A SWING WITH NO IMPACT FRAME IS THE ONLY SKIP ───────────
+        #
+        # This skipped every swing with no ball at rest, which is the
+        # same `continue` as the early return above and cost the same
+        # thing: the strike was heard, the cut was made, and no draft
+        # came out. A clip is cut from the impact frame; the ball is
+        # where the LINE starts, and with no line there is nothing for
+        # it to start.
+        _tracerless = c.get("no_tracer") or None
+        if not c.get("ball") and not _tracerless:
+            _tracerless = "no ball was found at rest for this swing"
+        if c.get("impact_frame") is None:
+            # Nothing to cut around. The one case where no draft is
+            # the honest answer, and it says so on the row.
+            c["reason"] = (str(c.get("reason") or "")
+                           or "no impact frame for this swing — nothing "
+                              "to cut a clip around")
             continue
         # THE SWEEP ALREADY MEASURED THIS FLIGHT. Hand it over.
         #
@@ -30624,7 +30740,8 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
         # always accepted and skipped find_flight for. So it goes the
         # same way, and the two searches can no longer disagree about a
         # shot only one of them was built to find.
-        _a = (_asc[_ci] if _ci < len(_asc) else None) or {}
+        _a = ((_asc_by_swing[_ci] if _ci < len(_asc_by_swing) else None)
+              or {})
         _apts = [
             {"frame": int(q["frame"]), "x": int(q["x"]), "y": int(q["y"])}
             for q in (_a.get("points") or [])
@@ -30668,9 +30785,16 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                         {"x": c["landing_spot"][0],
                          "y": c["landing_spot"][1]}
                         if c.get("landing_spot") else None),
-                    "ball": {"x": int(round(float(c["ball"][0]))),
-                             "y": int(round(float(c["ball"][1])))},
-                    "ball_auto": True}
+                    }
+            # ONLY WHERE ONE WAS FOUND. Writing a placeholder ball
+            # onto the record would be a measurement that was never
+            # made, and `_d3_save_swing` keeps what it is given -- so
+            # the next run, and the wizard, would read a spot nobody
+            # had measured as this swing's ball at rest.
+            if c.get("ball"):
+                _rec["ball"] = {"x": int(round(float(c["ball"][0]))),
+                                "y": int(round(float(c["ball"][1])))}
+                _rec["ball_auto"] = True
             if c.get("impact_frame") is not None:
                 _rec["impact_frame"] = int(c["impact_frame"])
                 # WHERE THAT FRAME CAME FROM, carried onto the record
@@ -30734,8 +30858,16 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                 c["saved_kept_prior"] = _kept
             _out = run_wizard_produce_job(
                 upload_id=row.id,
-                ball_xy=[float(c["ball"][0]), float(c["ball"][1])],
+                ball_xy=([float(c["ball"][0]), float(c["ball"][1])]
+                         if c.get("ball") else None),
                 impact_frame=int(c["impact_frame"]),
+                # WHY THIS ONE HAS NO LINE, carried to the renderer and
+                # onto the clip. Set, it also tells the job not to run
+                # find_flight: with no ball and no chain there is
+                # nothing for it to lock onto, and a minute of blob
+                # tracking to re-confirm what step 2 already reported
+                # is a minute the operator waits for the same answer.
+                no_tracer=_tracerless,
                 # THE CALLER'S HOLE WINS. A produce started from a
                 # camera event knows which hole fired it; working it
                 # out again from the upload can disagree, and the
@@ -30799,6 +30931,11 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
             # produce perfectly and still show a line that stops in
             # mid-air, and that is a different failure from "no clip".
             c["tracer_aim"] = _first.get("tracer_aim")
+            # WHICH KIND OF DRAFT THIS IS. Stamped on the row whether
+            # the absence came from the tee spot (set in the loop
+            # above) or from this swing having no usable chain, so the
+            # report and the card agree about it.
+            c["no_tracer"] = _tracerless
             # NOT `c.get("reason")` AS THE FALLBACK. By this point that
             # key holds `_ascent_tee_spot`'s description of where the
             # ball sat -- "ball at 1073,392 sat 7.8s and went at f1316"
@@ -30875,8 +31012,18 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
 
     _ball_scan_finish_timing(rep, _t_run)
     rep["ok"] = rep["n_produced"] > 0
-    rep["reason"] = (f"{rep['n_produced']} of {len(_asc)} ball(s) seen "
-                     f"leaving were produced")
+    # COUNTED AGAINST THE SWINGS, NOT THE CHAINS. A produce makes one
+    # draft per SWING now, so "2 of 0 ball(s) seen leaving were
+    # produced" was the line a tracerless run printed -- true about
+    # the sky search and nonsense about the run.
+    _n_sw = len(rep.get("swings") or [])
+    _n_traced = sum(1 for c in (rep.get("clips") or [])
+                    if c.get("ok") and not c.get("no_tracer"))
+    rep["reason"] = (
+        "%d of %d swing(s) produced — %d with a tracer, %d cut from the "
+        "audio impact with no ball found in the sky"
+        % (rep["n_produced"], _n_sw, _n_traced,
+           max(0, int(rep["n_produced"]) - _n_traced)))
     log.info("ascent produce upload=%s: %s in %.1fs", row.id, rep["reason"],
              rep["timing"]["total_sec"])
     return rep
@@ -37221,6 +37368,19 @@ def run_wizard_produce_job(
     # False for an automatic produce, where it would be a guess dressed
     # as a measurement -- see `_d3_fast_produce`.
     saved_track_as_landing: bool = True,
+    # ── THERE IS NO LINE TO DRAW, AND HERE IS WHY ──────────────────
+    #
+    # Set by a caller that has ALREADY established the ascent search
+    # found nothing for this swing. It does two things: it skips
+    # find_flight, because with no ball and no chain there is nothing
+    # for it to lock onto and a second empty search costs a minute for
+    # an answer step 2 already has; and it travels onto the swing, so
+    # the clip can say it has no tracer rather than looking like a
+    # tracer that failed.
+    #
+    # `ball_xy` may be None with this set -- the clip is cut from the
+    # impact frame, and the ball is only where a line would start.
+    no_tracer: str | None = None,
 ) -> dict:
     """Stages 4-8, from the operator's ball and impact frame.
 
@@ -37265,7 +37425,14 @@ def run_wizard_produce_job(
 
             fps = float(probe_fps(src_path) or 30.0)
             _fw, _fh = _probe_frame_size(src_path)
-            _bx, _by = float(ball_xy[0]), float(ball_xy[1])
+            # NONE ONLY WITH `no_tracer`. Every other caller has a
+            # ball, and letting one through silently would produce a
+            # clip with no line and no explanation.
+            if ball_xy is None and not no_tracer:
+                return {"ok": False,
+                        "error": "no ball to start the tracer from"}
+            _bx, _by = ((float(ball_xy[0]), float(ball_xy[1]))
+                        if ball_xy is not None else (None, None))
             _imp = int(impact_frame)
 
             # The shape club_bottom_ball returns, so find_flight treats the
@@ -37284,7 +37451,23 @@ def run_wizard_produce_job(
                 except (KeyError, TypeError, ValueError):
                     continue
             _plotted.sort(key=lambda q: q["frame"])
-            if len(_plotted) >= 2:
+            # ── WHERE THE FLIGHT COMES FROM: THREE ANSWERS ─────────
+            #
+            # Already settled as none; the operator's plotted line; or
+            # a search. The first has to be here, beside the other
+            # two, because this is the only place that decides -- put
+            # further up it set `_ff` and then the search below
+            # overwrote it, which is a tracerless produce that quietly
+            # spends a minute searching anyway.
+            if no_tracer:
+                log.info(
+                    "wizard produce: upload=%s swing %s has no flight "
+                    "(%s) — cutting a tracerless draft around f%s, "
+                    "find_flight skipped",
+                    upload_id, swing_idx, no_tracer, _imp)
+                _ff = {"ok": True, "launch_frame": _imp, "points": [],
+                       "candidates": [], "no_tracer": no_tracer}
+            elif len(_plotted) >= 2:
                 # STRAIGHT TO THE RENDERER. The points came off the
                 # motion map under the operator's cursor; running
                 # find_flight over them again would answer a question
@@ -37405,7 +37588,12 @@ def run_wizard_produce_job(
                 # ball above, so this is the same value -- but the clip is
                 # rendered from THIS number, and it must not be able to
                 # drift from what the operator set.
-                "ball": [_bx, _by],
+                #
+                # NONE, NOT [None, None], when there is no ball. The
+                # renderer tests `s.get("ball")` to decide whether a
+                # swing has one, and a two-element list of Nones is
+                # true.
+                "ball": ([_bx, _by] if _bx is not None else None),
                 "launch_frame": _ff.get("launch_frame"),
                 "flight": _ff.get("points") or [],
                 "impact_frame": _imp,
@@ -38328,6 +38516,38 @@ def _frames_disagree(impact_f, launch_f, lo, hi, fps):
     return None
 
 
+def _d3_producible_swing(s) -> bool:
+    """Can a clip be made of this swing?
+
+    TWO SHAPES, NOT ONE, and conflating them is what stopped every
+    tracerless draft from ever reaching disk.
+
+    A TRACED swing needs all three: the ball the line starts at, the
+    launch frame, and the flight that IS the line.
+
+    A TRACERLESS swing needs only the impact frame. The clip is cut
+    around the strike the cutter heard and nothing is drawn on it.
+
+    The renderer's filter required the flight unconditionally, so a
+    caller that had deliberately substituted an empty flight -- logged
+    it, said it was cutting a tracerless draft -- had the swing
+    removed here and got back "no swing with a flight to produce". The
+    whole path ran and produced nothing, and the reason read like the
+    ascent search failing rather than the renderer refusing.
+
+    A function with a name, at module scope, because the version of
+    this that lived inside a list comprehension was tested by reading
+    the comprehension.
+    """
+    if not isinstance(s, dict):
+        return False
+    if (s.get("ball") and s.get("launch_frame") is not None
+            and (s.get("flight") or [])):
+        return True
+    # Nothing to cut around is the one honest nothing.
+    return s.get("impact_frame") is not None
+
+
 def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                      hole_number=None, end_green_sec=None,
                      landing=None, replace=True,
@@ -38371,13 +38591,26 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
     _d3_green_landing for why that is a separate problem and not a
     continuation of the tee's line."""
     out = {"ok": False, "clips": [], "error": None}
-    swings = [
-        s for s in (rep.get("swings") or [])
-        if s.get("ball") and s.get("launch_frame") is not None
-        and (s.get("flight") or [])
-    ]
+    # ── TWO SHAPES OF PRODUCIBLE SWING ─────────────────────────────
+    #
+    # A TRACED one needs all three: the ball the line starts at, the
+    # launch frame, and the flight that is the line.
+    #
+    # A TRACERLESS one needs only the impact frame. The clip is cut
+    # around the strike the cutter heard and nothing is drawn on it.
+    #
+    # This required the flight unconditionally, so every tracerless
+    # swing was dropped HERE -- the caller substituted an empty flight
+    # on purpose, logged that it was cutting a tracerless draft, and
+    # then this filter removed the swing and returned "no swing with a
+    # flight to produce". The whole path ran and produced nothing, and
+    # the only trace was a reason that read like the search failing
+    # rather than the renderer refusing.
+    swings = [s for s in (rep.get("swings") or [])
+              if _d3_producible_swing(s)]
     if not swings:
-        out["error"] = "no swing with a flight to produce"
+        out["error"] = ("no swing with a flight to produce, and none "
+                        "with an impact frame to cut a clip around")
         return out
 
     fps = float(fps or 30.0)
@@ -38579,8 +38812,19 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                  "x": float(p["x"]), "y": float(p["y"])}
                 for p in (sw.get("flight") or [])
             ]
-            ball = sw["ball"]
-            launch_f = int(sw["launch_frame"])
+            ball = sw.get("ball")
+            # THE IMPACT FIRST, because it is the one number that is
+            # not a guess and the only one a tracerless swing has.
+            # `launch_frame` falls back to it: with no chain there is
+            # no launch to speak of, and the frames either side of the
+            # strike are what the clip is.
+            _impact_f = (int(sw["impact_frame"])
+                         if sw.get("impact_frame") is not None else None)
+            launch_f = (int(sw["launch_frame"])
+                        if sw.get("launch_frame") is not None
+                        else _impact_f)
+            if _impact_f is None:
+                _impact_f = launch_f
 
             # ── the clip's boundaries, in seconds ──────────────────
             #
@@ -38598,9 +38842,6 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
             # and it cannot be anywhere else. The chain's job is to
             # draw the tracer, not to decide which seconds of the
             # recording this clip is of.
-            _impact_f = (int(sw["impact_frame"])
-                         if sw.get("impact_frame") is not None
-                         else launch_f)
             t_impact = _impact_f / fps
             t0 = max(0.0, t_impact - D3_PRE_ROLL_SEC)
             # The tracer may run past the pre-roll window, and should;
@@ -39100,7 +39341,14 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
             # frame comes out around a couple of seconds -- and they are
             # indistinguishable on screen. Three rounds of "the timing
             # is still off" were spent not knowing which of them it was.
-            _last_asc_f = max(int(p["frame"]) for p in pts)
+            # EMPTY ON A TRACERLESS SWING, and `max()` of nothing
+            # raises -- which crashed the clip here, several hundred
+            # lines before the render branch that knows how to cut one
+            # with no line on it. Everything this block computes is
+            # consumed only where a tracer is drawn, so the strike
+            # itself stands in and the numbers go unused.
+            _last_asc_f = (max(int(p["frame"]) for p in pts) if pts
+                           else int(launch_f))
             _timing = {
                 "launch_frame": int(launch_f),
                 "last_ascent_frame": _last_asc_f,
@@ -39766,8 +40014,6 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                 "frames_disagree": _frames_disagree(
                     sw.get("impact_frame"), launch_f,
                     int(round(t0 * fps)), int(round(t1 * fps)), fps),
-                "ball": {"x": int(round(float(ball[0]))),
-                         "y": int(round(float(ball[1])))},
                 "tracer_url": _url,
                 "tracer_engine": "debug3",
                 # WHAT THE TRACER'S CONTINUATION ACTUALLY DID: which
@@ -39834,6 +40080,18 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     f"{settings.app_base_url}/uploads/clips/{_bg}"
                     f"?v={int((CLIPS_DIR / _bg).stat().st_mtime)}"
                 )
+            # ── THE BALL, ONLY IF THERE IS ONE ────────────────────
+            #
+            # OMITTED RATHER THAN None. A tracerless swing has no ball
+            # at rest, and `_d3_save_swing` merges with
+            # `merged.update(rec)` -- so the key present and None does
+            # not mean "nothing was measured", it ERASES whatever was
+            # measured before, by an earlier run or by an operator who
+            # placed it. The same shape as every absent-is-a-clearance
+            # bug in this file.
+            if ball:
+                _sw_rec["ball"] = {"x": int(round(float(ball[0]))),
+                                   "y": int(round(float(ball[1])))}
             _d3_save_swing(db, row.id, _slot, _sw_rec, delta)
 
             out["clips"].append({
