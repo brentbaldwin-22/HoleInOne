@@ -37,7 +37,21 @@
  * is reported either way.
  */
 
-/** Which gate controls each refusal reason. Null means no gate does. */
+/**
+ * Which gate controls each refusal reason. Null means no gate does.
+ *
+ * ONLY THE DETECTOR'S OWN GATES APPEAR HERE, and that is the whole
+ * point: these are arguments to the detector, so loosening one
+ * changes which peaks are FOUND. Every other audio1 gate is applied
+ * to what the detector already reported and can only take candidates
+ * away -- no value of a crest factor, or of the LOCAL peak ratio,
+ * will conjure a peak the detector never saw.
+ *
+ * `ratio` maps to `audio_min_ratio`, which is the DETECTOR's ratio
+ * (peak over the whole clip's median). `audio_min_local_ratio` is
+ * audio1's, measured against the 500 ms before the peak, and is
+ * deliberately absent: it is a post-filter.
+ */
 export const CONTROLLING_GATE = {
   attack: "audio_max_attack_ms",
   ratio: "audio_min_ratio",
@@ -91,11 +105,17 @@ export function buildRules(fields) {
     step: STEP_FOR(f.reads),
     lo: f.lo,
     hi: f.hi,
+    // DOES THIS GATE DECIDE WHAT IS FOUND, or only filter what was?
+    // Loosening a detector gate can bring a peak into existence;
+    // no value of a post-filter ever can. See CONTROLLING_GATE.
+    detector: !!f.detector,
     read: (p) => (p.gate_values ? p.gate_values[f.reads] : p[f.reads]),
     help: `gate ${gate} · reads ${f.reads}`
       + (f.lo === undefined ? "" : ` · ${f.lo} to ${f.hi}`),
   }));
-  return [...armable, ...EXTRA_RULES.map((r) => ({ ...r, gate: null }))];
+  return [...armable,
+          ...EXTRA_RULES.map((r) => ({ ...r, gate: null,
+                                       detector: false }))];
 }
 
 /**
@@ -196,6 +216,28 @@ export function classify(peaks, labels, rules, ruleList, blankFails) {
     const retunable = !cut && !!controlling && !!rules[controlling]?.on
       && Number.isFinite(Number(rules[controlling]?.value));
     if (!cut && !controlling) out.reasonsUnknown += 1;
+    // WHY A CANDIDATE CANNOT BE RECOVERED, in words. "Out of reach"
+    // has three quite different causes and the operator can act on
+    // two of them:
+    //
+    //   the gate that refused it is not in the proposal  -> switch it on
+    //   it is in the proposal and still refuses          -> loosen it
+    //   nothing controls the refusal (suppression)       -> nothing to do
+    //
+    // Lumping them together is what makes a sandbox feel arbitrary:
+    // a strike sits in "cannot reach" while the operator stares at a
+    // local-ratio gate they just loosened, which was never the gate
+    // that refused it.
+    let blockedBecause = null;
+    if (!cut && !retunable) {
+      blockedBecause = !controlling
+        ? (why === "nms"
+          ? "a louder peak within the minimum separation suppressed it — "
+            + "no gate value recovers this"
+          : "the detector did not say why it refused this")
+        : `the detector refused it on ${controlling}, which is not `
+          + "switched on in your proposal — only that gate can bring it back";
+    }
 
     let bucket;
     if (lab.label === STRIKE) {
@@ -210,7 +252,7 @@ export function classify(peaks, labels, rules, ruleList, blankFails) {
       return;
     }
     const row = { peak: p, label: lab.label, bucket, cut, why,
-                  failed: ev.failed, pass: ev.pass };
+                  failed: ev.failed, pass: ev.pass, blockedBecause };
     out[bucket].push(row);
     rows.push(row);
   });

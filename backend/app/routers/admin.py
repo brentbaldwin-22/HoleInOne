@@ -13329,8 +13329,7 @@ def get_audio_gates(upload_id: int, db: Session = Depends(get_db)):
     live = _d3.resolve_gates(over, zone=zone)
 
     # The three the detector itself reads, then every audio1 gate.
-    names = ["audio_min_ratio", "audio_max_attack_ms",
-             "audio_min_separation_sec"]
+    names = list(_d3.DETECTOR_AUDIO_GATES)
     names += [k for k in _d3.AUDIO_GATE_FIELDS if k not in names]
 
     out = []
@@ -13353,16 +13352,14 @@ def get_audio_gates(upload_id: int, db: Session = Depends(get_db)):
             # THE DETECTOR'S OWN THREE ARE NOT OPTIONAL. Zero is off
             # for an audio1 gate and out of range for these, so the
             # editor must not offer the same switch for both.
-            "detector_gate": name in ("audio_min_ratio",
-                                      "audio_max_attack_ms",
-                                      "audio_min_separation_sec"),
+            "detector_gate": name in _d3.DETECTOR_AUDIO_GATES,
             "off_is": _audio_gate_off(name) if name in _d3.AUDIO_GATE_FIELDS
             else None,
         })
 
     _armed = bool(float(live.get("audio1_armed") or 0.0) >= 1.0)
     _on = sorted(k for k in _d3.AUDIO_GATE_FIELDS
-                 if k not in ("audio_min_ratio", "audio_max_attack_ms")
+                 if k not in _d3.DETECTOR_AUDIO_GATES
                  and float(live.get(k) or 0.0) > 0.0)
     from .production_flow import _gates_sentence as _gs
     return {
@@ -13374,9 +13371,8 @@ def get_audio_gates(upload_id: int, db: Session = Depends(get_db)):
         "audio1_on": _on,
         "gates": out,
         "sentence": _gs({
-            "gates_used": {k: float(live[k]) for k in
-                           ("audio_min_ratio", "audio_max_attack_ms",
-                            "audio_min_separation_sec")},
+            "gates_used": {k: float(live[k])
+                           for k in _d3.DETECTOR_AUDIO_GATES},
             "audio1_armed": _armed, "audio1_on": _on}),
         "presets": _d3.AUDIO_TEE_PRESETS,
     }
@@ -16067,10 +16063,15 @@ def audio_gate_presets():
     # The page can only warn about that if it knows the range.
     return {
         "presets": _d3.AUDIO_TEE_PRESETS,
+        # `detector` says whether a gate decides what is FOUND or
+        # merely filters what was. The sandbox has to tell them
+        # apart: loosening a detector gate can recover a peak, and no
+        # value of a post-filter ever can.
         "fields": {k: {"cmp": v[0], "reads": v[1], "label": v[2],
                        "lo": _d3.GATE_SPEC[k][1],
                        "hi": _d3.GATE_SPEC[k][2],
-                       "off": _audio_gate_off(k)}
+                       "off": _audio_gate_off(k),
+                       "detector": k in _d3.DETECTOR_AUDIO_GATES}
                    for k, v in _d3.AUDIO_GATE_FIELDS.items()
                    if k in _d3.GATE_SPEC},
     }
@@ -16316,7 +16317,7 @@ def _audio1_enabled_gates(gates: dict) -> dict:
     from ..services import debug3 as _d3
     out = {}
     for name, (cmp_, field, label) in _d3.AUDIO_GATE_FIELDS.items():
-        if name in ("audio_min_ratio", "audio_max_attack_ms"):
+        if name in _d3.DETECTOR_AUDIO_GATES:
             continue
         try:
             v = float((gates or {}).get(name) or 0.0)
@@ -28190,16 +28191,12 @@ def _cutter_hits(name, db, row, src_path, fps, dbg):
         # caller could read it -- so the only way to find out was to
         # notice a 22 ms attack surviving a gate that is supposed to
         # refuse anything over 14.
-        dbg["gates_used"] = {
-            "audio_min_ratio": float(_ag["audio_min_ratio"]),
-            "audio_max_attack_ms": float(_ag["audio_max_attack_ms"]),
-            "audio_min_separation_sec": float(
-                _ag["audio_min_separation_sec"]),
-        }
+        dbg["gates_used"] = {k: float(_ag[k])
+                             for k in _d3.DETECTOR_AUDIO_GATES}
         dbg["audio1_armed"] = bool(_ag.get("audio1_armed"))
         dbg["audio1_on"] = sorted(
             k for k in _d3.AUDIO_GATE_FIELDS
-            if k not in ("audio_min_ratio", "audio_max_attack_ms")
+            if k not in _d3.DETECTOR_AUDIO_GATES
             and float(_ag.get(k) or 0.0) > 0.0)
         dbg["gates_from"] = (
             "the hole's audio gates" if _az is None else

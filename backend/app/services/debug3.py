@@ -9005,6 +9005,21 @@ GATE_SPEC = {
     # A max-type gate reads 0 as off too. A maximum attack of 0 ms
     # would reject every sound ever recorded, so there is no real
     # setting it could be confused with.
+    # ── THE LOCAL PEAK RATIO ────────────────────────────────────────
+    #
+    # audio1's ratio, which is a DIFFERENT MEASUREMENT from the
+    # detector's `audio_min_ratio` and now has its own gate rather
+    # than sharing that one's name. The detector divides by the median
+    # of the WHOLE CLIP; this divides by the 500 ms before the peak.
+    #
+    # On a clip with a mower running through part of it the two differ
+    # by twenty times on the same strike: the local floor rises beside
+    # the mower and a whole-clip median does not. That is exactly the
+    # false positive this is meant to catch, and exactly why it could
+    # not be expressed before.
+    #
+    # Off until it has been scored against labelled strikes.
+    "audio_min_local_ratio": (0.0, 0.0, 200.0, False),
     "audio_min_hf_snr_db": (0.0, 0.0, 60.0, False),
     "audio_min_crest": (0.0, 0.0, 40.0, False),
     "audio_min_amplitude": (0.0, 0.0, 1.0, False),
@@ -9396,7 +9411,15 @@ AUDIO_GATE_FIELDS = {
     "audio_min_crest": ("min", "crest_factor", "crest factor"),
     "audio_max_attack_ms": ("max", "detector_attack_ms",
                             "detector attack (ms)"),
-    "audio_min_ratio": ("min", "peak_ratio", "peak ratio"),
+    # READS THE DETECTOR'S RATIO, which is what it enforces. It read
+    # `peak_ratio` -- audio1's, measured against a local floor -- so
+    # the sandbox scored this gate on a number the gate does not use
+    # and the real detector uses a different one. On a clip with
+    # ongoing noise those two differ by twenty times, so the sandbox's
+    # prediction for this gate was not approximately wrong, it was
+    # about something else.
+    "audio_min_ratio": ("min", "detector_ratio", "peak ratio (detector)"),
+    "audio_min_local_ratio": ("min", "peak_ratio", "local peak ratio"),
     "audio_min_amplitude": ("min", "peak_amplitude", "minimum amplitude"),
     "audio_max_raw_attack_ms": ("max", "attack_ms", "raw 10-90 attack (ms)"),
     "audio_min_centroid_hz": ("min", "spectral_centroid_hz",
@@ -9409,6 +9432,26 @@ AUDIO_GATE_FIELDS = {
     "audio_max_decay_ms": ("max", "decay_ms", "decay (ms)"),
     "audio_min_confidence": ("min", "confidence_score", "confidence score"),
 }
+
+
+# ── WHICH AUDIO GATES THE DETECTOR ITSELF READS ─────────────────────
+#
+# THE DISTINCTION IS NOT COSMETIC. These three are arguments to
+# `detect_swings_from_audio`: they decide which peaks are FOUND, so
+# loosening one can bring a peak into existence that nothing else
+# could recover. Every other audio gate is a post-filter applied to
+# what the detector already found, and can only ever take candidates
+# away -- no value of a crest factor will conjure a peak the detector
+# never reported.
+#
+# A sandbox that treats the two alike will promise recoveries that
+# cannot happen. Named once here because three callers need the same
+# answer: the post-filter, the resolved view, and the sandbox.
+DETECTOR_AUDIO_GATES = (
+    "audio_min_ratio",
+    "audio_max_attack_ms",
+    "audio_min_separation_sec",
+)
 
 
 def split_gate_key(k):

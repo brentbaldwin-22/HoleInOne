@@ -38,7 +38,14 @@ const FIELDS = {
   audio_min_crest: { cmp: "min", reads: "crest_factor", label: "crest factor" },
   audio_max_attack_ms: { cmp: "max", reads: "detector_attack_ms",
                          label: "detector attack (ms)" },
-  audio_min_ratio: { cmp: "min", reads: "peak_ratio", label: "peak ratio" },
+  // THE DETECTOR'S RATIO, which is what this gate enforces. It read
+  // `peak_ratio` -- audio1's local-floor ratio -- so the sandbox
+  // scored it on a number the detector does not use.
+  audio_min_ratio: { cmp: "min", reads: "detector_ratio",
+                     label: "peak ratio (detector)", detector: true },
+  // And audio1's, now a gate of its own.
+  audio_min_local_ratio: { cmp: "min", reads: "peak_ratio",
+                           label: "local peak ratio" },
   audio_min_amplitude: { cmp: "min", reads: "peak_amplitude",
                          label: "minimum amplitude" },
   audio_max_raw_attack_ms: { cmp: "max", reads: "attack_ms",

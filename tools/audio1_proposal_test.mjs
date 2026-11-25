@@ -35,7 +35,10 @@ const FIELDS = {
   audio_min_crest: { cmp: "min", reads: "crest_factor", label: "crest factor" },
   audio_max_attack_ms: { cmp: "max", reads: "detector_attack_ms",
                          label: "detector attack (ms)" },
-  audio_min_ratio: { cmp: "min", reads: "peak_ratio", label: "peak ratio" },
+  audio_min_ratio: { cmp: "min", reads: "detector_ratio",
+                     label: "peak ratio (detector)", detector: true },
+  audio_min_local_ratio: { cmp: "min", reads: "peak_ratio",
+                           label: "local peak ratio" },
   audio_min_amplitude: { cmp: "min", reads: "peak_amplitude",
                          label: "minimum amplitude" },
   audio_min_hf_concentration: { cmp: "min", reads: "hf_concentration",
@@ -52,7 +55,9 @@ const peak = (t, { cut = true, why = null, ...vals } = {}) => {
     peak_time_sec: t, passed_gate: cut, refused_by: cut ? null : why,
     gate_values: {
       hf_snr_db: vals.hf ?? 20, crest_factor: vals.crest ?? 8,
-      detector_attack_ms: vals.atk ?? 11, peak_ratio: vals.ratio ?? 5,
+      detector_attack_ms: vals.atk ?? 11,
+      detector_ratio: vals.ratio ?? 5,
+      peak_ratio: vals.local ?? vals.ratio ?? 5,
       peak_amplitude: vals.amp ?? 0.1,
       hf_concentration: vals.c ?? 0.6,
       confidence_score: vals.conf ?? 80,
@@ -287,6 +292,54 @@ console.log("\n15. a bar the resolver would move says so");
     x: { cmp: "min", reads: "peak_ratio", label: "x" } })[0];
   check("a gate served without a range claims no clamp",
         clampedTo(noRange, 999), null);
+}
+
+console.log("\n16. the two ratio gates are separate, and only one can recover");
+{
+  // THE DETECTOR'S RATIO decides what is FOUND; audio1's local ratio
+  // filters what was. A sandbox that let the local one "recover" a
+  // peak would promise back a strike the detector never reported.
+  const byKey = Object.fromEntries(RULES.map((r) => [r.key, r]));
+  check("they are two rules", !!byKey.audio_min_ratio
+        && !!byKey.audio_min_local_ratio);
+  check("reading different measurements",
+        [byKey.audio_min_ratio.read(peak(1, { ratio: 9, local: 2 })),
+         byKey.audio_min_local_ratio.read(peak(1, { ratio: 9, local: 2 }))],
+        [9, 2]);
+  check("the detector's is marked as such", byKey.audio_min_ratio.detector,
+        true);
+  check("...and the local one is not",
+        byKey.audio_min_local_ratio.detector, false);
+
+  // A strike the detector refused on ratio.
+  const peaks = [peak(5, { cut: false, why: "ratio", ratio: 1.8, local: 40 })];
+  const labels = labelsOf([[5, "strike"]]);
+
+  const localOnly = classify(peaks, labels,
+                             on({ audio_min_local_ratio: 1.0 }), RULES, false);
+  check("loosening the LOCAL ratio recovers nothing",
+        localOnly.recovered.length, 0);
+  check("...it is out of reach", localOnly.blockedUpstream.length, 1);
+  check("...and says which gate would be needed",
+        /audio_min_ratio/.test(localOnly.blockedUpstream[0].blockedBecause),
+        true);
+
+  const detRatio = classify(peaks, labels, on({ audio_min_ratio: 1.3 }),
+                            RULES, false);
+  check("loosening the DETECTOR's ratio does recover it",
+        detRatio.recovered.length, 1);
+}
+
+console.log("\n17. the local ratio still refuses, like any post-filter");
+{
+  const peaks = [peak(1, { local: 2.0 })];
+  const labels = labelsOf([[1, "ground"]]);
+  const r = classify(peaks, labels, on({ audio_min_local_ratio: 6.0 }),
+                     RULES, false);
+  check("a noisy cut is eliminated", r.eliminated.length, 1);
+  check("...by the local ratio", r.eliminated[0].failed[0].key,
+        "audio_min_local_ratio");
+  check("...with the reading", r.eliminated[0].failed[0].read, 2.0);
 }
 
 console.log("\n%s", FAILED.length

@@ -163,19 +163,67 @@ with TemporaryDirectory() as tmp:
     check("they disagree even with nothing else happening",
           abs(dq - aq) > 1.0, True)
 
-print("\n5. only the detector's is gated")
+print("\n5. each ratio has its own gate, reading its own measurement")
 from app.routers.admin import _audio1_enabled_gates  # noqa: E402
 from app.services import debug3 as d3  # noqa: E402
+
+check("the detector's gate reads the detector's ratio",
+      d3.AUDIO_GATE_FIELDS["audio_min_ratio"][1], "detector_ratio")
+check("the local gate reads audio1's",
+      d3.AUDIO_GATE_FIELDS["audio_min_local_ratio"][1], "peak_ratio")
+check("and their labels tell them apart",
+      d3.AUDIO_GATE_FIELDS["audio_min_ratio"][2]
+      != d3.AUDIO_GATE_FIELDS["audio_min_local_ratio"][2], True)
 
 _live = d3.resolve_gates({"audio_min_ratio@1": 3.0, "audio1_armed@1": 1.0},
                          zone=1)
 check("audio_min_ratio resolves", _live["audio_min_ratio"], 3.0)
 check("but is NOT an audio1 post-filter",
       "audio_min_ratio" in _audio1_enabled_gates(_live), False)
-# It is the detector's own argument: see _cutter_hits.
 SRC = (ROOT / "backend/app/routers/admin.py").read_text()
 check("it is handed to the detector instead",
       'min_peak_ratio=float(_ag["audio_min_ratio"])' in SRC, True)
+check("the local one IS a post-filter",
+      "audio_min_local_ratio" in _audio1_enabled_gates(
+          d3.resolve_gates({"audio_min_local_ratio@1": 6.0}, zone=1)), True)
+check("...and is never handed to the detector",
+      "min_peak_ratio=float(_ag[\"audio_min_local_ratio\"])" in SRC, False)
+
+print("\n6. the new gate is OFF until somebody sets it")
+_d = d3.resolve_gates({}, zone=1)
+check("default is zero", _d["audio_min_local_ratio"], 0.0)
+check("...which is off", "audio_min_local_ratio" in _audio1_enabled_gates(_d),
+      False)
+check("no tee preset turns it on",
+      any("audio_min_local_ratio" in p["gates"]
+          for p in d3.AUDIO_TEE_PRESETS.values()), False)
+
+print("\n7. and it is configurable per tee box, like every other gate")
+_ov = {"audio_min_local_ratio@1": 6.0}
+check("zone 1 gets it", d3.resolve_gates(_ov, zone=1)["audio_min_local_ratio"],
+      6.0)
+check("zone 0 does not", d3.resolve_gates(_ov, zone=0)["audio_min_local_ratio"],
+      0.0)
+_both = {"audio_min_ratio@1": 1.3, "audio_min_local_ratio@1": 6.0,
+         "audio_min_ratio@0": 3.5}
+_z1 = d3.resolve_gates(_both, zone=1)
+_z0 = d3.resolve_gates(_both, zone=0)
+check("the two ratios are set independently per tee",
+      [_z1["audio_min_ratio"], _z1["audio_min_local_ratio"],
+       _z0["audio_min_ratio"], _z0["audio_min_local_ratio"]],
+      [1.3, 6.0, 3.5, 0.0])
+
+print("\n8. the detector-gate set is named once, not copied")
+check("debug3 holds it", "audio_min_ratio" in d3.DETECTOR_AUDIO_GATES)
+check("...with attack and separation",
+      sorted(d3.DETECTOR_AUDIO_GATES),
+      ["audio_max_attack_ms", "audio_min_ratio", "audio_min_separation_sec"])
+check("the local ratio is NOT one of them",
+      "audio_min_local_ratio" in d3.DETECTOR_AUDIO_GATES, False)
+check("and admin reads that set rather than its own copy",
+      SRC.count('"audio_min_ratio", "audio_max_attack_ms"'), 0)
+check("...using it in several places", SRC.count("DETECTOR_AUDIO_GATES") >= 4,
+      True)
 
 print("\n%s" % ("all ok" if not FAILED else "%d FAILED:\n  %s" % (
     len(FAILED), "\n  ".join(FAILED))))

@@ -39,9 +39,11 @@ const BUCKETS = [
   ["lost", "True strikes LOST", false,
    "the detector cut it and your gates would throw it away"],
   ["blockedUpstream", "Strikes your gates cannot reach", false,
-   "your proposal would admit these, but they were suppressed by a "
-   + "louder peak nearby, or refused for a reason no gate controls. "
-   + "No value set here recovers them."],
+   "your proposal would admit these, but the detector never offered "
+   + "them — either the gate that refused them is not switched on "
+   + "here, or nothing controls the refusal at all. An audio1 gate "
+   + "can only take candidates away; it cannot conjure a peak the "
+   + "detector did not report."],
   ["stillMissed", "Strikes still refused", false,
    "refused now, and your proposal refuses them too"],
   ["noPeak", "Strikes that made no peak at all", false,
@@ -148,6 +150,48 @@ export default function Audio1Thresholds({
     }
   }
 
+  // One gate's control. Shared by both groups so the two cannot
+  // drift into looking like different kinds of thing.
+  const renderRule = (q) => {
+    const moved = rules[q.key]?.on
+      ? clampedTo(q, rules[q.key]?.value) : null;
+    return (
+      <label key={q.key} className="tiny" title={q.help}
+             style={{ display: "flex", alignItems: "center", gap: 5 }}>
+        <input type="checkbox" checked={!!rules[q.key]?.on}
+               onChange={(e) => set(q.key, { on: e.target.checked })}
+               style={{ margin: 0 }} />
+        <span style={{ flex: 1, opacity: rules[q.key]?.on ? 1 : 0.6 }}>
+          {q.cmp === "max" ? "max " : "min "}{q.label}
+          {!q.gate && (
+            <span className="muted" title="no gate exists for this
+              measurement, so it can be argued with here but not
+              armed"> ·&nbsp;bench</span>
+          )}
+          {/* THE CLAMP, SAID OUT LOUD. Stored as typed, enforced
+              at the edge of the range, and silent about it. */}
+          {moved !== null && (
+            <span style={{ color: "var(--rose-700, #b4254b)" }}
+                  title={`this gate runs from ${q.lo} to ${q.hi}; `
+                         + `anything outside is moved to the edge `
+                         + `without warning, so this bar would be `
+                         + `enforced at ${moved}`}>
+              {" "}· runs as {moved}
+            </span>
+          )}
+        </span>
+        <input type="text" inputMode="decimal"
+               value={rules[q.key]?.value ?? ""}
+               disabled={!rules[q.key]?.on}
+               step={q.step}
+               onChange={(e) => set(q.key, { value: e.target.value })}
+               style={{ width: 58, fontSize: 11, padding: "1px 4px",
+                        borderColor: moved !== null
+                          ? "var(--rose-700, #b4254b)" : undefined }} />
+      </label>
+    );
+  };
+
   if (loadErr) {
     return (
       <div className="tiny err-text" style={{ marginTop: 10 }}>
@@ -197,52 +241,34 @@ export default function Audio1Thresholds({
         </div>
       )}
 
-      {/* ── EVERY GATE, ONE AT A TIME ─────────────────────────── */}
+      {/* ── TWO KINDS OF GATE, AND THE DIFFERENCE DECIDES WHAT A
+             PROPOSAL CAN CLAIM ────────────────────────────────────
+             The detector's own are its arguments: loosening one
+             changes which peaks are FOUND, so it can recover a
+             strike. Everything else filters what the detector
+             already reported and can only take candidates away. A
+             panel that showed them as one list invited an operator
+             to expect a recovery from a crest factor. */}
+      <div className="tiny muted" style={{ marginTop: 8 }}>
+        <b>The detector's own gates</b> — these change which peaks are
+        found at all, so loosening one can recover a strike
+      </div>
       <div style={{ display: "grid",
                     gridTemplateColumns:
                       "repeat(auto-fill, minmax(236px, 1fr))",
-                    gap: "2px 14px", marginTop: 8 }}>
-        {ruleList.map((q) => {
-          const moved = rules[q.key]?.on
-            ? clampedTo(q, rules[q.key]?.value) : null;
-          return (
-            <label key={q.key} className="tiny" title={q.help}
-                   style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <input type="checkbox" checked={!!rules[q.key]?.on}
-                     onChange={(e) => set(q.key, { on: e.target.checked })}
-                     style={{ margin: 0 }} />
-              <span style={{ flex: 1, opacity: rules[q.key]?.on ? 1 : 0.6 }}>
-                {q.cmp === "max" ? "max " : "min "}{q.label}
-                {!q.gate && (
-                  <span className="muted" title="no gate exists for this
-                    measurement, so it can be argued with here but not
-                    armed"> ·&nbsp;bench</span>
-                )}
-                {/* THE CLAMP, SAID OUT LOUD. Stored as typed, enforced
-                    at the edge of the range, and silent about it. */}
-                {moved !== null && (
-                  <span style={{ color: "var(--rose-700, #b4254b)" }}
-                        title={`this gate runs from ${q.lo} to ${q.hi}; `
-                               + `anything outside is moved to the edge `
-                               + `without warning, so this bar would be `
-                               + `enforced at ${moved}`}>
-                    {" "}· runs as {moved}
-                  </span>
-                )}
-              </span>
-              <input type="text" inputMode="decimal"
-                     value={rules[q.key]?.value ?? ""}
-                     disabled={!rules[q.key]?.on}
-                     step={q.step}
-                     onChange={(e) => set(q.key, { value: e.target.value })}
-                     style={{ width: 58, fontSize: 11, padding: "1px 4px",
-                              borderColor: moved !== null
-                                ? "var(--rose-700, #b4254b)" : undefined }} />
-            </label>
-          );
-        })}
+                    gap: "2px 14px", marginTop: 3 }}>
+        {ruleList.filter((q) => q.detector).map((q) => renderRule(q))}
       </div>
-
+      <div className="tiny muted" style={{ marginTop: 8 }}>
+        <b>audio1 gates</b> — applied to what the detector already
+        found, so these can only ever take cuts away
+      </div>
+      <div style={{ display: "grid",
+                    gridTemplateColumns:
+                      "repeat(auto-fill, minmax(236px, 1fr))",
+                    gap: "2px 14px", marginTop: 3 }}>
+        {ruleList.filter((q) => !q.detector).map((q) => renderRule(q))}
+      </div>
       <label className="tiny" style={{ display: "inline-flex", gap: 5,
                                        alignItems: "center", marginTop: 6 }}
              title={"A quiet strike from a far tee is exactly where HF "
@@ -350,6 +376,17 @@ export default function Audio1Thresholds({
               {r.reasonsUnknown === 1 ? "" : "s"} came back without a
               recorded reason, so no gate is credited with recovering
               {r.reasonsUnknown === 1 ? " it" : " them"}.
+            </div>
+          )}
+          {r.blockedUpstream.length > 0 && (
+            <div className="tiny muted" style={{ marginTop: 4 }}>
+              <b>out of reach, and why:</b>{" "}
+              {r.blockedUpstream.slice(0, 6).map((row) => (
+                <span key={row.peak.peak_time_sec}
+                      style={{ marginRight: 10 }}>
+                  {row.peak.peak_time_sec.toFixed(2)}s — {row.blockedBecause}
+                </span>
+              ))}
             </div>
           )}
           {r.lost.length > 0 && (

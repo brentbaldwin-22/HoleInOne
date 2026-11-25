@@ -197,6 +197,39 @@ with TemporaryDirectory() as tmp:
           ).keys() == {"audio_min_centroid_hz", "audio_max_centroid_hz"},
           True)
 
+    print("\n7c. the LOCAL peak ratio gate enforces, reports and names itself")
+    # It reads audio1's ratio -- peak over the 500 ms before it --
+    # which is a different measurement from the detector's, and it is
+    # a POST-FILTER: it can refuse a candidate the detector found and
+    # can never produce one it did not.
+    hits, g, _ = run(SRC, {**ARMED, "audio_min_local_ratio@1": 1.0})
+    check("a bar the peak clears keeps it", len(hits), 1)
+    hits, g, _ = run(SRC, {**ARMED, "audio_min_local_ratio@1": 500.0})
+    check("a bar it misses refuses it", len(hits), 0)
+    _f = g["rejected"][0]["failed"][0]
+    check("...naming the new gate", _f["gate"], "audio_min_local_ratio")
+    check("...as a minimum", _f["cmp"], "min")
+    check("...with the local ratio it read", isinstance(_f["read"], float),
+          True)
+    # UNARMED IT ONLY REPORTS, like every other audio1 gate.
+    hits, g, _ = run(SRC, {**LOOSE, "audio_min_local_ratio@1": 500.0})
+    check("unarmed it refuses nothing", len(hits), 1)
+    check("...but says it would have", len(g["rejected"]), 1)
+    # AND OFF BY DEFAULT: a hole nobody has touched is unchanged.
+    _, g, _ = run(SRC, {**LOOSE, "audio1_armed@1": 1.0})
+    check("off by default, the pass does not even run",
+          bool(g.get("ran")), False)
+
+    print("\n7d. the two ratio gates do not stand in for one another")
+    # The detector's ratio is loose enough to find the peak; the local
+    # ratio is set impossibly high. Only the local one refuses, and
+    # the rejection says which.
+    hits, g, _ = run(SRC, {**ARMED, "audio_min_local_ratio@1": 500.0})
+    check("the detector still FOUND it", g["n_in"], 1)
+    check("...and the post-filter is what dropped it", len(hits), 0)
+    check("...named as the local gate, not the detector's",
+          g["rejected"][0]["failed"][0]["gate"], "audio_min_local_ratio")
+
     print("\n8. and the report is written even when there is nothing to say")
     # THE COMMONEST CASE OF ALL. A tee box nobody has set a gate on
     # used to return before writing anything, so the panel showed an
