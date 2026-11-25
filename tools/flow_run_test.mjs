@@ -174,6 +174,31 @@ console.log("\n3d. the columns refresh while the run is still going");
         /VideoClip\.long_upload_id == upload_id/.test(flow));
 }
 
+console.log("\n3e. the measurement table says what the gates did to each row");
+{
+  const panel = readFileSync(
+    join(ROOT, "frontend/src/components/Audio1Panel.jsx"), "utf8");
+  const page2 = readFileSync(
+    join(ROOT, "frontend/src/pages/AdminLongUpload.jsx"), "utf8");
+  // "8 cut" over eight rows, beside four gates that are set and not
+  // armed, says nothing about which rows arming would take. The gate
+  // pass judged every one of them; the verdict is joined back on.
+  check("the report reaches the panel",
+        /gateReport=\{\s*testCutResults\[u\.id\]\.debug\.audio1_gates\}/
+          .test(page2));
+  check("the panel takes it", /gateReport \}\) \{|gateReport \}/.test(panel));
+  check("it is keyed back onto the row by time",
+        /by\[r\.peak_time_sec\.toFixed\(2\)\] = r/.test(panel));
+  check("an unarmed run says what arming would leave",
+        /would leave/.test(panel));
+  check("...and an armed one says what it did",
+        /these gates decided this run/.test(panel));
+  check("a dropped row names the gate that dropped it",
+        /verdicts\[key\]/.test(panel) && /f\.of/.test(panel));
+  check("and the wording distinguishes did from would",
+        /armed \? "dropped" : "would drop"/.test(panel));
+}
+
 console.log("\n4. the cuts column prints fields the cut row serves");
 const cutKeys = new Set(
   [...page.matchAll(/\bk\.([a-z_]+)/g)].map((m) => m[1]));

@@ -151,7 +151,7 @@ const BAND_COLOUR = {
 };
 
 export default function Audio1Panel({ uploadId, data, adminPassword,
-                                      zoneOptions }) {
+                                      zoneOptions, gateReport }) {
   const [labels, setLabels] = useState({});
   const [open, setOpen] = useState(null);
   const [busy, setBusy] = useState(null);
@@ -175,6 +175,24 @@ export default function Audio1Panel({ uploadId, data, adminPassword,
   useEffect(() => { refresh(); }, [refresh]);
 
   const peaks = useMemo(() => data?.peaks || [], [data]);
+
+  // WHAT THE GATES DID, OR WOULD DO, ROW BY ROW.
+  //
+  // "8 cut" over a table of eight rows, next to four gates that are
+  // set and not armed, left the operator to work out for themselves
+  // which rows the arming would take -- by reading a crest column
+  // against a bar in another panel. The gate pass already judged
+  // every one of them; this is it, joined back onto the row it
+  // judged.
+  const verdicts = useMemo(() => {
+    const by = {};
+    (gateReport?.rejected || []).forEach((r) => {
+      by[r.peak_time_sec.toFixed(2)] = r;
+    });
+    return by;
+  }, [gateReport]);
+  const armed = !!gateReport?.armed;
+  const wouldDrop = !armed && (gateReport?.rejected || []).length;
 
   async function classify(peak, label) {
     const key = peak.peak_time_sec.toFixed(2);
@@ -274,6 +292,27 @@ export default function Audio1Panel({ uploadId, data, adminPassword,
         </span>
       </div>
 
+      {/* THE ARITHMETIC THE OPERATOR WAS DOING BY HAND. "8 cut" over
+          a table of eight rows, beside four gates that are set and
+          not armed, says nothing about what arming would leave. */}
+      {gateReport?.ran && wouldDrop > 0 && (
+        <div className="small" style={{ marginBottom: 6, padding: "4px 8px",
+                                        borderRadius: 4,
+                                        background: "var(--warn-bg, #fdf3d7)" }}>
+          <b>These gates are not armed.</b> Armed, they would leave{" "}
+          <b>{(gateReport.n_in || 0) - wouldDrop} of {gateReport.n_in}</b>
+          {" "}cuts — the {wouldDrop} marked below would go. Arm them in
+          the gates panel above.
+        </div>
+      )}
+      {gateReport?.ran && armed && (
+        <div className="tiny" style={{ marginBottom: 6 }}>
+          <span className="pill ok small">armed</span>{" "}
+          these gates decided this run: {gateReport.kept} of{" "}
+          {gateReport.n_in} peaks kept.
+        </div>
+      )}
+
       {/* THE RECORDING ITSELF, because every band below depends on it.
           A camera at 16 kHz cannot carry 3-8 kHz and a table that
           printed 0 for it would be lying with a number. */}
@@ -326,6 +365,7 @@ export default function Audio1Panel({ uploadId, data, adminPassword,
                 omits it, and both read as a mistake. */}
             <tr className="muted">
               <th />
+              <th style={{ textAlign: "left", fontSize: 10 }}>gates</th>
               {GROUPS.map((g) => (
                 <th key={g.key}
                     style={{ textAlign: "left", paddingRight: 8,
@@ -338,6 +378,7 @@ export default function Audio1Panel({ uploadId, data, adminPassword,
               <th style={{ textAlign: "left", fontSize: 10 }}>label</th>
             </tr>
             <tr className="muted">
+              <th />
               <th />
               {GROUPS.map((g) => (
                 <th key={g.key}
@@ -375,6 +416,29 @@ export default function Audio1Panel({ uploadId, data, adminPassword,
                             onClick={() => setOpen(isOpen ? null : key)}>
                       {isOpen ? "−" : "+"}
                     </button>
+                  </td>
+                  {/* THE GATES' VERDICT ON THIS ROW, beside the row.
+                      Unarmed it is the only place the operator can
+                      see what arming would cost them. */}
+                  <td style={{ whiteSpace: "nowrap", paddingRight: 6 }}>
+                    {verdicts[key] ? (
+                      <span
+                        title={(verdicts[key].failed || []).map(
+                          (f) => `${f.of} ${f.read} `
+                            + `${f.cmp === "min" ? "<" : ">"} ${f.bar}`)
+                          .join(" · ")}
+                        style={{ color: "var(--rose-700, #b4254b)",
+                                 fontSize: 10 }}>
+                        {armed ? "dropped" : "would drop"}
+                        {" "}
+                        {(verdicts[key].failed || [])
+                          .map((f) => f.of.replace(/ \(.*\)$/, ""))
+                          .slice(0, 2).join(", ")}
+                      </span>
+                    ) : p.passed_gate && gateReport?.ran ? (
+                      <span style={{ color: "var(--green-700, #197a4b)",
+                                     fontSize: 10 }}>passes</span>
+                    ) : null}
                   </td>
                   {GROUPS.map((g) => {
                     const vals = g.get(p) || [];

@@ -1266,7 +1266,9 @@ export default function AdminLongUpload() {
                           uploadId={u.id}
                           data={testCutResults[u.id].debug.audio1}
                           adminPassword={adminPassword}
-                          zoneOptions={zoneOpts} />
+                          zoneOptions={zoneOpts}
+                          gateReport={
+                            testCutResults[u.id].debug.audio1_gates} />
                       )}
                       {/* A REFUSED LAG HAS TO BE LOUDER THAN AN ACCEPTED
                           ONE. Type 0.8, get the hole's 0.6 in silence,
