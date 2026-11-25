@@ -7,6 +7,10 @@ import { api } from "../api.js";
 import { readAdminPassword } from "../adminAuth.js";
 import { Brand } from "../components/Brand.jsx";
 import { VideoLightbox } from "../components/VideoLightbox.jsx";
+// THE SAME WIZARD PRODUCTION OPENS, mounted here. Editing a draft
+// used to navigate to Production and open it there, so the operator
+// left the page they were working on to change one clip on it.
+import { ClickToPlotModal } from "./AdminProduction.jsx";
 import { zoneName } from "../zones.js";
 
 /*
@@ -210,6 +214,9 @@ export default function AdminProductionFlow() {
   // a run that has finished has any timings to show, so only those
   // rows carry the button.
   const [timingsFor, setTimingsFor] = useState({});
+  // {row, swingPos} while the edit wizard is open on this page.
+  const [editing, setEditing] = useState(null);
+  const [editErr, setEditErr] = useState(null);
   const [viewer, setViewer] = useState(null);
   const [focus, setFocus] = useState(0);      // which recording, 0 = all
   const polling = useRef(new Set());
@@ -290,6 +297,32 @@ export default function AdminProductionFlow() {
       poll(uploadId);
       setFocus(uploadId);
     } catch (e) { setErr(e.message); } finally { setActing(null); }
+  }
+
+  // OPEN THE WIZARD HERE. It needs the upload row the Production page
+  // hands it -- the same shape, from the same builder -- so it is
+  // fetched by id rather than rebuilt into something slimmer that
+  // would then have to be kept in step with the wizard's needs.
+  async function openEditor(clip) {
+    setActing(`edit-${clip.id}`);
+    setEditErr(null);
+    try {
+      const got = await api.listLongUploads(adminPassword, 1, 0,
+                                            { uploadId: clip.long_upload_id });
+      // The endpoint returns a bare array. Guessing at two or three
+      // possible shapes here would just hide the day it changes.
+      const row = Array.isArray(got) ? got[0] : null;
+      if (!row) throw new Error("could not load recording "
+                                + `#${clip.long_upload_id}`);
+      const arr = row.edit_metrics?.swings || [];
+      const pos = arr.findIndex((sw) => sw?.clip_id != null
+                                && sw.clip_id === clip.id);
+      setEditing({ row, swingPos: pos >= 0 ? pos : 0 });
+    } catch (e) {
+      setEditErr(e.message);
+    } finally {
+      setActing(null);
+    }
   }
 
   async function act(key, fn, ...args) {
@@ -493,13 +526,13 @@ export default function AdminProductionFlow() {
       <div className="tiny muted">{fmtWhen(c.captured_at)}</div>
       <div className="row" style={{ gap: 6, marginTop: 6, flexWrap: "wrap" }}>
         {/* The same editor Production opens for a produced clip. */}
-        {/* `back=flow` so cancel and save both return here rather
-            than leaving the operator on Production, which is not the
-            page they were working on. */}
-        <Link to={`/admin/production?edit=${c.long_upload_id}`
-                  + `&clip=${c.id}&back=flow`}>
-          <button type="button" className="btn ghost small">edit</button>
-        </Link>
+        {/* OPENS HERE. No navigation: the operator came to change one
+            clip on this page and should still be on it afterwards. */}
+        <button type="button" className="btn ghost small"
+                disabled={acting === `edit-${c.id}`}
+                onClick={() => openEditor(c)}>
+          {acting === `edit-${c.id}` ? "opening…" : "edit"}
+        </button>
         <button type="button" className="btn ghost small"
                 disabled={acting === `del-${c.id}`}
                 onClick={() => act(`del-${c.id}`, api.flowDeleteClip, c.id)}>
@@ -737,6 +770,22 @@ export default function AdminProductionFlow() {
           );
         })}
       </div>
+
+      {editErr && <div className="card err-text small">{editErr}</div>}
+      {editing && (
+        <ClickToPlotModal
+          row={editing.row}
+          swingPos={editing.swingPos}
+          addNew={false}
+          adminPassword={adminPassword}
+          // Cancel and save both land here, and both reload the
+          // columns: the point of editing a draft is that the draft
+          // changes.
+          onClose={() => { setEditing(null); load(); }}
+          onBackground={() => { setEditing(null); load(); }}
+          onDone={() => { setEditing(null); load(); }}
+        />
+      )}
 
       <VideoLightbox
         url={viewer?.url}

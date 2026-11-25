@@ -7922,6 +7922,13 @@ def list_long_uploads(
     # "2" is the box labelled "Zone 3" in the editor. Same reason as
     # `trigger` for being answered in SQL rather than the browser.
     zone: str = "",
+    # ONE UPLOAD, BY ID. For a screen that needs the row for a single
+    # recording -- the Production Flow opening the edit wizard on one
+    # draft -- without paging through the list hoping it is on this
+    # page. The same builder, so the row is the same shape the
+    # Production page hands that wizard; a second, slimmer row built
+    # elsewhere is a second thing to keep in step with it.
+    upload_id: int = 0,
     db: Session = Depends(get_db),
 ):
     """List previously-uploaded long videos so the operator can re-edit /
@@ -7934,6 +7941,8 @@ def list_long_uploads(
       order   "desc" (default) or "asc". For a course sort, "asc" is A→Z.
     """
     q = db.query(LongVideoUpload)
+    if upload_id:
+        q = q.filter(LongVideoUpload.id == int(upload_id))
 
     # Search by course name — keep rows whose course name contains the
     # query (case-insensitive). Blank keeps everything.
@@ -28400,12 +28409,55 @@ def _ascent_windows(db, row, src_path, fps, rep=None):
     _cut, _cut_why = _cutter_for(db, row)
     _cw = {"cutter": _cut, "cutter_why": _cut_why}
 
+    # ── 0. THE SWINGS THIS RUN IS ABOUT, AND NOTHING EARLIER ───────
+    #
+    # STEP 1 HAS ALREADY RUN and every swing it found carries the
+    # impact frame the clip will be cut around and the record will
+    # name. Searching from anywhere else is how a produce ends up with
+    # a chain that starts before its own impact: on #1916 the rig's
+    # impact (path 1 below) placed the window four seconds earlier
+    # than the audio cut did, the sweep found a ball there, and the
+    # clip was built around a launch 273 frames BEFORE the strike it
+    # claimed to be of.
+    #
+    # NOTHING BEFORE THE IMPACT. The window opens ON the impact frame,
+    # not a second before it: a ball cannot leave before it is struck,
+    # so every frame earlier is a frame where only another swing's
+    # ball, or something that is not a ball, can be found. That is a
+    # deliberate trade -- an impact estimated slightly late now clips
+    # the first frames of its own ascent rather than admitting the
+    # frames before it -- and it is the trade that was asked for.
+    _sw_frames = []
+    for _sw in ((rep or {}).get("swings") or []):
+        _if = _sw.get("impact_frame")
+        if _if is None:
+            continue
+        try:
+            _sw_frames.append(int(_if))
+        except (TypeError, ValueError):
+            continue
+    if _sw_frames:
+        w = [(int(f), int(f + ASCENT_WIN_POST_SEC * fps))
+             for f in sorted(_sw_frames)]
+        _note("the %d impact frame(s) step 1 found, searching only "
+              "AFTER each one (f%s, %.1fs forward)"
+              % (len(w), ", f".join(str(f) for f in sorted(_sw_frames)),
+                 ASCENT_WIN_POST_SEC), w,
+              ran="step 1's impact frames",
+              frames=sorted(_sw_frames), **_cw)
+        return w
+
     # 1. The rig heard it.
     #
+    # ONLY WHERE STEP 1 FOUND NO SWING AT ALL. It used to be first,
+    # and it is a different instant from the one the produce records:
+    # the rig hears the strike through its own microphone and the
+    # clip is cut around what the cutter found in the file. A quarter
+    # of a second apart is most of an ascent; four seconds apart is
+    # another swing's.
+    #
     # THE SAME READER THE PRODUCE SIDE USES, not a second copy of the
-    # arithmetic. Two readers of one instant that disagree about when
-    # it was would place the search window and the impact frame a
-    # quarter of a second apart, which is most of the ascent.
+    # arithmetic.
     try:
         _rig = _rig_impact_sec(db, row, getattr(row, "id", None))
         if _rig is not None:
@@ -29619,6 +29671,31 @@ def _ascent_run(row, src_path, db, progress=None, produce=True,
                  "tee", 0, 0)
     _t_sub = time.perf_counter()
     _win = _ascent_windows(db, row, src_path, fps, rep)
+    # ── NOTHING TO LOOK FOR MEANS DO NOT LOOK ──────────────────────
+    #
+    # Steps 2 to 4 run once per swing, so with no swings there is
+    # nothing to produce -- and sweeping the whole clip for a ball
+    # leaving is then minutes of reading frames whose only possible
+    # output is chains belonging to nothing. Worse than wasted: every
+    # one of them is a candidate for a later run to match a swing
+    # against.
+    #
+    # The sky is searched because a strike was heard, not in the hope
+    # of finding one.
+    if not (rep.get("swings") or []):
+        rep["sweep"] = {"ok": False, "ascents": [],
+                        "reason": "no swing was found in this clip, so "
+                                  "there was nothing to search the sky "
+                                  "for"}
+        _stage(2, "The ascent — balls leaving the tee",
+               "NOT RUN. Step 1 found no swing, and the ascent search "
+               "exists to find the ball belonging to one. Sweeping "
+               "anyway would read every frame of the clip to produce "
+               "chains that cannot be matched to anything.",
+               secs=time.perf_counter() - _t_sub)
+        rep["reason"] = (rep.get("reason")
+                         or "no swing was found in this clip")
+        return rep
     # WAS THERE A SWING WHERE IT CUT? Only on a FIND, never on a
     # produce.
     #

@@ -20,7 +20,7 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState }
   from "react";
 import { growZoneOptions, zoneWords } from "../zones";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { VideoLightbox } from "../components/VideoLightbox.jsx";
 import { api } from "../api.js";
@@ -2238,7 +2238,12 @@ function leadInVerdict(points, landingFrame, fps) {
     : { ok: true, n: keep.length, rms: f.rms, dropped };
 }
 
-function ClickToPlotModal({
+// EXPORTED, because the Production Flow opens the same wizard. Not
+// moved into its own module: it is 2,400 lines deep in this page's
+// helpers, and a copy on the other page would be a second editor
+// that drifts -- which is the thing the deep link was added to
+// avoid in the first place.
+export function ClickToPlotModal({
   row, swingPos, addNew, adminPassword, onClose, onBackground, onDone,
 }) {
   const swings = row.edit_metrics?.swings || [];
@@ -18971,9 +18976,7 @@ export default function AdminProduction() {
   //
   // Fires once the rows are loaded and then clears the query string,
   // so a refresh does not reopen a dialog the operator has closed.
-  const navigate = useNavigate();
   const deepLinked = useRef(false);
-  const _backTo = useRef(null);
   useEffect(() => {
     if (deepLinked.current || !rows?.length) return;
     const q = new URLSearchParams(window.location.search);
@@ -18987,13 +18990,6 @@ export default function AdminProduction() {
     const pos = clipId
       ? arr.findIndex((sw) => sw?.clip_id != null && sw.clip_id === clipId)
       : -1;
-    // WHERE TO GO WHEN IT CLOSES. Arriving from the Production Flow
-    // and being left on Production afterwards is a dead end: the
-    // operator came to edit one draft and has to find their way back
-    // to the page they were working on. Remembered before the query
-    // string is cleared, which is why it cannot be read at close.
-    _backTo.current = q.get("back") === "flow"
-      ? "/admin/production-flow" : null;
     setPlotModal({ row, swingPos: pos >= 0 ? pos : 0 });
     window.history.replaceState({}, "", window.location.pathname);
   }, [rows]);
@@ -19645,15 +19641,8 @@ export default function AdminProduction() {
     })();
   }
 
-  // Close the plot map, and go back where the operator came from.
-  // Save and cancel both land here, which is the point: a draft
-  // edited from the flow page should put you back on the flow page
-  // either way.
   function closePlot() {
     setPlotModal(null);
-    const back = _backTo.current;
-    _backTo.current = null;
-    if (back) navigate(back);
   }
 
   function handleEdit(row, opts = {}) {

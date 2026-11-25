@@ -66,15 +66,27 @@ _desc = _live(_desc_all)
 
 print("the run is four steps, numbered as the operator numbered them:")
 _titles = re.findall(r'_stage\((\d), "([^"]+)"', _run)
-check("four of them", len(_titles), 4)
-check("  1 is the cutter", _titles[0][0] == "1"
-      and "cutter" in _titles[0][1].lower(), True)
-check("  2 is the ascent", _titles[1][0] == "2"
-      and "ascent" in _titles[1][1].lower(), True)
-check("  3 is the descent", _titles[2][0] == "3"
-      and "coming down" in _titles[2][1].lower(), True)
-check("  4 is the tracer", _titles[3][0] == "4"
-      and "tracer" in _titles[3][1].lower(), True)
+# ONE STEP MAY HAVE TWO SITES, and step 2 now does: the sweep, and the
+# early return that reports it was NOT run because step 1 found no
+# swing. They are mutually exclusive -- the second returns -- so a run
+# still emits one stage 2. What must hold is that the four steps exist
+# in order and that no FIFTH number appears.
+_nums = [n for n, _ in _titles]
+check("the four steps are there", sorted(set(_nums)), ["1", "2", "3", "4"])
+check("...in order", _nums, sorted(_nums))
+_first = {}
+for _n, _t in _titles:
+    _first.setdefault(_n, _t)
+check("  1 is the cutter", "cutter" in _first["1"].lower(), True)
+check("  2 is the ascent", "ascent" in _first["2"].lower(), True)
+check("  3 is the descent", "coming down" in _first["3"].lower(), True)
+check("  4 is the tracer", "tracer" in _first["4"].lower(), True)
+# AND THE SECOND SITE IS THE NOT-RUN ONE, which must say so rather
+# than reporting an empty sweep as a sweep that found nothing.
+_twos = [t for n, t in _titles if n == "2"]
+check("  step 2 has a second, not-run site", len(_twos), 2)
+check("  ...and both name the ascent",
+      all("ascent" in t.lower() for t in _twos), True)
 # EVERY STEP REPORTS ITS OWN TIME, and a step that passes none reads
 # as instant. Checked by walking each `_stage(` call to its closing
 # paren rather than matching "...- _t)" as a literal: the seconds are
@@ -96,8 +108,13 @@ def _calls(text, name):
 
 _timed = [n for n, c in _calls(_run, "_stage")
           if "time.perf_counter() - _t" in c]
-check("and every one of them is timed", sorted(_timed),
-      ["1", "2", "3", "4"])
+# EVERY SITE IS TIMED, including step 2's not-run one: a step that
+# reports no seconds reads as instant, and "the sweep was skipped"
+# still took however long step 1 and the window decision took to get
+# there.
+check("every step is timed", sorted(set(_timed)), ["1", "2", "3", "4"])
+check("...and so is step 2's not-run site",
+      len([n for n in _timed if n == "2"]), 2)
 
 print()
 print("STEP 1 — the cutter finds the swings, not a window:")

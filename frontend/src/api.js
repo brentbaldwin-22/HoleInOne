@@ -485,6 +485,9 @@ export const api = {
     if (opts.zone != null && opts.zone !== "") {
       params.set("zone", String(opts.zone));
     }
+    // One upload, by id — the same row shape, for a screen that wants
+    // exactly one recording rather than a page of them.
+    if (opts.uploadId) params.set("upload_id", String(opts.uploadId));
     return request(
       `/api/admin/long-uploads?${params.toString()}`,
       { adminPassword: key },

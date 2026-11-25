@@ -288,21 +288,32 @@ console.log("\n3h. a re-run starts over rather than adding to the pile");
         /c\.audio_cut_id = None/.test(flow));
 }
 
-console.log("\n3i. editing a draft comes back to the flow");
+console.log("\n3i. the edit wizard opens ON this page, with no navigation");
 {
-  // Arriving from the flow and being left on Production afterwards is
-  // a dead end: the operator came to edit one draft and has to find
-  // their way back to the page they were working on.
-  check("the link says where it came from", /&back=flow/.test(page));
-  check("Production reads it", /q\.get\("back"\) === "flow"/.test(prod));
-  check("...remembering it before the query string is cleared",
-        prod.indexOf('q.get("back")') < prod.indexOf("replaceState"));
-  check("both closers go through one place",
-        (prod.match(/onClose=\{\(\) => closePlot\(\)\}/g) || []).length, 2);
-  check("...which navigates back when that is where we came from",
-        /if \(back\) navigate\(back\)/.test(prod));
-  check("and clears it, so a later close does not jump",
-        /_backTo\.current = null;/.test(prod));
+  // The operator came to change one clip on the flow page and should
+  // still be on it afterwards. Sending them to Production and back
+  // was a round trip through a page they were not working on.
+  check("the wizard is mounted here", /<ClickToPlotModal/.test(page));
+  check("...the same one Production opens, imported not copied",
+        /import \{ ClickToPlotModal \} from "\.\/AdminProduction\.jsx"/
+          .test(page));
+  check("...which means it is exported there",
+        /export function ClickToPlotModal\(\{/.test(prod));
+  check("edit is a button, not a link to another page",
+        /onClick=\{\(\) => openEditor\(c\)\}/.test(page));
+  check("nothing links to Production any more",
+        /\/admin\/production\?edit=/.test(page), false);
+  check("and Production's back-to-flow redirect is gone with it",
+        /back=flow/.test(prod), false);
+  // THE ROW THE WIZARD NEEDS is the one Production hands it, from the
+  // same builder -- a slimmer row built here would be a second thing
+  // to keep in step with what the wizard reads.
+  check("the upload row is fetched by id", /uploadId: clip\.long_upload_id/
+    .test(page));
+  check("...through the existing list endpoint",
+        /upload_id: int = 0/.test(admin));
+  check("closing reloads the columns, because the draft changed",
+        (page.match(/setEditing\(null\); load\(\);/g) || []).length, 3);
 }
 
 console.log("\n4. the cuts column prints fields the cut row serves");
@@ -319,11 +330,10 @@ for (const k of rawKeys) {
   check(`  ${k}`, new RegExp(`"${k}":`).test(flow));
 }
 
-console.log("\n6. and the deep link matches what Production listens for");
-// However the template is split, the link must carry both params.
-const to = /\/admin\/production\?edit=\$\{[\s\S]{0,60}?&clip=\$\{/.test(page);
-check("the flow links with edit= and clip=", to);
-
+console.log("\n6. Production's own deep link still works on its own");
+// THE FLOW NO LONGER USES IT -- it mounts the wizard itself, which is
+// section 3i -- but a pasted ?edit=&clip= URL should still open the
+// right swing on Production, so the handler stays and stays tested.
 check("Production reads edit=", /q\.get\("edit"\)/.test(prod));
 check("...and clip=", /q\.get\("clip"\)/.test(prod));
 check("...and opens the same plot map an Edit button does",
