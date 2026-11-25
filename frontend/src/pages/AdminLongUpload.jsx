@@ -3,6 +3,7 @@ import { growZoneOptions, zoneName } from "../zones";
 import { Link } from "react-router-dom";
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import Audio1Panel from "../components/Audio1Panel.jsx";
+import AudioGatesPanel from "../components/AudioGatesPanel.jsx";
 import { api } from "../api.js";
 import { MotionGraph } from "../components/MotionGraph.jsx";
 import { PiTestZones } from "../components/PiTestZones.jsx";
@@ -142,6 +143,9 @@ export default function AdminLongUpload() {
   const [testCutting, setTestCutting] = useState({}); // {id: true}
   const [testCutResults, setTestCutResults] = useState({}); // {id: {detector, cuts, ...}}
   const [testCutDetector, setTestCutDetector] = useState({}); // {id: "motion"|"audio"|"combined"|"pi"}
+  // The gates panel, open per recording. Closed by default: it is the
+  // answer to a question, not something to read every time.
+  const [showGates, setShowGates] = useState({});
   const [piParams, setPiParams] = useState({}); // {id: {min_ratio, ...}}
   const [piZones, setPiZones] = useState({});   // {id: [{x,y,w,h}] fractions}
   const [piZonesOpen, setPiZonesOpen] = useState({}); // {id: true}
@@ -735,14 +739,21 @@ export default function AdminLongUpload() {
                           in the gate sandbox below. */}
                       {["audio", "audio2", "audio1"].includes(
                         testCutDetector[u.id] || "motion") && (
-                        <span className="tiny muted"
-                              title={"The ratio, separation and attack now "
-                                     + "come from this hole's stored gates "
-                                     + "for its tee box — the same ones "
-                                     + "production cuts with. Set them in "
-                                     + "the gate sandbox below the cuts."}>
-                          gates: stored, per tee box
-                        </span>
+                        <button
+                          type="button"
+                          className={showGates[u.id] ? "btn small"
+                            : "btn ghost small"}
+                          disabled={!!testCutting[u.id] || missing || busy}
+                          onClick={() => setShowGates((g) => ({
+                            ...g, [u.id]: !g[u.id] }))}
+                          title={"The ratio, separation and attack come "
+                                 + "from this hole's stored gates for the "
+                                 + "tee box that fired this recording — "
+                                 + "the same ones production cuts with. "
+                                 + "Open this to see them, and change "
+                                 + "them, before you cut."}>
+                          {showGates[u.id] ? "hide gates" : "show gates"}
+                        </button>
                       )}
                       {["audio", "audio2", "audio1"].includes(
                         testCutDetector[u.id] || "motion")
@@ -1105,6 +1116,18 @@ export default function AdminLongUpload() {
                       </button>
                     </div>
                   </div>
+
+                  {/* THE GATES, BEFORE THE CUT. Above the results on
+                      purpose: they are an input to the run, and a
+                      control that decides what a button does belongs
+                      beside the button, not under its output. */}
+                  {showGates[u.id]
+                    && ["audio", "audio2", "audio1"].includes(
+                      testCutDetector[u.id] || "motion") && (
+                    <AudioGatesPanel
+                      uploadId={u.id}
+                      adminPassword={adminPassword} />
+                  )}
 
                   {testCutError[u.id] && (
                     <div className="card tight err-text small"

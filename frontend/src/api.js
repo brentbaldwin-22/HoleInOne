@@ -1118,6 +1118,16 @@ export const api = {
   // This hole's detector gates: the spec, the defaults, what is in
   // force and which of those an operator set. Keyed per camera pair and
   // hole, so tuning one hole cannot reach another.
+  // THE GATES THAT WILL CUT THIS UPLOAD, resolved for the tee box
+  // that fired it. Different question from getGateTuning, which
+  // answers what the HOLE has stored: only one of "audio_min_ratio"
+  // and "audio_min_ratio@1" is going to cut this clip, and working
+  // out which by eye is how a cut gets verified at a ratio the
+  // cutter would never run at.
+  getAudioGates: (key, uploadId) =>
+    request(`/api/admin/long-uploads/${uploadId}/audio-gates`,
+            { adminPassword: key }),
+
   getGateTuning: (key, uploadId) =>
     request(`/api/admin/long-uploads/${uploadId}/gate-tuning`, {
       adminPassword: key,

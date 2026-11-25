@@ -79,10 +79,9 @@ print("\n4. the duplicate boxes are gone from the page")
 # different detector down a different branch of the test cut, and it
 # was not part of this change.
 _audio_controls = re.findall(
-    r'\["audio", "audio2", "audio1"\]\.includes\(\s*\n?\s*'
-    r'testCutDetector\[u\.id\] \|\| "motion"\)[\s\S]{0,900}?\n\s{22}\)\}',
+    r'\["audio", "audio2", "audio1"\]\.includes\([\s\S]{0,1200}?\)\}',
     PAGE)
-check("the audio detectors' control block was found",
+check("the audio detectors' control blocks were found",
       len(_audio_controls) > 0, True)
 _audio_block = "\n".join(_audio_controls)
 for name in ("audioMinRatio", "audioMinSep", "audioMaxAttack"):
@@ -90,8 +89,15 @@ for name in ("audioMinRatio", "audioMinSep", "audioMaxAttack"):
           "value={%s[u.id]" % name in _audio_block, False)
 check("the combined detector keeps its own, deliberately",
       'value={audioMinRatio[u.id] ?? 5}' in PAGE, True)
-check("and the page says where they went",
-      "gates: stored, per tee box" in PAGE)
+# The static note that replaced them became a BUTTON: the gates are
+# not just stored elsewhere, they are readable and editable here,
+# before the cut that will use them.
+check("and the page offers to show them instead",
+      '">show gates"' in PAGE or "show gates" in PAGE)
+check("...which opens the resolved view for this upload's tee box",
+      "<AudioGatesPanel" in PAGE)
+check("...fed by the endpoint that resolves it",
+      "getAudioGates" in (ROOT / "frontend/src/api.js").read_text())
 
 print("\n5. the detector still gets real numbers, from the gate table")
 from app.services import debug3 as d3  # noqa: E402

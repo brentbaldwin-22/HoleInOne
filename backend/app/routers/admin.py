@@ -13290,6 +13290,98 @@ def get_gate_tuning(upload_id: int, db: Session = Depends(get_db)):
     }
 
 
+# The detector gates that are NOT in AUDIO_GATE_FIELDS, named for a
+# person. Separation is the only one: no preset sets it and the gate
+# sandbox has no control for it, so it would otherwise appear in front
+# of an operator as its column name.
+_AUDIO_GATE_LABELS = {
+    "audio_min_separation_sec": "seconds between strikes",
+}
+
+
+@router.get("/long-uploads/{upload_id}/audio-gates")
+def get_audio_gates(upload_id: int, db: Session = Depends(get_db)):
+    """The gates that will cut THIS upload, resolved for its own tee box.
+
+    DIFFERENT QUESTION FROM `gate-tuning`, which answers "what has
+    this hole stored". An operator looking at one recording wants to
+    know what is about to happen to it, and the answer involves the
+    zone that fired it: "audio_min_ratio" is the hole's and
+    "audio_min_ratio@1" is Zone 2's, and only one of them is going to
+    cut this clip.
+
+    Working it out by reading the hole's tuning and applying the
+    zone rule by eye is how a cut gets verified at a ratio the cutter
+    would never run at. So the resolution is done here, once, by the
+    same resolver the cutter uses.
+
+    `source` on each gate is the honest provenance: whether the value
+    in force was set for this tee box, set for the hole, or is simply
+    the module default nobody has touched.
+    """
+    from ..services import debug3 as _d3
+
+    row = db.get(LongVideoUpload, upload_id)
+    if not row:
+        raise HTTPException(404, "long upload not found")
+    over, key, why = _gate_tuning_for(db, row)
+    zone = _trigger_zone(db, row)
+    live = _d3.resolve_gates(over, zone=zone)
+
+    # The three the detector itself reads, then every audio1 gate.
+    names = ["audio_min_ratio", "audio_max_attack_ms",
+             "audio_min_separation_sec"]
+    names += [k for k in _d3.AUDIO_GATE_FIELDS if k not in names]
+
+    out = []
+    for name in names:
+        spec = _d3.GATE_SPEC.get(name)
+        if spec is None:
+            continue
+        _dflt, _lo, _hi, _int = spec
+        _zoned = over.get("%s@%s" % (name, zone)) if zone is not None else None
+        _plain = over.get(name)
+        out.append({
+            "name": name,
+            "label": (_d3.AUDIO_GATE_FIELDS.get(name)
+                      or (None, None, _AUDIO_GATE_LABELS.get(name, name)))[2],
+            "cmp": (_d3.AUDIO_GATE_FIELDS.get(name) or ("min",))[0],
+            "value": live.get(name),
+            "default": _dflt, "lo": _lo, "hi": _hi,
+            "source": ("tee box" if _zoned is not None
+                       else "hole" if _plain is not None else "default"),
+            # THE DETECTOR'S OWN THREE ARE NOT OPTIONAL. Zero is off
+            # for an audio1 gate and out of range for these, so the
+            # editor must not offer the same switch for both.
+            "detector_gate": name in ("audio_min_ratio",
+                                      "audio_max_attack_ms",
+                                      "audio_min_separation_sec"),
+            "off_is": _audio_gate_off(name) if name in _d3.AUDIO_GATE_FIELDS
+            else None,
+        })
+
+    _armed = bool(float(live.get("audio1_armed") or 0.0) >= 1.0)
+    _on = sorted(k for k in _d3.AUDIO_GATE_FIELDS
+                 if k not in ("audio_min_ratio", "audio_max_attack_ms")
+                 and float(live.get(k) or 0.0) > 0.0)
+    from .production_flow import _gates_sentence as _gs
+    return {
+        "upload_id": upload_id,
+        "zone": zone,
+        "zone_name": None if zone is None else "Zone %d" % (zone + 1),
+        "key": key, "key_reason": why,
+        "armed": _armed,
+        "audio1_on": _on,
+        "gates": out,
+        "sentence": _gs({
+            "gates_used": {k: float(live[k]) for k in
+                           ("audio_min_ratio", "audio_max_attack_ms",
+                            "audio_min_separation_sec")},
+            "audio1_armed": _armed, "audio1_on": _on}),
+        "presets": _d3.AUDIO_TEE_PRESETS,
+    }
+
+
 @router.post("/long-uploads/{upload_id}/gate-tuning")
 def set_gate_tuning(
     upload_id: int,
