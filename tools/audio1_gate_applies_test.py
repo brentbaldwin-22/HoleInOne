@@ -161,6 +161,42 @@ with TemporaryDirectory() as tmp:
           isinstance(_f["read"], float), True)
     check("...which is below the bar, as claimed", _f["read"] < 0.99, True)
 
+    print("\n7b. a floor and a ceiling on one measurement make a band")
+    # A MINIMUM ALONE ONLY REFUSES THE DULL THINGS. A struck ball sits
+    # in a band: too dark is a thud or an engine, too bright is hiss,
+    # birdsong, a zip, a clubhead ringing on another club. With only a
+    # floor, every bright false positive clears by being brighter
+    # still -- the wrong direction for a measurement meant to be
+    # characteristic rather than merely large.
+    ARMED = {**LOOSE, "audio1_armed@1": 1.0}
+    hits, g, _ = run(SRC, {**ARMED, "audio_max_centroid_hz@1": 6000.0})
+    check("a ceiling the peak is under keeps it", len(hits), 1)
+    hits, g, _ = run(SRC, {**ARMED, "audio_max_centroid_hz@1": 1500.0})
+    check("a ceiling it is over refuses it", len(hits), 0)
+    check("...naming the new gate", g["rejected"][0]["failed"][0]["gate"],
+          "audio_max_centroid_hz")
+    check("...as a maximum", g["rejected"][0]["failed"][0]["cmp"], "max")
+    _read = g["rejected"][0]["failed"][0]["read"]
+    check("...with the centroid it read", _read > 1500.0, True)
+    hits, _, _ = run(SRC, {**ARMED, "audio_min_centroid_hz@1": 1000.0,
+                           "audio_max_centroid_hz@1": 6000.0})
+    check("the two together pass a peak inside the band", len(hits), 1)
+    hits, g, _ = run(SRC, {**ARMED, "audio_min_centroid_hz@1": 4000.0,
+                           "audio_max_centroid_hz@1": 6000.0})
+    check("and refuse one below it", len(hits), 0)
+    check("...by the floor, not the ceiling",
+          g["rejected"][0]["failed"][0]["gate"], "audio_min_centroid_hz")
+    # BOTH READ THE SAME MEASUREMENT, which is the thing that could
+    # have gone wrong: one overwriting the other in any table keyed on
+    # what a gate reads rather than on the gate.
+    check("both gates read the same measurement",
+          A._audio1_enabled_gates(
+              __import__("app.services.debug3", fromlist=["x"])
+              .resolve_gates({"audio_min_centroid_hz@1": 1000.0,
+                              "audio_max_centroid_hz@1": 6000.0}, zone=1)
+          ).keys() == {"audio_min_centroid_hz", "audio_max_centroid_hz"},
+          True)
+
     print("\n8. and the report is written even when there is nothing to say")
     # THE COMMONEST CASE OF ALL. A tee box nobody has set a gate on
     # used to return before writing anything, so the panel showed an

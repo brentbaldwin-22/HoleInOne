@@ -45,6 +45,12 @@ const FIELDS = {
                              label: "raw 10-90 attack (ms)" },
   audio_min_centroid_hz: { cmp: "min", reads: "spectral_centroid_hz",
                            label: "spectral centroid (Hz)" },
+  // A FLOOR AND A CEILING ON ONE MEASUREMENT. Both read
+  // `spectral_centroid_hz`; together they are a band, and a gate
+  // table that allowed only one of them could express "bright
+  // enough" but never "bright, but not THAT bright".
+  audio_max_centroid_hz: { cmp: "max", reads: "spectral_centroid_hz",
+                           label: "spectral centroid (Hz)" },
   audio_min_hf_concentration: { cmp: "min", reads: "hf_concentration",
                                 label: "HF energy concentration" },
   audio_min_isolation_db: { cmp: "min", reads: "isolation_db",
@@ -90,7 +96,8 @@ console.log("\n1. every gate the server defines is offered");
 for (const k of Object.keys(FIELDS)) {
   check(`  ${k}`, !!byKey[k]);
 }
-check("  and each is armable", RULES.filter((r) => r.gate).length, 11);
+check("  and each is armable", RULES.filter((r) => r.gate).length,
+      Object.keys(FIELDS).length);
 
 console.log("\n2. the measurements with no gate are still argued with");
 for (const k of ["x_snr_db", "x_c20_200", "x_c50_200", "x_c10_100",
@@ -99,6 +106,21 @@ for (const k of ["x_snr_db", "x_c20_200", "x_c50_200", "x_c10_100",
 }
 check("  and none of them claims to be armable",
       RULES.filter((r) => !r.gate).every((r) => r.gate === null));
+
+console.log("\n2b. two gates may read one measurement, in opposite directions");
+{
+  const pair = RULES.filter((r) => r.gate
+    && /centroid/.test(r.gate));
+  check("both centroid gates are offered", pair.length, 2);
+  check("...and they are distinct rules", new Set(pair.map((r) => r.key)).size,
+        2);
+  // THE LABEL IS NOT THE KEY. Both say "spectral centroid (Hz)"; the
+  // direction is what separates them, and a sandbox keyed on the
+  // label would let one overwrite the other.
+  check("...sharing a label", new Set(pair.map((r) => r.label)).size, 1);
+  check("...but opposite directions",
+        pair.map((r) => r.cmp).sort(), ["max", "min"]);
+}
 
 console.log("\n3. min and max are applied the right way round");
 check("min HF SNR 20 keeps 30",
@@ -116,6 +138,19 @@ check("max attack 20 drops 40",
 check("a bar met exactly is not a failure",
       evaluate(peak({ peak_ratio: 3.5 }), on("audio_min_ratio", 3.5),
                RULES, false).pass, true);
+
+console.log("\n3b. a floor and a ceiling together make a band");
+{
+  const band = { ...on("audio_min_centroid_hz", 1000),
+                 ...on("audio_max_centroid_hz", 6000) };
+  const at = (hz) => evaluate(peak({ spectral_centroid_hz: hz }), band,
+                              RULES, false);
+  check("inside the band passes", at(3453).pass, true);
+  check("below it fails the floor", at(400).failed.length, 1);
+  check("above it fails the ceiling", at(9000).failed.length, 1);
+  check("and far outside fails only the one it broke",
+        at(9000).failed[0].key, "audio_max_centroid_hz");
+}
 
 console.log("\n4. a gate reads the server's resolved value, not a flat key");
 // `hf_concentration` is nested under `concentration_hf` on a

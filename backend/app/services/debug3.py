@@ -9010,6 +9010,20 @@ GATE_SPEC = {
     "audio_min_amplitude": (0.0, 0.0, 1.0, False),
     "audio_max_raw_attack_ms": (0.0, 0.0, 200.0, False),
     "audio_min_centroid_hz": (0.0, 0.0, 12000.0, False),
+    # ── AND A CEILING ON IT ─────────────────────────────────────────
+    #
+    # A FLOOR ALONE ONLY REFUSES THE DULL THINGS. A struck ball sits
+    # in a band: too dark is a thud, a footfall or an engine, and too
+    # bright is hiss, birdsong, a zip, a clubhead ringing on another
+    # club. With only a minimum, every one of the bright ones clears
+    # the gate by being brighter still, which is the wrong direction
+    # for a measurement that is supposed to be characteristic rather
+    # than merely large.
+    #
+    # Zero is off here as it is everywhere else, and is not a value
+    # this could be confused with: a maximum centroid of 0 Hz would
+    # refuse every sound ever recorded.
+    "audio_max_centroid_hz": (0.0, 0.0, 12000.0, False),
     "audio_min_hf_concentration": (0.0, 0.0, 1.0, False),
     "audio_min_isolation_db": (0.0, 0.0, 60.0, False),
     "audio_max_decay_ms": (0.0, 0.0, 2000.0, False),
@@ -9386,6 +9400,8 @@ AUDIO_GATE_FIELDS = {
     "audio_min_amplitude": ("min", "peak_amplitude", "minimum amplitude"),
     "audio_max_raw_attack_ms": ("max", "attack_ms", "raw 10-90 attack (ms)"),
     "audio_min_centroid_hz": ("min", "spectral_centroid_hz",
+                              "spectral centroid (Hz)"),
+    "audio_max_centroid_hz": ("max", "spectral_centroid_hz",
                               "spectral centroid (Hz)"),
     "audio_min_hf_concentration": ("min", "hf_concentration",
                                    "HF energy concentration"),

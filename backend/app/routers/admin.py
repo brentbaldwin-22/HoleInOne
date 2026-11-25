@@ -16269,12 +16269,15 @@ def export_audio_labels(upload_id: int = 0, db: Session = Depends(get_db)):
 def _audio1_enabled_gates(gates: dict) -> dict:
     """The audio1 gates this zone has switched on. ZERO MEANS OFF.
 
-    Two of the eleven -- `audio_min_ratio` and `audio_max_attack_ms`
-    -- are the detector's OWN arguments and are already applied inside
-    it, per zone, by both produce paths. They are deliberately not
-    returned here: applying them a second time as a post-filter would
-    be a second opinion on a decision already taken, and the two could
-    drift apart.
+    Zero is off for a MAXIMUM too, and is never a real setting: a
+    maximum attack of 0 ms, or a maximum centroid of 0 Hz, would
+    refuse every sound ever recorded.
+
+    `audio_min_ratio` and `audio_max_attack_ms` are the detector's OWN
+    arguments and are already applied inside it, per zone, by both
+    produce paths. They are deliberately not returned here: applying
+    them a second time as a post-filter would be a second opinion on
+    a decision already taken, and the two could drift apart.
     """
     from ..services import debug3 as _d3
     out = {}
