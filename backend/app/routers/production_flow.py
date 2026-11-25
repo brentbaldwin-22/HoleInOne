@@ -591,7 +591,20 @@ def flow_run(row, src_path, db, progress=None) -> dict:
         return rep
 
     # ══ PHASE 2. CUT BOTH ANGLES AROUND EACH STRIKE ═══════════════
+    #
+    # A FRESH START, NOT AN ADDITION. Re-running the flow on a
+    # recording means "do this again", and the cuts are keyed on
+    # (upload, idx): a second run that found three strikes where the
+    # first found five left the last two sitting there, pointing at
+    # files this run is about to overwrite or has already replaced.
+    # The column then showed five cuts for a run that made three, with
+    # no way to tell which two were ghosts.
+    #
+    # The produce clears the upload's clips the same way, for the same
+    # reason, which is why the two together are a re-run rather than a
+    # second pile on top of the first.
     _t = _time.monotonic()
+    rep["cleared"] = _clear_previous(db, row)
     _green_src = None
     try:
         _g = _local_green(row)
@@ -726,6 +739,53 @@ def flow_run(row, src_path, db, progress=None) -> dict:
     rep["total_sec"] = round(_time.monotonic() - _t_run, 2)
     rep["ok"] = True
     return rep
+
+
+def _clear_previous(db, row) -> dict:
+    """Throw away what an earlier run of this flow left on this upload.
+
+    Rows AND files: a cut row removed while its mp4 stays behind is a
+    file nothing points at, in a folder no retention sweep walks.
+
+    ANY CLIP STILL POINTING AT ONE IS UNPOINTED FIRST. The produce
+    that follows clears the upload's clips anyway, but it runs after
+    this and can fail; a dangling `audio_cut_id` left in between would
+    make a clip claim to be a swing that no longer exists, which reads
+    as provenance and is not.
+    """
+    from .admin import CLIPS_DIR
+
+    out = {"cuts": 0, "files": 0}
+    try:
+        old = (db.query(AudioCut)
+               .filter(AudioCut.long_upload_id == row.id).all())
+        if not old:
+            return out
+        ids = {k.id for k in old}
+        for c in (db.query(VideoClip)
+                  .filter(VideoClip.audio_cut_id.in_(ids)).all()):
+            c.audio_cut_id = None
+        for k in old:
+            for field in ("tee_filename", "green_filename"):
+                name = getattr(k, field, None)
+                if not name:
+                    continue
+                try:
+                    path = (CLIPS_DIR / name).resolve()
+                    if CLIPS_DIR.resolve() in path.parents and path.is_file():
+                        path.unlink()
+                        out["files"] += 1
+                except OSError as exc:
+                    log.warning("flow: could not delete %s: %s", name, exc)
+            db.delete(k)
+            out["cuts"] += 1
+        db.commit()
+        log.info("flow: upload %s -- cleared %d cut(s) and %d file(s) "
+                 "from an earlier run", row.id, out["cuts"], out["files"])
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        log.warning("flow: could not clear upload %s: %s", row.id, exc)
+    return out
 
 
 def _claim_clips(db, row, cuts) -> tuple[int, int]:

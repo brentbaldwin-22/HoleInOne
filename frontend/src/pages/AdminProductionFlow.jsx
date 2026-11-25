@@ -86,6 +86,49 @@ function fmtDur(sec) {
   return `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, "0")}s`;
 }
 
+/*
+ * WHICH RECORDING A CARD BELONGS TO, said in every column.
+ *
+ * The columns are four independent lists and the eye has no way to
+ * join them: three cuts and a draft, all from #1915, sitting next to
+ * five cuts from #1916 with nothing but a small grey "#1915" on each
+ * card to tell them apart. The lineage is the thing the page is for.
+ *
+ * So every column groups by recording, under the same heading in the
+ * same order, and the heading carries the count for THAT recording in
+ * THAT column -- "#1915 · 3 cuts" beside "#1915 · 1 draft" is the
+ * fan-out, readable across the row.
+ */
+function groupByUpload(rows, idOf) {
+  const out = new Map();
+  (rows || []).forEach((r) => {
+    const id = idOf(r);
+    if (!out.has(id)) out.set(id, []);
+    out.get(id).push(r);
+  });
+  return out;
+}
+
+function GroupHead({ id, n, unit, focus, onFocus }) {
+  const on = focus === id;
+  return (
+    <button type="button" onClick={() => onFocus(on ? 0 : id)}
+            title={on ? "show every recording again"
+              : "show only this recording, across all four columns"}
+            style={{ display: "flex", alignItems: "baseline", gap: 6,
+                     width: "100%", textAlign: "left", border: 0,
+                     cursor: "pointer", padding: "2px 0 3px",
+                     background: "transparent",
+                     borderBottom: on
+                       ? "2px solid var(--accent, #1a56db)"
+                       : "1px solid var(--line)" }}>
+      <b className="small" style={{ color: on
+        ? "var(--accent, #1a56db)" : "inherit" }}>#{id}</b>
+      <span className="tiny muted">{n} {unit}{n === 1 ? "" : "s"}</span>
+    </button>
+  );
+}
+
 function Column({ title, unit, count, blurb, children }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
@@ -275,6 +318,21 @@ export default function AdminProductionFlow() {
       && (!focus || Number(id) === focus)) || 0);
   const liveRun = liveId ? runs[liveId] : null;
 
+  // WHAT EACH RECORDING SPAWNED, counted once for every column that
+  // needs it. This is the fan-out the page exists to show: one
+  // recording, three cuts, one of which became a clip.
+  const tally = (rows, idOf) => {
+    const m = {};
+    (rows || []).forEach((r) => {
+      const id = idOf(r);
+      m[id] = (m[id] || 0) + 1;
+    });
+    return m;
+  };
+  const nCuts = tally(cuts, (k) => k.long_upload_id);
+  const nDrafts = tally(drafts, (c) => c.long_upload_id);
+  const nFinals = tally(finals, (c) => c.long_upload_id);
+
   const shownCuts = keep(cuts, (k) => k.long_upload_id);
   // ONLY ONCE IT IS ACTUALLY PRODUCING.
   //
@@ -439,13 +497,26 @@ export default function AdminProductionFlow() {
                             total={run.report.total_sec} />
                   </>
                 )}
-                {r.cuts > 0 && (
-                  <button type="button" className="btn ghost small"
-                          style={{ marginTop: 5, width: "100%" }}
+                {/* ── WHAT THIS RECORDING BECAME ──────────────
+                    The whole point of four columns side by side,
+                    said on the card the operator started from. */}
+                {(nCuts[r.id] || nDrafts[r.id] || nFinals[r.id]) ? (
+                  <button type="button"
+                          className={focus === r.id ? "btn small"
+                            : "btn ghost small"}
+                          style={{ marginTop: 6, width: "100%" }}
+                          title="show only this recording, across all
+                                 four columns"
                           onClick={() => setFocus(focus === r.id ? 0 : r.id)}>
-                    {focus === r.id ? "showing this one" : "follow this one"}
+                    → {nCuts[r.id] || 0} cut
+                    {(nCuts[r.id] || 0) === 1 ? "" : "s"}
+                    {" · "}{nDrafts[r.id] || 0} draft
+                    {(nDrafts[r.id] || 0) === 1 ? "" : "s"}
+                    {(nFinals[r.id] || 0) > 0
+                      && ` · ${nFinals[r.id]} final`}
+                    {focus === r.id ? " — showing" : ""}
                   </button>
-                )}
+                ) : null}
               </div>
             );
           })}
@@ -464,13 +535,22 @@ export default function AdminProductionFlow() {
             <div className="card tight"><p className="tiny muted">
               Nothing cut yet. Start the flow on a recording.</p></div>
           )}
-          {shownCuts.map((k) => (
+          {[...groupByUpload(shownCuts, (k) => k.long_upload_id)]
+            .map(([uid, rows]) => (
+            <div key={uid} style={{ display: "flex",
+                                    flexDirection: "column", gap: 8 }}>
+              <GroupHead id={uid} n={rows.length} unit="cut"
+                         focus={focus} onFocus={setFocus} />
+              {rows.map((k) => (
             <div key={k.id} className="card tight" style={{ margin: 0 }}>
               <div className="small">
-                <b>#{k.long_upload_id} · swing {k.idx + 1}</b>
+                <b>swing {k.idx + 1}</b>
+                {/* THE FAN-OUT, SAID ON THE CUT. Which of this
+                    recording's cuts became a clip is the question the
+                    middle column exists to answer. */}
                 {k.produced
                   ? <span className="pill ok small"
-                          style={{ marginLeft: 6 }}>produced</span>
+                          style={{ marginLeft: 6 }}>→ draft</span>
                   : <span className="pill small"
                           style={{ marginLeft: 6 }}>no clip</span>}
               </div>
@@ -519,6 +599,8 @@ export default function AdminProductionFlow() {
                   {k.produce_error}
                 </div>
               )}
+                </div>
+              ))}
             </div>
           ))}
         </Column>
@@ -536,7 +618,13 @@ export default function AdminProductionFlow() {
             <div className="card tight"><p className="tiny muted">
               No drafts yet.</p></div>
           )}
-          {shownDrafts.map((c) => (
+          {[...groupByUpload(shownDrafts, (c) => c.long_upload_id)]
+            .map(([uid, rows]) => (
+            <div key={uid} style={{ display: "flex",
+                                    flexDirection: "column", gap: 8 }}>
+              <GroupHead id={uid} n={rows.length} unit="draft"
+                         focus={focus} onFocus={setFocus} />
+              {rows.map((c) => (
             <div key={c.id} className="card tight" style={{ margin: 0 }}>
               {c.url && (
                 <video src={c.url} controls preload="metadata"
@@ -545,11 +633,16 @@ export default function AdminProductionFlow() {
                                 background: "#000" }} />
               )}
               <div className="small" style={{ marginTop: 5 }}>
-                <b>Hole {c.hole_number}</b>
-                {c.cut_idx != null ? (
-                  <span className="muted"> · swing {c.cut_idx + 1} of
-                    {" "}#{c.long_upload_id}</span>
-                ) : null}
+                {/* THE SWING FIRST: it is what joins this card to the
+                    cut two columns to its left. The hole is context. */}
+                <b>{c.cut_idx != null ? `swing ${c.cut_idx + 1}`
+                  : "swing unknown"}</b>
+                <span className="muted"> · Hole {c.hole_number}</span>
+                {c.cut_idx == null && (
+                  <span className="muted tiny">
+                    {" "}· could not be matched to a cut
+                  </span>
+                )}
               </div>
               <div className="tiny muted">{fmtWhen(c.captured_at)}</div>
               <div className="row" style={{ gap: 6, marginTop: 6,
@@ -575,6 +668,8 @@ export default function AdminProductionFlow() {
                   {acting === `ok-${c.id}` ? "approving…" : "approve"}
                 </button>
               </div>
+                </div>
+              ))}
             </div>
           ))}
         </Column>
@@ -608,7 +703,12 @@ export default function AdminProductionFlow() {
                                     background: "#000" }} />
                   )}
                   <div className="tiny muted" style={{ marginTop: 4 }}>
-                    {fmtWhen(c.captured_at)}
+                    {/* The recording and swing, because this column
+                        groups by GROUP and the lineage would
+                        otherwise be the one thing it drops. */}
+                    #{c.long_upload_id}
+                    {c.cut_idx != null ? ` · swing ${c.cut_idx + 1}` : ""}
+                    {" · "}{fmtWhen(c.captured_at)}
                     {c.broadcast_at && (
                       <span className="pill small"
                             style={{ marginLeft: 6 }}>broadcast</span>

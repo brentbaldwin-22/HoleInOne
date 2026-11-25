@@ -199,6 +199,60 @@ console.log("\n3e. the measurement table says what the gates did to each row");
         /armed \? "dropped" : "would drop"/.test(panel));
 }
 
+console.log("\n3f. every column says which recording a card belongs to");
+{
+  // FOUR INDEPENDENT LISTS AND NO WAY TO JOIN THEM. Three cuts and a
+  // draft from #1915 sat beside five cuts from #1916 with nothing but
+  // a small grey id on each card. The lineage is what the page is
+  // for, so every column groups by recording under the same heading.
+  check("there is one grouping helper, not one per column",
+        (page.match(/function groupByUpload/g) || []).length, 1);
+  const grouped = [...page.matchAll(/groupByUpload\(shown(\w+)/g)]
+    .map((m) => m[1]).sort();
+  check("the cuts and drafts columns are grouped",
+        grouped, ["Cuts", "Drafts"]);
+  check("under a shared heading component",
+        (page.match(/<GroupHead/g) || []).length >= 2);
+  check("...which carries that recording's own count in that column",
+        /n=\{rows\.length\} unit="cut"/.test(page)
+        && /n=\{rows\.length\} unit="draft"/.test(page));
+  // The finals column groups by DAY AND GROUP instead, which is what
+  // was asked for there -- so it has to name the recording on the
+  // card or the lineage is the one thing that column drops.
+  check("the finals column still names the recording",
+        /#\{c\.long_upload_id\}/.test(page));
+  check("...and the swing", /swing \$\{c\.cut_idx \+ 1\}/.test(page));
+}
+
+console.log("\n3g. the raw card says what the recording became");
+{
+  check("the fan-out is counted once per column",
+        /const nCuts = tally\(/.test(page)
+        && /const nDrafts = tally\(/.test(page)
+        && /const nFinals = tally\(/.test(page));
+  check("and printed on the recording it came from",
+        /\{nCuts\[r\.id\] \|\| 0\} cut/.test(page));
+  check("...with the drafts beside it",
+        /\{nDrafts\[r\.id\] \|\| 0\} draft/.test(page));
+  check("clicking it follows that recording across the columns",
+        /setFocus\(focus === r\.id \? 0 : r\.id\)/.test(page));
+  // AND THE CUT SAYS WHETHER IT BECAME ANYTHING, which is the join
+  // the middle column exists to make.
+  check("a produced cut is marked as having spawned a draft",
+        /→ draft/.test(page));
+  check("...and one that produced nothing says so", /no clip/.test(page));
+}
+
+console.log("\n3h. a re-run starts over rather than adding to the pile");
+{
+  check("the run clears what an earlier one left",
+        /rep\["cleared"\] = _clear_previous\(db, row\)/.test(flow));
+  check("rows and files both", /out\["files"\] \+= 1/.test(flow)
+        && /out\["cuts"\] \+= 1/.test(flow));
+  check("and nothing is left pointing at a deleted cut",
+        /c\.audio_cut_id = None/.test(flow));
+}
+
 console.log("\n4. the cuts column prints fields the cut row serves");
 const cutKeys = new Set(
   [...page.matchAll(/\bk\.([a-z_]+)/g)].map((m) => m[1]));

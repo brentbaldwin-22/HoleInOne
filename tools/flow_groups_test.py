@@ -183,6 +183,73 @@ check("the count agrees with the column",
 check("a second run does not re-match what is already matched",
       _claim_clips(db2, up2, cuts)[1], 0)
 
+print("\n6c. re-running the flow starts over rather than piling up")
+# THE CUTS ARE KEYED ON (upload, idx). A second run that found three
+# strikes where the first found five left the last two sitting there,
+# pointing at files this run was about to overwrite -- so the column
+# showed five cuts for a run that made three, with no way to tell
+# which two were ghosts.
+from app.routers.production_flow import _clear_previous  # noqa: E402
+
+with TemporaryDirectory() as tmp:
+    import app.routers.admin as _adm
+    _was = _adm.CLIPS_DIR
+    _adm.CLIPS_DIR = Path(tmp)
+    try:
+        (Path(tmp) / "_flowcuts").mkdir()
+        eng3 = create_engine("sqlite://")
+        Base.metadata.create_all(eng3)
+        db3 = sessionmaker(bind=eng3)()
+        db3.add(Course(id=1, name="R"))
+        up3 = LongVideoUpload(id=7, course_id=1, tee_filename="t.mp4",
+                              base_captured_at=datetime(2026, 11, 24, 20, 0))
+        db3.add(up3)
+        db3.commit()
+
+        # An earlier run: five cuts, with files, one of them produced.
+        for i in range(5):
+            (Path(tmp) / "_flowcuts" / ("old-%d.mp4" % i)).write_bytes(b"x" * 64)
+            record_cut(db3, upload=up3, idx=i, peak_time_sec=float(i),
+                       tee_filename="_flowcuts/old-%d.mp4" % i)
+        k0 = db3.query(AudioCut).filter(AudioCut.idx == 0).one()
+        old_clip = VideoClip(id=90, course_id=1, hole_number=4,
+                             camera_type="tee", captured_at=datetime.now(),
+                             long_upload_id=7, audio_cut_id=k0.id,
+                             source_url="http://x/90.mp4")
+        db3.add(old_clip)
+        db3.commit()
+        check("five cuts before", db3.query(AudioCut).count(), 5)
+
+        rep = _clear_previous(db3, up3)
+        check("all five rows are gone", rep["cuts"], 5)
+        check("and their files with them", rep["files"], 5)
+        check("none left in the database", db3.query(AudioCut).count(), 0)
+        check("no file left behind",
+              list((Path(tmp) / "_flowcuts").iterdir()), [])
+        # A CLIP MUST NOT KEEP POINTING AT A CUT THAT IS GONE. The
+        # produce clears the clips too, but it runs after this and can
+        # fail; a dangling id in between reads as provenance.
+        db3.refresh(old_clip)
+        check("a clip that pointed at one is unpointed",
+              old_clip.audio_cut_id, None)
+        check("...rather than left claiming a swing that does not exist",
+              bool(db3.get(VideoClip, 90)), True)
+
+        # And a second clear on an upload with nothing is harmless.
+        check("clearing twice costs nothing", _clear_previous(db3, up3),
+              {"cuts": 0, "files": 0})
+    finally:
+        _adm.CLIPS_DIR = _was
+
+print("\n6d. and the run calls it before it cuts anything")
+FLOW = (ROOT / "backend/app/routers/production_flow.py").read_text()
+_run = FLOW[FLOW.index("def flow_run("):]
+_run = _run[:_run.index("\ndef ", 10)]
+check("the clear happens in the run",
+      'rep["cleared"] = _clear_previous(db, row)' in _run, True)
+check("...before the first record_cut",
+      _run.index("_clear_previous") < _run.index("record_cut("), True)
+
 print("\n7. deleting a draft takes its files and frees its cut")
 with TemporaryDirectory() as tmp:
     import app.routers.admin as _adm
