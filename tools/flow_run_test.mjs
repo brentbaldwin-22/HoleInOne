@@ -294,8 +294,12 @@ console.log("\n3i. the edit wizard opens ON this page, with no navigation");
   // still be on it afterwards. Sending them to Production and back
   // was a round trip through a page they were not working on.
   check("the wizard is mounted here", /<ClickToPlotModal/.test(page));
+  // MATCHED LOOSELY ON THE BRACES. The intent is "imported from
+  // Production, not copied into this file", and pinning the exact
+  // import line meant adding a second panel to the same statement --
+  // which is the behaviour this wants -- broke the check.
   check("...the same one Production opens, imported not copied",
-        /import \{ ClickToPlotModal \} from "\.\/AdminProduction\.jsx"/
+        /import \{[^}]*\bClickToPlotModal\b[^}]*\} from "\.\/AdminProduction\.jsx"/
           .test(page));
   check("...which means it is exported there",
         /export function ClickToPlotModal\(\{/.test(prod));

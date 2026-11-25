@@ -400,6 +400,30 @@ class LongVideoUpload(Base):
     # set, the wizard re-opens with these values instead of re-running
     # auto-detect.
     edit_metrics: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # ── WHAT THE LAST PRODUCE WAS TRYING TO DO ──────────────────────
+    #
+    # The produce's own report: the four steps, what each one looked
+    # at, the pictures it drew, the chains it weighed and the verdict
+    # on each. It has always existed and has always been thrown away
+    # -- it lived in one backend process's memory under a key the live
+    # progress modal polls, so it was readable for the minute the run
+    # took and then gone, and gone for good on any restart.
+    #
+    # Which meant "why did it produce that" could only be answered by
+    # producing AGAIN and watching, and producing again replaces the
+    # clips you were asking about.
+    #
+    # REDUCED BEFORE IT IS STORED. The live report carries every
+    # detection, chain and plotted point -- megabytes on a busy clip,
+    # and all of it for a map that is not on screen any more. What is
+    # kept is the story: the steps, their timings, the images (which
+    # are URLs to files already on disk), the tables and the verdicts.
+    # `produce_report["reduced"]` names what was dropped, so a panel
+    # can say so rather than render an empty section.
+    produce_report: Mapped[Optional[dict]] = mapped_column(
+        JSON, nullable=True)
+    produce_report_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True)
     # When this row was created by the Pi camera-event pipeline (instead
     # of an admin upload), points at the source CameraEvent. Drives the
     # "From Camera #N · hole X" badge on the production card and lets us

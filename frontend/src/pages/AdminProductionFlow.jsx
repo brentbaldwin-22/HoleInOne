@@ -11,7 +11,11 @@ import { VideoLightbox } from "../components/VideoLightbox.jsx";
 // THE SAME WIZARD PRODUCTION OPENS, mounted here. Editing a draft
 // used to navigate to Production and open it there, so the operator
 // left the page they were working on to change one clip on it.
-import { ClickToPlotModal } from "./AdminProduction.jsx";
+// THE SAME TWO PANELS PRODUCTION USES. The flow's produce IS
+// Production's produce -- one function, `_produce_run` -- so the
+// screen that explains it is the same screen, not a second one that
+// can drift from it.
+import { AscentProduceModal, ClickToPlotModal } from "./AdminProduction.jsx";
 import { zoneName } from "../zones.js";
 
 /*
@@ -235,6 +239,10 @@ export default function AdminProductionFlow() {
   // and only for a produce THIS page asked for: a clip produced from
   // the Production page is not this flow's output.
   const adopting = useRef(new Set());
+  // THE PRODUCE'S OWN REPORT, for whichever recording was asked
+  // about. Fetched on click, not with the list: it is the biggest
+  // thing on the row and nobody reads it until they ask.
+  const [work, setWork] = useState(null);
   // {row, swingPos} while the edit wizard is open on this page.
   const [editing, setEditing] = useState(null);
   const [editErr, setEditErr] = useState(null);
@@ -345,6 +353,28 @@ export default function AdminProductionFlow() {
   // whose produce refused one -- had no route to a draft from this
   // page at all: the only way was to find the recording on the
   // Production page and add it there.
+  // ── THE PRODUCE'S REASONING, ON DEMAND ──────────────────────
+  //
+  // A report that is absent is not a failure: a recording produced
+  // before the report was kept simply has nothing to show, and the
+  // endpoint says which so this can say it too.
+  async function openWork(uploadId) {
+    setActing(`work-${uploadId}`);
+    setEditErr(null);
+    try {
+      const got = await api.flowProduceReport(adminPassword, uploadId);
+      if (!got?.report) {
+        setEditErr(got?.reason || "no produce report for this recording");
+        return;
+      }
+      setWork({ uploadId, report: got.report, at: got.at });
+    } catch (e) {
+      setEditErr(e.message);
+    } finally {
+      setActing(null);
+    }
+  }
+
   async function openAdder(uploadId) {
     setActing(`add-${uploadId}`);
     setEditErr(null);
@@ -497,6 +527,24 @@ export default function AdminProductionFlow() {
           page: these are per tee box, and showing one hole's numbers
           over another hole's row is how a cut gets verified at a
           threshold the cutter would never run at. */}
+      {/* ── WHAT THE PRODUCE WAS TRYING TO DO ──────────────────────
+          The flow's phase 3 and Production's "Produce from ascents"
+          are the same function; only the key the live progress is
+          filed under differs, and that is what decided whether the
+          reasoning was shown or thrown away. Kept on the row now, so
+          this opens the same panel afterwards. */}
+      {r.produce_report_at && (
+        <button type="button" className="btn ghost small"
+                style={{ marginTop: 5, width: "100%" }}
+                disabled={acting === `work-${r.id}`}
+                title={"the four steps of the produce, what each looked "
+                       + "at and the verdict on every candidate — the "
+                       + "same panel Production's Produce from ascents "
+                       + "shows"}
+                onClick={() => openWork(r.id)}>
+          {acting === `work-${r.id}` ? "reading…" : "show work"}
+        </button>
+      )}
       <button type="button" className="btn ghost small"
               style={{ marginTop: 5, width: "100%" }}
               title={"the thresholds and the audio lag the next run of "
@@ -978,6 +1026,19 @@ export default function AdminProductionFlow() {
             load();
             if (_id) { adopting.current.add(_id); poll(_id); }
           }}
+        />
+      )}
+
+      {work && (
+        <AscentProduceModal
+          // NOT RUNNING. The panel reads `state.running` to decide
+          // whether to narrate progress or show a finished report,
+          // and this is always the latter -- the run ended before
+          // anybody pressed the button.
+          state={{ running: false, uploadId: work.uploadId,
+                   report: work.report, error: null }}
+          adminPassword={adminPassword}
+          onClose={() => setWork(null)}
         />
       )}
 

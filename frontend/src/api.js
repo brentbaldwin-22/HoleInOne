@@ -509,6 +509,13 @@ export const api = {
   flowStatus: (key, uploadId) =>
     request(`/api/admin/flow/raw/${uploadId}/status`, { adminPassword: key }),
 
+  flowProduceReport: (key, uploadId) =>
+    // WHAT THE LAST PRODUCE WAS TRYING TO DO, off the row rather than
+    // out of a running process's memory -- so it survives the run
+    // that made it, and a backend restart.
+    request(`/api/admin/flow/raw/${uploadId}/produce-report`,
+            { adminPassword: key }),
+
   flowClaimClips: (key, uploadId) =>
     // ADOPT WHAT THIS PAGE PRODUCED. Editing a draft or adding a
     // swing goes through the wizard's produce, which writes a NEW

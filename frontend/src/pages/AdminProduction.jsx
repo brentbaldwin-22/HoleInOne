@@ -11260,7 +11260,15 @@ function ImpactFrameSum({ rig }) {
   );
 }
 
-function AscentProduceModal({ state, adminPassword, onClose }) {
+// EXPORTED FOR THE FLOW PAGE. The flow's produce IS this produce --
+// one function, `_produce_run`, with the only difference being which
+// key its progress is filed under -- so the panel that explains it
+// should be the same panel, not a second one that can drift from it.
+//
+// It takes {running, uploadId, report, error, findOnly} and does not
+// care whether the report arrived from a live poll or off the row, so
+// showing a kept report needs nothing but {uploadId, report}.
+export function AscentProduceModal({ state, adminPassword, onClose }) {
   // THE CONE PICTURE'S DOTS, ON OR OFF. Declared here with the other
   // state and above every use of it: a `const` is hoisted but not
   // initialised, so a reference from an earlier line is a

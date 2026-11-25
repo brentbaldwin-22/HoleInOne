@@ -35051,6 +35051,137 @@ def _ball_scan_produce_run(row, src_path, db, progress=None,
     return rep
 
 
+# ── WHAT TO KEEP OF A PRODUCE REPORT, AND WHY ──────────────────────
+#
+# The live report carries every detection, every chain and every
+# plotted point: megabytes on a busy clip, and nearly all of it feeds
+# ONE thing -- the click-to-plot map, which is not on screen when
+# somebody later asks what the produce was trying to do.
+#
+# What that question needs is the story: the four steps, how long each
+# took, the pictures each drew (URLs to files already on disk, so they
+# cost nothing here), the tables of what was weighed, and the verdict
+# on each candidate. All of that is small.
+#
+# Listed as keys to DROP rather than keys to keep, because a key added
+# to the report later should appear in the stored copy by default. The
+# cost of getting that wrong the other way is a panel that silently
+# stops showing a new section.
+# CHOSEN BY WHAT IS BIG *AND* UNREAD, which is not the same as "is a
+# list of points". A chain is a few dozen points and the panel prints
+# them; `considered` is the table that IS the reasoning -- "every
+# chain, judged against this swing's span" -- and it is already
+# point-free where it is built. Dropping either would have blanked the
+# exact sections somebody opens this for.
+#
+# What actually costs: the raw detection pool (thousands of blobs per
+# clip), the click-to-plot candidate pool (capped at 1500 and only
+# ever read by the map), and the fitted per-frame tracks.
+_PRODUCE_REPORT_HEAVY = frozenset({
+    "cand_points", "ball_track_frames", "flight_points", "timed_points",
+    "ai_points", "candidates", "tracks_preview", "dets", "near_dets",
+    "heat", "tiles",
+})
+# NOT `frames`. It looked like an obvious one to drop and it is a key
+# the report uses for SMALL things too -- the impact frames the search
+# window was placed on (`window.frames`), the named frames of a walk
+# (`walk.frames.at_rest`). Dropping it by name replaced the cutter's
+# own answer with a count of it, on the one panel somebody opens to
+# find out which frames were searched. The bulky frame dumps are under
+# `tiles` and `heat`, which are listed.
+# Past this, the reduction has not worked and something unforeseen is
+# large. Stored truncated with a note rather than silently dropped, and
+# never allowed to bloat a row without bound.
+_PRODUCE_REPORT_CAP = 600_000
+
+
+def _reduce_produce_report(rep, cap: int = _PRODUCE_REPORT_CAP) -> dict:
+    """The produce's report, small enough to keep on the row.
+
+    Returns a copy with the heavy per-point arrays removed and a
+    `reduced` note saying what went, so a panel reading it can say
+    "the plotted points are not kept" instead of rendering an empty
+    map and looking broken.
+    """
+    import json as _json
+
+    _dropped: set = set()
+
+    def _walk(v, depth=0):
+        if depth > 12:
+            return None
+        if isinstance(v, dict):
+            out = {}
+            for k, q in v.items():
+                if k in _PRODUCE_REPORT_HEAVY:
+                    # THE LENGTH SURVIVES THE LIST. "11 chains were
+                    # weighed" is most of the answer; the chains
+                    # themselves are the part nobody can read.
+                    if isinstance(q, (list, tuple)):
+                        out["n_" + k] = len(q)
+                    _dropped.add(k)
+                    continue
+                out[k] = _walk(q, depth + 1)
+            return out
+        if isinstance(v, (list, tuple)):
+            return [_walk(q, depth + 1) for q in v[:200]]
+        return v
+
+    try:
+        small = _walk(dict(rep or {}))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("produce report: could not reduce it (%s)", exc)
+        return {"reduced": {"failed": str(exc)}}
+    if _dropped:
+        small["reduced"] = {
+            "dropped": sorted(_dropped),
+            "why": ("the per-point arrays are not kept -- they feed the "
+                    "click-to-plot map, which is not what this panel "
+                    "is for. Re-produce to plot by hand."),
+        }
+    try:
+        _n = len(_json.dumps(small, default=str))
+    except Exception:  # noqa: BLE001
+        return {"reduced": {"failed": "not serialisable"}}
+    if _n > cap:
+        # Keep the part that is always wanted and say what went.
+        _keep = {k: small.get(k) for k in
+                 ("upload_id", "ok", "reason", "produced", "window",
+                  "timing", "n_produced", "n_candidates", "stages")}
+        _keep["reduced"] = {
+            "dropped": sorted(_dropped | {"clips", "swing_steps",
+                                          "ascents", "swings"}),
+            "why": ("the report was %d bytes, over the %d kept, so only "
+                    "the steps and their timings are stored"
+                    % (_n, cap)),
+        }
+        return _keep
+    return small
+
+
+def _keep_produce_report(db, upload_id: int, rep) -> None:
+    """Put the last produce's report on the row. Never raises.
+
+    A failure here must not cost the clips: the produce has already
+    happened by the time this runs, and a report that could not be
+    saved is a missing panel, not a missing clip.
+    """
+    try:
+        r2 = db.get(LongVideoUpload, upload_id)
+        if r2 is None:
+            return
+        r2.produce_report = _reduce_produce_report(rep)
+        r2.produce_report_at = _utcnow_naive()
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        log.warning("produce report: could not keep it for %s: %s",
+                    upload_id, exc)
+
+
 def _produce_run(row, src_path, db, progress=None, debug_artifacts=False,
                  hole_number=None) -> dict:
     """THE produce, everywhere: find the ball LEAVING, then produce it.
@@ -35198,6 +35329,18 @@ def _produce_run(row, src_path, db, progress=None, debug_artifacts=False,
                         if k != "accepted") if _tally else "")
                 )
         _set_status("failed", str(_err)[:2000], n_ok=0, n_total=n_cand)
+    # ── THE WORK, KEPT ─────────────────────────────────────────────
+    #
+    # Written here, in the one function every produce goes through, so
+    # the flow's run and the Production page's button leave the same
+    # record -- which they are entitled to, being the same run under
+    # two different progress keys.
+    #
+    # A RUN THAT FOUND NOTHING IS THE ONE WORTH KEEPING. This is below
+    # the failure branch deliberately: "no swings detected" is exactly
+    # the report somebody wants to read, and storing only successes
+    # would lose it.
+    _keep_produce_report(db, upload_id, rep)
     return rep
 
 

@@ -555,6 +555,12 @@ def _raw_row(db, row, info_of) -> dict:
         "green_url": _green,
         "has_green": bool(row.green_filename),
         "processing_status": row.processing_status,
+        # WHETHER THERE IS WORK TO SHOW, and when it was done. The
+        # report itself is not sent with the list -- it is the biggest
+        # thing on the row and nobody is reading it until they ask --
+        # so the button appears on this and fetches on click.
+        "produce_report_at": (row.produce_report_at.isoformat()
+                              if row.produce_report_at else None),
     }
 
 
@@ -1073,6 +1079,42 @@ def flow_start(upload_id: int, db: Session = Depends(get_db)):
 
 def _flow_runner(row, src_path, db, progress=None):
     return flow_run(row, src_path, db, progress=progress)
+
+
+@router.get("/raw/{upload_id}/produce-report")
+def flow_produce_report(upload_id: int, db: Session = Depends(get_db)):
+    """What the last produce on this recording was trying to do.
+
+    THE SAME RUN THE PRODUCTION PAGE NARRATES. The flow's phase 3 and
+    the Production page's "Produce from ascents" are one function --
+    `_produce_run` -- and the only difference between them is which
+    key the live progress is filed under, which is what decides
+    whether the card narrates it or the modal does. So the flow could
+    run the identical detector and show none of its reasoning, and
+    "why did it produce that" had no answer on this page.
+
+    Served from the row rather than from a running process's memory,
+    so it survives the run that made it and a backend restart. See
+    `_reduce_produce_report` for what is kept and what is dropped.
+    """
+    row = db.get(LongVideoUpload, upload_id)
+    if not row:
+        raise HTTPException(404, "recording not found")
+    rep = row.produce_report
+    return {
+        "ok": bool(rep),
+        "upload_id": upload_id,
+        "at": (row.produce_report_at.isoformat()
+               if row.produce_report_at else None),
+        # NOT AN ERROR. A recording that has never been produced, or
+        # one produced before this was kept, simply has nothing to
+        # show -- and saying so is different from failing.
+        "reason": None if rep else (
+            "no produce report is kept for this recording — it has not "
+            "been produced since the report started being saved. Start "
+            "the flow, or produce it, and the work will be here."),
+        "report": rep,
+    }
 
 
 @router.post("/raw/{upload_id}/claim")

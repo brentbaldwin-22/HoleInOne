@@ -103,6 +103,36 @@ check("...without swallowing the empty message",
         .test(page) && /\{\/\* OUTSIDE THE EMPTY TEST[\s\S]{0,400}?\{footer\}/
         .test(page));
 
+console.log("\n5. and the produce's own work is shown, not re-run");
+// THE FLOW'S PRODUCE *IS* PRODUCTION'S PRODUCE -- one function, with
+// only the progress key differing -- so the panel that explains it
+// must be the same panel. A second one would drift from it, and the
+// drift would show up as two screens disagreeing about one run.
+check("Production exports its panel",
+      /export function AscentProduceModal/.test(prod));
+check("...and the flow page imports that one",
+      /import \{ AscentProduceModal, ClickToPlotModal \}/.test(page));
+check("...rather than defining its own",
+      /function AscentProduceModal/.test(page), false);
+check("the flow serves the kept report",
+      /@router\.get\("\/raw\/\{upload_id\}\/produce-report"\)/.test(flow));
+check("the api can read it", /flowProduceReport:/.test(apijs));
+check("the button is on the recording", /show work/.test(page));
+// ONLY WHEN THERE IS SOMETHING TO SHOW. A button that opens an empty
+// panel is worse than no button.
+check("...and only when a report exists",
+      /\{r\.produce_report_at && \(/.test(page));
+check("...which the list says", /"produce_report_at":/.test(flow));
+// THE PANEL READS `running` TO DECIDE WHETHER TO NARRATE PROGRESS.
+// A kept report is never running.
+check("the panel is told the run has ended",
+      /running: false, uploadId: work\.uploadId/.test(page));
+// ABSENT IS NOT BROKEN: a recording produced before the report was
+// kept has nothing to show, and the endpoint says so.
+check("an absent report is explained, not failed",
+      /no produce report is kept/.test(flow)
+        && /got\?\.reason/.test(page));
+
 console.log();
 if (failed.length) {
   console.log(`${failed.length} FAILED:\n  ${failed.join("\n  ")}`);
