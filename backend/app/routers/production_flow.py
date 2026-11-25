@@ -1042,12 +1042,22 @@ def assign_groups(rows):
 def delete_flow_clip(clip_id: int, db: Session = Depends(get_db)):
     """Throw a draft away.
 
-    THE FILES GO WITH IT. A clip row removed while its mp4 stays on
-    disk is a file nothing points at, which the retention sweep then
-    protects forever — `protected_names` is built from the rows, so a
-    deleted row makes its own footage immortal and invisible.
+    DELEGATES TO THE CONSOLE'S OWN CLIP DELETE, which is the only one
+    that knows what deleting a clip entails. This had its own copy
+    that removed the row and its obvious files, and four real foreign
+    keys still pointed at it -- camera_events.produced_clip_id is
+    stamped on every clip the moment it is produced -- so every delete
+    raised an IntegrityError and 500'd with the clip still there.
+
+    Rewriting that list here would have been a second answer to "what
+    does deleting a clip mean", and the second answer is always the
+    one that is missing a table. The flow adds only what is its own:
+    a clip that has gone out is not thrown away by a stray click, and
+    the cut it came from goes back to unproduced -- the swing still
+    happened, and it is now a swing nothing was made from, which is
+    what the cuts column is for.
     """
-    from .admin import CLIPS_DIR
+    from .admin import delete_clip
 
     c = db.get(VideoClip, clip_id)
     if not c:
@@ -1056,26 +1066,13 @@ def delete_flow_clip(clip_id: int, db: Session = Depends(get_db)):
         raise HTTPException(
             409, "this clip has been broadcast — un-broadcast it first if "
                  "you really mean to delete it")
-    gone = []
-    for url in (c.source_url, c.tracer_url, c.vertical_url, c.tee_clip_url,
-                c.thumbnail_url):
-        name = (url or "").split("?")[0].rstrip("/").rsplit("/", 1)[-1]
-        if not name:
-            continue
-        try:
-            p = (CLIPS_DIR / name).resolve()
-            if CLIPS_DIR.resolve() in p.parents and p.is_file():
-                p.unlink()
-                gone.append(name)
-        except OSError as exc:
-            log.warning("flow: could not delete %s: %s", name, exc)
-    # The cut it came from survives, and goes back to unproduced: the
-    # swing still happened, and it is now a swing nothing was made
-    # from, which is exactly what the cuts column is for.
-    if c.audio_cut_id:
-        k = db.get(AudioCut, c.audio_cut_id)
+    # BEFORE THE DELETE, because afterwards there is no row to read the
+    # cut id off.
+    _cut_id = c.audio_cut_id
+    out = delete_clip(clip_id, db=db)
+    if _cut_id:
+        k = db.get(AudioCut, _cut_id)
         if k is not None:
             k.produced = False
-    db.delete(c)
-    db.commit()
-    return {"ok": True, "deleted": clip_id, "files": gone}
+            db.commit()
+    return dict(out or {}, ok=True, deleted=clip_id, freed_cut=_cut_id)
