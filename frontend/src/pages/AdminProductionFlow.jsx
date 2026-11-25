@@ -129,7 +129,7 @@ function HeadCell({ title, unit, count, blurb }) {
 }
 
 /** One cell of a recording's row: its cards, or a visible nothing. */
-function Cell({ children, empty, live, center }) {
+function Cell({ children, empty, live, center, footer }) {
   const has = Array.isArray(children)
     ? children.some(Boolean) : !!children;
   return (
@@ -145,6 +145,12 @@ function Cell({ children, empty, live, center }) {
       {has ? children : (
         <div className="tiny muted" style={{ opacity: 0.6 }}>{empty}</div>
       )}
+      {/* OUTSIDE THE EMPTY TEST. A control in this column is not
+          content in it: counted as a child, an "add" button would
+          make an empty column claim to have something in it, and the
+          "no drafts" line -- the thing that tells an empty column
+          from one still loading -- would never appear. */}
+      {footer}
     </div>
   );
 }
@@ -222,6 +228,13 @@ export default function AdminProductionFlow() {
   // from another page, so the answer to "why did it produce f2009"
   // lived somewhere other than the button that produced it.
   const [gatesFor, setGatesFor] = useState({});
+  // RECORDINGS THIS PAGE STARTED A WIZARD PRODUCE ON. The clip it
+  // writes is a NEW row with no flow stamp, so the columns -- which
+  // filter on that stamp -- would not show the draft that was just
+  // corrected here. The flow adopts it once the produce finishes,
+  // and only for a produce THIS page asked for: a clip produced from
+  // the Production page is not this flow's output.
+  const adopting = useRef(new Set());
   // {row, swingPos} while the edit wizard is open on this page.
   const [editing, setEditing] = useState(null);
   const [editErr, setEditErr] = useState(null);
@@ -289,6 +302,19 @@ export default function AdminProductionFlow() {
         }
         polling.current.delete(uploadId);
         setLiveDrafts(null);
+        if (adopting.current.has(uploadId)) {
+          adopting.current.delete(uploadId);
+          try {
+            await api.flowClaimClips(adminPassword, uploadId);
+          } catch (e) {
+            // NOT FATAL AND NOT SILENT. The clip exists either way;
+            // without the stamp it simply will not be in this
+            // column, and that needs saying rather than looking like
+            // the edit having lost it.
+            setErr(`the clip was produced but this page could not `
+                   + `claim it: ${e.message}`);
+          }
+        }
         await load();
       } catch {
         polling.current.delete(uploadId);
@@ -311,6 +337,30 @@ export default function AdminProductionFlow() {
   // hands it -- the same shape, from the same builder -- so it is
   // fetched by id rather than rebuilt into something slimmer that
   // would then have to be kept in step with the wizard's needs.
+  // ── OPEN THE SAME MAP ON A NEW SWING ─────────────────────────
+  //
+  // `addNew` points the modal one past the end of the swings array,
+  // which is what makes every field blank and makes the save APPEND
+  // rather than patch. A recording whose cutter missed a strike -- or
+  // whose produce refused one -- had no route to a draft from this
+  // page at all: the only way was to find the recording on the
+  // Production page and add it there.
+  async function openAdder(uploadId) {
+    setActing(`add-${uploadId}`);
+    setEditErr(null);
+    try {
+      const got = await api.listLongUploads(adminPassword, 1, 0,
+                                            { uploadId });
+      const row = Array.isArray(got) ? got[0] : null;
+      if (!row) throw new Error(`could not load recording #${uploadId}`);
+      setEditing({ row, swingPos: null, addNew: true });
+    } catch (e) {
+      setEditErr(e.message);
+    } finally {
+      setActing(null);
+    }
+  }
+
   async function openEditor(clip) {
     setActing(`edit-${clip.id}`);
     setEditErr(null);
@@ -325,7 +375,7 @@ export default function AdminProductionFlow() {
       const arr = row.edit_metrics?.swings || [];
       const pos = arr.findIndex((sw) => sw?.clip_id != null
                                 && sw.clip_id === clip.id);
-      setEditing({ row, swingPos: pos >= 0 ? pos : 0 });
+      setEditing({ row, swingPos: pos >= 0 ? pos : 0, addNew: false });
     } catch (e) {
       setEditErr(e.message);
     } finally {
@@ -860,7 +910,18 @@ export default function AdminProductionFlow() {
 
               {/* 3. its drafts */}
               <Cell empty="no drafts"
-                    live={busy ? <Working run={run} phase="produce" /> : null}>
+                    live={busy ? <Working run={run} phase="produce" /> : null}
+                    footer={r ? (
+                      <button type="button" className="btn ghost small"
+                              disabled={acting === `add-${uid}` || busy}
+                              title={"plot a swing the cutter missed, or "
+                                     + "one the produce refused, and make "
+                                     + "a draft of it"}
+                              onClick={() => openAdder(uid)}>
+                        {acting === `add-${uid}`
+                          ? "opening…" : "+ add a swing"}
+                      </button>
+                    ) : null}>
                 {mine(shownDrafts).map(draftCard)}
               </Cell>
 
@@ -880,14 +941,43 @@ export default function AdminProductionFlow() {
         <ClickToPlotModal
           row={editing.row}
           swingPos={editing.swingPos}
-          addNew={false}
+          addNew={!!editing.addNew}
           adminPassword={adminPassword}
           // Cancel and save both land here, and both reload the
           // columns: the point of editing a draft is that the draft
           // changes.
+          //
+          // AND THE SAVE IS NOT THE RENDER. `wizardProduce` returns
+          // the moment the job is QUEUED -- the clip takes a minute on
+          // a thread -- so `load()` on its own read the draft that was
+          // still being replaced and then never asked again. The
+          // corrected clip only appeared on a manual page reload,
+          // which is indistinguishable from the edit having done
+          // nothing. `poll` watches the produce and reloads the
+          // columns when it stops.
           onClose={() => { setEditing(null); load(); }}
-          onBackground={() => { setEditing(null); load(); }}
-          onDone={() => { setEditing(null); load(); }}
+          onBackground={() => {
+            const _id = editing.row?.id;
+            setEditing(null);
+            load();
+            if (_id) { adopting.current.add(_id); poll(_id); }
+          }}
+          onDone={(ok, msg) => {
+            const _id = editing.row?.id;
+            setEditing(null);
+            // THE MODAL IS GONE, so a save that was REFUSED has
+            // nowhere to say so. It reported through these arguments
+            // all along and this page threw them away, so a rejected
+            // plot looked identical to one that had been accepted and
+            // was still rendering.
+            if (ok === false) {
+              setEditErr(msg || "the produce was refused");
+              load();
+              return;
+            }
+            load();
+            if (_id) { adopting.current.add(_id); poll(_id); }
+          }}
         />
       )}
 

@@ -509,6 +509,16 @@ export const api = {
   flowStatus: (key, uploadId) =>
     request(`/api/admin/flow/raw/${uploadId}/status`, { adminPassword: key }),
 
+  flowClaimClips: (key, uploadId) =>
+    // ADOPT WHAT THIS PAGE PRODUCED. Editing a draft or adding a
+    // swing goes through the wizard's produce, which writes a NEW
+    // clip row with no flow stamp on it -- so the corrected draft
+    // disappeared from the column it was corrected in. Called once
+    // the produce has finished, never on every poll: a clip produced
+    // from the Production page is not this flow's.
+    request(`/api/admin/flow/raw/${uploadId}/claim`,
+            { method: "POST", adminPassword: key }),
+
   flowDeleteClip: (key, clipId) =>
     request(`/api/admin/flow/clips/${clipId}`,
             { method: "DELETE", adminPassword: key }),

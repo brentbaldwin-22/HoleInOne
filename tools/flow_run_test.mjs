@@ -312,8 +312,18 @@ console.log("\n3i. the edit wizard opens ON this page, with no navigation");
     .test(page));
   check("...through the existing list endpoint",
         /upload_id: int = 0/.test(admin));
-  check("closing reloads the columns, because the draft changed",
-        (page.match(/setEditing\(null\); load\(\);/g) || []).length, 3);
+  // EVERY EXIT RELOADS. Counted by handler rather than by matching
+  // one exact line: two of the three now also wait for the render
+  // before reloading (the wizard's produce returns when the job is
+  // QUEUED, not when the clip exists), so the bodies are no longer
+  // one-liners and a text match on the old shape only found the
+  // handler that had not been fixed.
+  for (const h of ["onClose", "onBackground", "onDone"]) {
+    const m = new RegExp(`${h}=\\{\\([^)]*\\) => \\{?[\\s\\S]{0,900}?load\\(\\)`);
+    check(`${h} reloads the columns`, m.test(page));
+  }
+  check("...and setEditing is cleared on all three",
+        (page.match(/setEditing\(null\)/g) || []).length, 3);
 }
 
 console.log("\n4. the cuts column prints fields the cut row serves");

@@ -935,8 +935,21 @@ def _claim_clips(db, row, cuts) -> tuple[int, int]:
     base = row.base_captured_at
     claimed = matched = 0
     for c in clips:
-        c.flow_run_at = _dt.utcnow()
-        claimed += 1
+        # ── AN EXISTING STAMP IS LEFT ALONE ────────────────────────
+        #
+        # The stamp says "the flow produced this" and its value is
+        # when it was first claimed. Re-stamping every clip on every
+        # claim made this unusable as an answer to "when", and it is
+        # what lets this run a second time -- which it now does, after
+        # an operator edits or adds a swing from the flow page -- as a
+        # no-op over clips that were already claimed.
+        #
+        # A re-run of the whole flow is unaffected: it deletes the
+        # cuts and the produce clears the upload's clips, so its
+        # clips are new rows with nothing stamped on them.
+        if c.flow_run_at is None:
+            c.flow_run_at = _dt.utcnow()
+            claimed += 1
         if c.audio_cut_id or base is None or c.captured_at is None:
             continue
         # The clip's capture time is the recording's start plus where
@@ -1062,12 +1075,81 @@ def _flow_runner(row, src_path, db, progress=None):
     return flow_run(row, src_path, db, progress=progress)
 
 
+@router.post("/raw/{upload_id}/claim")
+def claim_clips(upload_id: int, db: Session = Depends(get_db)):
+    """Adopt clips produced for this recording FROM this page.
+
+    WHY THIS EXISTS. The columns show what the flow produced --
+    `flow_run_at` is the stamp, and filtering on it is what stops a
+    thousand unrelated clips burying the two an operator is looking
+    at. The stamp is put on during a flow run.
+
+    But editing a draft here, or adding a swing here, goes through the
+    wizard's produce, and that writes a BRAND NEW clip row: the old
+    one is replaced, the new one has no stamp, and the corrected draft
+    therefore vanished from the column it was corrected in. Which
+    reads as the edit having deleted the clip.
+
+    So the flow adopts what it asked for. Called by the page once the
+    produce it started has finished, and deliberately NOT on every
+    poll: a clip produced from the Production page is not this flow's
+    output, and quietly claiming it would make the stamp mean "some
+    clip of a recording the flow has touched" instead.
+
+    Idempotent. Clips already stamped keep their stamp and their cut.
+    """
+    row = db.get(LongVideoUpload, upload_id)
+    if not row:
+        raise HTTPException(404, "recording not found")
+    # THE CUT WINDOWS FROM THE ROWS, in the shape `_claim_clips` reads
+    # them -- it was written against a run's report, and the report is
+    # long gone by the time an operator edits a draft.
+    cuts = [{"id": k.id, "start_sec": k.start_sec, "end_sec": k.end_sec}
+            for k in (db.query(AudioCut)
+                      .filter(AudioCut.long_upload_id == upload_id)
+                      .order_by(AudioCut.idx.asc()).all())]
+    claimed, matched = _claim_clips(db, row, cuts)
+    return {"ok": True, "upload_id": upload_id,
+            "claimed": claimed, "matched": matched,
+            "cuts": len(cuts)}
+
+
 @router.get("/raw/{upload_id}/status")
 def flow_status(upload_id: int):
-    """How the run is going, or how it went."""
-    from .admin import _debugx_status, _json_safe
+    """How the run is going, or how it went.
 
-    return _json_safe(_debugx_status("flow", upload_id))
+    AND A WIZARD PRODUCE ON THE SAME RECORDING, which is a different
+    run under a different key and was invisible here.
+
+    THE FAILURE THIS FIXES. Editing a draft from this page calls the
+    wizard's produce, which RETURNS AS SOON AS THE JOB IS QUEUED --
+    the render takes a minute on a thread. The page reloaded its
+    columns the instant the modal closed, read the clip that was still
+    being replaced, and then never asked again. So the draft an
+    operator had just corrected sat there as the old one until they
+    reloaded the whole page by hand, which looks exactly like the edit
+    having done nothing.
+
+    One `running` for the page to poll, whichever kind started the
+    work, so the existing tick covers both: it reloads the columns
+    when the work stops, and that is when there is something new to
+    see. `produce_running` stays separate because the two are not the
+    same event and a caller may want to say which.
+    """
+    from .admin import _debugx_get, _debugx_status, _json_safe
+
+    out = dict(_debugx_status("flow", upload_id) or {})
+    _p = _debugx_get("produce", upload_id) or {}
+    _busy = bool(_p.get("running"))
+    out["produce_running"] = _busy
+    out["produce_stage"] = _p.get("stage") if _busy else None
+    out["produce_done"] = _p.get("done") if _busy else None
+    out["produce_total"] = _p.get("total") if _busy else None
+    # NOT `or` ON THE REPORT. `running` is the only field folded
+    # together: the flow run's report is the flow run's, and a produce
+    # finishing must not make this claim the flow produced it.
+    out["running"] = bool(out.get("running")) or _busy
+    return _json_safe(out)
 
 
 # ── GROUPS: A ROUND'S SWINGS, AS THE DAY WENT ──────────────────────
