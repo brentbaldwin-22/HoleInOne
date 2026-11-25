@@ -263,8 +263,14 @@ export default function Audio1Panel({ uploadId, data, adminPassword,
         <b>audio 1 — measurements</b>{" "}
         <span className="muted tiny">
           · {data.n_cut ?? 0} cut · {data.n_refused ?? 0} refused ·{" "}
-          these numbers decide nothing: the clips above are whatever the
-          audio detector cut on its own thresholds
+          {/* THIS USED TO SAY "these numbers decide nothing". It was
+              true when audio1 was a measurement pass and became false
+              the day the gates were armed -- and a caption telling an
+              operator that the numbers in front of them cannot have
+              refused anything, on a screen where they just did, is
+              worse than no caption. What decides is whether this tee
+              box's gates are armed, which the line below says. */}
+          measured on every peak the detector saw, kept or not
         </span>
       </div>
 

@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import Audio1Panel from "../components/Audio1Panel.jsx";
 import AudioGatesPanel from "../components/AudioGatesPanel.jsx";
+import Audio1GateReport from "../components/Audio1GateReport.jsx";
 import { api } from "../api.js";
 import { MotionGraph } from "../components/MotionGraph.jsx";
 import { PiTestZones } from "../components/PiTestZones.jsx";
@@ -1292,6 +1293,16 @@ export default function AdminLongUpload() {
                           <span className="pill small">gates</span>{" "}
                           {testCutResults[u.id].debug.audio_gates_from}
                         </div>
+                      )}
+                      {/* WHAT THE audio1 GATES DID ON THIS RUN. The
+                          report has always been in the response and
+                          nothing rendered it, so "are the gates being
+                          applied?" had no answer on the screen that
+                          applied them -- only a cut list to squint at
+                          and a crest column to compare by eye. */}
+                      {testCutResults[u.id].debug?.audio1_gates && (
+                        <Audio1GateReport
+                          rep={testCutResults[u.id].debug.audio1_gates} />
                       )}
                       {testCutResults[u.id].debug && (
                         <div className="tiny muted" style={{ marginBottom: 8, fontFamily: "monospace", lineHeight: 1.4 }}>

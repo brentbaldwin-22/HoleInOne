@@ -16343,6 +16343,14 @@ def _audio1_gate(db, row, src_path, hits, zone, dbg=None):
         if not enabled or not hits:
             report["why"] = ("no audio1 gate is switched on for this tee"
                              if not enabled else "no peaks to judge")
+            # SAID OUT LOUD, like every other outcome. This returned
+            # without writing the report, so the commonest case of all
+            # -- a tee box nobody has set a gate on -- put NOTHING in
+            # front of the operator. An empty space reads as "the
+            # gates ran and were happy", which is the one thing it
+            # does not mean.
+            if dbg is not None:
+                dbg["audio1_gates"] = report
             return hits, report
         from ..services import audio1 as _a1
         out = _a1.analyse(
