@@ -28102,6 +28102,12 @@ def get_tee_box(upload_id: int, db: Session = Depends(get_db)):
 # the tee within a frame or two of impact and is out of the band in
 # well under two seconds; the lead is for a mis-stamped impact, not for
 # the flight.
+# How much of the clip must follow the strike, whatever the tracer
+# did. A clip that ends at the impact is a clip of a golfer standing
+# still, and an empty or truncated chain used to be able to produce
+# exactly that.
+D3_MIN_AFTER_IMPACT_SEC = 6.0
+
 ASCENT_WIN_PRE_SEC = 1.0
 ASCENT_WIN_POST_SEC = 4.0
 
@@ -38540,10 +38546,34 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
             launch_f = int(sw["launch_frame"])
 
             # ── the clip's boundaries, in seconds ──────────────────
-            t_launch = launch_f / fps
-            t0 = max(0.0, t_launch - D3_PRE_ROLL_SEC)
-            t_tracer_end = max(p["frame"] for p in pts) / fps
-            t1 = t_tracer_end + D3_POST_TRACER_SEC
+            #
+            # FROM THE IMPACT, NOT FROM THE CHAIN. This was
+            # `launch_f - PRE_ROLL`: the frame a detector first picked
+            # the ball out of the sky, which is a guess made by the
+            # ascent search. So a chain found in the wrong place moved
+            # the CLIP to the wrong place, and the produce cut frames
+            # the audio never pointed at -- on #1916, f1527-f1781 for
+            # a strike at f1920.
+            #
+            # The impact frame is the one thing here that is not a
+            # guess: it is what the cutter heard and what the audio cut
+            # was made around. The clip is that moment plus a pre-roll,
+            # and it cannot be anywhere else. The chain's job is to
+            # draw the tracer, not to decide which seconds of the
+            # recording this clip is of.
+            _impact_f = (int(sw["impact_frame"])
+                         if sw.get("impact_frame") is not None
+                         else launch_f)
+            t_impact = _impact_f / fps
+            t0 = max(0.0, t_impact - D3_PRE_ROLL_SEC)
+            # The tracer may run past the pre-roll window, and should;
+            # it may NOT pull the end back before the strike plus a
+            # follow-through, which is what an empty or short chain
+            # would otherwise do.
+            t_tracer_end = (max(p["frame"] for p in pts) / fps
+                            if pts else t_impact)
+            t1 = max(t_tracer_end + D3_POST_TRACER_SEC,
+                     t_impact + D3_MIN_AFTER_IMPACT_SEC)
 
             # HOLD THE TEE SHOT UNTIL THE BALL LANDS.
             #

@@ -112,6 +112,62 @@ check("...and it happens before the sweep call",
 check("the stage says it was not run", "NOT RUN. Step 1 found no swing"
       in _run, True)
 
+print("\n7. the clip is cut from the IMPACT, not from the chain")
+# THE BUG THE WHOLE WAY DOWN. `t0` was launch_frame - pre-roll, so a
+# chain found in the wrong place moved the CLIP to the wrong place:
+# #1916 cut f1527-f1781 for a strike at f1920. The impact frame is the
+# one thing here that is not a guess -- it is what the cutter heard
+# and what the audio cut was made around -- so the clip is that
+# moment plus a pre-roll and cannot be anywhere else.
+_SRC = (ROOT / "backend/app/routers/admin.py").read_text()
+_fp = _SRC[_SRC.index("def _d3_fast_produce("):]
+_fp = _fp[:_fp.index("\ndef ", 10)]
+check("t0 comes from the impact", "t0 = max(0.0, t_impact - D3_PRE_ROLL_SEC)"
+      in _fp, True)
+check("...not from the launch frame",
+      "t0 = max(0.0, t_launch - D3_PRE_ROLL_SEC)" in _fp, False)
+check("an empty chain does not raise on max()",
+      'if pts else t_impact' in _fp, True)
+check("and the end cannot be pulled back before the follow-through",
+      "t_impact + D3_MIN_AFTER_IMPACT_SEC" in _fp, True)
+
+from app.routers.admin import (  # noqa: E402
+    D3_MIN_AFTER_IMPACT_SEC, D3_POST_TRACER_SEC, D3_PRE_ROLL_SEC,
+)
+from app.routers.production_flow import (  # noqa: E402
+    FLOW_CUT_POST_SEC, FLOW_CUT_PRE_SEC,
+)
+
+
+def window(impact_f, chain_end_f, fps=60.0):
+    t_i = impact_f / fps
+    t0 = max(0.0, t_i - D3_PRE_ROLL_SEC)
+    t_end = (chain_end_f / fps) if chain_end_f else t_i
+    t1 = max(t_end + D3_POST_TRACER_SEC, t_i + D3_MIN_AFTER_IMPACT_SEC)
+    return round(t0 * fps), round(t1 * fps)
+
+
+for _label, _chain in (("no chain at all", None),
+                       ("a chain after the impact", 2100),
+                       ("#1916's chain, 273 frames EARLY", 1781)):
+    _lo, _hi = window(1920, _chain)
+    check("  %s -> f%d-f%d contains the impact" % (_label, _lo, _hi),
+          _lo <= 1920 <= _hi, True)
+
+print("\n8. and that clip lives inside the audio cut it came from")
+# The cut is impact -4s..+8s. A produce that reached outside it would
+# be showing frames the audio never pointed at, which is the whole
+# complaint.
+check("the pre-roll is inside the cut's lead",
+      D3_PRE_ROLL_SEC <= FLOW_CUT_PRE_SEC, True)
+check("the minimum tail is inside the cut's tail",
+      D3_MIN_AFTER_IMPACT_SEC <= FLOW_CUT_POST_SEC, True)
+# And the sweep cannot hand back a chain past the cut either, because
+# it only looks ASCENT_WIN_POST_SEC forward from the impact.
+from app.routers.admin import ASCENT_WIN_POST_SEC  # noqa: E402
+check("the sweep cannot find a chain beyond the cut",
+      ASCENT_WIN_POST_SEC + D3_POST_TRACER_SEC <= FLOW_CUT_POST_SEC, True)
+
 print("\n%s" % ("all ok" if not FAILED else "%d FAILED:\n  %s" % (
     len(FAILED), "\n  ".join(FAILED))))
 sys.exit(1 if FAILED else 0)
