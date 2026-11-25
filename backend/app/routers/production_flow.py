@@ -220,6 +220,11 @@ def flow_clips(stage: str = "draft", broadcast: str = "",
         _r["cut_frames"] = ([_sw.get("start_frame"), _sw.get("end_frame")]
                             if _sw.get("start_frame") is not None else None)
         _r["impact_frame"] = _sw.get("impact_frame")
+        # A DRAFT WITH NO LINE ON IT, and why. The clip is cut from
+        # the audio impact whether or not a ball was found in the sky;
+        # saying which is which is what stops a tracerless draft
+        # reading as a tracer that failed.
+        _r["no_tracer"] = _sw.get("no_tracer")
         # THE CONTRADICTION, ON THE CARD. Worked out here rather than
         # read off the record: a flag the produce stamped only appears
         # on clips produced since it existed, and the clip somebody is

@@ -37320,6 +37320,33 @@ def run_wizard_produce_job(
                 _err = _ff.get("reason") or "no flight found"
                 log.info("wizard produce: upload=%s no flight (%s)",
                          upload_id, _err)
+                # ── CUT IT ANYWAY, WITH NO TRACER ──────────────────
+                #
+                # The clip does not depend on the flight. It is cut
+                # around the impact frame the cutter heard, and the
+                # tracer is a drawing ON it -- so "no ball found in
+                # the sky" is a reason to draw nothing, not a reason
+                # to produce nothing.
+                #
+                # Before this, an audio cut that plainly contained a
+                # strike produced no draft at all, and the operator's
+                # only route to one was to find the recording on
+                # another page and plot the whole flight by hand with
+                # no clip in front of them. Now the draft exists, says
+                # it has no tracer, and the wizard's "plot ascent by
+                # hand" has something to open on.
+                #
+                # Only where there is an impact frame to cut around.
+                # Without one there is no clip to make -- that is the
+                # one case where nothing is the honest answer.
+                if _imp is not None:
+                    log.info(
+                        "wizard produce: upload=%s cutting a tracerless "
+                        "draft around f%s", upload_id, _imp)
+                    _ff = {"ok": True, "launch_frame": _imp,
+                           "points": [], "candidates":
+                           _ff.get("candidates") or [],
+                           "no_tracer": _err}
                 # NO FLIGHT IS WHEN THE OPERATOR NEEDS THE DOTS MOST.
                 # The detections were computed either way; dropping them
                 # left click-to-plot empty and the swing unrecoverable
@@ -37362,9 +37389,13 @@ def run_wizard_produce_job(
                         log.warning(
                             "wizard produce: could not keep the candidate "
                             "dots for upload %s: %s", upload_id, _exc)
-                _finish_wizard_produce(db, upload_id, ok=False, n_ok=0,
-                                       error=_err)
-                return {"ok": False, "error": _err}
+                # RE-CHECKED, because the branch above may have
+                # turned this into a tracerless produce. Only a swing
+                # with no impact frame to cut around ends here now.
+                if not _ff.get("ok"):
+                    _finish_wizard_produce(db, upload_id, ok=False, n_ok=0,
+                                           error=_err)
+                    return {"ok": False, "error": _err}
 
             # `_d3_fast_produce` reads swings off a Debug3 report, so hand
             # it one with the single swing the operator pointed at.
@@ -37378,6 +37409,12 @@ def run_wizard_produce_job(
                 "launch_frame": _ff.get("launch_frame"),
                 "flight": _ff.get("points") or [],
                 "impact_frame": _imp,
+                # WHY THERE IS NO LINE ON THIS CLIP. Absent on a normal
+                # produce; a sentence when the ascent search found no
+                # ball and the clip was cut anyway. Without it a
+                # tracerless draft is indistinguishable from a tracer
+                # that failed to render.
+                "no_tracer": _ff.get("no_tracer"),
                 # The clickable pool. Without it _d3_fast_produce writes
                 # cand_points empty, and click-to-plot opens on a swing
                 # with nothing to click -- read-only exactly where the
@@ -39338,21 +39375,50 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     _rest_f = min(int(_if), launch_f)
             except (TypeError, ValueError):
                 _rest_f = launch_f
-            _rv = render_tracer_video(
-                src_path, _tee,
-                (float(ball[0]), float(ball[1])),
-                _rest_f, pts,
-                write_start=int(round(t0 * fps)),
-                write_end=int(round(t_render_end * fps)),
-                rest_verified=True,
-                target_xy=_target_xy,
-                target_frame=_target_frame,
-                apex_lift=_apex_lift,
-                apex_at=_apex_at,
-            )
-            if not _rv.get("ok") or not _tee.exists():
-                raise RuntimeError(
-                    f"tracer render failed: {_rv.get('error')}")
+            # ── NO CHAIN IS NOT NO CLIP ────────────────────────────
+            #
+            # A swing the ascent search found no ball for used to
+            # produce NOTHING: find_flight refused, the job returned
+            # ok=False, and the operator was left with an audio cut
+            # that plainly contains a strike and no draft to look at.
+            #
+            # The audio cut and its impact frame are enough to cut the
+            # clip. The tracer is a drawing ON that clip, not a
+            # precondition for it -- so with no points there is simply
+            # nothing to draw, and the frames are cut through as they
+            # are. The wizard's "plot ascent by hand" is then pointed
+            # at a clip that exists.
+            #
+            # `render_tracer_video` cannot be handed an empty flight --
+            # it ends at `pts[-1]` -- and teaching it to would put a
+            # no-op branch in the renderer every clip pays for. The
+            # branch belongs here, where the decision is.
+            if pts:
+                _rv = render_tracer_video(
+                    src_path, _tee,
+                    (float(ball[0]), float(ball[1])),
+                    _rest_f, pts,
+                    write_start=int(round(t0 * fps)),
+                    write_end=int(round(t_render_end * fps)),
+                    rest_verified=True,
+                    target_xy=_target_xy,
+                    target_frame=_target_frame,
+                    apex_lift=_apex_lift,
+                    apex_at=_apex_at,
+                )
+                if not _rv.get("ok") or not _tee.exists():
+                    raise RuntimeError(
+                        f"tracer render failed: {_rv.get('error')}")
+            else:
+                _rv = None
+                log.info(
+                    "d3 produce: swing %s has no flight — cutting the "
+                    "clip from the impact (f%d) with no tracer drawn",
+                    i, _impact_f)
+                if not cut_segment(src_path, _tee, t0, t_render_end):
+                    raise RuntimeError(
+                        "could not cut the clip for a swing with no "
+                        "tracer")
             # NOT TRANSCODED HERE. `render_tracer_video` writes raw mp4v
             # and its docstring says the caller must get it to H.264
             # before serving it -- but nothing serves THIS file. It is
@@ -39693,6 +39759,10 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                 # a question about the ascent search, and quietly
                 # moving one to agree with the other would destroy the
                 # evidence for answering it.
+                # No line was drawn, and why. The wizard opens on a
+                # clip with no tracer and says so, instead of leaving
+                # the operator to wonder whether one failed to render.
+                "no_tracer": sw.get("no_tracer"),
                 "frames_disagree": _frames_disagree(
                     sw.get("impact_frame"), launch_f,
                     int(round(t0 * fps)), int(round(t1 * fps)), fps),

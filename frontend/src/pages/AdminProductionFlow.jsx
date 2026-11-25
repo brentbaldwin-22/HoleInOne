@@ -535,6 +535,13 @@ export default function AdminProductionFlow() {
           {c.impact_frame != null && <> · impact f{c.impact_frame}</>}
         </div>
       )}
+      {c.no_tracer && (
+        <div className="tiny" style={{ marginTop: 2 }}>
+          <span className="pill small">no tracer</span>{" "}
+          <span className="muted">{c.no_tracer} — the clip is cut from
+            the audio impact; plot the ascent by hand to draw it.</span>
+        </div>
+      )}
       {c.frames_disagree && (
         <div className="tiny err-text" style={{ marginTop: 2 }}>
           {c.frames_disagree}

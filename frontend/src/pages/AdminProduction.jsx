@@ -4415,6 +4415,16 @@ export function ClickToPlotModal({
               covered f1527-f1781 with an impact of f1920 and the
               wizard showed both, side by side, with nothing saying
               they contradict each other. */}
+          {swing?.no_tracer && (
+            <div className="tiny" style={{ margin: "0 0 6px",
+                                           padding: "4px 8px",
+                                           borderRadius: 4,
+                                           background: "var(--surface-alt)" }}>
+              <b>No tracer on this clip.</b> {swing.no_tracer} — it was
+              cut from the audio impact anyway. Plot the ascent by hand
+              and save to draw one.
+            </div>
+          )}
           {framesDisagree && (
             <div className="tiny err-text"
                  style={{ margin: "0 0 6px", padding: "4px 8px",
