@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState }
+  from "react";
 import { Link } from "react-router-dom";
 
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
@@ -99,57 +100,51 @@ function fmtDur(sec) {
  * THAT column -- "#1915 · 3 cuts" beside "#1915 · 1 draft" is the
  * fan-out, readable across the row.
  */
-function groupByUpload(rows, idOf) {
-  const out = new Map();
-  (rows || []).forEach((r) => {
-    const id = idOf(r);
-    if (!out.has(id)) out.set(id, []);
-    out.get(id).push(r);
-  });
-  return out;
-}
-
-function GroupHead({ id, n, unit, focus, onFocus }) {
-  const on = focus === id;
+/*
+ * ONE ROW PER RECORDING, and the four columns of that row are what
+ * became of it.
+ *
+ * The columns used to be four independent lists, so a reader joined
+ * them by eye: three cuts and a draft from #1915 sat beside five cuts
+ * from #1916 with nothing lining them up. The lineage is the whole
+ * point of the page, and a table says it without anybody having to
+ * read a card.
+ */
+function HeadCell({ title, unit, count, blurb }) {
   return (
-    <button type="button" onClick={() => onFocus(on ? 0 : id)}
-            title={on ? "show every recording again"
-              : "show only this recording, across all four columns"}
-            style={{ display: "flex", alignItems: "baseline", gap: 6,
-                     width: "100%", textAlign: "left", border: 0,
-                     cursor: "pointer", padding: "2px 0 3px",
-                     background: "transparent",
-                     borderBottom: on
-                       ? "2px solid var(--accent, #1a56db)"
-                       : "1px solid var(--line)" }}>
-      <b className="small" style={{ color: on
-        ? "var(--accent, #1a56db)" : "inherit" }}>#{id}</b>
-      <span className="tiny muted">{n} {unit}{n === 1 ? "" : "s"}</span>
-    </button>
-  );
-}
-
-function Column({ title, unit, count, blurb, children }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-      <div className="card tight" style={{ margin: 0, marginBottom: 8 }}>
-        <div className="small"><b>{title}</b>{" "}
-          <span className="pill small" style={{ marginLeft: 4 }}>
-            {count ?? "—"} {unit}
-          </span>
-        </div>
-        <div className="tiny muted" style={{ marginTop: 2 }}>{blurb}</div>
+    <div style={{ padding: "0 8px 8px" }}>
+      <div className="small"><b>{title}</b>{" "}
+        <span className="pill small" style={{ marginLeft: 4 }}>
+          {count ?? "—"} {unit}
+        </span>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {children}
-      </div>
+      <div className="tiny muted" style={{ marginTop: 2 }}>{blurb}</div>
     </div>
   );
 }
 
-/** A phase timing table. "94 seconds" is not actionable; which phase is. */
-function Phases({ phases, total }) {
-  if (!phases?.length) return null;
+/** One cell of a recording's row: its cards, or a visible nothing. */
+function Cell({ children, empty, live }) {
+  const has = Array.isArray(children)
+    ? children.some(Boolean) : !!children;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8,
+                  padding: "8px", borderTop: "1px solid var(--line)",
+                  borderLeft: "1px solid var(--line)", minWidth: 0 }}>
+      {live}
+      {has ? children : (
+        <div className="tiny muted" style={{ opacity: 0.6 }}>{empty}</div>
+      )}
+    </div>
+  );
+}
+
+function Phases({ phases, total, show }) {
+  // HIDDEN UNLESS ASKED FOR. A dozen rows of seconds under every
+  // recording is the detail you want twice and read past the rest of
+  // the time, and it pushed the thing the row is about off the
+  // screen. One switch at the top, off by default.
+  if (!show || !phases?.length) return null;
   return (
     <table className="tiny" style={{ borderCollapse: "collapse",
                                      marginTop: 4, width: "100%" }}>
@@ -204,6 +199,8 @@ export default function AdminProductionFlow() {
   const [acting, setActing] = useState(null);
   const [runs, setRuns] = useState({});       // uploadId -> status blob
   const [liveDrafts, setLiveDrafts] = useState(null);
+  // Off by default: see Phases.
+  const [showTimings, setShowTimings] = useState(false);
   const [viewer, setViewer] = useState(null);
   const [focus, setFocus] = useState(0);      // which recording, 0 = all
   const polling = useRef(new Set());
@@ -292,6 +289,250 @@ export default function AdminProductionFlow() {
     catch (e) { setErr(e.message); } finally { setActing(null); }
   }
 
+  // ── THE ROWS OF THE TABLE ────────────────────────────────────
+  //
+  // The recordings, newest first, plus any upload that has cuts or
+  // clips but is not on this page of raw rows -- without that, a
+  // draft from an older recording would simply vanish from the page
+  // rather than appear with a row of its own.
+  const rawById = Object.fromEntries((raw || []).map((r) => [r.id, r]));
+  const bands = (() => {
+    const seen = [];
+    const push = (id) => {
+      if (id != null && !seen.includes(id)) seen.push(id);
+    };
+    (raw || []).forEach((r) => push(r.id));
+    [cuts, drafts, finals].forEach((rows) =>
+      (rows || []).forEach((x) => push(x.long_upload_id)));
+    return focus ? seen.filter((id) => id === focus) : seen;
+  })();
+
+  const rawCard = (r, run, busy, on) => (
+    <div className="card tight" style={{ margin: 0,
+                                         outline: on
+                                           ? "2px solid var(--accent, #1a56db)"
+                                           : "none" }}>
+      <div className="small">
+        <b>#{r.id}</b>
+        {r.hole_number ? <> · Hole {r.hole_number}</> : null}
+        <span className="muted">
+          {" "}· {r.course_name || `course #${r.course_id}`}
+        </span>
+      </div>
+      <div className="tiny muted">
+        {fmtWhen(r.captured_at)} · {fmtDur(r.duration_sec)}
+        {" · "}
+        {r.trigger_zone == null ? "no zone recorded"
+          : zoneName(r.trigger_zone)}
+      </div>
+      <div className="row" style={{ gap: 6, marginTop: 5, flexWrap: "wrap" }}>
+        <button type="button" className="btn ghost small"
+                disabled={!r.tee_url}
+                onClick={() => setViewer({ url: r.tee_url,
+                                           title: `#${r.id} tee angle`,
+                                           startedAt: r.captured_at })}>
+          tee angle
+        </button>
+        <button type="button" className="btn ghost small"
+                disabled={!r.green_url}
+                title={r.has_green ? "" : "this pair has no green"}
+                onClick={() => setViewer({ url: r.green_url,
+                                           title: `#${r.id} green angle`,
+                                           startedAt: r.captured_at })}>
+          green angle
+        </button>
+      </div>
+      <button type="button" className="btn small"
+              style={{ marginTop: 6, width: "100%" }}
+              disabled={busy || acting === `raw-${r.id}`}
+              onClick={() => start(r.id)}>
+        {busy ? "running…" : acting === `raw-${r.id}` ? "starting…"
+          : "Start production flow"}
+      </button>
+      {/* Only the runner's OWN lines -- "starting", "queued behind 2
+          uploads". Everything tagged with a phase belongs in the cell
+          doing that work, which is the point of a row band. */}
+      {busy && !phaseOf(run?.stage).phase && (
+        <div className="tiny muted" style={{ marginTop: 4 }}>
+          {phaseOf(run?.stage).text || "working"}
+          {run?.total ? ` · ${run.done ?? 0} of ${run.total}` : ""}
+        </div>
+      )}
+      {!busy && run?.error && (
+        <div className="tiny err-text" style={{ marginTop: 4 }}>
+          {run.error}
+        </div>
+      )}
+      {!busy && run?.report && (
+        <>
+          <div className="tiny" style={{ marginTop: 4 }}>
+            {run.report.n_cuts ?? 0} cut
+            {run.report.n_cuts === 1 ? "" : "s"} ·{" "}
+            {run.report.n_clips ?? 0} draft
+            {run.report.n_clips === 1 ? "" : "s"}
+            {run.report.cleared?.cuts > 0 && (
+              <span className="muted">
+                {" "}· replaced {run.report.cleared.cuts} from an
+                earlier run
+              </span>
+            )}
+          </div>
+          {run.report.reason && (
+            <div className="tiny muted" style={{ marginTop: 2 }}>
+              {run.report.reason}
+            </div>
+          )}
+          <Phases phases={run.report.phases} total={run.report.total_sec}
+                  show={showTimings} />
+        </>
+      )}
+      {(nCuts[r.id] || nDrafts[r.id] || nFinals[r.id]) ? (
+        <button type="button"
+                className={on ? "btn small" : "btn ghost small"}
+                style={{ marginTop: 6, width: "100%" }}
+                title="show only this recording"
+                onClick={() => setFocus(on ? 0 : r.id)}>
+          → {nCuts[r.id] || 0} cut{(nCuts[r.id] || 0) === 1 ? "" : "s"}
+          {" · "}{nDrafts[r.id] || 0} draft
+          {(nDrafts[r.id] || 0) === 1 ? "" : "s"}
+          {(nFinals[r.id] || 0) > 0 && ` · ${nFinals[r.id]} final`}
+          {on ? " — showing" : ""}
+        </button>
+      ) : null}
+    </div>
+  );
+
+  const cutCard = (k) => (
+    <div key={k.id} className="card tight" style={{ margin: 0 }}>
+      <div className="small">
+        <b>swing {k.idx + 1}</b>
+        {/* WHICH CUTS BECAME CLIPS is the question this column
+            exists to answer, and the row band answers "whose". */}
+        {k.produced
+          ? <span className="pill ok small"
+                  style={{ marginLeft: 6 }}>→ draft</span>
+          : <span className="pill small"
+                  style={{ marginLeft: 6 }}>no clip</span>}
+      </div>
+      <div className="tiny muted">
+        impact at {k.peak_time_sec?.toFixed?.(2) ?? "—"}s
+        {k.ratio != null ? ` · ×${Number(k.ratio).toFixed(1)}` : ""}
+        {k.attack_ms != null
+          ? ` · ${Number(k.attack_ms).toFixed(0)}ms attack` : ""}
+      </div>
+      <div className="tiny muted">
+        {k.start_sec?.toFixed?.(1)}s–{k.end_sec?.toFixed?.(1)}s
+        {k.trigger_zone != null ? ` · ${zoneName(k.trigger_zone)}` : ""}
+      </div>
+      {/* LINKS, NOT THUMBNAILS: two 110px tiles of a dark tee box
+          tell an operator nothing the numbers above do not, and cost
+          two video decodes per cut. */}
+      <div className="row" style={{ gap: 6, marginTop: 5, flexWrap: "wrap" }}>
+        <button type="button" className="btn ghost small"
+                disabled={!k.tee_url}
+                onClick={() => setViewer({
+                  url: k.tee_url,
+                  title: `#${k.long_upload_id} swing ${k.idx + 1} — tee` })}>
+          tee angle
+        </button>
+        {k.green_url ? (
+          <button type="button" className="btn ghost small"
+                  onClick={() => setViewer({
+                    url: k.green_url,
+                    title: `#${k.long_upload_id} swing ${k.idx + 1}`
+                           + " — green" })}>
+            green angle
+          </button>
+        ) : (
+          <span className="tiny muted" style={{ alignSelf: "center" }}>
+            tee only
+          </span>
+        )}
+      </div>
+      {k.produce_error && (
+        <div className="tiny err-text" style={{ marginTop: 4 }}>
+          {k.produce_error}
+        </div>
+      )}
+    </div>
+  );
+
+  const draftCard = (c) => (
+    <div key={c.id} className="card tight" style={{ margin: 0 }}>
+      {c.url && (
+        <video src={c.url} controls preload="metadata"
+               poster={c.thumbnail_url || undefined}
+               style={{ width: "100%", borderRadius: 6, background: "#000" }} />
+      )}
+      <div className="small" style={{ marginTop: 5 }}>
+        {/* THE SWING FIRST: it is what joins this card to the cut in
+            the cell to its left. */}
+        <b>{c.cut_idx != null ? `swing ${c.cut_idx + 1}` : "swing unknown"}</b>
+        <span className="muted"> · Hole {c.hole_number}</span>
+        {c.cut_idx == null && (
+          <span className="muted tiny">
+            {" "}· could not be matched to a cut
+          </span>
+        )}
+      </div>
+      <div className="tiny muted">{fmtWhen(c.captured_at)}</div>
+      <div className="row" style={{ gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+        {/* The same editor Production opens for a produced clip. */}
+        <Link to={`/admin/production?edit=${c.long_upload_id}&clip=${c.id}`}>
+          <button type="button" className="btn ghost small">edit</button>
+        </Link>
+        <button type="button" className="btn ghost small"
+                disabled={acting === `del-${c.id}`}
+                onClick={() => act(`del-${c.id}`, api.flowDeleteClip, c.id)}>
+          {acting === `del-${c.id}` ? "deleting…" : "delete"}
+        </button>
+        <button type="button" className="btn small"
+                disabled={acting === `ok-${c.id}`}
+                onClick={() => act(`ok-${c.id}`, api.flowAccept, c.id,
+                                   "admin")}>
+          {acting === `ok-${c.id}` ? "approving…" : "approve"}
+        </button>
+      </div>
+    </div>
+  );
+
+  const finalCard = (c, newGroup) => (
+    <div key={c.id}>
+      {newGroup && c.group_label && (
+        <div className="small" style={{ margin: "2px 0 6px",
+                                        fontWeight: 600 }}>
+          {c.group_label}
+        </div>
+      )}
+      <div className="card tight" style={{ margin: 0 }}>
+        {c.url && (
+          <video src={c.url} controls preload="metadata"
+                 poster={c.thumbnail_url || undefined}
+                 style={{ width: "100%", borderRadius: 6,
+                          background: "#000" }} />
+        )}
+        <div className="tiny muted" style={{ marginTop: 4 }}>
+          {c.cut_idx != null ? `swing ${c.cut_idx + 1} · ` : ""}
+          {fmtWhen(c.captured_at)}
+          {c.broadcast_at && (
+            <span className="pill small" style={{ marginLeft: 6 }}>
+              broadcast
+            </span>
+          )}
+        </div>
+        <button type="button"
+                className={c.broadcast_at ? "btn ghost small" : "btn small"}
+                style={{ marginTop: 6, width: "100%" }}
+                disabled={acting === `b-${c.id}`}
+                onClick={() => act(`b-${c.id}`, api.flowBroadcast, c.id,
+                                   !c.broadcast_at)}>
+          {acting === `b-${c.id}` ? "…"
+            : c.broadcast_at ? "un-broadcast" : "Broadcast"}
+        </button>
+      </div>
+    </div>
+  );
+
   if (!adminPassword) {
     return (
       <div className="wrap">
@@ -373,7 +614,7 @@ export default function AdminProductionFlow() {
           <div className="small">
             <b>Production flow</b>{" "}
             <span className="muted tiny">
-              · one recording, left to right · only what this flow made
+              · one row per recording · only what this flow made
             </span>
           </div>
           <div className="row" style={{ gap: 8, alignItems: "center" }}>
@@ -383,6 +624,12 @@ export default function AdminProductionFlow() {
                 showing recording #{focus} — show all
               </button>
             )}
+            <button type="button"
+                    className={showTimings ? "btn small" : "btn ghost small"}
+                    title="the phase-by-phase clock on every run"
+                    onClick={() => setShowTimings((v) => !v)}>
+              {showTimings ? "hide timings" : "show timings"}
+            </button>
             <button type="button" className="btn ghost small" onClick={load}>
               refresh
             </button>
@@ -392,343 +639,90 @@ export default function AdminProductionFlow() {
 
       {err && <div className="card err-text small">{err}</div>}
 
-      <div style={{ display: "grid", gap: 12, alignItems: "start",
+      {/* ── THE TABLE: ONE ROW PER RECORDING ──────────────────
+          Four cells across, so what a recording became is read
+          along its own row instead of reconstructed from four
+          lists. Cell borders make the band, which is the only
+          thing that actually separates #1915's cuts from
+          #1916's when both have several. */}
+      <div style={{ display: "grid", alignItems: "stretch",
                     gridTemplateColumns:
-                      "repeat(auto-fit, minmax(265px, 1fr))" }}>
+                      "minmax(230px, 1fr) minmax(210px, 1fr) "
+                      + "minmax(230px, 1.1fr) minmax(210px, 1fr)",
+                    borderRight: "1px solid var(--line)",
+                    borderBottom: "1px solid var(--line)" }}>
+        <HeadCell title="Raw clips" unit="recordings" count={countOf("raw")}
+                  blurb="Both angles off the camera pair. Open either in
+                         the console's viewer, then start the flow." />
+        <HeadCell title="Audio cuts" unit="cuts" count={countOf("cuts")}
+                  blurb="What the microphone heard, both angles. No
+                         swing judgement — only that it cleared this
+                         tee box's gates." />
+        <HeadCell title="Draft produced" unit="clips"
+                  count={countOf("draft")}
+                  blurb="Produced from the audio impact — ascent, the
+                         ball on the green if it is there, then tracer
+                         and graphics." />
+        <HeadCell title="Final produced" unit="clips"
+                  count={countOf("final")}
+                  blurb="Approved, and grouped by the seven minutes
+                         around the first swing in each group." />
 
-        {/* ── 1. RAW ───────────────────────────────────────────── */}
-        <Column title="Raw clips" unit="recordings" count={countOf("raw")}
-                blurb="Both angles off the camera pair. Open either in the
-                       console's viewer, then start the flow on it.">
-          {raw === null && <div className="card tight"><div className="shimmer"
-            style={{ height: 90 }} /></div>}
-          {raw?.length === 0 && (
-            <div className="card tight"><p className="tiny muted">
-              No recordings.</p></div>
-          )}
-          {(raw || []).map((r) => {
-            const run = runs[r.id];
-            const busy = !!run?.running;
-            return (
-              <div key={r.id} className="card tight"
-                   style={{ margin: 0,
-                            outline: focus === r.id
-                              ? "2px solid var(--accent, #1a56db)" : "none" }}>
-                <div className="small">
-                  <b>#{r.id}</b>
-                  {r.hole_number ? <> · Hole {r.hole_number}</> : null}
-                  <span className="muted">
-                    {" "}· {r.course_name || `course #${r.course_id}`}
-                  </span>
-                </div>
-                <div className="tiny muted">
-                  {fmtWhen(r.captured_at)} · {fmtDur(r.duration_sec)}
-                  {" · "}
-                  {r.trigger_zone == null
-                    ? "no zone recorded"
-                    : zoneName(r.trigger_zone)}
-                </div>
-                <div className="row" style={{ gap: 6, marginTop: 5,
-                                              flexWrap: "wrap" }}>
-                  <button type="button" className="btn ghost small"
-                          disabled={!r.tee_url}
-                          onClick={() => setViewer({
-                            url: r.tee_url, title: `#${r.id} tee angle`,
-                            startedAt: r.captured_at })}>
-                    tee angle
-                  </button>
-                  <button type="button" className="btn ghost small"
-                          disabled={!r.green_url}
-                          title={r.has_green ? "" : "this pair has no green"}
-                          onClick={() => setViewer({
-                            url: r.green_url, title: `#${r.id} green angle`,
-                            startedAt: r.captured_at })}>
-                    green angle
-                  </button>
-                </div>
-                <button type="button" className="btn small"
-                        style={{ marginTop: 6, width: "100%" }}
-                        disabled={busy || acting === `raw-${r.id}`}
-                        onClick={() => start(r.id)}>
-                  {busy ? "running…"
-                    : acting === `raw-${r.id}` ? "starting…"
-                      : "Start production flow"}
-                </button>
-                {/* Only the runner's OWN lines -- "starting", "queued
-                    behind 2 uploads". Everything tagged with a phase
-                    belongs over the column doing that work, which is
-                    the point of following a run across the page. */}
-                {busy && !phaseOf(run?.stage).phase && (
-                  <div className="tiny muted" style={{ marginTop: 4 }}>
-                    {phaseOf(run?.stage).text || "working"}
-                    {run?.total ? ` · ${run.done ?? 0} of ${run.total}` : ""}
-                  </div>
-                )}
-                {busy && phaseOf(run?.stage).phase && (
-                  <div className="tiny muted" style={{ marginTop: 4 }}>
-                    running · see the{" "}
-                    {phaseOf(run?.stage).phase === "produce"
-                      ? "draft" : "cuts"} column
-                  </div>
-                )}
-                {/* `report`, which is what the runner stores. It was
-                    `result` here -- a field nothing writes, so a
-                    finished run showed no timings and no counts and
-                    looked like a run that had done nothing. */}
-                {!busy && run?.error && (
-                  <div className="tiny err-text" style={{ marginTop: 4 }}>
-                    {run.error}
-                  </div>
-                )}
-                {!busy && run?.report && (
-                  <>
-                    <div className="tiny" style={{ marginTop: 4 }}>
-                      {run.report.n_cuts ?? 0} cut
-                      {run.report.n_cuts === 1 ? "" : "s"} ·{" "}
-                      {run.report.n_clips ?? 0} draft
-                      {run.report.n_clips === 1 ? "" : "s"}
-                    </div>
-                    {run.report.reason && (
-                      <div className="tiny muted" style={{ marginTop: 2 }}>
-                        {run.report.reason}
-                      </div>
-                    )}
-                    <Phases phases={run.report.phases}
-                            total={run.report.total_sec} />
-                  </>
-                )}
-                {/* ── WHAT THIS RECORDING BECAME ──────────────
-                    The whole point of four columns side by side,
-                    said on the card the operator started from. */}
-                {(nCuts[r.id] || nDrafts[r.id] || nFinals[r.id]) ? (
-                  <button type="button"
-                          className={focus === r.id ? "btn small"
-                            : "btn ghost small"}
-                          style={{ marginTop: 6, width: "100%" }}
-                          title="show only this recording, across all
-                                 four columns"
-                          onClick={() => setFocus(focus === r.id ? 0 : r.id)}>
-                    → {nCuts[r.id] || 0} cut
-                    {(nCuts[r.id] || 0) === 1 ? "" : "s"}
-                    {" · "}{nDrafts[r.id] || 0} draft
-                    {(nDrafts[r.id] || 0) === 1 ? "" : "s"}
-                    {(nFinals[r.id] || 0) > 0
-                      && ` · ${nFinals[r.id]} final`}
-                    {focus === r.id ? " — showing" : ""}
-                  </button>
-                ) : null}
-              </div>
-            );
-          })}
-        </Column>
+        {raw === null && (
+          <div style={{ gridColumn: "1 / -1", padding: 10 }}>
+            <div className="shimmer" style={{ height: 90 }} />
+          </div>
+        )}
+        {raw?.length === 0 && (
+          <div style={{ gridColumn: "1 / -1", padding: 10 }}
+               className="tiny muted">No recordings.</div>
+        )}
 
-        {/* ── 2. AUDIO CUTS ────────────────────────────────────── */}
-        <Column title="Audio cuts" unit="cuts" count={countOf("cuts")}
-                blurb="What the microphone heard, cut to size on both
-                       angles. No swing judgement — only that it cleared
-                       this tee box's gates.">
-          <Working run={liveRun} phase="audio" />
-          <Working run={liveRun} phase="cut" />
-          {cuts === null && <div className="card tight"><div className="shimmer"
-            style={{ height: 90 }} /></div>}
-          {cuts?.length === 0 && !liveRun && (
-            <div className="card tight"><p className="tiny muted">
-              Nothing cut yet. Start the flow on a recording.</p></div>
-          )}
-          {[...groupByUpload(shownCuts, (k) => k.long_upload_id)]
-            .map(([uid, rows]) => (
-            <div key={uid} style={{ display: "flex",
-                                    flexDirection: "column", gap: 8 }}>
-              <GroupHead id={uid} n={rows.length} unit="cut"
-                         focus={focus} onFocus={setFocus} />
-              {rows.map((k) => (
-            <div key={k.id} className="card tight" style={{ margin: 0 }}>
-              <div className="small">
-                <b>swing {k.idx + 1}</b>
-                {/* THE FAN-OUT, SAID ON THE CUT. Which of this
-                    recording's cuts became a clip is the question the
-                    middle column exists to answer. */}
-                {k.produced
-                  ? <span className="pill ok small"
-                          style={{ marginLeft: 6 }}>→ draft</span>
-                  : <span className="pill small"
-                          style={{ marginLeft: 6 }}>no clip</span>}
-              </div>
-              <div className="tiny muted">
-                impact at {k.peak_time_sec?.toFixed?.(2) ?? "—"}s
-                {k.ratio != null ? ` · ×${Number(k.ratio).toFixed(1)}` : ""}
-                {k.attack_ms != null
-                  ? ` · ${Number(k.attack_ms).toFixed(0)}ms attack` : ""}
-              </div>
-              <div className="tiny muted">
-                {k.start_sec?.toFixed?.(1)}s–{k.end_sec?.toFixed?.(1)}s
-                {k.trigger_zone != null
-                  ? ` · ${zoneName(k.trigger_zone)}` : ""}
-              </div>
-              {/* LINKS, NOT THUMBNAILS. A pair of 110px tiles of a
-                  dark tee box tells the operator nothing they could
-                  not read from the numbers above, and costs two video
-                  decodes per cut on a column that can hold dozens.
-                  The viewer is where a cut is actually watched. */}
-              <div className="row" style={{ gap: 6, marginTop: 5,
-                                            flexWrap: "wrap" }}>
-                <button type="button" className="btn ghost small"
-                        disabled={!k.tee_url}
-                        onClick={() => setViewer({
-                          url: k.tee_url,
-                          title: `#${k.long_upload_id} swing ${k.idx + 1}`
-                                 + " — tee" })}>
-                  tee angle
-                </button>
-                {k.green_url ? (
-                  <button type="button" className="btn ghost small"
-                          onClick={() => setViewer({
-                            url: k.green_url,
-                            title: `#${k.long_upload_id} swing ${k.idx + 1}`
-                                   + " — green" })}>
-                    green angle
-                  </button>
-                ) : (
-                  <span className="tiny muted" style={{ alignSelf: "center" }}>
-                    tee only
-                  </span>
-                )}
-              </div>
-              {k.produce_error && (
-                <div className="tiny err-text" style={{ marginTop: 4 }}>
-                  {k.produce_error}
-                </div>
-              )}
-                </div>
-              ))}
-            </div>
-          ))}
-        </Column>
-
-        {/* ── 3. DRAFT ─────────────────────────────────────────── */}
-        <Column title="Draft produced" unit="clips" count={countOf("draft")}
-                blurb="Produced automatically from the audio impact —
-                       ascent, then the ball on the green if it is
-                       there, then tracer and graphics. Nobody has
-                       looked yet.">
-          <Working run={liveRun} phase="produce" />
-          {drafts === null && <div className="card tight">
-            <div className="shimmer" style={{ height: 120 }} /></div>}
-          {shownDrafts.length === 0 && !liveRun && (
-            <div className="card tight"><p className="tiny muted">
-              No drafts yet.</p></div>
-          )}
-          {[...groupByUpload(shownDrafts, (c) => c.long_upload_id)]
-            .map(([uid, rows]) => (
-            <div key={uid} style={{ display: "flex",
-                                    flexDirection: "column", gap: 8 }}>
-              <GroupHead id={uid} n={rows.length} unit="draft"
-                         focus={focus} onFocus={setFocus} />
-              {rows.map((c) => (
-            <div key={c.id} className="card tight" style={{ margin: 0 }}>
-              {c.url && (
-                <video src={c.url} controls preload="metadata"
-                       poster={c.thumbnail_url || undefined}
-                       style={{ width: "100%", borderRadius: 6,
-                                background: "#000" }} />
-              )}
-              <div className="small" style={{ marginTop: 5 }}>
-                {/* THE SWING FIRST: it is what joins this card to the
-                    cut two columns to its left. The hole is context. */}
-                <b>{c.cut_idx != null ? `swing ${c.cut_idx + 1}`
-                  : "swing unknown"}</b>
-                <span className="muted"> · Hole {c.hole_number}</span>
-                {c.cut_idx == null && (
-                  <span className="muted tiny">
-                    {" "}· could not be matched to a cut
-                  </span>
-                )}
-              </div>
-              <div className="tiny muted">{fmtWhen(c.captured_at)}</div>
-              <div className="row" style={{ gap: 6, marginTop: 6,
-                                            flexWrap: "wrap" }}>
-                {/* The same editor Production opens for a produced
-                    clip -- the plot map -- not a second one. */}
-                <Link to={`/admin/production?edit=${c.long_upload_id}`
-                          + `&clip=${c.id}`}>
-                  <button type="button" className="btn ghost small">
-                    edit
-                  </button>
-                </Link>
-                <button type="button" className="btn ghost small"
-                        disabled={acting === `del-${c.id}`}
-                        onClick={() => act(`del-${c.id}`,
-                                           api.flowDeleteClip, c.id)}>
-                  {acting === `del-${c.id}` ? "deleting…" : "delete"}
-                </button>
-                <button type="button" className="btn small"
-                        disabled={acting === `ok-${c.id}`}
-                        onClick={() => act(`ok-${c.id}`, api.flowAccept,
-                                           c.id, "admin")}>
-                  {acting === `ok-${c.id}` ? "approving…" : "approve"}
-                </button>
-              </div>
-                </div>
-              ))}
-            </div>
-          ))}
-        </Column>
-
-        {/* ── 4. FINAL ─────────────────────────────────────────── */}
-        <Column title="Final produced" unit="clips" count={countOf("final")}
-                blurb="Approved. Grouped by the seven minutes around the
-                       first swing in each group.">
-          {finals === null && <div className="card tight">
-            <div className="shimmer" style={{ height: 120 }} /></div>}
-          {finals?.length === 0 && (
-            <div className="card tight"><p className="tiny muted">
-              Nothing approved yet.</p></div>
-          )}
-          {shownFinals.map((c, i) => {
-            const prev = shownFinals[i - 1];
-            const newGroup = !prev || prev.group_label !== c.group_label;
-            return (
-              <div key={c.id}>
-                {newGroup && c.group_label && (
-                  <div className="small" style={{ margin: "4px 0 6px",
-                                                  fontWeight: 600 }}>
-                    {c.group_label}
+        {bands.map((uid) => {
+          const r = rawById[uid];
+          const run = runs[uid];
+          const busy = !!run?.running;
+          const mine = (rows) => (rows || [])
+            .filter((x) => x.long_upload_id === uid);
+          const myFinals = mine(shownFinals);
+          const on = focus === uid;
+          return (
+            <Fragment key={uid}>
+              {/* 1. the recording */}
+              <Cell empty="this recording is gone from the list">
+                {r ? rawCard(r, run, busy, on) : (
+                  <div className="tiny muted">
+                    <b>#{uid}</b> — not on this page of recordings
                   </div>
                 )}
-                <div className="card tight" style={{ margin: 0 }}>
-                  {c.url && (
-                    <video src={c.url} controls preload="metadata"
-                           poster={c.thumbnail_url || undefined}
-                           style={{ width: "100%", borderRadius: 6,
-                                    background: "#000" }} />
-                  )}
-                  <div className="tiny muted" style={{ marginTop: 4 }}>
-                    {/* The recording and swing, because this column
-                        groups by GROUP and the lineage would
-                        otherwise be the one thing it drops. */}
-                    #{c.long_upload_id}
-                    {c.cut_idx != null ? ` · swing ${c.cut_idx + 1}` : ""}
-                    {" · "}{fmtWhen(c.captured_at)}
-                    {c.broadcast_at && (
-                      <span className="pill small"
-                            style={{ marginLeft: 6 }}>broadcast</span>
-                    )}
-                  </div>
-                  <button type="button"
-                          className={c.broadcast_at ? "btn ghost small"
-                            : "btn small"}
-                          style={{ marginTop: 6, width: "100%" }}
-                          disabled={acting === `b-${c.id}`}
-                          onClick={() => act(`b-${c.id}`, api.flowBroadcast,
-                                             c.id, !c.broadcast_at)}>
-                    {acting === `b-${c.id}` ? "…"
-                      : c.broadcast_at ? "un-broadcast" : "Broadcast"}
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </Column>
+              </Cell>
+
+              {/* 2. its cuts */}
+              <Cell empty="no cuts"
+                    live={busy ? (
+                      <>
+                        <Working run={run} phase="audio" />
+                        <Working run={run} phase="cut" />
+                      </>
+                    ) : null}>
+                {mine(shownCuts).map(cutCard)}
+              </Cell>
+
+              {/* 3. its drafts */}
+              <Cell empty="no drafts"
+                    live={busy ? <Working run={run} phase="produce" /> : null}>
+                {mine(shownDrafts).map(draftCard)}
+              </Cell>
+
+              {/* 4. and what was approved */}
+              <Cell empty="nothing approved">
+                {myFinals.map((c, n) => finalCard(
+                  c, n === 0 || myFinals[n - 1].group_label
+                    !== c.group_label))}
+              </Cell>
+            </Fragment>
+          );
+        })}
       </div>
 
       <VideoLightbox

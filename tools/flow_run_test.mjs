@@ -199,29 +199,30 @@ console.log("\n3e. the measurement table says what the gates did to each row");
         /armed \? "dropped" : "would drop"/.test(panel));
 }
 
-console.log("\n3f. every column says which recording a card belongs to");
+console.log("\n3f. the page is a table: one row per recording");
 {
   // FOUR INDEPENDENT LISTS AND NO WAY TO JOIN THEM. Three cuts and a
-  // draft from #1915 sat beside five cuts from #1916 with nothing but
-  // a small grey id on each card. The lineage is what the page is
-  // for, so every column groups by recording under the same heading.
-  check("there is one grouping helper, not one per column",
-        (page.match(/function groupByUpload/g) || []).length, 1);
-  const grouped = [...page.matchAll(/groupByUpload\(shown(\w+)/g)]
-    .map((m) => m[1]).sort();
-  check("the cuts and drafts columns are grouped",
-        grouped, ["Cuts", "Drafts"]);
-  check("under a shared heading component",
-        (page.match(/<GroupHead/g) || []).length >= 2);
-  check("...which carries that recording's own count in that column",
-        /n=\{rows\.length\} unit="cut"/.test(page)
-        && /n=\{rows\.length\} unit="draft"/.test(page));
-  // The finals column groups by DAY AND GROUP instead, which is what
-  // was asked for there -- so it has to name the recording on the
-  // card or the lineage is the one thing that column drops.
-  check("the finals column still names the recording",
-        /#\{c\.long_upload_id\}/.test(page));
-  check("...and the swing", /swing \$\{c\.cut_idx \+ 1\}/.test(page));
+  // draft from #1915 sat beside five cuts from #1916 with nothing
+  // lining them up, so the lineage -- the whole point of the page --
+  // had to be reconstructed card by card. A row band says it without
+  // anybody reading anything.
+  check("the rows are built from the recordings",
+        /const bands = \(\(\) => \{/.test(page));
+  check("...four cells wide", (page.match(/<Cell /g) || []).length, 4);
+  check("...in one grid, so the cells line up",
+        /gridTemplateColumns:\s*\n?\s*"minmax/.test(page));
+  check("each cell is filtered to its own recording",
+        /x\.long_upload_id === uid/.test(page));
+  // A RECORDING WITH NO CUTS STILL GETS A ROW, and the cell says so
+  // rather than collapsing and pulling the row out of alignment.
+  check("an empty cell says what is missing",
+        /empty="no cuts"/.test(page) && /empty="no drafts"/.test(page));
+  // AND A CLIP WHOSE RECORDING IS OFF THIS PAGE still gets a row --
+  // otherwise it would simply vanish rather than be findable.
+  check("uploads known only from their cuts get a row too",
+        /\[cuts, drafts, finals\]\.forEach/.test(page));
+  check("...with the cell saying why the recording is not shown",
+        /not on this page of recordings/.test(page));
 }
 
 console.log("\n3g. the raw card says what the recording became");
@@ -232,15 +233,32 @@ console.log("\n3g. the raw card says what the recording became");
         && /const nFinals = tally\(/.test(page));
   check("and printed on the recording it came from",
         /\{nCuts\[r\.id\] \|\| 0\} cut/.test(page));
-  check("...with the drafts beside it",
-        /\{nDrafts\[r\.id\] \|\| 0\} draft/.test(page));
-  check("clicking it follows that recording across the columns",
-        /setFocus\(focus === r\.id \? 0 : r\.id\)/.test(page));
-  // AND THE CUT SAYS WHETHER IT BECAME ANYTHING, which is the join
-  // the middle column exists to make.
+  check("clicking it narrows to that recording",
+        /setFocus\(on \? 0 : r\.id\)/.test(page));
   check("a produced cut is marked as having spawned a draft",
         /→ draft/.test(page));
   check("...and one that produced nothing says so", /no clip/.test(page));
+  check("the draft leads with the swing that made it",
+        /swing \$\{c\.cut_idx \+ 1\}/.test(page));
+}
+
+console.log("\n3g2. the timings are one switch, off by default");
+{
+  // A dozen rows of seconds under every recording is detail you want
+  // twice and read past the rest of the time.
+  check("Phases takes a show flag", /function Phases\(\{ phases, total, show \}\)/
+    .test(page));
+  check("...and renders nothing without it",
+        /if \(!show \|\| !phases\?\.length\) return null/.test(page));
+  check("the switch starts off",
+        /useState\(false\);\n\s*\/\/ Off by default|const \[showTimings, setShowTimings\] = useState\(false\)/
+          .test(page));
+  // One control: the declaration plus exactly one place that flips
+  // it. A per-card toggle would be several.
+  check("one control, not one per card",
+        (page.match(/setShowTimings\(\(v\) => !v\)/g) || []).length, 1);
+  check("...and it is labelled both ways",
+        /showTimings \? "hide timings" : "show timings"/.test(page));
 }
 
 console.log("\n3h. a re-run starts over rather than adding to the pile");
@@ -268,7 +286,8 @@ for (const k of rawKeys) {
 }
 
 console.log("\n6. and the deep link matches what Production listens for");
-const to = /\/admin\/production\?edit=\$\{[^}]+\}`\s*\+\s*`&clip=/.test(page);
+// However the template is split, the link must carry both params.
+const to = /\/admin\/production\?edit=\$\{[\s\S]{0,60}?&clip=\$\{/.test(page);
 check("the flow links with edit= and clip=", to);
 const prod = readFileSync(
   join(ROOT, "frontend/src/pages/AdminProduction.jsx"), "utf8");
