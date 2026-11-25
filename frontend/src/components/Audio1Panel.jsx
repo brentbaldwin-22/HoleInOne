@@ -69,8 +69,26 @@ const GROUPS = [
                    : p.source === "manual" ? "manual"
                    : p.source === "hf" ? "HF"
                    : p.passed_gate ? "cut" : "refused"] },
-  { key: "pk", head: "peak", subs: ["amp", "ratio"], w: 78,
-    get: (p) => [fx(p.peak_amplitude, 3), fx(p.peak_ratio, 1)] },
+  // TWO RATIOS, AND THEY ARE NOT THE SAME MEASUREMENT.
+  //
+  //   det¹  the DETECTOR's: peak envelope over the MEDIAN OF THE
+  //         WHOLE CLIP, on 22050 Hz audio high-passed at 1500 Hz with
+  //         a 10 ms envelope. This is the one `min peak ratio`
+  //         enforces -- it is the argument the detector is given.
+  //   a1    audio1's: peak envelope over a LOCAL floor, the median of
+  //         the 500 ms ending 50 ms before the peak, on the camera's
+  //         own rate, unfiltered, with a 2 ms envelope.
+  //
+  // They disagree for four separate reasons at once, so one cannot be
+  // read as a correction of the other: different band, different
+  // sample rate, different envelope length, and -- the big one -- a
+  // whole-clip denominator against a local one. On a clip that is
+  // quiet apart from a few strikes the whole-clip median is the
+  // ambience and both are similar; on a clip with a running mower the
+  // local floor rises next to the mower and the clip median does not.
+  { key: "pk", head: "peak", subs: ["amp", "det¹", "a1"], w: 96,
+    get: (p) => [fx(p.peak_amplitude, 3), fx(p.detector_ratio, 1),
+                 fx(p.peak_ratio, 1)] },
   // det¹ IS BLANK WHEN THE DETECTOR COULD NOT MEASURE ONE. It returns
   // a sentinel — (lookback+1)/22050, three times the attack gate —
   // and printing it made a whole clip read as though every candidate

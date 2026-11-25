@@ -1397,6 +1397,46 @@ HOW_MEASURED = [
                   "quiet strikes because of it.",
     },
     {
+        "name": "peak ratio, DETECTOR (det1) — the one the gate enforces",
+        "where": "ai_tracer.detect_swings_from_audio",
+        "signal": "22050 Hz mono, HIGH-PASSED at 1500 Hz by ffmpeg "
+                  "before anything else runs",
+        "envelope": "moving average of |x| over 10 ms",
+        "how": "peak envelope / THE MEDIAN OF THE WHOLE CLIP's "
+               "envelope. One denominator for every peak in the "
+               "recording.",
+        "gate": "`min peak ratio` (audio_min_ratio) is this value and "
+                "only this value: it is passed to the detector as its "
+                "min_peak_ratio argument, so it decides which peaks "
+                "are found at all. The audio1 ratio below is never "
+                "gated on.",
+        "cannot": "None where the clip's median envelope is zero — a "
+                  "silent track.",
+    },
+    {
+        "name": "peak ratio, audio1 — a LOCAL floor, not the clip's",
+        "where": "audio1.measure_peak",
+        "signal": "the camera's own sample rate, UNFILTERED",
+        "envelope": "moving average of |x| over 2 ms",
+        "how": "peak envelope / the median of the envelope over the "
+               "500 ms ending 50 ms before THIS peak.",
+        "why_it_differs": "Four things differ at once, so neither is a "
+                          "correction of the other: the band (full "
+                          "vs above 1500 Hz), the sample rate (the "
+                          "camera's vs 22050), the envelope length "
+                          "(2 ms vs 10 ms) and — the one that moves "
+                          "the number most — a LOCAL denominator "
+                          "against a WHOLE-CLIP one. On a clip that is "
+                          "quiet apart from a few strikes they agree "
+                          "closely. On a clip with a mower running "
+                          "through part of it, the local floor rises "
+                          "beside the mower and the clip median does "
+                          "not, so audio1's ratio falls there while "
+                          "the detector's does not.",
+        "cannot": "None where there is no measurable background before "
+                  "the peak.",
+    },
+    {
         "name": "attack (10-90%)",
         "where": "audio1.measure_peak",
         "signal": "the camera's own sample rate, UNFILTERED",
@@ -1507,7 +1547,11 @@ CSV_COLUMNS = [
     ("label", "label"),
     ("passed_gate", "cut by detector"),
     ("peak_amplitude", "peak amplitude"),
-    ("peak_ratio", "peak ratio"),
+    # BOTH RATIOS, because they are different measurements of
+    # different things and the gate enforces only one of them. See
+    # HOW_MEASURED.
+    ("detector_ratio", "peak ratio, detector (det1)"),
+    ("peak_ratio", "peak ratio, audio1 (local floor)"),
     ("detector_attack_ms", "attack, detector (ms)"),
     ("attack_ms", "attack 10-90% (ms)"),
     ("decay_ms", "decay (ms)"),
@@ -1591,6 +1635,7 @@ def flat_row(m: dict, *, upload_id=None, kind="detected", label=None,
         "label": label,
         "passed_gate": m.get("passed_gate"),
         "peak_amplitude": m.get("peak_amplitude"),
+        "detector_ratio": m.get("detector_ratio"),
         "peak_ratio": m.get("peak_ratio"),
         "detector_attack_ms": m.get("detector_attack_ms"),
         "attack_ms": m.get("attack_ms"),
