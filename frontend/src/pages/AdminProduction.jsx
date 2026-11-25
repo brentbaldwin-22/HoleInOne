@@ -20,7 +20,7 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState }
   from "react";
 import { growZoneOptions, zoneWords } from "../zones";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { VideoLightbox } from "../components/VideoLightbox.jsx";
 import { api } from "../api.js";
@@ -4370,6 +4370,22 @@ function ClickToPlotModal({
             )}
           </PlotField>
 
+          {/* ── THE PRODUCE'S OWN TWO FRAMES, WHERE THEY DISAGREE ──
+              The clip's window is built from the LAUNCH frame and the
+              impact comes from the cutter, so a produce can record a
+              ball that left before it was struck. On #1916 the clip
+              covered f1527-f1781 with an impact of f1920 and the
+              wizard showed both, side by side, with nothing saying
+              they contradict each other. */}
+          {swing?.frames_disagree && (
+            <div className="tiny err-text"
+                 style={{ margin: "0 0 6px", padding: "4px 8px",
+                          borderRadius: 4,
+                          background: "var(--warn-bg, #fdf3d7)" }}>
+              <b>This swing's frames contradict each other.</b>{" "}
+              {swing.frames_disagree}
+            </div>
+          )}
           <PlotField
             label="Impact frame" icon="⧗"
             value={impactF != null ? `f${impactF}` : null}
@@ -18955,7 +18971,9 @@ export default function AdminProduction() {
   //
   // Fires once the rows are loaded and then clears the query string,
   // so a refresh does not reopen a dialog the operator has closed.
+  const navigate = useNavigate();
   const deepLinked = useRef(false);
+  const _backTo = useRef(null);
   useEffect(() => {
     if (deepLinked.current || !rows?.length) return;
     const q = new URLSearchParams(window.location.search);
@@ -18969,6 +18987,13 @@ export default function AdminProduction() {
     const pos = clipId
       ? arr.findIndex((sw) => sw?.clip_id != null && sw.clip_id === clipId)
       : -1;
+    // WHERE TO GO WHEN IT CLOSES. Arriving from the Production Flow
+    // and being left on Production afterwards is a dead end: the
+    // operator came to edit one draft and has to find their way back
+    // to the page they were working on. Remembered before the query
+    // string is cleared, which is why it cannot be read at close.
+    _backTo.current = q.get("back") === "flow"
+      ? "/admin/production-flow" : null;
     setPlotModal({ row, swingPos: pos >= 0 ? pos : 0 });
     window.history.replaceState({}, "", window.location.pathname);
   }, [rows]);
@@ -19618,6 +19643,17 @@ export default function AdminProduction() {
       // this row is not the only thing that can change it.
       refreshAll();
     })();
+  }
+
+  // Close the plot map, and go back where the operator came from.
+  // Save and cancel both land here, which is the point: a draft
+  // edited from the flow page should put you back on the flow page
+  // either way.
+  function closePlot() {
+    setPlotModal(null);
+    const back = _backTo.current;
+    _backTo.current = null;
+    if (back) navigate(back);
   }
 
   function handleEdit(row, opts = {}) {
@@ -20826,13 +20862,13 @@ export default function AdminProduction() {
 
       {plotModal && (
         <Boundary name="Click-to-plot"
-                  onClose={() => setPlotModal(null)}>
+                  onClose={() => closePlot()}>
           <ClickToPlotModal
             row={plotModal.row}
             swingPos={plotModal.swingPos ?? null}
             addNew={!!plotModal.addNew}
             adminPassword={adminPassword}
-            onClose={() => setPlotModal(null)}
+            onClose={() => closePlot()}
             // The save runs after this modal has closed, so its progress
             // belongs on the card: greyed, named stage, held until the new
             // video is actually in.

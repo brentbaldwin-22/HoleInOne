@@ -34,6 +34,8 @@ const admin = readFileSync(
   join(ROOT, "backend/app/routers/admin.py"), "utf8");
 const flow = readFileSync(
   join(ROOT, "backend/app/routers/production_flow.py"), "utf8");
+const prod = readFileSync(
+  join(ROOT, "frontend/src/pages/AdminProduction.jsx"), "utf8");
 
 console.log("\n1. the run's status fields are the runner's own");
 // The shape the background runner initialises and maintains.
@@ -215,6 +217,12 @@ console.log("\n3f. the page is a table: one row per recording");
         /x\.long_upload_id === uid/.test(page));
   // A RECORDING WITH NO CUTS STILL GETS A ROW, and the cell says so
   // rather than collapsing and pulling the row out of alignment.
+  // THE RECORDING SITS AGAINST A CELL AS TALL AS ITS TALLEST
+  // NEIGHBOUR -- four cuts, say -- so it reads as the heading of the
+  // row rather than a card at the top of a column of whitespace.
+  check("the recording is centred in its cell", /<Cell center /.test(page));
+  check("...and only that column is",
+        (page.match(/<Cell center/g) || []).length, 1);
   check("an empty cell says what is missing",
         /empty="no cuts"/.test(page) && /empty="no drafts"/.test(page));
   // AND A CLIP WHOSE RECORDING IS OFF THIS PAGE still gets a row --
@@ -242,7 +250,7 @@ console.log("\n3g. the raw card says what the recording became");
         /swing \$\{c\.cut_idx \+ 1\}/.test(page));
 }
 
-console.log("\n3g2. the timings are one switch, off by default");
+console.log("\n3g2. the timings belong to a recording, and start hidden");
 {
   // A dozen rows of seconds under every recording is detail you want
   // twice and read past the rest of the time.
@@ -250,15 +258,24 @@ console.log("\n3g2. the timings are one switch, off by default");
     .test(page));
   check("...and renders nothing without it",
         /if \(!show \|\| !phases\?\.length\) return null/.test(page));
-  check("the switch starts off",
-        /useState\(false\);\n\s*\/\/ Off by default|const \[showTimings, setShowTimings\] = useState\(false\)/
-          .test(page));
-  // One control: the declaration plus exactly one place that flips
-  // it. A per-card toggle would be several.
-  check("one control, not one per card",
-        (page.match(/setShowTimings\(\(v\) => !v\)/g) || []).length, 1);
-  check("...and it is labelled both ways",
-        /showTimings \? "hide timings" : "show timings"/.test(page));
+  // PER RECORDING, NOT PER PAGE. One switch at the top turned on a
+  // dozen rows of seconds under every row at once, which is not how
+  // the question arrives: it is asked of the one run that was slow.
+  check("the state is keyed by recording",
+        /const \[timingsFor, setTimingsFor\] = useState\(\{\}\)/.test(page));
+  check("the button toggles only its own recording",
+        /\[r\.id\]: !t\[r\.id\]/.test(page));
+  check("...and is labelled both ways",
+        /timingsFor\[r\.id\] \? "hide timings" : "show timings"/.test(page));
+  // ONLY A FINISHED RUN HAS TIMINGS, so only those rows get a button.
+  // The BUTTON, not the state declaration, which naturally comes
+  // first. Only a finished run has timings, so only those rows
+  // should carry one.
+  check("the button lives inside the finished-run block",
+        page.indexOf("run?.report && (")
+        < page.indexOf("setTimingsFor((t) =>"));
+  check("and there is no page-wide switch left",
+        /setShowTimings/.test(page), false);
 }
 
 console.log("\n3h. a re-run starts over rather than adding to the pile");
@@ -269,6 +286,23 @@ console.log("\n3h. a re-run starts over rather than adding to the pile");
         && /out\["cuts"\] \+= 1/.test(flow));
   check("and nothing is left pointing at a deleted cut",
         /c\.audio_cut_id = None/.test(flow));
+}
+
+console.log("\n3i. editing a draft comes back to the flow");
+{
+  // Arriving from the flow and being left on Production afterwards is
+  // a dead end: the operator came to edit one draft and has to find
+  // their way back to the page they were working on.
+  check("the link says where it came from", /&back=flow/.test(page));
+  check("Production reads it", /q\.get\("back"\) === "flow"/.test(prod));
+  check("...remembering it before the query string is cleared",
+        prod.indexOf('q.get("back")') < prod.indexOf("replaceState"));
+  check("both closers go through one place",
+        (prod.match(/onClose=\{\(\) => closePlot\(\)\}/g) || []).length, 2);
+  check("...which navigates back when that is where we came from",
+        /if \(back\) navigate\(back\)/.test(prod));
+  check("and clears it, so a later close does not jump",
+        /_backTo\.current = null;/.test(prod));
 }
 
 console.log("\n4. the cuts column prints fields the cut row serves");
@@ -289,8 +323,7 @@ console.log("\n6. and the deep link matches what Production listens for");
 // However the template is split, the link must carry both params.
 const to = /\/admin\/production\?edit=\$\{[\s\S]{0,60}?&clip=\$\{/.test(page);
 check("the flow links with edit= and clip=", to);
-const prod = readFileSync(
-  join(ROOT, "frontend/src/pages/AdminProduction.jsx"), "utf8");
+
 check("Production reads edit=", /q\.get\("edit"\)/.test(prod));
 check("...and clip=", /q\.get\("clip"\)/.test(prod));
 check("...and opens the same plot map an Edit button does",

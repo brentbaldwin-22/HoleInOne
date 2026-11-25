@@ -38171,6 +38171,43 @@ def _detach_clip_refs(db, clip_ids) -> dict:
     return out
 
 
+def _frames_disagree(impact_f, launch_f, lo, hi, fps):
+    """Is this swing's impact frame outside its own clip, or after it?
+
+    None when the two agree. Otherwise a sentence saying how badly,
+    stored on the swing and shown by the wizard.
+
+    TWO WAYS IT GOES WRONG, and they are different faults:
+
+      the impact is OUTSIDE the window the clip was cut from -- the
+      clip does not contain the strike it claims to be of;
+
+      the launch is BEFORE the impact -- the ball left before it was
+      hit, which is impossible and means the ascent chain belongs to
+      another swing.
+
+    Both were silent. A clip can be produced, rendered, overlaid and
+    delivered while its own record says the two are minutes apart.
+    """
+    try:
+        if impact_f is None:
+            return None
+        _i, _l = int(impact_f), int(launch_f)
+        _fps = float(fps) or 30.0
+    except (TypeError, ValueError):
+        return None
+    if _l < _i:
+        return ("the ball was first seen leaving at f%d, %.2fs BEFORE the "
+                "impact at f%d — a ball cannot leave before it is struck, "
+                "so this ascent chain is most likely another swing's"
+                % (_l, (_i - _l) / _fps, _i))
+    if not (lo <= _i <= hi):
+        return ("the impact at f%d is outside the frames this clip was "
+                "cut from (f%d-f%d), so the clip does not contain the "
+                "strike it is a record of" % (_i, lo, hi))
+    return None
+
+
 def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                      hole_number=None, end_green_sec=None,
                      landing=None, replace=True,
@@ -39529,6 +39566,29 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                                  if sw.get("impact_frame") is not None
                                  else launch_f),
                 "launch_frame": launch_f,
+                # ── THE TWO FRAMES, CHECKED AGAINST EACH OTHER ──────
+                #
+                # The window above is built from the LAUNCH frame and
+                # the impact comes from step 1, so the record can come
+                # out saying the ball left before it was struck -- and
+                # nothing read it back. On #1916 the clip covered
+                # f1527-f1781 with an impact of f1920: a launch four
+                # and a half seconds BEFORE the strike, which is not a
+                # late ascent or a loose gate, it is a chain belonging
+                # to some other swing.
+                #
+                # The wizard then opens on a window its own impact
+                # frame is outside of, with no dots in it, and the
+                # operator is left comparing two numbers with nothing
+                # saying they disagree.
+                #
+                # Recorded, not corrected: which of the two is wrong is
+                # a question about the ascent search, and quietly
+                # moving one to agree with the other would destroy the
+                # evidence for answering it.
+                "frames_disagree": _frames_disagree(
+                    sw.get("impact_frame"), launch_f,
+                    int(round(t0 * fps)), int(round(t1 * fps)), fps),
                 "ball": {"x": int(round(float(ball[0]))),
                          "y": int(round(float(ball[1])))},
                 "tracer_url": _url,

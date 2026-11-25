@@ -124,11 +124,16 @@ function HeadCell({ title, unit, count, blurb }) {
 }
 
 /** One cell of a recording's row: its cards, or a visible nothing. */
-function Cell({ children, empty, live }) {
+function Cell({ children, empty, live, center }) {
   const has = Array.isArray(children)
     ? children.some(Boolean) : !!children;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8,
+                  // The recording sits against a cell as tall as its
+                  // tallest neighbour -- four cuts, say -- and reads
+                  // as the heading of the row rather than a card that
+                  // happens to be at the top of it.
+                  justifyContent: center ? "center" : "flex-start",
                   padding: "8px", borderTop: "1px solid var(--line)",
                   borderLeft: "1px solid var(--line)", minWidth: 0 }}>
       {live}
@@ -199,8 +204,12 @@ export default function AdminProductionFlow() {
   const [acting, setActing] = useState(null);
   const [runs, setRuns] = useState({});       // uploadId -> status blob
   const [liveDrafts, setLiveDrafts] = useState(null);
-  // Off by default: see Phases.
-  const [showTimings, setShowTimings] = useState(false);
+  // PER RECORDING, AND OFF. One switch at the top turned on a dozen
+  // rows of seconds under every row at once, which is not how the
+  // question arrives: it is asked of the one run that was slow. Only
+  // a run that has finished has any timings to show, so only those
+  // rows carry the button.
+  const [timingsFor, setTimingsFor] = useState({});
   const [viewer, setViewer] = useState(null);
   const [focus, setFocus] = useState(0);      // which recording, 0 = all
   const polling = useRef(new Set());
@@ -382,8 +391,14 @@ export default function AdminProductionFlow() {
               {run.report.reason}
             </div>
           )}
+          <button type="button" className="btn ghost small"
+                  style={{ marginTop: 5, width: "100%" }}
+                  onClick={() => setTimingsFor((t) => ({
+                    ...t, [r.id]: !t[r.id] }))}>
+            {timingsFor[r.id] ? "hide timings" : "show timings"}
+          </button>
           <Phases phases={run.report.phases} total={run.report.total_sec}
-                  show={showTimings} />
+                  show={!!timingsFor[r.id]} />
         </>
       )}
       {(nCuts[r.id] || nDrafts[r.id] || nFinals[r.id]) ? (
@@ -478,7 +493,11 @@ export default function AdminProductionFlow() {
       <div className="tiny muted">{fmtWhen(c.captured_at)}</div>
       <div className="row" style={{ gap: 6, marginTop: 6, flexWrap: "wrap" }}>
         {/* The same editor Production opens for a produced clip. */}
-        <Link to={`/admin/production?edit=${c.long_upload_id}&clip=${c.id}`}>
+        {/* `back=flow` so cancel and save both return here rather
+            than leaving the operator on Production, which is not the
+            page they were working on. */}
+        <Link to={`/admin/production?edit=${c.long_upload_id}`
+                  + `&clip=${c.id}&back=flow`}>
           <button type="button" className="btn ghost small">edit</button>
         </Link>
         <button type="button" className="btn ghost small"
@@ -624,12 +643,6 @@ export default function AdminProductionFlow() {
                 showing recording #{focus} — show all
               </button>
             )}
-            <button type="button"
-                    className={showTimings ? "btn small" : "btn ghost small"}
-                    title="the phase-by-phase clock on every run"
-                    onClick={() => setShowTimings((v) => !v)}>
-              {showTimings ? "hide timings" : "show timings"}
-            </button>
             <button type="button" className="btn ghost small" onClick={load}>
               refresh
             </button>
@@ -689,7 +702,7 @@ export default function AdminProductionFlow() {
           return (
             <Fragment key={uid}>
               {/* 1. the recording */}
-              <Cell empty="this recording is gone from the list">
+              <Cell center empty="this recording is gone from the list">
                 {r ? rawCard(r, run, busy, on) : (
                   <div className="tiny muted">
                     <b>#{uid}</b> — not on this page of recordings
