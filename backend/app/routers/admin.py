@@ -13391,7 +13391,13 @@ def set_gate_tuning(
     """Tune this hole's gates. Body: {"gates": {key: number, ...}}.
 
     A key set to null is cleared back to the default; `{"gates": {}}`
-    clears the hole entirely. Only values that DIFFER from the current
+    clears the hole entirely.
+
+    `"merge": true` keeps every gate the body does NOT mention. For a
+    caller that edits one FAMILY of gates -- the per-tee audio panel,
+    the preset writer -- because without it a save about audio threw
+    away the hole's ascent cone and ball contrast, silently, and the
+    loss only showed up as a produce going wrong weeks later. Only values that DIFFER from the current
     defaults are stored, so raising a default later lifts every untuned
     hole with it rather than leaving them pinned to a copy of today's
     number.
@@ -13449,6 +13455,30 @@ def set_gate_tuning(
     _clean = _d3.gates_diff(_keep)
 
     store = dict(course.gate_tuning or {})
+    # ── MERGE, FOR A SAVE THAT ONLY KNOWS ABOUT SOME GATES ──────────
+    #
+    # The default is REPLACE, because the hole's editor shows every
+    # gate and clearing one has to mean something.
+    #
+    # But an editor that shows only the AUDIO gates -- the per-tee
+    # panel, and the preset writer behind the sandbox -- posts only
+    # those, and a replace then threw away the hole's ascent cone, its
+    # ball contrast and everything else it had been tuned with.
+    # Silently, on a save the operator thought was about audio. The
+    # loss is invisible until a produce comes out wrong weeks later
+    # and nothing in the history says a gate was ever set.
+    #
+    # With `merge`, keys not mentioned are left exactly as they were
+    # and an explicit null still clears the one it names.
+    _merge = bool((payload or {}).get("merge"))
+    if _merge:
+        _prev = dict(store.get(key) or {})
+        _prev.pop("cutter", None)
+        for _k, _v in _in.items():
+            if _v is None:
+                _prev.pop(_k, None)
+        _prev.update(_clean)
+        _clean = _prev
     # THE CUTTER SURVIVES A GATE SAVE, and vice versa. They live under
     # one key, so rebuilding that key from the gates alone would clear
     # the choice every time somebody nudged a threshold -- the same
@@ -16165,7 +16195,11 @@ def apply_audio_gate_preset(
     # "apply and watch" is the default. A preset that armed itself
     # would change what a course cuts the moment somebody looked at it.
     gates["audio1_armed%s" % _suffix] = 1.0 if arm else 0.0
-    return set_gate_tuning(upload_id, {"gates": gates}, db=db)
+    # MERGE: this writes the AUDIO gates for one tee box and knows
+    # nothing about the hole's ascent or ball gates, which a replace
+    # would throw away.
+    return set_gate_tuning(upload_id, {"gates": gates, "merge": True},
+                           db=db)
 
 
 @router.post("/long-uploads/{upload_id}/audio-measure-at")

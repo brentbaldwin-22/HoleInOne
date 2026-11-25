@@ -1139,10 +1139,17 @@ export const api = {
   // (today's behaviour) and "none". Filed with the gates because the
   // audio cutter is tuned by them. Omit it to leave the choice alone;
   // gates and cutter can each be saved without clearing the other.
-  setGateTuning: (key, uploadId, gates, cutter) =>
+  // `merge` keeps every gate the body does not mention — for an
+  // editor that shows only one FAMILY of gates. Without it a save
+  // about audio threw away the hole's ascent cone and ball contrast.
+  setGateTuning: (key, uploadId, gates, cutter, merge) =>
     request(`/api/admin/long-uploads/${uploadId}/gate-tuning`, {
       method: "POST",
-      body: cutter === undefined ? { gates } : { gates, cutter },
+      body: {
+        gates,
+        ...(cutter === undefined ? {} : { cutter }),
+        ...(merge ? { merge: true } : {}),
+      },
       adminPassword: key,
     }),
   saveHolePin: (key, uploadId, payload = {}) =>
