@@ -13337,6 +13337,9 @@ def get_gate_tuning(upload_id: int, db: Session = Depends(get_db)):
 # of an operator as its column name.
 _AUDIO_GATE_LABELS = {
     "audio_min_separation_sec": "seconds between strikes",
+    # NAMED FOR WHAT IT DOES, not for the field it lives in. "audio
+    # lag" invites "lag behind what?"; this says it.
+    "audio_lag_sec": "audio lag — seconds the peak trails the strike",
 }
 
 
@@ -13369,9 +13372,26 @@ def get_audio_gates(upload_id: int, db: Session = Depends(get_db)):
     zone = _trigger_zone(db, row)
     live = _d3.resolve_gates(over, zone=zone)
 
-    # The three the detector itself reads, then every audio1 gate.
+    # The three the detector itself reads, then every audio1 gate,
+    # then the timing values -- which are not thresholds at all.
     names = list(_d3.DETECTOR_AUDIO_GATES)
     names += [k for k in _d3.AUDIO_GATE_FIELDS if k not in names]
+    # ── THE LAG BELONGS ON THIS PANEL ───────────────────────────────
+    #
+    # `audio_lag_sec` has been a stored, per-tee-box gate all along
+    # and there was nowhere to see or set it. It decides WHICH FRAME a
+    # heard strike becomes -- the peak less the lag is what the
+    # produce cuts around when the ball's own departure cannot be
+    # measured -- so it is the number behind every "why did it produce
+    # frame 2009" question, and it was the one number on this screen
+    # that could only be changed by hand in the database.
+    #
+    # NOT A THRESHOLD, so it is marked as its own group rather than
+    # dropped in with the audio1 gates: arming does not govern it,
+    # and zero is a real value (the peak IS the strike) rather than
+    # "off".
+    _TIMING = ("audio_lag_sec",)
+    names += [k for k in _TIMING if k not in names]
 
     out = []
     for name in names:
@@ -13381,11 +13401,19 @@ def get_audio_gates(upload_id: int, db: Session = Depends(get_db)):
         _dflt, _lo, _hi, _int = spec
         _zoned = over.get("%s@%s" % (name, zone)) if zone is not None else None
         _plain = over.get(name)
+        _group = ("detector" if name in _d3.DETECTOR_AUDIO_GATES
+                  else "timing" if name in _TIMING else "audio1")
         out.append({
             "name": name,
+            "group": _group,
+            "unit": "seconds" if name.endswith("_sec") else None,
             "label": (_d3.AUDIO_GATE_FIELDS.get(name)
                       or (None, None, _AUDIO_GATE_LABELS.get(name, name)))[2],
-            "cmp": (_d3.AUDIO_GATE_FIELDS.get(name) or ("min",))[0],
+            # A TIMING VALUE IS NOT A FLOOR OR A CEILING. "min audio
+            # lag 0.15s" is not what the number means and reads as a
+            # threshold something has to clear.
+            "cmp": (None if _group == "timing"
+                    else (_d3.AUDIO_GATE_FIELDS.get(name) or ("min",))[0]),
             "value": live.get(name),
             "default": _dflt, "lo": _lo, "hi": _hi,
             "source": ("tee box" if _zoned is not None
@@ -13393,9 +13421,14 @@ def get_audio_gates(upload_id: int, db: Session = Depends(get_db)):
             # THE DETECTOR'S OWN THREE ARE NOT OPTIONAL. Zero is off
             # for an audio1 gate and out of range for these, so the
             # editor must not offer the same switch for both.
-            "detector_gate": name in _d3.DETECTOR_AUDIO_GATES,
-            "off_is": _audio_gate_off(name) if name in _d3.AUDIO_GATE_FIELDS
-            else None,
+            # `detector_gate` IS WHAT THE PANEL HAS ALWAYS READ to
+            # decide "no off switch, bites immediately". A timing value
+            # is both of those things too, so it rides the same flag
+            # and `group` is what separates the two headings.
+            "detector_gate": _group != "audio1",
+            "off_is": (_audio_gate_off(name)
+                       if _group == "audio1"
+                       and name in _d3.AUDIO_GATE_FIELDS else None),
         })
 
     _armed = bool(float(live.get("audio1_armed") or 0.0) >= 1.0)
@@ -13414,6 +13447,9 @@ def get_audio_gates(upload_id: int, db: Session = Depends(get_db)):
         "sentence": _gs({
             "gates_used": {k: float(live[k])
                            for k in _d3.DETECTOR_AUDIO_GATES},
+            # THE SAME SENTENCE THE RUN PRINTS, so the panel and the
+            # phase line cannot describe the same hole differently.
+            "audio_lag_sec": float(live.get("audio_lag_sec") or 0.0),
             "audio1_armed": _armed, "audio1_on": _on}),
         "presets": _d3.AUDIO_TEE_PRESETS,
     }
@@ -28397,6 +28433,36 @@ def _find_test_cut(db, row, cutter, gates):
         return {"_error": "%s: %s" % (type(exc).__name__, exc)}
 
 
+def _audio_lag_sec(db, row, hole_number=None) -> float:
+    """How long after the strike the microphone's peak lands, in seconds.
+
+    THE ONE ANSWER TO IT. The peak is the strike plus whatever the
+    mic, the encoder and the ring buffer add, so every path that turns
+    a heard second into a struck frame subtracts this. Three places
+    did it with three copies of the same six lines, which is three
+    places that can disagree about which tee box a recording came from
+    and then date-stamp a clip from a frame nobody else would have
+    picked.
+
+    Stored as the `audio_lag_sec` gate, per hole and per tee box, so it
+    resolves through the same resolver the cutter's thresholds do.
+
+    Zero on any failure, and said in the log rather than raised: a lag
+    that cannot be read must not cost the cut. Zero is also the
+    default, and it is an honest one -- it means "the peak IS the
+    strike", which is what an untuned hole is asserting.
+    """
+    try:
+        from ..services import debug3 as _ld3
+        _over, _, _ = _gate_tuning_for(db, row, hole_number)
+        return float(_ld3.resolve_gates(
+            _over, zone=_trigger_zone(db, row))["audio_lag_sec"])
+    except Exception as exc:  # noqa: BLE001
+        log.debug("audio lag: none for upload %s (%s)",
+                  getattr(row, "id", None), exc)
+        return 0.0
+
+
 def _ascent_windows(db, row, src_path, fps, rep=None):
     """Frames worth searching for a ball leaving, or None for all of them.
 
@@ -29288,15 +29354,7 @@ def _ascent_cutter_swings(db, row, src_path, fps, rep,
                       "no swings to work from" % _cut_why)
         return out
 
-    from ..services import debug3 as _ld3
-    _lag = 0.0
-    try:
-        _lg, _, _ = _gate_tuning_for(db, row, hole_number)
-        _lag = float(_ld3.resolve_gates(
-            _lg, zone=_trigger_zone(db, row))["audio_lag_sec"])
-    except Exception as _lx:  # noqa: BLE001
-        log.debug("step 1: no audio lag for upload %s (%s)",
-                  getattr(row, "id", None), _lx)
+    _lag = _audio_lag_sec(db, row, hole_number)
     out["lag_sec"] = round(_lag, 3)
 
     _dbg: dict = {}
@@ -33121,14 +33179,7 @@ def _ascent_ai_launch(db, row, src_path, fps, rep, roi, anchor=None) -> dict:
                     "impact — so there is no frame to zoom in on"
                     % _cut_why)
                 return out
-            _lag = 0.0
-            try:
-                from ..services import debug3 as _ld3
-                _lg, _, _ = _gate_tuning_for(db, row)
-                _lag = float(_ld3.resolve_gates(
-                    _lg, zone=_trigger_zone(db, row))["audio_lag_sec"])
-            except Exception as _lx:  # noqa: BLE001
-                log.debug("ai launch: no lag gate (%s)", _lx)
+            _lag = _audio_lag_sec(db, row)
             _ct = _cutter_times(_cut, db, row, src_path,
                                 float(fps or 30.0), {})
             if not _ct:

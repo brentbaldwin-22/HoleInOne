@@ -266,8 +266,25 @@ _hits = subprocess.run(
 _code = [h for h in _hits
          if "debug3.py" not in h and not h.split(":", 2)[-1].strip()
          .startswith("#")]
-check("it is read only where the ball check runs",
-      all("admin.py" in h for h in _code), True)
+# ── WHERE IT MAY BE READ, AND WHY THOSE TWO PLACES ─────────────────
+#
+# `admin.py`, because that is where the ball check turns a heard
+# second into a struck frame.
+#
+# `production_flow.py`, because the flow STORES it on each cut row and
+# PRINTS it in the run's gates sentence. Neither is detection: the cut
+# keeps the lag it was made with so that changing the lag tomorrow
+# cannot rewrite what an earlier cut was made with, and the sentence
+# says the number out loud so that a lag of zero -- an assertion that
+# the microphone's peak IS the strike -- stops being invisible.
+#
+# The guard that matters is unchanged and is the one below: the lag
+# must never reach a detector's own module, where it could change what
+# is FOUND rather than which frame a find is called.
+_ALLOWED = ("admin.py", "production_flow.py")
+_stray = [h for h in _code if not any(a in h for a in _ALLOWED)]
+check("it is read only where the ball check runs, or where the "
+      "flow records and reports it", _stray, [])
 check("  and never in a detector's own module",
       any("d3.py" in h or "debug2.py" in h for h in _code), False)
 

@@ -81,6 +81,44 @@ def _clip_row(c: VideoClip, course_name=None, cut_idx=None) -> dict:
     }
 
 
+def _cut_frames(k: AudioCut) -> dict:
+    """The cut's own seconds, said in frames.
+
+    THE QUESTION THIS ANSWERS. "The produce used impact frame 2009 --
+    what did the audio cut say?" There was no way to ask it: the cut
+    is recorded in seconds (33.48s) and the produce reports frames
+    (f2009), and converting between them needs the recording's frame
+    rate and the hole's audio lag, neither of which was anywhere near
+    the row. So the two numbers could not be compared, and a produce
+    working off a frame the audio never pointed at looked exactly like
+    one working off the right frame.
+
+    `peak_frame` is the microphone's peak. `impact_frame` is that less
+    the hole's audio lag, which is the frame the produce anchors on
+    when the ball's own departure cannot be measured -- so when the
+    two agree, the produce used the audio's answer, and when they
+    disagree something measured a different one and should say so.
+
+    Empty for a cut recorded before the frame rate was kept, rather
+    than guessed at 30 or 60: a frame number off by a factor of two is
+    worse than no frame number.
+    """
+    _fps = float(k.fps or 0.0)
+    _pk = k.peak_time_sec
+    if _fps <= 0 or _pk is None:
+        return {"fps": k.fps, "lag_sec": k.lag_sec,
+                "peak_frame": None, "impact_frame": None,
+                "lag_frames": None}
+    _lag = float(k.lag_sec or 0.0)
+    return {
+        "fps": round(_fps, 2),
+        "lag_sec": round(_lag, 3),
+        "peak_frame": int(round(float(_pk) * _fps)),
+        "lag_frames": int(round(_lag * _fps)),
+        "impact_frame": int(round(max(0.0, float(_pk) - _lag) * _fps)),
+    }
+
+
 def _cut_row(k: AudioCut, base: str) -> dict:
     def _u(fn):
         return f"{base}/uploads/clips/{fn}" if fn else None
@@ -91,6 +129,7 @@ def _cut_row(k: AudioCut, base: str) -> dict:
         "start_sec": k.start_sec, "end_sec": k.end_sec,
         "detector": k.detector, "trigger_zone": k.trigger_zone,
         "ratio": k.ratio, "attack_ms": k.attack_ms,
+        **_cut_frames(k),
         "tee_url": _u(k.tee_filename), "green_url": _u(k.green_filename),
         "duration_sec": k.duration_sec, "size_mb": k.size_mb,
         "produced": bool(k.produced), "produce_error": k.produce_error,
@@ -193,9 +232,16 @@ def flow_clips(stage: str = "draft", broadcast: str = "",
     names = {c.id: c.name for c in db.query(Course).all()}
     # One query for the page, not one per clip.
     cut_ids = [c.audio_cut_id for c in rows if c.audio_cut_id]
-    idxs = (dict(db.query(AudioCut.id, AudioCut.idx)
-                 .filter(AudioCut.id.in_(cut_ids)).all())
-            if cut_ids else {})
+    # THE WHOLE ROW, NOT JUST THE INDEX. The draft's card has to be
+    # able to say what the AUDIO thought the impact frame was, beside
+    # the frame the produce used -- "it identified 2009 instead of
+    # 1920, what did the audio cut say?" was unanswerable from this
+    # page, and the answer decides whether the produce is wrong or the
+    # thing that measured a different frame is.
+    _cuts = (db.query(AudioCut).filter(AudioCut.id.in_(cut_ids)).all()
+             if cut_ids else [])
+    idxs = {k.id: k.idx for k in _cuts}
+    _cut_by_id = {k.id: k for k in _cuts}
     # ── WHICH FRAMES EACH DRAFT WAS CUT FROM ───────────────────────
     #
     # The clip's own record of the window it covers and the impact it
@@ -220,6 +266,33 @@ def flow_clips(stage: str = "draft", broadcast: str = "",
         _r["cut_frames"] = ([_sw.get("start_frame"), _sw.get("end_frame")]
                             if _sw.get("start_frame") is not None else None)
         _r["impact_frame"] = _sw.get("impact_frame")
+        # WHERE THAT FRAME CAME FROM -- measured off the ball, or the
+        # audio peak less the lag. Two different kinds of evidence
+        # that looked identical on screen.
+        _r["impact_from"] = _sw.get("impact_from")
+        # ── AND WHAT THE AUDIO SAID, FOR COMPARISON ─────────────────
+        _k = _cut_by_id.get(c.audio_cut_id)
+        _kf = _cut_frames(_k) if _k is not None else {}
+        _r["audio_impact_frame"] = _kf.get("impact_frame")
+        _r["audio_peak_sec"] = getattr(_k, "peak_time_sec", None)
+        _r["audio_lag_sec"] = _kf.get("lag_sec")
+        _r["fps"] = _kf.get("fps")
+        # ONE SENTENCE, ONLY WHEN THEY DIFFER. Agreement needs no
+        # words; a gap of 89 frames is a second and a half of golf
+        # swing and is the whole story of the clip.
+        _r["impact_differs"] = None
+        _ai, _pi = _r["audio_impact_frame"], _sw.get("impact_frame")
+        if _ai is not None and _pi is not None and int(_ai) != int(_pi):
+            _d = int(_pi) - int(_ai)
+            _r["impact_differs"] = (
+                "the audio put the strike at f%d; this was produced from "
+                "f%d, %d frame%s %s (%.2fs) — %s"
+                % (_ai, _pi, abs(_d), "" if abs(_d) == 1 else "s",
+                   "later" if _d > 0 else "earlier",
+                   abs(_d) / float(_kf.get("fps") or 30.0),
+                   str(_sw.get("impact_from")
+                       or "nothing on the swing says where f%d came from"
+                       % _pi)))
         # A DRAFT WITH NO LINE ON IT, and why. The clip is cut from
         # the audio impact whether or not a ball was found in the sky;
         # saying which is which is what stops a tracerless draft
@@ -324,7 +397,8 @@ def broadcast_clip(clip_id: int, on: bool = Form(True),
 def record_cut(db, *, upload, idx, peak_time_sec=None, start_sec=None,
                end_sec=None, detector=None, zone=None, ratio=None,
                attack_ms=None, tee_filename=None, green_filename=None,
-               duration_sec=None, size_mb=None) -> AudioCut | None:
+               duration_sec=None, size_mb=None, fps=None,
+               lag_sec=None) -> AudioCut | None:
     """Keep one swing-sized cut. Never raises.
 
     IDEMPOTENT ON (upload, idx), because a recording gets re-cut
@@ -362,6 +436,13 @@ def record_cut(db, *, upload, idx, peak_time_sec=None, start_sec=None,
                        ("attack_ms", attack_ms),
                        ("duration_sec", duration_sec),
                        ("size_mb", size_mb),
+                       # AS THEY WERE WHEN THE CUT WAS MADE. Kept on the
+                       # row rather than resolved on read, so changing
+                       # the hole's lag tomorrow does not rewrite what
+                       # this cut was made with -- which is the only way
+                       # "the lag was 0.15s then and is 0.30s now" can
+                       # be told from "the lag has always been 0.30s".
+                       ("fps", fps), ("lag_sec", lag_sec),
                        ("tee_filename", tee_filename),
                        ("green_filename", green_filename)):
             if _v is not None:
@@ -582,8 +663,8 @@ def flow_run(row, src_path, db, progress=None) -> dict:
 
     from ..services.video import cut_segment
     from .admin import (
-        CLIPS_DIR, _clip_url_for, _cutter_hits, _local_green, _trigger_zone,
-        probe_fps,
+        CLIPS_DIR, _audio_lag_sec, _clip_url_for, _cutter_hits, _local_green,
+        _trigger_zone, probe_fps,
     )
 
     rep: dict = {"ok": False, "upload_id": row.id, "phases": [],
@@ -615,6 +696,15 @@ def flow_run(row, src_path, db, progress=None) -> dict:
         _zone = _trigger_zone(db, row)
     except Exception:  # noqa: BLE001
         pass
+    # THE SAME LAG THE PRODUCE WILL SUBTRACT, read once here and kept
+    # on every cut row. Without it the cuts column reports a second
+    # and the drafts column reports a frame, and the only way to ask
+    # whether they are the same instant was to know this hole's lag
+    # and the recording's frame rate by heart.
+    _lag = _audio_lag_sec(db, row)
+    # ONTO THE DEBUG THE SENTENCE IS BUILT FROM, so the audio phase
+    # reports it beside the thresholds.
+    dbg["audio_lag_sec"] = round(float(_lag), 3)
     _t_audio = _time.monotonic() - _t
 
     if not hits:
@@ -704,10 +794,15 @@ def flow_run(row, src_path, db, progress=None) -> dict:
                           if _tee_ok else None),
             green_filename=("%s/%s" % (FLOW_CUTS_SUBDIR, _green_name)
                             if _green_ok else None),
-            duration_sec=round(_b - _a, 2), size_mb=_size)
+            duration_sec=round(_b - _a, 2), size_mb=_size,
+            fps=round(float(fps), 3), lag_sec=round(float(_lag), 3))
         rep["cuts"].append({
             "idx": idx, "peak_time_sec": round(float(_peak), 2),
             "start_sec": round(_a, 2), "end_sec": round(_b, 2),
+            "fps": round(float(fps), 2), "lag_sec": round(float(_lag), 3),
+            "peak_frame": int(round(float(_peak) * float(fps))),
+            "impact_frame": int(round(
+                max(0.0, float(_peak) - float(_lag)) * float(fps))),
             "ratio": _of("ratio"), "attack_ms": _of("attack_ms"),
             "tee_url": _clip_url_for("%s/%s" % (FLOW_CUTS_SUBDIR, _tee_name))
             if _tee_ok else None,
@@ -892,6 +987,19 @@ def _gates_sentence(dbg) -> str:
     bits = ["×%g ratio" % g.get("audio_min_ratio", 0),
             "≤%gms attack" % g.get("audio_max_attack_ms", 0),
             "%gs apart" % g.get("audio_min_separation_sec", 0)]
+    # ── AND THE LAG, WHICH IS NOT A THRESHOLD BUT DECIDES A FRAME ───
+    #
+    # Said out loud, including when it is zero. A lag of zero means
+    # "the microphone's peak IS the strike", which is an assertion
+    # about this hole's rig and not a neutral absence -- and it is the
+    # whole reason a produce can land on the peak frame and look like
+    # it ignored the audio.
+    _lag = (dbg or {}).get("audio_lag_sec")
+    if _lag is not None:
+        bits.append("%.2fs audio lag%s"
+                    % (float(_lag),
+                       " (the peak is taken as the strike)"
+                       if float(_lag) == 0.0 else ""))
     on = (dbg or {}).get("audio1_on") or []
     if not on:
         bits.append("no audio1 gate is set — these are the defaults, "

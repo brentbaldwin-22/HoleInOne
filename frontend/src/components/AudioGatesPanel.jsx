@@ -123,8 +123,17 @@ export default function AudioGatesPanel({ uploadId, adminPassword, onSaved }) {
   }
   if (!data) return <div className="tiny muted">reading the gates…</div>;
 
-  const detector = data.gates.filter((g) => g.detector_gate);
-  const audio1 = data.gates.filter((g) => !g.detector_gate);
+  // THREE GROUPS, NOT TWO. `group` is the server's own split;
+  // `detector_gate` is the older flag and still means "no off switch,
+  // and it bites as soon as it is saved", which is true of the timing
+  // values too -- so grouping on it alone put the audio lag under the
+  // detector's thresholds, where "min audio lag" reads as something a
+  // strike has to clear.
+  const of = (k) => data.gates.filter(
+    (g) => (g.group || (g.detector_gate ? "detector" : "audio1")) === k);
+  const detector = of("detector");
+  const audio1 = of("audio1");
+  const timing = of("timing");
 
   // Anything on screen that the server does not have yet.
   const changed = !onServer ? [] : [
@@ -152,7 +161,11 @@ export default function AudioGatesPanel({ uploadId, adminPassword, onSaved }) {
       )}
       <span style={{ flex: 1,
                      opacity: (!g.detector_gate && off[g.name]) ? 0.55 : 1 }}>
-        {g.cmp === "max" ? "max " : "min "}{g.label}
+        {/* A TIMING VALUE HAS NO DIRECTION. `cmp` is null for those
+            and the prefix is left off rather than defaulting to
+            "min", which is what it used to do for anything that was
+            not a max. */}
+        {g.cmp === "max" ? "max " : g.cmp === "min" ? "min " : ""}{g.label}
         {/* WHERE THE VALUE IN FORCE CAME FROM. "1.3" alone does not
             say whether somebody chose it for this tee box or it is
             the number every untouched hole has. */}
@@ -227,6 +240,36 @@ export default function AudioGatesPanel({ uploadId, adminPassword, onSaved }) {
                       "repeat(auto-fill, minmax(230px, 1fr))" }}>
         {audio1.map(row)}
       </div>
+
+      {timing.length > 0 && (
+        <>
+          <div className="tiny" style={{ marginTop: 8, fontWeight: 600 }}>
+            Timing
+            <span className="muted" style={{ fontWeight: 400 }}>
+              {" "}· not a threshold — this decides which FRAME a heard
+              strike becomes
+            </span>
+          </div>
+          <div style={{ display: "grid", gap: "2px 14px", marginTop: 3,
+                        gridTemplateColumns:
+                          "repeat(auto-fill, minmax(230px, 1fr))" }}>
+            {timing.map(row)}
+          </div>
+          {/* WHY THIS NUMBER MATTERS, where it is set. The peak is the
+              strike plus whatever the mic, the encoder and the ring
+              buffer add; the produce cuts around the peak LESS this
+              whenever the ball's own departure cannot be measured. At
+              zero it is asserting that the peak IS the strike. */}
+          <div className="tiny muted" style={{ marginTop: 3 }}>
+            The cutter reports the microphone's peak, which lands after
+            the strike. Subtracting this gives the frame the clip is cut
+            around when the ball's own departure cannot be measured —
+            at 0 the peak is taken to be the strike itself. Each cut
+            keeps the lag it was made with, so changing this affects the
+            next run, not the rows above.
+          </div>
+        </>
+      )}
 
       <div className="row" style={{ gap: 10, marginTop: 8,
                                     alignItems: "center",

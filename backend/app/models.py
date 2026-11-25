@@ -1188,6 +1188,24 @@ class AudioCut(Base):
         Integer, nullable=True, index=True)
     ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     attack_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # ── THE PEAK AS A FRAME NUMBER, AND WHAT IT WAS SHIFTED BY ──────
+    #
+    # The cut is recorded in SECONDS, because that is what the
+    # microphone deals in. Everything downstream -- the produce, the
+    # tracer, the window on the card, every question an operator asks
+    # about a clip -- is in FRAMES. So "the cut is at 33.48s" and "the
+    # produce used f2009" were two numbers nobody could put side by
+    # side without knowing the recording's frame rate and the hole's
+    # audio lag, neither of which was on the row.
+    #
+    # Both are kept as they were AT CUT TIME, not resolved on read: a
+    # lag changed afterwards must not silently rewrite what an earlier
+    # cut was made with. That is the whole reason this is a column and
+    # not a computed field.
+    fps: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Seconds subtracted from the peak to get the strike. The hole's
+    # `audio_lag_sec` gate, resolved for this cut's tee box.
+    lag_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # BOTH ANGLES. Green is null when the pair had no green half, which
     # is a real and ordinary state — a tee-only cut is still a cut.
     tee_filename: Mapped[Optional[str]] = mapped_column(

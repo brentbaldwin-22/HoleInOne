@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useRef, useState }
   from "react";
 import { Link } from "react-router-dom";
 
+import AudioGatesPanel from "../components/AudioGatesPanel.jsx";
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
 import { api } from "../api.js";
 import { readAdminPassword } from "../adminAuth.js";
@@ -214,6 +215,13 @@ export default function AdminProductionFlow() {
   // a run that has finished has any timings to show, so only those
   // rows carry the button.
   const [timingsFor, setTimingsFor] = useState({});
+  // WHICH ROW'S GATES ARE OPEN. The same panel the long-upload page
+  // uses, mounted here because this is where the cut is STARTED --
+  // the thresholds and the audio lag that decide what the next run
+  // finds, and which frame it calls the strike, were only reachable
+  // from another page, so the answer to "why did it produce f2009"
+  // lived somewhere other than the button that produced it.
+  const [gatesFor, setGatesFor] = useState({});
   // {row, swingPos} while the edit wizard is open on this page.
   const [editing, setEditing] = useState(null);
   const [editErr, setEditErr] = useState(null);
@@ -434,6 +442,22 @@ export default function AdminProductionFlow() {
                   show={!!timingsFor[r.id]} />
         </>
       )}
+      {/* THE GATES AND THE LAG, BESIDE THE BUTTON THAT USES THEM.
+          Open for whichever recording is being looked at, not for the
+          page: these are per tee box, and showing one hole's numbers
+          over another hole's row is how a cut gets verified at a
+          threshold the cutter would never run at. */}
+      <button type="button" className="btn ghost small"
+              style={{ marginTop: 5, width: "100%" }}
+              title={"the thresholds and the audio lag the next run of "
+                     + "this recording will use"}
+              onClick={() => setGatesFor((t) => ({
+                ...t, [r.id]: !t[r.id] }))}>
+        {gatesFor[r.id] ? "hide gates & lag" : "gates & lag"}
+      </button>
+      {gatesFor[r.id] && (
+        <AudioGatesPanel uploadId={r.id} adminPassword={adminPassword} />
+      )}
       {(nCuts[r.id] || nDrafts[r.id] || nFinals[r.id]) ? (
         <button type="button"
                 className={on ? "btn small" : "btn ghost small"}
@@ -463,11 +487,39 @@ export default function AdminProductionFlow() {
                   style={{ marginLeft: 6 }}>no clip</span>}
       </div>
       <div className="tiny muted">
-        impact at {k.peak_time_sec?.toFixed?.(2) ?? "—"}s
+        {/* THE PEAK, NOT THE IMPACT. This said "impact at 33.48s",
+            which is the microphone's peak -- the strike plus whatever
+            the mic, the encoder and the ring buffer add. Calling it
+            the impact is how a lag of zero goes unnoticed. */}
+        peak at {k.peak_time_sec?.toFixed?.(2) ?? "—"}s
         {k.ratio != null ? ` · ×${Number(k.ratio).toFixed(1)}` : ""}
         {k.attack_ms != null
           ? ` · ${Number(k.attack_ms).toFixed(0)}ms attack` : ""}
       </div>
+      {/* ── AND THE SAME THING IN FRAMES ───────────────────────────
+          The cut is recorded in seconds and every produce question is
+          about frames, so "the cut is at 33.48s" and "it produced
+          f2009" could not be compared without knowing this
+          recording's frame rate and this hole's lag by heart. Both
+          are on the row now, as they were when the cut was made. */}
+      {k.peak_frame != null && (
+        <div className="tiny">
+          <span className="muted">f{k.peak_frame}</span>
+          {k.fps ? <span className="muted"> @ {k.fps}fps</span> : null}
+          {k.lag_frames ? (
+            <span className="muted">
+              {" "}· less {Number(k.lag_sec).toFixed(2)}s lag
+              {" "}({k.lag_frames}f) →{" "}
+              <b>strike f{k.impact_frame}</b>
+            </span>
+          ) : (
+            <span className="muted">
+              {" "}· lag 0.00s, so the strike is taken as{" "}
+              <b>f{k.impact_frame}</b>
+            </span>
+          )}
+        </div>
+      )}
       <div className="tiny muted">
         {k.start_sec?.toFixed?.(1)}s–{k.end_sec?.toFixed?.(1)}s
         {k.trigger_zone != null ? ` · ${zoneName(k.trigger_zone)}` : ""}
@@ -533,6 +585,35 @@ export default function AdminProductionFlow() {
         <div className="tiny muted">
           cut f{c.cut_frames[0]}–f{c.cut_frames[1]}
           {c.impact_frame != null && <> · impact f{c.impact_frame}</>}
+        </div>
+      )}
+      {/* ── WHOSE FRAME THAT IS ────────────────────────────────────
+          "It identified impact frame 2009 instead of 1920" is only
+          answerable next to what the AUDIO said. When the two agree
+          there is nothing to say and this stays quiet; when they
+          differ the gap is the whole story of the clip, so it is
+          spelled out in frames, in seconds, and with where the
+          produce's number came from. */}
+      {c.impact_differs ? (
+        <div className="tiny" style={{ marginTop: 2 }}>
+          <span className="pill small">impact moved</span>{" "}
+          <span className="muted">{c.impact_differs}</span>
+        </div>
+      ) : c.audio_impact_frame != null && c.impact_frame != null ? (
+        <div className="tiny muted" style={{ marginTop: 2 }}>
+          the audio put the strike at f{c.audio_impact_frame} too
+          {c.audio_peak_sec != null && (
+            <> (peak {Number(c.audio_peak_sec).toFixed(2)}s
+              {" "}less {Number(c.audio_lag_sec ?? 0).toFixed(2)}s lag)</>
+          )}
+        </div>
+      ) : null}
+      {/* AND HOW IT WAS ARRIVED AT, agreement or not: a frame measured
+          off the ball leaving its spot and one subtracted from a peak
+          are different kinds of evidence and looked identical. */}
+      {c.impact_from && (
+        <div className="tiny muted" style={{ marginTop: 2 }}>
+          {c.impact_from}
         </div>
       )}
       {c.no_tracer && (
