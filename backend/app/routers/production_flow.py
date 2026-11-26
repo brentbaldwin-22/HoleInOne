@@ -119,7 +119,7 @@ def _cut_frames(k: AudioCut) -> dict:
     }
 
 
-def _cut_row(k: AudioCut, base: str) -> dict:
+def _cut_row(k: AudioCut, base: str, zone_label=None) -> dict:
     def _u(fn):
         return f"{base}/uploads/clips/{fn}" if fn else None
     return {
@@ -128,6 +128,12 @@ def _cut_row(k: AudioCut, base: str) -> dict:
         "peak_time_sec": k.peak_time_sec,
         "start_sec": k.start_sec, "end_sec": k.end_sec,
         "detector": k.detector, "trigger_zone": k.trigger_zone,
+        # THE NAME, carried alongside the index for the same reason
+        # the raw row carries it: "Zone 2" is the rig's count and
+        # "middle" is what the operator drew. Passed in rather than
+        # looked up: a cut has no camera of its own, and asking per
+        # row would be a camera-event query per cut on the page.
+        "trigger_zone_label": zone_label,
         "ratio": k.ratio, "attack_ms": k.attack_ms,
         **_cut_frames(k),
         "tee_url": _u(k.tee_filename), "green_url": _u(k.green_filename),
@@ -340,8 +346,24 @@ def flow_cuts(upload_id: int = 0, produced: str = "", limit: int = 80,
     rows = (q.order_by(AudioCut.created_at.desc(), AudioCut.idx.asc())
             .offset(max(0, offset)).limit(max(1, min(200, limit))).all())
     base = settings.app_base_url
+    # ── ONE ZONE LOOKUP PER RECORDING, NOT PER CUT ──────────────────
+    #
+    # A cut has no camera of its own; its zone name comes from the
+    # recording's camera event. Four cuts of one recording asking
+    # separately is four identical queries for one answer.
+    from .admin import _trigger_zone_label
+    _labels: dict = {}
+    for _uid in {k.long_upload_id for k in rows if k.long_upload_id}:
+        _up = db.get(LongVideoUpload, _uid)
+        if _up is None:
+            continue
+        try:
+            _labels[_uid] = _trigger_zone_label(db, _up)
+        except Exception:  # noqa: BLE001
+            _labels[_uid] = None
     return {"offset": offset, "limit": limit,
-            "cuts": [_cut_row(k, base) for k in rows]}
+            "cuts": [_cut_row(k, base, _labels.get(k.long_upload_id))
+                     for k in rows]}
 
 
 @router.post("/clips/{clip_id}/accept")
@@ -530,7 +552,7 @@ def _raw_row(db, row, info_of) -> dict:
     angles — the two files are the thing being looked at, so they are
     URLs the console's own viewer can open rather than a download.
     """
-    from .admin import _clip_url_for, _trigger_zone
+    from .admin import _clip_url_for, _trigger_zone, _trigger_zone_label
 
     _tee, _green = None, None
     try:
@@ -539,12 +561,17 @@ def _raw_row(db, row, info_of) -> dict:
     except Exception as exc:  # noqa: BLE001
         log.warning("flow: no url for upload %s: %s", row.id, exc)
     _zone = None
+    _zone_label = None
     try:
         _zone = _trigger_zone(db, row)
+        # THE NAME, NOT JUST THE INDEX. "Zone 2" is the rig's count;
+        # the operator drew the box and typed "middle" on it.
+        _zone_label = _trigger_zone_label(db, row, _zone)
     except Exception:  # noqa: BLE001
         pass
     return {
         "id": row.id,
+        "trigger_zone_label": _zone_label,
         "course_id": row.course_id,
         "hole_number": getattr(row, "hole_number", None),
         "captured_at": (row.base_captured_at.isoformat()
@@ -566,15 +593,56 @@ def _raw_row(db, row, info_of) -> dict:
 
 @router.get("/raw")
 def flow_raw(course_id: int = 0, limit: int = 40, offset: int = 0,
+             day: str = "", zone: int = -1,
              db: Session = Depends(get_db)):
-    """The recordings this flow can be started on, newest first."""
+    """The recordings this flow can be started on, newest first.
+
+    `day` is a date in the COURSE'S OWN DAY (YYYY-MM-DD), not UTC --
+    the same reckoning the groups use. A swing at 19:30 Central is the
+    25th in UTC and the 24th to everybody who was standing there, so
+    filtering on the UTC date splits one evening across two days.
+
+    `zone` is a stored trigger-zone INDEX, counting from 0, which is
+    what the column prints beside its name.
+
+    `days` comes back with every page: the dropdown cannot be built
+    from the rows on screen, because the rows on screen are the ones
+    the filter already let through.
+    """
     from .admin import _local_tee
 
     q = db.query(LongVideoUpload)
     if course_id:
         q = q.filter(LongVideoUpload.course_id == course_id)
+    # ── EVERY DAY THERE IS A RECORDING FOR, BEFORE FILTERING ────────
+    #
+    # One cheap column read over the whole table rather than a page of
+    # it: a dropdown built from the current page offers only the days
+    # that page happens to hold, so choosing one can empty the list
+    # and then the day that emptied it is gone from the dropdown too.
+    _days: dict = {}
+    for (_at,) in db.query(LongVideoUpload.base_captured_at).filter(
+            *( [LongVideoUpload.course_id == course_id] if course_id else [])
+    ).all():
+        _d = _local_dt(_at)
+        if _d is None:
+            continue
+        _days[_d.strftime("%Y-%m-%d")] = _days.get(
+            _d.strftime("%Y-%m-%d"), 0) + 1
     rows = (q.order_by(LongVideoUpload.base_captured_at.desc())
             .offset(max(0, offset)).limit(max(1, min(200, limit))).all())
+    # ── THE DAY, IN THE COURSE'S OWN CLOCK ──────────────────────────
+    #
+    # Filtered here rather than in SQL. The column is naive UTC and
+    # the day wanted is local, so a SQL date comparison would need the
+    # database to know the zone -- and SQLite and Postgres disagree
+    # about how to tell it. One pass over at most 200 rows is cheaper
+    # than that disagreement.
+    if day:
+        rows = [r for r in rows
+                if (_local_dt(r.base_captured_at) or None) is not None
+                and _local_dt(r.base_captured_at).strftime("%Y-%m-%d")
+                == day]
 
     def _dur(r):
         # PROBED, AND NEVER AT THE COST OF THE LIST. The duration is
@@ -598,8 +666,41 @@ def flow_raw(course_id: int = 0, limit: int = 40, offset: int = 0,
         _row["course_name"] = names.get(r.course_id)
         _row["cuts"] = (db.query(func.count(AudioCut.id))
                         .filter(AudioCut.long_upload_id == r.id).scalar() or 0)
+        # BY INDEX, AFTER THE ROW IS BUILT, because the zone is read
+        # off the camera event and the row is where that read lands.
+        if zone is not None and int(zone) >= 0 \
+                and _row.get("trigger_zone") != int(zone):
+            continue
         out.append(_row)
-    return {"offset": offset, "limit": limit, "raw": out}
+    # ── THE ZONES ON THIS PAGE, FOR THE PAGE TO ACCUMULATE ──────────
+    #
+    # From the rows actually built, not from a sweep of every camera
+    # event in the table: a zone is read off the event behind each
+    # upload, so a complete list costs one query per recording.
+    #
+    # The page keeps these in a Map across loads (see `zones.js`,
+    # `growZoneOptions`), which is the same thing Production and Test
+    # Cut do and exists for exactly this: a filtered page holds only
+    # the zone that was chosen, and a dropdown rebuilt from it would
+    # drop every other option the moment you used it.
+    _zs: dict = {}
+    for _r in out:
+        _z = _r.get("trigger_zone")
+        if _z is None:
+            continue
+        _zs.setdefault(int(_z), _r.get("trigger_zone_label") or "")
+        if not _zs[int(_z)] and _r.get("trigger_zone_label"):
+            _zs[int(_z)] = _r["trigger_zone_label"]
+    return {"offset": offset, "limit": limit, "raw": out,
+            # EVERY DAY AND EVERY ZONE THERE IS SOMETHING FOR, so the
+            # dropdowns do not shrink to whatever the filter let past.
+            "days": [{"day": k, "n": v}
+                     for k, v in sorted(_days.items(), reverse=True)],
+            "zones": [{"zone": k, "label": v}
+                      for k, v in sorted(_zs.items())],
+            "day": day or None,
+            "zone": int(zone) if zone is not None and int(zone) >= 0
+            else None}
 
 
 # ── THE RUN: ONE RECORDING, ALL THE WAY TO DRAFTS ──────────────────
@@ -1079,6 +1180,71 @@ def flow_start(upload_id: int, db: Session = Depends(get_db)):
 
 def _flow_runner(row, src_path, db, progress=None):
     return flow_run(row, src_path, db, progress=progress)
+
+
+@router.delete("/raw/{upload_id}")
+def delete_flow_raw(upload_id: int, db: Session = Depends(get_db)):
+    """Throw a whole recording away: the cuts, the drafts and the files.
+
+    THE CONSOLE'S OWN UPLOAD DELETE IS THE ONE THAT KNOWS THE FILES
+    and the camera event behind them, so that part delegates. What it
+    does NOT know is the flow: it says in its own docstring that
+    "per-swing VideoClips produced from this upload are kept", which
+    is right on a page where a produced clip is an independent thing
+    and wrong here, where the row being deleted is the recording those
+    clips are OF. Left behind they are drafts of a recording nobody
+    can open, pointing at a `long_upload_id` that resolves to nothing.
+    The cuts are worse: the rows cascade on the foreign key but the
+    MP4s under `_flowcuts/` do not, so they become files in a folder
+    no retention sweep walks.
+
+    So the order is: refuse if anything has gone out, remove the
+    drafts through the delete that knows their four foreign keys,
+    clear the cuts and their files, and only then delete the
+    recording.
+
+    NOTHING BROADCAST IS DELETED BY A STRAY CLICK. A clip that has
+    gone out is public; retracting one is a decision, and it is made
+    on that clip rather than by deleting the thing it came from.
+    """
+    from .admin import delete_clip, delete_long_upload
+
+    row = db.get(LongVideoUpload, upload_id)
+    if not row:
+        raise HTTPException(404, "recording not found")
+    _clips = (db.query(VideoClip)
+              .filter(VideoClip.long_upload_id == upload_id).all())
+    _out = [c for c in _clips if c.broadcast_at is not None]
+    if _out:
+        raise HTTPException(
+            409,
+            "%d clip%s from this recording %s been broadcast — "
+            "un-broadcast %s first if you really mean to delete the "
+            "recording they came from"
+            % (len(_out), "" if len(_out) == 1 else "s",
+               "has" if len(_out) == 1 else "have",
+               "it" if len(_out) == 1 else "them"))
+
+    _n_clips = 0
+    for c in _clips:
+        try:
+            # `keep_swing` is irrelevant here -- the edit list goes
+            # with the recording -- but the FOUR FOREIGN KEYS are
+            # not, and this is the only delete that clears them.
+            delete_clip(c.id, db=db)
+            _n_clips += 1
+        except Exception as exc:  # noqa: BLE001
+            log.warning("flow: could not delete clip %s of %s: %s",
+                        c.id, upload_id, exc)
+    _cuts = _clear_previous(db, row)
+    _gone = delete_long_upload(upload_id, db=db)
+    log.info("flow: recording %s deleted — %d clip(s), %d cut(s), "
+             "%d cut file(s), %s bytes of source",
+             upload_id, _n_clips, _cuts.get("cuts"), _cuts.get("files"),
+             (_gone or {}).get("freed_bytes"))
+    return dict(_gone or {}, ok=True, deleted=upload_id,
+                clips=_n_clips, cuts=_cuts.get("cuts"),
+                cut_files=_cuts.get("files"))
 
 
 @router.get("/raw/{upload_id}/produce-report")

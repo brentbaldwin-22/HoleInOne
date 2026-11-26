@@ -243,6 +243,26 @@ export default function AdminProductionFlow() {
   // about. Fetched on click, not with the list: it is the biggest
   // thing on the row and nobody reads it until they ask.
   const [work, setWork] = useState(null);
+  const [note, setNote] = useState(null);
+  // ── THE TWO FILTERS ───────────────────────────────────────────
+  //
+  // A day and a tee box. Both are server-side: the list is
+  // paginated, so filtering what has already arrived would hide rows
+  // from the page and leave the ones it wanted on the next one.
+  const [day, setDay] = useState("");
+  const [zone, setZone] = useState("");
+  const [days, setDays] = useState([]);
+  // ZONE OPTIONS ACCUMULATE. A page filtered to one zone holds only
+  // that zone, so a dropdown rebuilt from it would drop every other
+  // option the moment it was used. `zones.js` keeps this Map for the
+  // two other pages that filter by zone, for the same reason.
+  const zoneSeen = useRef(new Map());
+  const [zoneOpts, setZoneOpts] = useState([]);
+  // WHICH RECORDING IS ONE CLICK FROM BEING DELETED. Deleting one
+  // takes its cuts, its drafts and its source files with it, and
+  // nothing on this page is undoable -- so the button arms first and
+  // deletes second, and arming one disarms any other.
+  const [armed, setArmed] = useState(0);
   // {row, swingPos} while the edit wizard is open on this page.
   const [editing, setEditing] = useState(null);
   const [editErr, setEditErr] = useState(null);
@@ -255,16 +275,31 @@ export default function AdminProductionFlow() {
     try {
       const [c, r, k, d, f] = await Promise.all([
         api.flowCounts(adminPassword),
-        api.flowRaw(adminPassword, { limit: 40 }),
+        api.flowRaw(adminPassword, { limit: 40, day, zone }),
         api.flowCuts(adminPassword, { limit: 120 }),
         api.flowClips(adminPassword, { stage: "draft", limit: 60 }),
         api.flowClips(adminPassword, { stage: "final", limit: 60 }),
       ]);
       setCounts(c); setRaw(r.raw); setCuts(k.cuts);
       setDrafts(d.clips); setFinals(f.clips);
+      setDays(r.days || []);
+      // GROWN, NOT REPLACED. See `zoneSeen` above.
+      let _grew = false;
+      for (const z of (r.zones || [])) {
+        const _k = String(z.zone);
+        const _prev = zoneSeen.current.get(_k);
+        if (_prev === undefined || (!_prev && z.label)) {
+          zoneSeen.current.set(_k, z.label || "");
+          _grew = true;
+        }
+      }
+      if (_grew) {
+        setZoneOpts(Array.from(zoneSeen.current.entries())
+          .sort((a, b) => Number(a[0]) - Number(b[0])));
+      }
       setErr(null);
     } catch (e) { setErr(e.message); }
-  }, [adminPassword]);
+  }, [adminPassword, day, zone]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -358,6 +393,34 @@ export default function AdminProductionFlow() {
   // A report that is absent is not a failure: a recording produced
   // before the report was kept simply has nothing to show, and the
   // endpoint says which so this can say it too.
+  // ── THROW THE WHOLE RECORDING AWAY ────────────────────────────
+  //
+  // The server refuses when a clip from it has been broadcast, and
+  // says which -- a retraction is a decision made on that clip, not a
+  // side effect of deleting the thing it came from.
+  async function removeRaw(uploadId) {
+    setActing(`rm-${uploadId}`);
+    setErr(null);
+    try {
+      const got = await api.flowDeleteRaw(adminPassword, uploadId);
+      setArmed(0);
+      if (focus === uploadId) setFocus(0);
+      await load();
+      setErr(null);
+      // NOT AN ERROR, AND WORTH SAYING. A row vanishing is the only
+      // other evidence that anything happened, and on a filtered page
+      // it can vanish for the wrong reason.
+      setNote(`recording #${uploadId} deleted — ${got.clips || 0} draft(s), `
+              + `${got.cuts || 0} cut(s) and `
+              + `${Math.round((got.freed_bytes || 0) / 1e6)}MB of source`);
+    } catch (e) {
+      setErr(e.message);
+      setArmed(0);
+    } finally {
+      setActing(null);
+    }
+  }
+
   async function openWork(uploadId) {
     setActing(`work-${uploadId}`);
     setEditErr(null);
@@ -375,15 +438,15 @@ export default function AdminProductionFlow() {
     }
   }
 
-  async function openAdder(uploadId) {
-    setActing(`add-${uploadId}`);
+  async function openAdder(uploadId, seed = null, key = null) {
+    setActing(key || `add-${uploadId}`);
     setEditErr(null);
     try {
       const got = await api.listLongUploads(adminPassword, 1, 0,
                                             { uploadId });
       const row = Array.isArray(got) ? got[0] : null;
       if (!row) throw new Error(`could not load recording #${uploadId}`);
-      setEditing({ row, swingPos: null, addNew: true });
+      setEditing({ row, swingPos: null, addNew: true, seed });
     } catch (e) {
       setEditErr(e.message);
     } finally {
@@ -453,7 +516,7 @@ export default function AdminProductionFlow() {
         {fmtWhen(r.captured_at)} · {fmtDur(r.duration_sec)}
         {" · "}
         {r.trigger_zone == null ? "no zone recorded"
-          : zoneName(r.trigger_zone)}
+          : zoneName(r.trigger_zone, r.trigger_zone_label)}
       </div>
       <div className="row" style={{ gap: 6, marginTop: 5, flexWrap: "wrap" }}>
         <button type="button" className="btn ghost small"
@@ -556,6 +619,39 @@ export default function AdminProductionFlow() {
       {gatesFor[r.id] && (
         <AudioGatesPanel uploadId={r.id} adminPassword={adminPassword} />
       )}
+      {/* ── AND THE WAY OUT ────────────────────────────────────────
+          Armed first, because this takes the cuts, the drafts and
+          the source files with it and nothing here is undoable. The
+          armed state says exactly what is about to go. */}
+      {armed === r.id ? (
+        <div className="tiny" style={{ marginTop: 5, padding: "4px 6px",
+                                       borderRadius: 4,
+                                       background: "var(--warn-bg, #fdf3d7)" }}>
+          <b>Delete #{r.id}?</b> This removes {nCuts[r.id] || 0} cut
+          {(nCuts[r.id] || 0) === 1 ? "" : "s"}, {nDrafts[r.id] || 0} draft
+          {(nDrafts[r.id] || 0) === 1 ? "" : "s"} and both source videos.
+          <div className="row" style={{ gap: 6, marginTop: 4 }}>
+            <button type="button" className="btn small"
+                    disabled={acting === `rm-${r.id}`}
+                    onClick={() => removeRaw(r.id)}>
+              {acting === `rm-${r.id}` ? "deleting…" : "yes, delete"}
+            </button>
+            <button type="button" className="btn ghost small"
+                    onClick={() => setArmed(0)}>
+              cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" className="btn ghost small"
+                style={{ marginTop: 5, width: "100%" }}
+                disabled={busy}
+                title={busy ? "a run is going on this recording"
+                  : "delete this recording, its cuts and its drafts"}
+                onClick={() => setArmed(r.id)}>
+          delete recording
+        </button>
+      )}
       {(nCuts[r.id] || nDrafts[r.id] || nFinals[r.id]) ? (
         <button type="button"
                 className={on ? "btn small" : "btn ghost small"}
@@ -620,7 +716,8 @@ export default function AdminProductionFlow() {
       )}
       <div className="tiny muted">
         {k.start_sec?.toFixed?.(1)}s–{k.end_sec?.toFixed?.(1)}s
-        {k.trigger_zone != null ? ` · ${zoneName(k.trigger_zone)}` : ""}
+        {k.trigger_zone != null
+          ? ` · ${zoneName(k.trigger_zone, k.trigger_zone_label)}` : ""}
       </div>
       {/* LINKS, NOT THUMBNAILS: two 110px tiles of a dark tee box
           tell an operator nothing the numbers above do not, and cost
@@ -647,6 +744,28 @@ export default function AdminProductionFlow() {
           </span>
         )}
       </div>
+      {/* ── A CUT WITH NO CLIP IS THE INTERESTING ONE ──────────────
+          Either the producer failed on a real swing or the sound was
+          never a swing, and the only way to settle it was to re-run
+          the whole flow. This opens the add wizard on the recording
+          with this cut's own impact frame already set, so the map
+          opens on the strike the microphone heard rather than on
+          frame zero of a three-minute recording. */}
+      {!k.produced && (
+        <button type="button" className="btn small"
+                style={{ marginTop: 5, width: "100%" }}
+                disabled={acting === `cut-${k.id}`}
+                title={"plot this swing by hand and produce a draft of "
+                       + "it, starting from the frame the strike was "
+                       + "heard on"}
+                onClick={() => openAdder(
+                  k.long_upload_id,
+                  k.impact_frame != null
+                    ? { impact_frame: k.impact_frame } : null,
+                  `cut-${k.id}`)}>
+          {acting === `cut-${k.id}` ? "opening…" : "Produce Clip"}
+        </button>
+      )}
       {k.produce_error && (
         <div className="tiny err-text" style={{ marginTop: 4 }}>
           {k.produce_error}
@@ -657,12 +776,7 @@ export default function AdminProductionFlow() {
 
   const draftCard = (c) => (
     <div key={c.id} className="card tight" style={{ margin: 0 }}>
-      {c.url && (
-        <video src={c.url} controls preload="metadata"
-               poster={c.thumbnail_url || undefined}
-               style={{ width: "100%", borderRadius: 6, background: "#000" }} />
-      )}
-      <div className="small" style={{ marginTop: 5 }}>
+      <div className="small">
         {/* THE SWING FIRST: it is what joins this card to the cut in
             the cell to its left. */}
         <b>{c.cut_idx != null ? `swing ${c.cut_idx + 1}` : "swing unknown"}</b>
@@ -679,8 +793,26 @@ export default function AdminProductionFlow() {
           ascent is to open the wizard and read a scrubber against a
           panel -- which is how it went unnoticed through several
           runs. */}
+      {/* A LINK, LIKE THE TEE AND GREEN ANGLES BESIDE IT. An inline
+          <video> per draft is a decode and a poster fetch per card,
+          four cards to a recording, and it told an operator nothing
+          the numbers under it do not -- the question at this column
+          is "is this the right swing", and that is answered by the
+          frames and the impact, not by a 110px still of a tee box. */}
+      <div className="row" style={{ gap: 6, marginTop: 5,
+                                    flexWrap: "wrap" }}>
+        <button type="button" className="btn ghost small"
+                disabled={!c.url}
+                onClick={() => setViewer({
+                  url: c.url,
+                  title: `#${c.long_upload_id} ${c.cut_idx != null
+                    ? `swing ${c.cut_idx + 1}` : "draft"} — draft`,
+                })}>
+          Draft Production
+        </button>
+      </div>
       {c.cut_frames && (
-        <div className="tiny muted">
+        <div className="tiny muted" style={{ marginTop: 4 }}>
           cut f{c.cut_frames[0]}–f{c.cut_frames[1]}
           {c.impact_frame != null && <> · impact f{c.impact_frame}</>}
         </div>
@@ -872,6 +1004,45 @@ export default function AdminProductionFlow() {
             </span>
           </div>
           <div className="row" style={{ gap: 8, alignItems: "center" }}>
+            {/* ── THE DAY AND THE TEE BOX ────────────────────────────
+                Both named the way the operator reads them: the day in
+                the course's own clock, and the zone by the name they
+                typed on the box rather than the index the rig counts
+                it by. */}
+            <label className="tiny muted" style={{ display: "inline-flex",
+                                                   gap: 4,
+                                                   alignItems: "center" }}>
+              day
+              <select value={day} className="small"
+                      onChange={(e) => setDay(e.target.value)}>
+                <option value="">all days</option>
+                {days.map((d) => (
+                  <option key={d.day} value={d.day}>
+                    {d.day} ({d.n})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="tiny muted" style={{ display: "inline-flex",
+                                                   gap: 4,
+                                                   alignItems: "center" }}>
+              tee box
+              <select value={zone} className="small"
+                      onChange={(e) => setZone(e.target.value)}>
+                <option value="">all tee boxes</option>
+                {zoneOpts.map(([z, label]) => (
+                  <option key={z} value={z}>
+                    {zoneName(z, label)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {(day || zone !== "") && (
+              <button type="button" className="btn ghost small"
+                      onClick={() => { setDay(""); setZone(""); }}>
+                clear filters
+              </button>
+            )}
             {focus > 0 && (
               <button type="button" className="btn ghost small"
                       onClick={() => setFocus(0)}>
@@ -984,12 +1155,22 @@ export default function AdminProductionFlow() {
         })}
       </div>
 
+      {note && (
+        <div className="card tight small" style={{ marginTop: 6 }}>
+          {note}{" "}
+          <button type="button" className="btn ghost small"
+                  onClick={() => setNote(null)}>dismiss</button>
+        </div>
+      )}
       {editErr && <div className="card err-text small">{editErr}</div>}
       {editing && (
         <ClickToPlotModal
           row={editing.row}
           swingPos={editing.swingPos}
           addNew={!!editing.addNew}
+          // WHAT THE CUT ALREADY KNEW. Only read for a new swing --
+          // see `seed` in the modal.
+          seed={editing.seed || null}
           adminPassword={adminPassword}
           // Cancel and save both land here, and both reload the
           // columns: the point of editing a draft is that the draft

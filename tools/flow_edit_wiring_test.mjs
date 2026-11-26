@@ -133,6 +133,94 @@ check("an absent report is explained, not failed",
       /no produce report is kept/.test(flow)
         && /got\?\.reason/.test(page));
 
+console.log("\n6. the five things asked for on this page");
+// ── THE DRAFT IS A LINK, NOT A PLAYER ───────────────────────────
+// An inline <video> per draft is a decode and a poster fetch per
+// card, four cards to a recording, and it answers nothing the
+// numbers under it do not: the question at this column is "is this
+// the right swing", which the frames and the impact answer.
+check("the draft opens in the viewer like the other angles",
+      /Draft Production/.test(page));
+// SCOPED TO THE DRAFT CARD. The FINAL column still has its player,
+// which was not part of this and is a different question: an
+// approved clip is something you watch, a draft is something you
+// check against the frames under it.
+const draftCard = page.slice(page.indexOf("const draftCard = "),
+                             page.indexOf("const finalCard = "));
+check("the draft card was found", draftCard.length > 200);
+check("...with no inline player left on it",
+      /poster=\{c\.thumbnail_url/.test(draftCard), false);
+check("...and the final card keeps its own",
+      /poster=\{c\.thumbnail_url/.test(page));
+
+// ── THE ZONE BY ITS NAME ────────────────────────────────────────
+// "Zone 2" is the rig's count; the operator drew the box and typed
+// "middle" on it. The index stays in brackets because the rig counts
+// from 0 and the editor labels from 1, which is the whole reason
+// zones.js exists.
+check("the raw card names the zone", /zoneName\(r\.trigger_zone, r\.trigger_zone_label\)/
+  .test(page));
+check("...and so does the cut card",
+      /zoneName\(k\.trigger_zone, k\.trigger_zone_label\)/.test(page));
+check("the server resolves the name", /_trigger_zone_label/.test(flow));
+const adminpy = readFileSync(
+  join(ROOT, "backend/app/routers/admin.py"), "utf8");
+const labelFn = adminpy.slice(
+  adminpy.indexOf("def _trigger_zone_label("),
+  adminpy.indexOf("def _trigger_zone(db, row):"));
+check("...from the event's own label first",
+      labelFn.indexOf('_d.get("zone_label")') > 0
+        && labelFn.indexOf('_d.get("zone_label")')
+           < labelFn.indexOf("tee_box_roi_at_trigger"));
+// A BOX REDRAWN SINCE IS A DIFFERENT PIECE OF GRASS, so the drawing
+// the event kept beats the camera's current one.
+check("...then the boxes as they were at the trigger",
+      labelFn.indexOf("tee_box_roi_at_trigger")
+        < labelFn.indexOf('getattr(cam, "tee_box_roi"'));
+
+// ── FILTER BY DAY AND TEE BOX ───────────────────────────────────
+check("the page filters by day", /setDay\(/.test(page));
+check("...and by tee box", /setZone\(/.test(page));
+check("...server-side, because the list is paginated",
+      /api\.flowRaw\(adminPassword, \{ limit: 40, day, zone \}\)/
+        .test(page));
+check("the day is the course's own, not UTC",
+      /_local_dt\(r\.base_captured_at\)/.test(flow));
+// ZONE 0 IS A ZONE. A falsy test drops the box printed "Zone 1" and
+// silently widens the filter to everything.
+check("zone 0 is sent, not treated as 'all'",
+      /zone != null && zone !== ""/.test(apijs));
+check("the day list comes from every recording, not the page",
+      /"days": \[\{"day": k, "n": v\}/.test(flow));
+check("the zone options accumulate across loads",
+      /zoneSeen/.test(page));
+
+// ── DELETE A RECORDING ──────────────────────────────────────────
+check("the server can delete a recording",
+      /@router\.delete\("\/raw\/\{upload_id\}"\)/.test(flow));
+check("...taking its drafts through the delete that knows their keys",
+      /delete_clip\(c\.id, db=db\)/.test(flow));
+check("...and its cuts and their files",
+      /_clear_previous\(db, row\)/.test(flow));
+check("...refusing when a clip has gone out",
+      /been broadcast/.test(flow));
+check("the button arms before it deletes", /setArmed\(r\.id\)/.test(page));
+check("...and says what is about to go",
+      /This removes \{nCuts\[r\.id\] \|\| 0\} cut/.test(page));
+
+// ── PRODUCE A CLIP FROM A CUT NOTHING WAS MADE FROM ─────────────
+// Either the producer failed on a real swing or the sound was never
+// one, and settling it used to mean re-running the whole flow.
+check("an unproduced cut offers it", /Produce Clip/.test(page));
+check("...only when nothing was produced", /\{!k\.produced && \(/.test(page));
+check("...opening the add wizard on that recording",
+      /openAdder\(\s*\n?\s*k\.long_upload_id/.test(page));
+check("...seeded with the frame the strike was heard on",
+      /impact_frame: k\.impact_frame/.test(page));
+check("the modal takes a seed", /row, swingPos, addNew, seed,/.test(prod));
+check("...and uses it only for a new swing",
+      /const swing = isNew \? \(seed \|\| \{\}\) :/.test(prod));
+
 console.log();
 if (failed.length) {
   console.log(`${failed.length} FAILED:\n  ${failed.join("\n  ")}`);

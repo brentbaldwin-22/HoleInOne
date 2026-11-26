@@ -2244,7 +2244,8 @@ function leadInVerdict(points, landingFrame, fps) {
 // that drifts -- which is the thing the deep link was added to
 // avoid in the first place.
 export function ClickToPlotModal({
-  row, swingPos, addNew, adminPassword, onClose, onBackground, onDone,
+  row, swingPos, addNew, seed, adminPassword, onClose, onBackground,
+  onDone,
 }) {
   const swings = row.edit_metrics?.swings || [];
   // ADDING A SWING IS THE SAME SCREEN WITH EMPTY FIELDS. A swing the
@@ -2267,7 +2268,19 @@ export function ClickToPlotModal({
   // goes wacky" looked like. A flag cannot go stale between the click
   // and the render.
   const isNew = !!addNew || swingPos == null || swingPos >= swings.length;
-  const swing = isNew ? {} : (swings[swingPos] || {});
+  // ── A NEW SWING CAN STILL KNOW SOMETHING ───────────────────────
+  //
+  // `seed` is what the CALLER already measured about the swing being
+  // added -- an impact frame off an audio cut, say. Production Flow's
+  // "Produce Clip" button is pressed on a cut whose strike the
+  // microphone heard and whose frame is on the row, and opening the
+  // map on frame zero would make the operator find that strike again
+  // by hand on a three-minute recording.
+  //
+  // It only ever seeds a NEW swing. A saved swing's own record wins
+  // outright: a caller's idea of the impact frame must not quietly
+  // move one somebody has already set.
+  const swing = isNew ? (seed || {}) : (swings[swingPos] || {});
   // FLIGHT WINDOW. Pre-swing motion (waggle, address, shadow) is noise on
   // this map, and so is everything long after the ball has gone — the
   // golfer walking off, a cart, wind in the trees. Both crowd the map with

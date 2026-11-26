@@ -495,10 +495,18 @@ export const api = {
   },
 
   // ---- production flow ----
-  flowRaw: (key, { courseId = 0, limit = 40, offset = 0 } = {}) => {
+  flowRaw: (key, { courseId = 0, limit = 40, offset = 0, day = "",
+                   zone = null } = {}) => {
     const p = new URLSearchParams({ course_id: String(courseId),
                                     limit: String(limit),
                                     offset: String(offset) });
+    // THE DAY IS THE COURSE'S OWN, not UTC: an evening round is one
+    // day to everybody who was standing there and two in UTC.
+    if (day) p.set("day", day);
+    // ZONE 0 IS A ZONE. `if (zone)` drops the box labelled "Zone 1"
+    // on screen and silently widens the filter to everything — the
+    // same off-by-one `zones.js` exists for.
+    if (zone != null && zone !== "") p.set("zone", String(zone));
     return request(`/api/admin/flow/raw?${p}`, { adminPassword: key });
   },
 
@@ -508,6 +516,13 @@ export const api = {
 
   flowStatus: (key, uploadId) =>
     request(`/api/admin/flow/raw/${uploadId}/status`, { adminPassword: key }),
+
+  flowDeleteRaw: (key, uploadId) =>
+    // THE WHOLE RECORDING: its cuts and their files, its drafts, the
+    // source videos and the camera event behind them. Refused when
+    // any clip from it has been broadcast.
+    request(`/api/admin/flow/raw/${uploadId}`,
+            { method: "DELETE", adminPassword: key }),
 
   flowProduceReport: (key, uploadId) =>
     // WHAT THE LAST PRODUCE WAS TRYING TO DO, off the row rather than

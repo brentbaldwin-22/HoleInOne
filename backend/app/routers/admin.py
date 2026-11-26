@@ -31105,6 +31105,65 @@ def _trigger_kind(db, row) -> Optional[str]:
     return str(_k).strip().lower() if _k else None
 
 
+def _trigger_zone_label(db, row, zone=None):
+    """The NAME the operator gave this clip's trigger zone, or None.
+
+    "Zone 2" IS NOT WHAT THE OPERATOR CALLS IT. They drew the box and
+    typed "middle" on it, and every screen that prints the index back
+    at them is asking them to translate -- on a course with a back, a
+    middle and a forward tee, into the one thing the index is most
+    easily confused with, since the rig counts from 0 and the editor
+    labels from 1.
+
+    TWO PLACES TO ASK, in this order:
+
+      1. the event's own `trigger_detail.zone_label`, which is the
+         name as it was AT THE TRIGGER -- the right answer even if the
+         boxes have been redrawn since.
+      2. the camera's current boxes, by index, for every clip whose
+         rig was too old to record the name or whose operator typed it
+         afterwards.
+
+    Never raises, and None means "it has no name", not "it has no
+    zone" -- the index is still printed either way.
+    """
+    _eid = getattr(row, "camera_event_id", None)
+    if not _eid:
+        return None
+    try:
+        ev = db.get(CameraEvent, _eid)
+        if ev is None:
+            return None
+        _d = getattr(ev, "trigger_detail", None)
+        if isinstance(_d, dict):
+            _lbl = _d.get("zone_label")
+            if isinstance(_lbl, str) and _lbl.strip():
+                return _lbl.strip()[:24]
+            if zone is None:
+                zone = _d.get("zone")
+        if zone is None:
+            return None
+        cam = db.get(Camera, ev.tee_camera_id) if ev.tee_camera_id else None
+        if cam is None:
+            return None
+        from ..services import tee_roi as _tr
+        # THE BOXES AS THEY WERE WHEN IT FIRED, where the event kept
+        # them. A box redrawn since is a different piece of grass, and
+        # naming this clip after it would be the same mistake as
+        # printing the index.
+        _roi = (getattr(ev, "tee_box_roi_at_trigger", None)
+                or getattr(cam, "tee_box_roi", None))
+        _boxes = _tr.boxes(_roi)
+        _i = int(zone)
+        if 0 <= _i < len(_boxes):
+            _lbl = _boxes[_i].get("label")
+            return str(_lbl).strip()[:24] if _lbl else None
+    except Exception as exc:  # noqa: BLE001
+        log.debug("zone label: none for upload %s (%s)",
+                  getattr(row, "id", None), exc)
+    return None
+
+
 def _trigger_zone(db, row):
     """Which trigger zone this clip's dwell fired on, or None.
 
