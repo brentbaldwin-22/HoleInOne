@@ -249,6 +249,20 @@ check("the modal takes a seed", /row, swingPos, addNew, seed,/.test(prod));
 check("...and uses it only for a new swing",
       /const swing = isNew \? \(seed \|\| \{\}\) :/.test(prod));
 
+console.log("\n7. a missing angle says why");
+// A DISABLED BUTTON IS NOT AN ANSWER. Four reasons, four different
+// next moves, one identical-looking button.
+check("the server works out why", /def _cut_why_no_file/.test(flow));
+check("...and the row carries it", /"tee_why"/.test(flow)
+  && /"green_why"/.test(flow));
+check("the card prints it", /no tee angle: \{k\.tee_why\}/.test(page));
+// AND NO LINK IS BUILT FROM A NAME WHOSE FILE IS GONE: a 404 looks
+// like footage, where an absence with a reason does not.
+check("a url is only built where the file is there",
+      /\(CLIPS_DIR \/ fn\)\.exists\(\)/.test(flow));
+check("...so the dead 'tee only' label is gone",
+      /tee only/.test(page), false);
+
 console.log();
 if (failed.length) {
   console.log(`${failed.length} FAILED:\n  ${failed.join("\n  ")}`);

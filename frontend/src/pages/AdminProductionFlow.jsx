@@ -739,7 +739,7 @@ export default function AdminProductionFlow() {
                   title: `#${k.long_upload_id} swing ${k.idx + 1} — tee` })}>
           tee angle
         </button>
-        {k.green_url ? (
+        {k.green_url && (
           <button type="button" className="btn ghost small"
                   onClick={() => setViewer({
                     url: k.green_url,
@@ -747,12 +747,21 @@ export default function AdminProductionFlow() {
                            + " — green" })}>
             green angle
           </button>
-        ) : (
-          <span className="tiny muted" style={{ alignSelf: "center" }}>
-            tee only
-          </span>
         )}
       </div>
+      {/* ── WHY THERE IS NO FOOTAGE, WHERE THERE IS NONE ───────────
+          A disabled button is not an answer, and there are four
+          reasons with four different next moves: the cuts are
+          scratch and are swept after three weeks, the pair may have
+          had no green half, the cut may have failed, or the file may
+          be gone from under a row that still names it. The button
+          looked identical for all four. */}
+      {(k.tee_why || k.green_why) && (
+        <div className="tiny muted" style={{ marginTop: 4 }}>
+          {k.tee_why && <div>no tee angle: {k.tee_why}</div>}
+          {k.green_why && <div>no green angle: {k.green_why}</div>}
+        </div>
+      )}
       {/* ── A CUT WITH NO CLIP IS THE INTERESTING ONE ──────────────
           Either the producer failed on a real swing or the sound was
           never a swing, and the only way to settle it was to re-run

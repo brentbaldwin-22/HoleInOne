@@ -121,9 +121,65 @@ def _cut_frames(k: AudioCut) -> dict:
     }
 
 
-def _cut_row(k: AudioCut, base: str, zone_label=None) -> dict:
+def _cut_why_no_file(k: AudioCut, which: str, has_green=None) -> str | None:
+    """Why this angle has no link, or None when it has one.
+
+    A DISABLED BUTTON IS NOT AN ANSWER. There are four reasons a cut
+    has no footage and the operator's next move is different for every
+    one of them -- and the button looked identical for all four, so
+    "why do some clips not have the tee angle enabled?" could only be
+    answered by reading this file.
+
+      SWEPT. The cuts are scratch -- two angles per swing at a few
+      megabytes, every swing of every round -- and they expire after
+      CUT_RETENTION_DAYS. The sweep deletes the MP4s and CLEARS the
+      columns, deliberately, because a row still holding the name of
+      a deleted file offers a link that plays nothing. The ROW is
+      kept where a produced clip points at it: which swing of a
+      three-minute recording a clip came from is worth a row even
+      when the footage is gone.
+
+      NO GREEN CAMERA. A tee-only pair has no green half to cut, which
+      is an ordinary state and not a failure.
+
+      THE CUT FAILED. ffmpeg returned nothing for this angle. Logged
+      at the time and otherwise invisible.
+
+      GONE FROM DISK. The row names a file that is not there -- a
+      hand-cleared folder, a lost volume, a half-finished sweep. The
+      worst of the four, because the name alone would have offered a
+      link.
+    """
+    from .admin import CLIPS_DIR
+
+    _fn = k.green_filename if which == "green" else k.tee_filename
+    if _fn:
+        if (CLIPS_DIR / _fn).exists():
+            return None
+        return ("the file is not on disk any more — the row still names "
+                "%s, so this was cleared out from under it rather than "
+                "swept" % _fn)
+    _exp = k.expires_at
+    if _exp is not None and _exp <= _utcnow():
+        return ("swept — cuts are scratch and are deleted after %d days. "
+                "The row is kept because it records which swing this was."
+                % CUT_RETENTION_DAYS)
+    if which == "green" and has_green is False:
+        return "this recording has no green half — a tee-only pair"
+    return ("the %s cut failed when this recording was run — re-run the "
+            "flow on it to try again" % which)
+
+
+def _cut_row(k: AudioCut, base: str, zone_label=None,
+             has_green=None) -> dict:
+    from .admin import CLIPS_DIR
+
     def _u(fn):
-        return f"{base}/uploads/clips/{fn}" if fn else None
+        # ONLY WHERE THE FILE IS ACTUALLY THERE. A URL built from a
+        # name whose file is gone is a link that 404s, which is worse
+        # than no link: it looks like footage.
+        return (f"{base}/uploads/clips/{fn}"
+                if fn and (CLIPS_DIR / fn).exists() else None)
     return {
         "id": k.id, "long_upload_id": k.long_upload_id,
         "idx": k.idx, "hole_number": k.hole_number,
@@ -139,6 +195,9 @@ def _cut_row(k: AudioCut, base: str, zone_label=None) -> dict:
         "ratio": k.ratio, "attack_ms": k.attack_ms,
         **_cut_frames(k),
         "tee_url": _u(k.tee_filename), "green_url": _u(k.green_filename),
+        # AND WHY, WHERE THERE IS NONE. See `_cut_why_no_file`.
+        "tee_why": _cut_why_no_file(k, "tee", has_green),
+        "green_why": _cut_why_no_file(k, "green", has_green),
         "duration_sec": k.duration_sec, "size_mb": k.size_mb,
         "produced": bool(k.produced), "produce_error": k.produce_error,
         "created_at": k.created_at.isoformat() if k.created_at else None,
@@ -383,16 +442,22 @@ def flow_cuts(upload_id: int = 0, produced: str = "", limit: int = 80,
     # separately is four identical queries for one answer.
     from .admin import _trigger_zone_label
     _labels: dict = {}
+    # WHETHER THE RECORDING HAD A GREEN HALF AT ALL. A tee-only pair
+    # has no green to cut, which is an ordinary state -- and without
+    # this the cut row cannot tell it from a green cut that failed.
+    _greens: dict = {}
     for _uid in {k.long_upload_id for k in rows if k.long_upload_id}:
         _up = db.get(LongVideoUpload, _uid)
         if _up is None:
             continue
+        _greens[_uid] = bool(getattr(_up, "green_filename", None))
         try:
             _labels[_uid] = _trigger_zone_label(db, _up)
         except Exception:  # noqa: BLE001
             _labels[_uid] = None
     return {"offset": offset, "limit": limit,
-            "cuts": [_cut_row(k, base, _labels.get(k.long_upload_id))
+            "cuts": [_cut_row(k, base, _labels.get(k.long_upload_id),
+                              _greens.get(k.long_upload_id))
                      for k in rows]}
 
 
