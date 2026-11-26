@@ -408,39 +408,42 @@ check("  still skipping a swing with no ball to walk from",
       in _desc, True)
 
 print()
-print("...and then 3g is skipped, because there is nothing to find:")
-# Searching anyway is expensive — 82% of this step — and actively
-# harmful: it puts branch chains in front of a matcher that has
-# already been handed the right answer.
-check("the old search runs only for swings the walk did not solve",
-      "_unsolved = [c for c in _clips" in _desc, True)
-check("  keyed on the walk having succeeded",
-      'if w.get("ok")' in _desc, True)
-check("  and on no track already being there",
-      'not c.get("green_track")' in _desc, True)
-check("  nothing unsolved means nothing searched",
-      "_do_descent = bool(_unsolved)" in _desc, True)
+print("...and the unanchored window search does not run at all:")
+# IT WAS THE RUNG BELOW THE WALK and it is the rung the descent logic
+# was rewritten to be rid of. It is anchored on nothing -- it hunts
+# the green and takes whatever best survives the gates -- so on a
+# swing with no ball found out there it has nothing to be right
+# about, and what it attaches is a landing for a shot that may never
+# have arrived.
+check("the old search is off in the produce",
+      "_do_descent = False" in _desc, True)
+check("  and not merely keyed on what was solved",
+      "_do_descent = bool(_unsolved)" in _desc, False)
+check("  with the reason on the record, not just in a comment",
+      "to be right about" in _desc, True)
+check("  and the swings that did get a chain are still named",
+      '"descent_skipped_for"' in _desc, True)
 check("the step says whether it ran, and why",
       '"the 3g search"' in SRC, True)
-# AND THE LABELS REPORT THE OUTCOME, NOT THE FLAG. 3c's units read
-# "walked — SKIPPED, this is a dwell clip and gets the older
-# whole-window search instead" beside a count of 1 and 57.6 seconds of
-# work: the walk had started running on dwell clips and only the label
-# still believed otherwise. A label keyed on a flag rather than on
-# what happened lies the moment the flag stops deciding anything.
-check("3c's label is keyed on what it walked, not the trigger kind",
-      '"walked" if out.get("n_descent") else' in _desc, True)
+# AND THE LABELS REPORT THE OUTCOME, NOT THE FLAG. 3c's units once
+# read "walked — SKIPPED, this is a dwell clip" beside a count of 1
+# and 57.6s of work, because the walk had started running on dwell
+# clips and only the label still believed otherwise. A label keyed on
+# a flag rather than on what happened lies the moment the flag stops
+# deciding anything -- so it is keyed on the count.
+check("3c's label is keyed on what it found",
+      '"found" if out.get("n_descent") else' in _desc, True)
 check("  with no trigger-kind text left on it",
       "this is a dwell clip and gets the older" in _desc, False)
+check("  and no walk left in it either",
+      "Walking the descent back" in _desc, False)
 check("the method prose is rewritten from what happened",
-      "swing(s) were walked back from their own ball at rest" in _desc,
-      True)
+      "chain pointing at their own ball on the" in _desc, True)
 # The provisional values set at the top must still exist, because an
 # early return can happen before the rewrite.
 check("  but a provisional one survives the early returns",
       '"search" if _old_way else "walk+crawl"' in _desc, True)
-check("  and which swings were walked instead",
-      '"descent_skipped_for"' in SRC, True)
+
 
 print()
 print("and the page renders it, collapsed, on the step's own row:")

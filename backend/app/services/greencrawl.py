@@ -517,6 +517,305 @@ def find_flight_to(green_path, anchor_xy, anchor_frame: int, *,
     return out
 
 
+# ══ POINTING AT THE BALL ═══════════════════════════════════════════
+#
+# A DIFFERENT QUESTION FROM `find_flight_to`, and the reason it is a
+# different function rather than another argument.
+#
+# `find_flight_to` asks "whose arc LANDS ON this pixel at this frame".
+# That is the right question when the anchor is the pitch mark, and
+# the wrong one when it is the ball lying on the green: the ball
+# pitches, bounces and rolls, so the point it finishes at is seconds
+# later and metres away from where any parabola ends. Anchored there,
+# the arc test refuses every chain, correctly and uselessly.
+#
+# What an operator does when they look at the scan picture is not
+# solve for an arrival. They see a line of dots coming down and see
+# that it POINTS AT the ball. That is a direction test: continue the
+# chain along its own heading and see whether it passes near the ball.
+#
+# Tolerances are angular, not absolute. A chain whose continuation
+# runs 40px wide of a ball 200px away is aimed somewhere else; the
+# same 40px at 900px away is the same line. So the miss allowed grows
+# with the distance, with a floor for chains that end close.
+POINT_AT_MIN_PX = 30.0
+POINT_AT_FRAC = 0.12          # about seven degrees
+# The ball has to be AHEAD of the chain, not behind it: a chain
+# climbing away from the ball extended backwards also "passes near"
+# it, and that is the tee shot of the next group.
+POINT_AT_MIN_AHEAD_PX = 20.0
+# And not arbitrarily far ahead. Beyond this the continuation is an
+# extrapolation of a short chain across most of the frame, which is
+# the overshoot that cost the tee's column search five rounds.
+POINT_AT_MAX_AHEAD_PX = 1400.0
+# A descent falls. Not a rate band -- that was a proxy for "is this
+# the shot" and the ball answers that directly -- just a direction, so
+# that a chain rising out of frame cannot be aimed at the ground by
+# arithmetic.
+POINT_AT_MIN_FALL_PX = 25.0
+
+
+def _judge_points_at(chain, ball_xy):
+    """Does this chain's own continuation pass near the ball?
+
+    Returns a row in the same shape `_judge` uses, because the refused
+    ones are what somebody reads when the answer is wrong -- and they
+    are only readable if every chain is described the same way.
+    """
+    pts = sorted(chain["points"], key=lambda p: int(p["frame"]))
+    row = {
+        "n_points": len(pts),
+        "n_trimmed": 0,
+        "first_frame": int(pts[0]["frame"]) if pts else None,
+        "last_frame": int(pts[-1]["frame"]) if pts else None,
+        "ok": False, "score": None, "miss_px": None,
+        "ahead_px": None, "allowed_px": None, "fell_px": None,
+        # WHICH DETECTOR SAW IT. The table has a column for this and
+        # the rung above says which detectors were running, but only
+        # this says whether the chain that was taken came from the
+        # cheap pass or from the one that returns treeline texture.
+        "srcs": sorted({str(p.get("src")) for p in pts
+                        if p.get("src")}),
+        "extrap_frames": None, "resid_px": None,
+        "why": None,
+    }
+    if len(pts) < MIN_FLIGHT_POINTS:
+        row["why"] = ("%d point(s) — under the %d a chain needs to have a "
+                      "direction worth extending"
+                      % (len(pts), MIN_FLIGHT_POINTS))
+        return row
+    _fell = float(pts[-1]["y"]) - float(pts[0]["y"])
+    row["fell_px"] = int(round(_fell))
+    if _fell < POINT_AT_MIN_FALL_PX:
+        row["why"] = ("it does not fall — %dpx over its own span, and a "
+                      "ball coming down does" % round(_fell))
+        return row
+
+    # ── THE HEADING, FROM THE END OF THE CHAIN ──────────────────────
+    #
+    # From the LAST few points, not from the whole chain. The ball is
+    # accelerating, so the mean heading of a long chain points above
+    # where it is actually going by the time it gets there -- and it
+    # is where it is going that has to hit the ball.
+    _tail = pts[-min(len(pts), 5):]
+    _dx = float(_tail[-1]["x"]) - float(_tail[0]["x"])
+    _dy = float(_tail[-1]["y"]) - float(_tail[0]["y"])
+    _len = math.hypot(_dx, _dy)
+    if _len < 1e-6:
+        row["why"] = "its last points are all in one place — no heading"
+        return row
+    _ux, _uy = _dx / _len, _dy / _len
+
+    # Where the ball sits relative to the chain's last point, split
+    # into along-the-heading and across-it.
+    _bx = float(ball_xy[0]) - float(_tail[-1]["x"])
+    _by = float(ball_xy[1]) - float(_tail[-1]["y"])
+    _ahead = _bx * _ux + _by * _uy
+    _miss = abs(_bx * (-_uy) + _by * _ux)
+    row["ahead_px"] = int(round(_ahead))
+    row["miss_px"] = int(round(_miss))
+    _allowed = max(POINT_AT_MIN_PX, POINT_AT_FRAC * max(0.0, _ahead))
+    row["allowed_px"] = int(round(_allowed))
+
+    if _ahead < POINT_AT_MIN_AHEAD_PX:
+        row["why"] = ("the ball is %dpx BEHIND where this chain is going "
+                      "— continuing it moves away from the ball"
+                      % round(-_ahead))
+        return row
+    if _ahead > POINT_AT_MAX_AHEAD_PX:
+        row["why"] = ("the ball is %dpx further on, past the %dpx this "
+                      "will carry a chain — that is an extrapolation, "
+                      "not a sighting"
+                      % (round(_ahead), round(POINT_AT_MAX_AHEAD_PX)))
+        return row
+    if _miss > _allowed:
+        row["why"] = ("it points %dpx wide of the ball, and %dpx is "
+                      "allowed at %dpx out" % (round(_miss),
+                                               round(_allowed),
+                                               round(_ahead)))
+        return row
+    row["ok"] = True
+    # NEAREST THE LINE WINS, and a longer chain breaks a tie: both are
+    # pointing at the ball, and the longer one was seen more often.
+    row["score"] = round(_miss, 2)
+    # `extrap_frames` and `resid_px` stay None, and the table prints
+    # them as "—": this search neither carries an arc to a frame nor
+    # fits a parabola, so a number in either column would be invented
+    # to fill a header.
+    row["why"] = ("points at the ball — %dpx wide over %dpx, inside the "
+                  "%dpx allowed" % (round(_miss), round(_ahead),
+                                    round(_allowed)))
+    return row
+
+
+def find_chain_to_ball(green_path, ball_xy, f_lo: int, f_hi: int, *,
+                       out_dir=None, stem="greenchain") -> dict:
+    """The chain of dots that points at the ball lying on the green.
+
+    THE SAME PICTURE THE EDIT WIZARD DRAWS. Its green scan is these
+    detectors over this window, and what an operator does with it is
+    look for a line of dots aimed at the ball. This is that, done
+    without them -- and it replaces the reverse walk and the crawl,
+    which between them were half the runtime of a produce and still
+    veered off the fall onto whatever was nearest.
+
+    `f_lo`/`f_hi` are the seconds a ball from this swing could be in
+    the air, on the GREEN clock. `ball_xy` is where it finished.
+
+    Returns the same shape `find_flight_to` does, so nothing
+    downstream has to know which one ran.
+
+    Never raises.
+    """
+    out: dict = {
+        "ok": False, "points": [], "n_points": 0, "first_frame": None,
+        "last_frame": None, "fell_px": 0, "why": None, "image": None,
+        "chains": [], "ladder": [], "rung": None, "counts": {},
+        "window": [int(f_lo), int(f_hi)],
+        "how": {
+            "anchored_on": ("the ball lying on the green -- the thing "
+                            "that was actually measured, not a pitch "
+                            "mark inferred from a chain that may not "
+                            "contain the fall"),
+            "question": ("which chain's own continuation POINTS AT it. "
+                         "Not which arc lands on it at a given frame: "
+                         "the ball pitches, bounces and rolls, so by "
+                         "the time it is lying still no parabola ends "
+                         "anywhere near it, and an arrival test refuses "
+                         "everything."),
+            "detectors": ("the edit wizard's own green scan, unchanged: "
+                          "frame differencing first, then MOG2, then "
+                          "the plate medians, escalated only on a miss"),
+            "tolerance": ("angular. %dpx wide is aimed elsewhere at "
+                          "200px out and the same line at 900px, so the "
+                          "miss allowed grows with the distance, with a "
+                          "%dpx floor." % (round(POINT_AT_MIN_PX),
+                                           round(POINT_AT_MIN_PX))),
+        },
+    }
+    cap = None
+    try:
+        if not ball_xy:
+            out["why"] = "no ball on the green to point at"
+            return out
+        f_lo, f_hi = int(f_lo), int(f_hi)
+        cap = cv2.VideoCapture(str(green_path))
+        if not cap.isOpened():
+            out["why"] = "could not open the green clip"
+            return out
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 60.0)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        cap.release()
+        cap = None
+        f_lo = max(0, f_lo)
+        if total:
+            f_hi = min(f_hi, total - 1)
+        out["window"] = [f_lo, f_hi]
+        out["window_sec"] = [round(f_lo / fps, 2), round(f_hi / fps, 2)]
+        if f_hi - f_lo < MIN_FLIGHT_POINTS:
+            out["why"] = ("the window is %d frame(s) — too short to hold "
+                          "a chain" % max(0, f_hi - f_lo))
+            return out
+
+        _best_rows: list = []
+        _best_chains: list = []
+        for _i, _which in enumerate(DETECTOR_LADDER):
+            _sens = DIFF_SENS[min(_i, len(DIFF_SENS) - 1)]
+            dets, _stats = _detect(green_path, f_lo, f_hi, _which, _sens)
+            _tr = build_tracks(dets, LINK_RADIUS_PX,
+                               min_len=MIN_FLIGHT_POINTS,
+                               max_gap=DESCENT_MAX_GAP,
+                               corridor_px=DESCENT_CORRIDOR_PX,
+                               max_span=DESCENT_MAX_SPAN)
+            _bx = build_descent_chains(dets, fw, fh,
+                                       max_gap=DESCENT_MAX_GAP,
+                                       min_len=MIN_FLIGHT_POINTS)
+            _chains = list(_tr) + list(_bx)
+            _rows = [_judge_points_at(c, ball_xy) for c in _chains]
+            _taken = [r for r in _rows if r["ok"]]
+            out["ladder"].append({
+                "detectors": list(_which), "diff_sens": _sens,
+                "n_dets": len(dets), "det_stats": _stats,
+                "n_chains": len(_chains),
+                "n_radius": len(_tr), "n_box": len(_bx),
+                "n_pointing_at_the_ball": len(_taken),
+                "why": ("%d detection(s) -> %d chain(s) (%d by radius, %d "
+                        "by box walk) -> %d pointing at the ball"
+                        % (len(dets), len(_chains), len(_tr), len(_bx),
+                           len(_taken))),
+            })
+            if len(_rows) > len(_best_rows):
+                _best_rows, _best_chains = _rows, _chains
+            if not _taken:
+                continue
+            out["rung"] = _i + 1
+            _best_rows, _best_chains = _rows, _chains
+            _taken.sort(key=lambda r: (r["score"], -r["n_points"]))
+            _win = _taken[0]
+            _pts = sorted(_best_chains[_rows.index(_win)]["points"],
+                          key=lambda p: int(p["frame"]))
+            out["points"] = [
+                {"frame": int(p["frame"]), "x": float(p["x"]),
+                 "y": float(p["y"]), "area": p.get("area"),
+                 "src": p.get("src"), "found": True}
+                for p in _pts]
+            out["n_points"] = len(_pts)
+            out["first_frame"] = int(_pts[0]["frame"])
+            out["last_frame"] = int(_pts[-1]["frame"])
+            out["fell_px"] = int(_pts[-1]["y"] - _pts[0]["y"])
+            # ── WHERE IT PITCHED ───────────────────────────────────
+            #
+            # The chain's own last sighting. Not extended to the ball:
+            # the gap between them is the bounce and the roll, which
+            # this did not watch and must not draw.
+            out["pitch_frame"] = out["last_frame"]
+            out["pitch_xy"] = [int(round(_pts[-1]["x"])),
+                               int(round(_pts[-1]["y"]))]
+            out["pitch_from"] = (
+                "the last frame the chain that points at the ball was "
+                "seen in — where the fall stops being watched, which is "
+                "the pitch. The roll from there to the ball is not drawn "
+                "because it was not seen.")
+            out["ok"] = True
+            out["why"] = _win["why"]
+            break
+        out["chains"] = _best_rows
+        out["counts"] = {"chains": len(_best_rows)}
+        if not out["ok"] and not out["why"]:
+            _near = [r for r in _best_rows if r.get("miss_px") is not None]
+            _near.sort(key=lambda r: r["miss_px"])
+            out["why"] = (
+                "no chain points at the ball: %d weighed, nearest missed "
+                "by %dpx where %dpx was allowed"
+                % (len(_best_rows), _near[0]["miss_px"],
+                   _near[0]["allowed_px"])
+                if _near else
+                "nothing in this window linked into a chain at all")
+        if out["ok"] and out_dir is not None:
+            try:
+                # AS A Path, WHICHEVER WAY IT ARRIVED. `_flight_image`
+                # builds its filename with `/`, so a caller handing in
+                # a plain string lost its picture to a TypeError that
+                # the except below then swallowed into a log line.
+                out["image"] = _flight_image(
+                    green_path, out, ball_xy, out["last_frame"],
+                    Path(out_dir), stem)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("green chain: no picture (%s)", exc)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("green chain to ball failed: %s", exc, exc_info=True)
+        out["why"] = "the search failed: %s" % exc
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:  # noqa: BLE001
+                pass
+    return out
+
+
 def _flight_image(green_path, info, anchor_xy, pitch_frame, out_dir, stem):
     """The flight, the pitch mark, and every chain that was refused.
 

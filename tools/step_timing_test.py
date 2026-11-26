@@ -175,13 +175,19 @@ _s3 = _block("def _ascent_descents(", "\ndef _ascent_window_views(")
 # operator ends up looking for a step 4 that is the tracer.
 for _n, _what in (("3a", "opening the green and reading the clocks"),
                   ("3b", "finding where it came to rest"),
-                  ("3c", "walking the descent back from the ball"),
+                  # 3c WAS THE REVERSE WALK AND 3e THE FLIGHT HUNTED
+                  # FORWARDS FROM ITS PITCH MARK. Both are gone: one
+                  # pass now weighs every chain in the flight window
+                  # and keeps the one AIMED at the ball on the green,
+                  # so there is no boundary between them left to
+                  # split the seconds across.
+                  ("3c", "the chain that points at the ball"),
                   ("3d", "placing the flight windows"),
-                  ("3e", "finding the flight forwards from the pitch mark"),
                   ("3f", "matching swings to landings"),
                   ("3g", "the old descent search, off by default"),
                   ("3h", "drawing the window views")):
     check("%s is %s" % (_n, _what), '"%s"' % _n in _s3, True)
+check("and 3e is gone with the search it timed", '"3e"' in _s3, False)
 # A RUN THAT GIVES UP STILL SAYS WHAT IT DID. Three of this function's
 # exits are early ones -- no green file, no impact frame, nothing found
 # -- and those are the runs whose timing is most worth reading.

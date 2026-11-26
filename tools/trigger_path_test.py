@@ -110,8 +110,20 @@ def main():
     # audio trigger switched off — which is every clip that rig makes.
     ok("  but the search is no longer turned on by the kind",
        "_do_descent = _old_way" in src, False)
-    ok("  it is turned on by a swing the walk did not solve",
-       "_do_descent = bool(_unsolved)" in src, True)
+    # ...AND NOW IT IS NOT TURNED ON AT ALL. It went from "keyed on
+    # the trigger kind" to "keyed on what the walk solved" to off:
+    # the unanchored search hunts the green and attaches whatever best
+    # survives the gates, so on a swing with no ball found out there
+    # it has nothing to be right about and what it attaches is a
+    # landing for a shot that may never have arrived. The descent is
+    # three measurements now -- a ball leaving, a ball on the green, a
+    # chain pointing at it -- and it stops where one is missing.
+    ok("  and is not turned on by what the walk solved either",
+       "_do_descent = bool(_unsolved)" in src, False)
+    ok("  it does not run in the produce at all",
+       "_do_descent = False" in src, True)
+    ok("  and `_kind` still explains the clip on the card",
+       'out["trigger_kind"] = _kind' in src, True)
 
     # ── ONE PATH PER SWING, NEVER BOTH ──────────────────────────────
     #
@@ -157,14 +169,14 @@ def main():
     # clips with the same header one level deeper, and a bare
     # `src.index` finds that one — which made this assertion compare
     # the rest search against itself and read as an ordering bug.
-    _i_walk = src.index("\n    for i, c in enumerate(_clips):")
-    _i_pick = src.index("_do_descent = bool(_unsolved)")
-    ok("where it came to rest is found before the walk",
-       _i_rest < _i_walk, True)
-    ok("  and before the search is chosen at all",
-       _i_rest < _i_pick, True)
-    ok("  with the walk itself ahead of that choice",
-       _i_walk < _i_pick, True)
+    _i_chain = src.index("\n    for i, c in enumerate(_clips):")
+    _i_pick = src.index("_do_descent = False")
+    ok("where it came to rest is found before the chain search",
+       _i_rest < _i_chain, True)
+    ok("  because that search is anchored on it",
+       'find_chain_to_ball(\n            _gp, c["rest_spot"]' in src, True)
+    ok("  and both are settled before anything else is decided",
+       _i_rest < _i_pick and _i_chain < _i_pick, True)
 
     print()
     if _fails:

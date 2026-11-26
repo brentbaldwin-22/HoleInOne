@@ -47,61 +47,68 @@ def main():
                 return i
         return None
 
-    _call = first(r"_gcrawl\.crawl_flight_back\(")
-    ok("produce calls the crawl", _call is not None, True)
-    # ── THE CRAWL IS THE METHOD, THE CHAINS ARE A FALLBACK RUNG ─────
+    # ── THE CRAWL IS GONE FROM THE PRODUCE ──────────────────────────
     #
-    # The chain search does not work on real footage: on the
-    # operator's own clip it considered 383 chains over the four
-    # seconds before the pitch mark and took none, nearest arc 5px
-    # away. It stays as a rung beneath the crawl, not as a second
-    # opinion running beside it -- one answer is produced, by
-    # whichever ran. Two searches reporting separately is what cost
-    # five rounds on the tee.
-    _alt = first(r"_gcrawl\.find_flight_to\(")
-    ok("  with the chain search only beneath it",
-       _alt is not None and _alt > _call, True)
-    ok("  and only when the crawl found nothing",
-       'if not _flight.get("ok"):' in src, True)
-    ok("  producing one answer, not two",
-       "_flight = _alt" in src, True)
+    # It was the method here, with the chain search as a rung beneath
+    # it, on the evidence that the chain search did not work on real
+    # footage: 383 chains over the four seconds before the pitch mark
+    # and none taken, nearest arc 5px away.
+    #
+    # THAT WAS THE ARRIVAL TEST, not the chains. `find_flight_to`
+    # asks whose arc LANDS ON a pixel at a frame, and anchored on a
+    # pitch mark that is itself derived from a chain containing no
+    # fall, almost nothing can pass. The question asked now is the one
+    # an operator asks of the wizard's own scan picture -- which line
+    # of dots is AIMED at the ball lying on the green -- and that is a
+    # direction, measured against a measurement.
+    #
+    # The crawl had no motion model at all, which is how it crossed
+    # the bounce and also how it ran up the true fall and then turned
+    # off it onto the treeline. A chain that bends away from the ball
+    # simply stops being aimed at it, so the new search has no such
+    # turn available to it.
+    _call = first(r"_gcrawl\.find_chain_to_ball\(")
+    ok("produce asks which chain points at the ball", _call is not None,
+       True)
+    ok("  and the crawl is not called here any more",
+       first(r"_gcrawl\.crawl_flight_back\("), None)
+    ok("  nor the arrival test", first(r"_gcrawl\.find_flight_to\("),
+       None)
+    ok("  nor the reverse walk", first(r"_gdsc\.track_descent_back\("),
+       None)
+    ok("  leaving one answer, from one search",
+       src.count("_flight = _gcrawl.") , 1)
 
     # ── AND NOT BEHIND AN EARLY RETURN ──────────────────────────────
     #
     # Every `return out` above the call is a way for it never to run.
-    # The walk it depends on is above it, which is correct -- the
-    # flight is anchored on the walk's pitch mark -- so what matters is
-    # that nothing between the two can bail out.
-    _walk = first(r"_gdsc\.track_descent_back\(")
-    ok("  after the walk that gives it the pitch mark",
-       _walk is not None and _call > _walk, True)
     _returns = [i for i, ln in enumerate(lines)
                 if re.match(r"\s{4}return out\b", ln)]
     ok("  with no function-level early return before it",
        [i for i in _returns if i < _call], [])
 
-    # ── THE CONTRACT: NO PITCH MARK, NO FLIGHT ──────────────────────
+    # ── THE CONTRACT: NO BALL ON THE GREEN, NO DESCENT ──────────────
     #
-    # The same contract the walk has, and the opposite of the search
-    # the operator scrapped: that one hunted the green and attached
-    # whatever best survived the gates, which is how a landing appeared
-    # on clips where the shot missed entirely.
-    ok("the flight is only searched where the walk saw the ball",
-       bool(re.search(r'_seen = \[q for q in \(_walk\.get\("points"\)',
-                      src)) and "if _anchor:" in src, True)
-    # ── ANCHORED ON A MEASUREMENT, NOT ON AN INFERENCE ──────────────
-    #
-    # The obvious thing to hand over is the walk's PITCH MARK, and it
-    # is the wrong thing: that mark is derived from a chain which,
-    # whenever the walk gave up at the bounce, does not contain the
-    # fall at all. On the smeared fixture it came out thirteen frames
-    # and ninety pixels from the truth, and anchored on it the search
-    # returned eight points of roll instead of fifty-two of flight.
-    ok("  anchored on the earliest frame it was really seen",
-       "_anchor = _seen[0] if _seen else None" in src, True)
-    ok("  and not on the computed pitch mark",
-       bool(re.search(r'find_flight_to\(\s*\n\s*_gp, _walk\["pitch_xy"\]',
-                      src)), False)
+    # Unchanged, and the opposite of the search the operator scrapped:
+    # that one hunted the green and attached whatever best survived
+    # the gates, which is how a landing appeared on clips where the
+    # shot missed entirely.
+    ok("the chain is only searched where a ball was found at rest",
+       'if not c.get("rest_spot") or c.get("impact_frame") is None:'
+       in src, True)
+    # AND NO ASCENT, NO DESCENT. The new first rung: a descent is the
+    # second half of a sentence whose first half is "a ball left the
+    # tee", and step 3 used to run in full -- 48% of a produce -- on a
+    # clip where step 2 had just reported nothing leaving.
+    ok("  and only where a ball was seen leaving the tee",
+       "if not _swing_saw_an_ascent(rep, i, c):" in src, True)
+    # ANCHORED ON THE BALL ITSELF, which is the measurement. The pitch
+    # mark is an inference over a chain that may contain no fall, and
+    # on the smeared fixture it was thirteen frames and ninety pixels
+    # from the truth.
+    ok("  anchored on the ball on the green",
+       bool(re.search(r'find_chain_to_ball\(\s*\n\s*_gp, c\["rest_spot"\]',
+                      src)), True)
 
     # ── AND THE COMET CARRIES IT ────────────────────────────────────
     #
@@ -110,35 +117,46 @@ def main():
     _track = first(r'c\["green_track"\] = ')
     ok("the comet is built after the flight is found",
        _track is not None and _track > _call, True)
-    ok("  and the flight's points are in it",
-       '_fpts = list(((_flight or {}).get("points") or []))' in src, True)
+    ok("  and the chain's points are in it",
+       '_fpts = list(_flight.get("points") or [])' in src, True)
     # MEASURED POINTS ONLY, on both halves. An extrapolated point is a
     # position nobody measured and a comet is a claim about where the
     # ball was.
-    ok("  measured points only, from the walk",
-       'if q.get("found"):' in src, True)
-    # ── MERGED ON FRAME NUMBER, NOT CONCATENATED ────────────────────
+    # ── ONE SOURCE, SO NOTHING HAS TO BE MERGED ─────────────────────
     #
-    # I joined these by cutting the flight at `landing_frame` and
-    # appending the whole walk, assuming the walk BEGINS at the pitch
-    # mark. It does not: the walk runs from the resting place
-    # backwards PAST the pitch to wherever it gave up, so the pitch
-    # sits in the middle of it. That produced seven duplicated frames
-    # and a comet that went backwards in time.
-    ok("  merged on frame number so the two cannot overlap",
-       "_by_frame = {" in src and "sorted(_by_frame.items())" in src, True)
-    # THE WALK WINS A SHARED FRAME. Both are measurements, but the
-    # walk tracked a known ball through a moving window while the
-    # flight chain is detections a linker joined up.
-    _fi = src.index("_by_frame = {")
-    _wi = src.index('_by_frame[int(q["frame"])] = ', _fi)
-    ok("  with the walk overwriting the flight where they share one",
-       _wi > _fi, True)
+    # The comet used to be the flight chain AND the reverse walk,
+    # merged on frame number because the walk runs from the resting
+    # place backwards PAST the pitch, so the pitch sat in the middle
+    # of it -- joined any other way it produced duplicated frames and
+    # a comet that went backwards in time.
+    #
+    # There is no walk now. The comet is the one chain that points at
+    # the ball, in the order the ball flew, and the merge it needed is
+    # gone with the second source.
+    ok("the comet is the chain, in flight order",
+       "for q in _fpts]" in src, True)
+    ok("  with nothing to merge against",
+       "_by_frame" in src, False)
+    # AND IT STOPS WHERE THE DOTS STOP. The gap from the last dot to
+    # the ball is the bounce and the roll; drawing through it is a
+    # claim about footage nobody looked at, which is exactly what the
+    # crawl did when it veered off the fall onto the treeline.
+    ok("  and is not carried on to the ball itself",
+       "the roll from there to the ball is not drawn"
+       in (Path(__import__("app.services.greencrawl",
+                           fromlist=["x"]).__file__).read_text()
+           .replace("The roll", "the roll")), True)
 
     # ── IT IS REPORTED AS ITS OWN STEP ──────────────────────────────
     ok("the run counts the flights it found", 'out["n_flight"]' in src, True)
-    ok("  and reports it as its own sub-stage",
-       '_sub("3e"' in src, True)
+    # ONE SEARCH, ONE SUB-STAGE. 3c was the walk and 3e the flight
+    # hunted forwards from its pitch mark; there is one pass now and
+    # splitting its seconds across two rows would invent a boundary
+    # that no longer exists.
+    ok("  reported as one sub-stage, not two",
+       '_sub("3c", "The chain that points at the ball' in src, True)
+    ok("  with no separate flight stage left over",
+       '_sub("3e"' in src, False)
 
     _adm = Path(__import__("app.routers.admin", fromlist=["x"]).__file__)
     _mod = _adm.read_text(encoding="utf-8")
@@ -168,14 +186,15 @@ def main():
     # pitch mark, and which frames does each pass scan. All three
     # existed and none was stated -- they had to be pieced together
     # from a sentence, a block table and a constant.
-    ok("the report states the three frames", '"frames": {' in src, True)
-    for _k in ("at_rest", "pitch", "walk_searched", "crawl_searched",
-               "crawl_blocks", "anchor"):
+    # THERE ARE THREE OF THEM AGAIN AND TWO ARE DIFFERENT. The walk
+    # and the crawl each scanned their own ranges and both had to be
+    # named; one search scans one window, so the list is the rest
+    # frame, that window, and the pitch.
+    ok("the report states the frames", '"frames": {' in src, True)
+    for _k in ("rest", "searched", "pitch", "pitch_from"):
         ok("  including %s" % _k, '"%s"' % _k in src, True)
-    # "EACH TIME WE SCAN" IS A LIST, NOT A RANGE. The crawl searches
-    # ten frames, moves, and searches ten more.
-    ok("  with every crawl block's own range",
-       'b["frames"] for b in' in src, True)
+    ok("  and no walk or crawl ranges are still claimed",
+       "crawl_blocks" in src or "walk_searched" in src, False)
 
     # ── AND THE REST FRAME IS THE ONE THE BALL WAS MEASURED IN ──────
     #
@@ -186,16 +205,14 @@ def main():
     # answering on rung 1, 3 or 4 the walk began six to fifteen
     # seconds from the measurement -- on a ball that may have been
     # marked, moved or putted out in between.
-    ok("the walk starts on the frame the ball was measured in",
+    ok("the search is bounded by the frame the ball was measured in",
        '_after = float(_win[1]) - _base' in src, True)
     ok("  and says which window that came from",
        'c["rest_frame_from"]' in src, True)
 
     _jsx2 = (_adm.resolve().parents[3] / "frontend" / "src" / "pages"
              / "AdminProduction.jsx").read_text(encoding="utf-8")
-    ok("the page shows the three frames", "The frames" in _jsx2, True)
-    ok("  and every block the crawl scanned",
-       "block by block:" in _jsx2, True)
+    ok("the page shows the frames", "The frames" in _jsx2, True)
 
     print()
     if _fails:
