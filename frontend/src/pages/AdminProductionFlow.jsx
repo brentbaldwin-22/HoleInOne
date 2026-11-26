@@ -273,12 +273,18 @@ export default function AdminProductionFlow() {
   const load = useCallback(async () => {
     if (!adminPassword) return;
     try {
+      // ALL FOUR TAKE THE FILTER. Sent on the raw list alone, the
+      // other three columns go on showing every other day -- which is
+      // how the page came to say "No recordings" beside a cut card
+      // and a draft from a fortnight earlier, with the raw cell
+      // explaining "#1896 — not on this page of recordings".
+      const _f = { day, zone };
       const [c, r, k, d, f] = await Promise.all([
-        api.flowCounts(adminPassword),
-        api.flowRaw(adminPassword, { limit: 40, day, zone }),
-        api.flowCuts(adminPassword, { limit: 120 }),
-        api.flowClips(adminPassword, { stage: "draft", limit: 60 }),
-        api.flowClips(adminPassword, { stage: "final", limit: 60 }),
+        api.flowCounts(adminPassword, _f),
+        api.flowRaw(adminPassword, { limit: 40, ..._f }),
+        api.flowCuts(adminPassword, { limit: 120, ..._f }),
+        api.flowClips(adminPassword, { stage: "draft", limit: 60, ..._f }),
+        api.flowClips(adminPassword, { stage: "final", limit: 60, ..._f }),
       ]);
       setCounts(c); setRaw(r.raw); setCuts(k.cuts);
       setDrafts(d.clips); setFinals(f.clips);
@@ -320,14 +326,17 @@ export default function AdminProductionFlow() {
   const loadLive = useCallback(async (uploadId) => {
     try {
       const [c, k, d] = await Promise.all([
-        api.flowCounts(adminPassword),
-        api.flowCuts(adminPassword, { limit: 120 }),
+        api.flowCounts(adminPassword, { day, zone }),
+        api.flowCuts(adminPassword, { limit: 120, day, zone }),
         api.flowClips(adminPassword, { stage: "draft", limit: 60,
                                        uploadId, flowOnly: false }),
       ]);
       setCounts(c); setCuts(k.cuts); setLiveDrafts(d.clips);
     } catch { /* a tick that fails is a tick; the next one will do */ }
-  }, [adminPassword]);
+    // THE FILTER IS A DEPENDENCY. Left out, the tick keeps calling
+    // the version of this that closed over the old day, and the
+    // columns drift back to everything while a run is going.
+  }, [adminPassword, day, zone]);
 
   // A run is minutes of work on a thread, so the page asks how it is
   // going rather than waiting on the request that started it.

@@ -502,11 +502,7 @@ export const api = {
                                     offset: String(offset) });
     // THE DAY IS THE COURSE'S OWN, not UTC: an evening round is one
     // day to everybody who was standing there and two in UTC.
-    if (day) p.set("day", day);
-    // ZONE 0 IS A ZONE. `if (zone)` drops the box labelled "Zone 1"
-    // on screen and silently widens the filter to everything — the
-    // same off-by-one `zones.js` exists for.
-    if (zone != null && zone !== "") p.set("zone", String(zone));
+    api.flowFilterParams(p, { day, zone });
     return request(`/api/admin/flow/raw?${p}`, { adminPassword: key });
   },
 
@@ -545,23 +541,38 @@ export const api = {
     request(`/api/admin/flow/clips/${clipId}`,
             { method: "DELETE", adminPassword: key }),
 
-  flowCounts: (key) => request("/api/admin/flow/counts",
-                               { adminPassword: key }),
+  // THE PAGE'S FILTER, written once. Four requests make the flow
+  // page and a filter sent on only one of them is how it ends up
+  // saying "No recordings" over three columns of another day's work.
+  // Zone 0 is a zone, so the test is `!= null`, not truthiness.
+  flowFilterParams: (p, { day = "", zone = null } = {}) => {
+    if (day) p.set("day", day);
+    if (zone != null && zone !== "") p.set("zone", String(zone));
+    return p;
+  },
+  flowCounts: (key, { day = "", zone = null } = {}) => {
+    const p = api.flowFilterParams(new URLSearchParams(), { day, zone });
+    const q = p.toString();
+    return request(`/api/admin/flow/counts${q ? `?${q}` : ""}`,
+                   { adminPassword: key });
+  },
   flowClips: (key, { stage = "draft", broadcast = "", courseId = 0,
                      limit = 60, offset = 0, uploadId = 0,
-                     flowOnly = null } = {}) => {
+                     flowOnly = null, day = "", zone = null } = {}) => {
     const p = new URLSearchParams({ stage, limit, offset });
     if (broadcast !== "") p.set("broadcast", broadcast);
     if (courseId) p.set("course_id", courseId);
     if (uploadId) p.set("upload_id", uploadId);
     if (flowOnly !== null) p.set("flow_only", flowOnly ? "1" : "0");
+    api.flowFilterParams(p, { day, zone });
     return request(`/api/admin/flow/clips?${p}`, { adminPassword: key });
   },
   flowCuts: (key, { uploadId = 0, produced = "", limit = 80,
-                    offset = 0 } = {}) => {
+                    offset = 0, day = "", zone = null } = {}) => {
     const p = new URLSearchParams({ limit, offset });
     if (uploadId) p.set("upload_id", uploadId);
     if (produced !== "") p.set("produced", produced);
+    api.flowFilterParams(p, { day, zone });
     return request(`/api/admin/flow/cuts?${p}`, { adminPassword: key });
   },
   flowAccept: (key, clipId, by) => {

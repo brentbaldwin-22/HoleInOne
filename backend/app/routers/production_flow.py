@@ -32,7 +32,9 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..deps import require_admin
-from ..models import AudioCut, Course, LongVideoUpload, VideoClip
+from ..models import (
+    AudioCut, CameraEvent, Course, LongVideoUpload, VideoClip,
+)
 
 log = logging.getLogger("golfreelz.flow")
 
@@ -145,21 +147,35 @@ def _cut_row(k: AudioCut, base: str, zone_label=None) -> dict:
 
 
 @router.get("/counts")
-def flow_counts(db: Session = Depends(get_db)):
+def flow_counts(day: str = "", zone: int = -1, course_id: int = 0,
+                db: Session = Depends(get_db)):
     """What is in each tab, and in what unit.
+
+    FILTERED THE SAME WAY THE COLUMNS ARE. A header reading "1560
+    RECORDINGS" over a column showing one day's four is two numbers
+    about different things, and the big one is the one that gets
+    believed.
 
     `unit` travels with every number because the strip mixes two of
     them: a recording holding four swings is one row in `raw` and four
     in `draft`. Without it the tabs look like a funnel that loses
     things.
     """
-    n_raw = db.query(func.count(LongVideoUpload.id)).scalar() or 0
-    n_cuts = db.query(func.count(AudioCut.id)).scalar() or 0
+    _ids = _flow_filter(db, course_id, day, zone)
+    _raw_q = db.query(func.count(LongVideoUpload.id))
+    _cut_q = db.query(func.count(AudioCut.id))
+    if _ids is not None:
+        _raw_q = _raw_q.filter(LongVideoUpload.id.in_(_ids))
+        _cut_q = _cut_q.filter(AudioCut.long_upload_id.in_(_ids))
+    n_raw = _raw_q.scalar() or 0
+    n_cuts = _cut_q.scalar() or 0
     # COUNTED THE SAME WAY THE COLUMNS SHOW IT. The clip columns show
     # only what this flow produced; a header counting all thousand
     # clips in the database over a column holding two is a number that
     # contradicts the thing underneath it.
     q = db.query(VideoClip).filter(VideoClip.flow_run_at.isnot(None))
+    if _ids is not None:
+        q = q.filter(VideoClip.long_upload_id.in_(_ids))
     n_draft = q.filter((VideoClip.stage == "draft")
                        | (VideoClip.stage.is_(None))).count()
     n_final = q.filter(VideoClip.stage == "final").count()
@@ -195,6 +211,7 @@ def flow_counts(db: Session = Depends(get_db)):
 def flow_clips(stage: str = "draft", broadcast: str = "",
                course_id: int = 0, limit: int = 60, offset: int = 0,
                flow_only: int = 1, upload_id: int = 0,
+               day: str = "", zone: int = -1,
                db: Session = Depends(get_db)):
     """Clips in one stage. `broadcast` filters on the independent fact.
 
@@ -210,6 +227,10 @@ def flow_clips(stage: str = "draft", broadcast: str = "",
     q = db.query(VideoClip)
     if upload_id:
         q = q.filter(VideoClip.long_upload_id == upload_id)
+    # The same filter the raw column gets. See `_flow_filter`.
+    _ids = _flow_filter(db, course_id, day, zone)
+    if _ids is not None:
+        q = q.filter(VideoClip.long_upload_id.in_(_ids))
     if flow_only:
         # THE FLOW STAMP, NOT THE SWING LINK. Filtering on the cut id
         # hid every clip whose swing could not be identified -- which
@@ -328,7 +349,8 @@ def flow_clips(stage: str = "draft", broadcast: str = "",
 
 @router.get("/cuts")
 def flow_cuts(upload_id: int = 0, produced: str = "", limit: int = 80,
-              offset: int = 0, db: Session = Depends(get_db)):
+              offset: int = 0, day: str = "", zone: int = -1,
+              course_id: int = 0, db: Session = Depends(get_db)):
     """The swing-sized cuts, newest first.
 
     `produced=0` is the interesting filter: a cut nothing was made
@@ -339,6 +361,14 @@ def flow_cuts(upload_id: int = 0, produced: str = "", limit: int = 80,
     q = db.query(AudioCut)
     if upload_id:
         q = q.filter(AudioCut.long_upload_id == upload_id)
+    # ── THE PAGE'S FILTER, NOT JUST THE RAW COLUMN'S ────────────────
+    #
+    # The four columns are four requests, and a day applied to only
+    # the first of them is how a page says "No recordings" over three
+    # columns full of other days' work.
+    _ids = _flow_filter(db, course_id, day, zone)
+    if _ids is not None:
+        q = q.filter(AudioCut.long_upload_id.in_(_ids))
     if produced == "1":
         q = q.filter(AudioCut.produced.is_(True))
     elif produced == "0":
@@ -591,6 +621,98 @@ def _raw_row(db, row, info_of) -> dict:
     }
 
 
+def _day_bounds_utc(day: str):
+    """A local calendar day, as the half-open UTC range it covers.
+
+    THE COLUMN IS NAIVE UTC AND THE DAY WANTED IS LOCAL, and the first
+    version of this filtered in Python AFTER the page had been taken,
+    which is the bug this exists to fix: with 1560 recordings and a
+    page of 40, choosing any day older than the newest forty found
+    nothing -- while the dropdown went on offering it, because the
+    dropdown is built from the whole table.
+
+    So the day has to narrow the QUERY, and that means arithmetic
+    rather than a string comparison. `zoneinfo` resolves the offset
+    for that date, so the two days a year that are 23 or 25 hours long
+    come out right without this having to know about them.
+
+    Returns (lo, hi) as naive UTC, half-open, or None when the date
+    cannot be read.
+    """
+    try:
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo
+        _z = ZoneInfo(GROUP_TZ)
+        _d = _dt.strptime(day, "%Y-%m-%d").date()
+        _lo = _dt.combine(_d, _dt.min.time(), tzinfo=_z)
+        _hi = _lo + timedelta(days=1)
+        return (_lo.astimezone(timezone.utc).replace(tzinfo=None),
+                _hi.astimezone(timezone.utc).replace(tzinfo=None))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("flow: could not read the day %r (%s)", day, exc)
+        return None
+
+
+def _zone_upload_ids(db, q):
+    """Every upload in `q`, keyed by the trigger zone it fired on.
+
+    TWO QUERIES, NOT ONE PER ROW. The zone lives on the camera event
+    behind the upload, and asking per upload is a query per recording
+    -- fifteen hundred of them on this course.
+    """
+    _pairs = q.with_entities(LongVideoUpload.id,
+                             LongVideoUpload.camera_event_id).all()
+    _ev_ids = {e for _, e in _pairs if e}
+    _zone_of: dict = {}
+    if _ev_ids:
+        for _eid, _d in (db.query(CameraEvent.id, CameraEvent.trigger_detail)
+                         .filter(CameraEvent.id.in_(_ev_ids)).all()):
+            if isinstance(_d, dict) and _d.get("zone") is not None:
+                try:
+                    _zone_of[_eid] = int(_d["zone"])
+                except (TypeError, ValueError):
+                    continue
+    out: dict = {}
+    for _uid, _eid in _pairs:
+        _z = _zone_of.get(_eid)
+        if _z is None:
+            continue
+        out.setdefault(_z, []).append(_uid)
+    return out
+
+
+def _flow_filter(db, course_id: int = 0, day: str = "", zone: int = -1):
+    """The recordings a day and a tee box select, or None for no filter.
+
+    ONE ANSWER FOR THE WHOLE PAGE. The raw column, the cuts, the
+    drafts, the finals and the counts in the header are five separate
+    requests, and a filter applied to only the first of them is how a
+    page ends up saying "No recordings" above three columns full of
+    other days' work -- with a cell reading "#1896 — not on this page
+    of recordings" to explain it.
+
+    Returns a list of upload ids, or None when nothing is filtered.
+    An EMPTY LIST is a real answer and means "that day has none",
+    which is not the same as None and must not be collapsed into it.
+    """
+    _day = (day or "").strip()
+    _zone = int(zone) if zone is not None else -1
+    if not _day and _zone < 0:
+        return None
+    q = db.query(LongVideoUpload)
+    if course_id:
+        q = q.filter(LongVideoUpload.course_id == course_id)
+    if _day:
+        _b = _day_bounds_utc(_day)
+        if _b is None:
+            return []
+        q = q.filter(LongVideoUpload.base_captured_at >= _b[0],
+                     LongVideoUpload.base_captured_at < _b[1])
+    if _zone < 0:
+        return [r[0] for r in q.with_entities(LongVideoUpload.id).all()]
+    return list(_zone_upload_ids(db, q).get(_zone, []))
+
+
 @router.get("/raw")
 def flow_raw(course_id: int = 0, limit: int = 40, offset: int = 0,
              day: str = "", zone: int = -1,
@@ -622,27 +744,33 @@ def flow_raw(course_id: int = 0, limit: int = 40, offset: int = 0,
     # and then the day that emptied it is gone from the dropdown too.
     _days: dict = {}
     for (_at,) in db.query(LongVideoUpload.base_captured_at).filter(
-            *( [LongVideoUpload.course_id == course_id] if course_id else [])
+            *([LongVideoUpload.course_id == course_id] if course_id else [])
     ).all():
         _d = _local_dt(_at)
         if _d is None:
             continue
-        _days[_d.strftime("%Y-%m-%d")] = _days.get(
-            _d.strftime("%Y-%m-%d"), 0) + 1
+        _k = _d.strftime("%Y-%m-%d")
+        _days[_k] = _days.get(_k, 0) + 1
+    # ── AND EVERY TEE BOX, THE SAME WAY ─────────────────────────────
+    _zone_ids = _zone_upload_ids(db, q)
+
+    # ── THE FILTER NARROWS THE QUERY, NOT THE PAGE ──────────────────
+    #
+    # THIS IS THE BUG THIS FUNCTION WAS FIXED FOR. Both filters used
+    # to run over `rows` -- the page that had already been taken --
+    # so on a course with 1560 recordings and a page of 40, choosing
+    # any day older than the newest forty returned nothing while the
+    # dropdown went on offering it, because the dropdown counts the
+    # whole table. "No recordings" was true of the page and false of
+    # the day.
+    _ids = _flow_filter(db, course_id, day, zone)
+    if _ids is not None:
+        # AN EMPTY LIST IS AN ANSWER. `in_([])` is false for every
+        # row, which is exactly right: that day really has none.
+        q = q.filter(LongVideoUpload.id.in_(_ids))
+    _total = q.with_entities(func.count(LongVideoUpload.id)).scalar() or 0
     rows = (q.order_by(LongVideoUpload.base_captured_at.desc())
             .offset(max(0, offset)).limit(max(1, min(200, limit))).all())
-    # ── THE DAY, IN THE COURSE'S OWN CLOCK ──────────────────────────
-    #
-    # Filtered here rather than in SQL. The column is naive UTC and
-    # the day wanted is local, so a SQL date comparison would need the
-    # database to know the zone -- and SQLite and Postgres disagree
-    # about how to tell it. One pass over at most 200 rows is cheaper
-    # than that disagreement.
-    if day:
-        rows = [r for r in rows
-                if (_local_dt(r.base_captured_at) or None) is not None
-                and _local_dt(r.base_captured_at).strftime("%Y-%m-%d")
-                == day]
 
     def _dur(r):
         # PROBED, AND NEVER AT THE COST OF THE LIST. The duration is
@@ -666,32 +794,39 @@ def flow_raw(course_id: int = 0, limit: int = 40, offset: int = 0,
         _row["course_name"] = names.get(r.course_id)
         _row["cuts"] = (db.query(func.count(AudioCut.id))
                         .filter(AudioCut.long_upload_id == r.id).scalar() or 0)
-        # BY INDEX, AFTER THE ROW IS BUILT, because the zone is read
-        # off the camera event and the row is where that read lands.
-        if zone is not None and int(zone) >= 0 \
-                and _row.get("trigger_zone") != int(zone):
-            continue
         out.append(_row)
-    # ── THE ZONES ON THIS PAGE, FOR THE PAGE TO ACCUMULATE ──────────
+    # ── EVERY TEE BOX THERE IS A RECORDING FOR ──────────────────────
     #
-    # From the rows actually built, not from a sweep of every camera
-    # event in the table: a zone is read off the event behind each
-    # upload, so a complete list costs one query per recording.
+    # From `_zone_upload_ids` over the whole (unfiltered) table, for
+    # the same reason as the days: built from the rows on screen, the
+    # list holds only the zone that was chosen and there is no way
+    # back to the others.
     #
-    # The page keeps these in a Map across loads (see `zones.js`,
-    # `growZoneOptions`), which is the same thing Production and Test
-    # Cut do and exists for exactly this: a filtered page holds only
-    # the zone that was chosen, and a dropdown rebuilt from it would
-    # drop every other option the moment you used it.
+    # The NAME comes from one recording per zone -- the newest, since
+    # the ids come back in no order and the label is read off the
+    # event. Two recordings of one zone can disagree about its name,
+    # one keeping the name it had at its trigger and the other reading
+    # today's box, and a dropdown can only show one.
     _zs: dict = {}
-    for _r in out:
-        _z = _r.get("trigger_zone")
-        if _z is None:
-            continue
-        _zs.setdefault(int(_z), _r.get("trigger_zone_label") or "")
-        if not _zs[int(_z)] and _r.get("trigger_zone_label"):
-            _zs[int(_z)] = _r["trigger_zone_label"]
+    for _z, _uids in sorted(_zone_ids.items()):
+        _lbl = ""
+        for _uid in sorted(_uids, reverse=True)[:4]:
+            _u = db.get(LongVideoUpload, _uid)
+            if _u is None:
+                continue
+            try:
+                from .admin import _trigger_zone_label as _tzl
+                _lbl = _tzl(db, _u, _z) or ""
+            except Exception:  # noqa: BLE001
+                _lbl = ""
+            if _lbl:
+                break
+        _zs[_z] = _lbl
     return {"offset": offset, "limit": limit, "raw": out,
+            # HOW MANY THE FILTER ACTUALLY MATCHES, so "no recordings"
+            # over an empty column can be told from a page that simply
+            # has not reached them.
+            "total": int(_total),
             # EVERY DAY AND EVERY ZONE THERE IS SOMETHING FOR, so the
             # dropdowns do not shrink to whatever the filter let past.
             "days": [{"day": k, "n": v}

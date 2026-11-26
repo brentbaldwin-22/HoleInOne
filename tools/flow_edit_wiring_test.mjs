@@ -182,16 +182,44 @@ check("...then the boxes as they were at the trigger",
 check("the page filters by day", /setDay\(/.test(page));
 check("...and by tee box", /setZone\(/.test(page));
 check("...server-side, because the list is paginated",
-      /api\.flowRaw\(adminPassword, \{ limit: 40, day, zone \}\)/
+      /api\.flowRaw\(adminPassword, \{ limit: 40, \.\.\._f \}\)/
         .test(page));
+// THE DAY IS THE COURSE'S OWN, not UTC: an evening round is one day
+// to everybody standing there and two in UTC. Worked out with
+// zoneinfo, so the two days a year that are 23 or 25 hours long come
+// out right without this having to know about them.
 check("the day is the course's own, not UTC",
-      /_local_dt\(r\.base_captured_at\)/.test(flow));
+      /ZoneInfo\(GROUP_TZ\)/.test(flow));
 // ZONE 0 IS A ZONE. A falsy test drops the box printed "Zone 1" and
 // silently widens the filter to everything.
 check("zone 0 is sent, not treated as 'all'",
       /zone != null && zone !== ""/.test(apijs));
 check("the day list comes from every recording, not the page",
       /"days": \[\{"day": k, "n": v\}/.test(flow));
+// ── THE FILTER NARROWS THE QUERY, NOT THE PAGE ──────────────────
+// Run over the page already taken, choosing any day older than the
+// newest forty found nothing while the dropdown went on offering it.
+check("the day narrows the query before the limit",
+      /_flow_filter\(db, course_id, day, zone\)[\s\S]{0,400}?\.offset\(/
+        .test(flow));
+check("...in UTC bounds worked out from the local day",
+      /_day_bounds_utc/.test(flow));
+check("...and the zone resolves its ids in two queries, not per row",
+      /def _zone_upload_ids/.test(flow)
+        && /CameraEvent\.id\.in_\(_ev_ids\)/.test(flow));
+// ── AND ALL FOUR COLUMNS TAKE IT ────────────────────────────────
+// Sent on the raw list alone, the page said "No recordings" beside a
+// cut card and a draft from a fortnight earlier.
+check("the cuts endpoint takes the filter",
+      /AudioCut\.long_upload_id\.in_\(_ids\)/.test(flow));
+check("...the clips endpoint too",
+      /VideoClip\.long_upload_id\.in_\(_ids\)/.test(flow));
+check("...and the header counts",
+      /LongVideoUpload\.id\.in_\(_ids\)/.test(flow));
+check("the page sends it on every one of them",
+      (page.match(/\.\.\._f/g) || []).length >= 4, true);
+check("...and the live tick depends on it",
+      /\}, \[adminPassword, day, zone\]\);/.test(page));
 check("the zone options accumulate across loads",
       /zoneSeen/.test(page));
 

@@ -20,7 +20,7 @@ where the row being deleted is the recording those clips are OF.
     python3 tools/flow_filters_test.py
 """
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -163,6 +163,65 @@ check("...the newest one's, where they disagree",
       flow_raw(db=db)["raw"][2]["trigger_zone_label"], "middle")
 check("no filter means everything",
       len(flow_raw(db=db)["raw"]), 5)
+
+print("\n4b. and the filter narrows the QUERY, not the page")
+# ── THE BUG THIS SECTION EXISTS FOR ─────────────────────────────────
+#
+# Both filters ran over `rows` -- the page that had ALREADY been taken
+# -- so on a course with 1560 recordings and a page of 40, choosing
+# any day older than the newest forty returned nothing. The dropdown
+# went on offering it, because the dropdown counts the whole table:
+# "No recordings" was true of the page and false of the day.
+#
+# And the other three columns were not filtered at all, so the same
+# screen showed a cut card and a draft from a fortnight earlier with
+# the raw cell explaining "#1896 — not on this page of recordings".
+from app.routers.production_flow import (  # noqa: E402
+    flow_clips, flow_counts,
+)
+
+db4 = a_db()
+_base = datetime(2026, 11, 10, 15, 0)
+for _i in range(120):
+    _u = a_recording(db4, 2000 + _i, _i % 2,
+                     (_base + timedelta(days=_i // 10,
+                                        minutes=_i)).isoformat(sep=" "))
+    _k = record_cut(db4, upload=_u, idx=0, peak_time_sec=33.4)
+    db4.add(VideoClip(id=5000 + _i, course_id=1, hole_number=8,
+                      camera_type="tee", captured_at=_u.base_captured_at,
+                      long_upload_id=_u.id, audio_cut_id=_k.id,
+                      flow_run_at=datetime.utcnow(),
+                      source_url="http://x/c%d.mp4" % _i))
+    db4.commit()
+
+_DAY = "2026-11-12"          # ~100 rows back from the newest
+_r4 = flow_raw(limit=40, day=_DAY, db=db4)
+check("a day well past the first page is still found",
+      len(_r4["raw"]), 10)
+check("...and says how many it matched", _r4["total"], 10)
+check("the cuts column is filtered too",
+      len(flow_cuts(limit=120, day=_DAY, db=db4)["cuts"]), 10)
+check("...and the drafts column",
+      len(flow_clips(stage="draft", limit=60, day=_DAY, db=db4)["clips"]),
+      10)
+# A HEADER READING 1560 OVER A COLUMN OF 10 is two numbers about
+# different things, and the big one is the one that gets believed.
+check("...and the header counts",
+      [t["count"] for t in flow_counts(day=_DAY, db=db4)["tabs"]][:3],
+      [10, 10, 10])
+check("the day list still offers every day", len(_r4["days"]), 12)
+check("...and the zone list every tee box",
+      [z["zone"] for z in _r4["zones"]], [0, 1])
+check("both filters together narrow further",
+      len(flow_raw(limit=40, day=_DAY, zone=1, db=db4)["raw"]), 5)
+# A ZONE SPANNING MORE THAN A PAGE still pages: 60 rows, 40 shown.
+_rz = flow_raw(limit=40, zone=0, db=db4)
+check("a zone with more than a page of rows still pages",
+      (len(_rz["raw"]), _rz["total"]), (40, 60))
+# AND AN EMPTY ANSWER IS A REAL ANSWER, not "no filter".
+_none = flow_raw(day="2026-01-01", db=db4)
+check("a day with nothing is empty, not unfiltered",
+      (len(_none["raw"]), _none["total"]), (0, 0))
 
 print("\n5. throwing a recording away takes its children")
 db2 = a_db()
