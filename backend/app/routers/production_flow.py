@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException
 from sqlalchemy import func
@@ -110,15 +111,40 @@ def _cut_frames(k: AudioCut) -> dict:
     if _fps <= 0 or _pk is None:
         return {"fps": k.fps, "lag_sec": k.lag_sec,
                 "peak_frame": None, "impact_frame": None,
-                "lag_frames": None}
+                "lag_frames": None,
+                # WITHOUT A FRAME RATE THERE IS NO WINDOW EITHER, and
+                # no window means the wizard opens on the whole
+                # recording -- which is what it used to do for every
+                # cut. Honest degradation for a cut recorded before
+                # the frame rate was kept; a window guessed at 30 or
+                # 60 would open on the wrong seconds.
+                "start_frame": None, "end_frame": None}
     _lag = float(k.lag_sec or 0.0)
-    return {
+    out = {
         "fps": round(_fps, 2),
         "lag_sec": round(_lag, 3),
         "peak_frame": int(round(float(_pk) * _fps)),
         "lag_frames": int(round(_lag * _fps)),
         "impact_frame": int(round(max(0.0, float(_pk) - _lag) * _fps)),
+        "start_frame": None, "end_frame": None,
     }
+    # ── THE CUT'S OWN WINDOW, IN RECORDING FRAMES ───────────────────
+    #
+    # So that producing a clip BY HAND from this cut opens on the
+    # twelve seconds the cut is of, rather than on the whole
+    # recording. On #1915 that was "1–9239" in the frame box: the
+    # operator was handed a three-minute video and asked to find a
+    # strike in it that the microphone had already located.
+    #
+    # IN THE RECORDING'S OWN FRAME NUMBERS, not the cut file's. The
+    # produce reads the full-resolution source and every frame number
+    # on the swing record is an index into it; pointing the wizard at
+    # the already-cut MP4 instead would re-encode a re-encode and
+    # shift every number by the cut's own start.
+    if k.start_sec is not None and k.end_sec is not None:
+        out["start_frame"] = max(0, int(round(float(k.start_sec) * _fps)))
+        out["end_frame"] = int(round(float(k.end_sec) * _fps))
+    return out
 
 
 def _cut_why_no_file(k: AudioCut, which: str, has_green=None) -> str | None:
@@ -221,12 +247,17 @@ def flow_counts(day: str = "", zone: int = -1, course_id: int = 0,
     things.
     """
     _ids = _flow_filter(db, course_id, day, zone)
-    _raw_q = db.query(func.count(LongVideoUpload.id))
+    _raw_q = db.query(LongVideoUpload.id, LongVideoUpload.tee_filename)
     _cut_q = db.query(func.count(AudioCut.id))
     if _ids is not None:
         _raw_q = _raw_q.filter(LongVideoUpload.id.in_(_ids))
         _cut_q = _cut_q.filter(AudioCut.long_upload_id.in_(_ids))
-    n_raw = _raw_q.scalar() or 0
+    # COUNTED THE WAY THE COLUMN SHOWS IT, footage included. A header
+    # reading 1560 over a list that hides every recording whose video
+    # is gone is the same contradiction as one reading 1560 over a
+    # single day -- and the big number is the one that gets believed.
+    _l, _b = _source_index()
+    n_raw = sum(1 for _, _fn in _raw_q.all() if _have_source(_fn, _l, _b))
     n_cuts = _cut_q.scalar() or 0
     # COUNTED THE SAME WAY THE COLUMNS SHOW IT. The clip columns show
     # only what this flow produced; a header counting all thousand
@@ -686,6 +717,66 @@ def _raw_row(db, row, info_of) -> dict:
     }
 
 
+def _source_index():
+    """Every file name that exists, locally or in the bucket.
+
+    TWO CHEAP CALLS FOR THE WHOLE TABLE, and that is the whole point.
+    `_local_tee` rehydrates from object storage before answering, which
+    is right for one recording and ruinous for fifteen hundred: asking
+    it per row to find out whether a file is there would try to
+    DOWNLOAD every clip on the course.
+
+    One directory scan and one bucket listing answer the same question
+    for every row at once. A name in either place is a recording that
+    can still be worked on -- the disk is ephemeral here and a clip
+    that is only in the bucket is pulled back the moment anything
+    needs it.
+
+    Returns (local names, bucket names). Either may be empty: no
+    bucket configured, or a listing that failed. A failure must not
+    make the page claim the footage is gone, so a caller treats an
+    empty bucket set as "the bucket could not be asked" and leans on
+    the local set -- see `_have_source`.
+    """
+    import os
+
+    from ..services import storage
+    from .admin import CLIPS_DIR
+
+    _local: set = set()
+    try:
+        with os.scandir(CLIPS_DIR) as _it:
+            for _e in _it:
+                if _e.is_file():
+                    _local.add(_e.name)
+    except OSError as exc:
+        log.warning("flow: could not list %s (%s)", CLIPS_DIR, exc)
+    _bucket: set = set()
+    try:
+        _bucket = storage.list_names() or set()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("flow: could not list the bucket (%s)", exc)
+    return _local, _bucket
+
+
+def _have_source(name, local: set, bucket: set) -> bool:
+    """Is this recording's video actually anywhere?
+
+    A row whose source is gone is a row nothing can be done with: no
+    cut, no produce, no angle to open. It used to sit in the list
+    showing "—" for its duration and two dead buttons, which reads as
+    a recording waiting to be worked on.
+
+    LOCAL *OR* BUCKET. The disk is wiped on every deploy here, so "not
+    under CLIPS_DIR" is not "gone" -- it is the normal state of
+    anything older than the last restart.
+    """
+    if not name:
+        return False
+    _base = Path(name).name
+    return _base in local or _base in bucket
+
+
 def _day_bounds_utc(day: str):
     """A local calendar day, as the half-open UTC range it covers.
 
@@ -807,12 +898,21 @@ def flow_raw(course_id: int = 0, limit: int = 40, offset: int = 0,
     # it: a dropdown built from the current page offers only the days
     # that page happens to hold, so choosing one can empty the list
     # and then the day that emptied it is gone from the dropdown too.
+    #
+    # AND ONLY WHAT IS ACTUALLY THERE. The number in brackets is what
+    # an operator is about to go and work on, so counting recordings
+    # whose video is gone makes it a promise the list cannot keep --
+    # "2026-11-14 (27)" over a column of rows showing "—" for their
+    # duration and two dead buttons.
+    _local, _bucket = _source_index()
     _days: dict = {}
-    for (_at,) in db.query(LongVideoUpload.base_captured_at).filter(
+    for (_at, _fn) in db.query(
+            LongVideoUpload.base_captured_at,
+            LongVideoUpload.tee_filename).filter(
             *([LongVideoUpload.course_id == course_id] if course_id else [])
     ).all():
         _d = _local_dt(_at)
-        if _d is None:
+        if _d is None or not _have_source(_fn, _local, _bucket):
             continue
         _k = _d.strftime("%Y-%m-%d")
         _days[_k] = _days.get(_k, 0) + 1
@@ -833,8 +933,28 @@ def flow_raw(course_id: int = 0, limit: int = 40, offset: int = 0,
         # AN EMPTY LIST IS AN ANSWER. `in_([])` is false for every
         # row, which is exactly right: that day really has none.
         q = q.filter(LongVideoUpload.id.in_(_ids))
-    _total = q.with_entities(func.count(LongVideoUpload.id)).scalar() or 0
-    rows = (q.order_by(LongVideoUpload.base_captured_at.desc())
+
+    # ── AND THE ONES WITH NO FOOTAGE COME OUT BEFORE THE PAGE ───────
+    #
+    # NOT AFTER IT, which is the same mistake the day filter made:
+    # dropping rows from a page already taken means a page of forty
+    # shows thirty-seven, `total` promises rows that will never
+    # appear, and the next offset steps over whatever the gap was.
+    #
+    # So the surviving ids are resolved first -- two columns over the
+    # filtered set, against one directory scan and one bucket listing
+    # -- and the page is taken from those.
+    _have = []
+    _gone = []
+    for _uid, _fn in q.with_entities(LongVideoUpload.id,
+                                     LongVideoUpload.tee_filename).all():
+        if _have_source(_fn, _local, _bucket):
+            _have.append(_uid)
+        else:
+            _gone.append(_uid)
+    _total = len(_have)
+    rows = (q.filter(LongVideoUpload.id.in_(_have))
+            .order_by(LongVideoUpload.base_captured_at.desc())
             .offset(max(0, offset)).limit(max(1, min(200, limit))).all())
 
     def _dur(r):
@@ -892,6 +1012,16 @@ def flow_raw(course_id: int = 0, limit: int = 40, offset: int = 0,
             # over an empty column can be told from a page that simply
             # has not reached them.
             "total": int(_total),
+            # AND HOW MANY WERE DROPPED FOR HAVING NO FOOTAGE. Said
+            # out loud: a row quietly missing from a list is the same
+            # shape of silence as a filter that matched nothing.
+            "hidden_no_source": len(_gone),
+            # WHICH ONES, so a band that still has cuts or drafts can
+            # say "its source video is gone" instead of the useless
+            # "not on this page of recordings". Capped: this is for
+            # naming the handful on screen, not for listing a
+            # thousand.
+            "hidden_ids": sorted(_gone, reverse=True)[:500],
             # EVERY DAY AND EVERY ZONE THERE IS SOMETHING FOR, so the
             # dropdowns do not shrink to whatever the filter let past.
             "days": [{"day": k, "n": v}

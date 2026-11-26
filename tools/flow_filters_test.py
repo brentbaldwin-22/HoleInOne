@@ -34,7 +34,7 @@ from app.database import Base  # noqa: E402
 from app.models import (  # noqa: E402
     AudioCut, Camera, CameraEvent, Course, LongVideoUpload, VideoClip,
 )
-from app.routers.admin import _trigger_zone_label  # noqa: E402
+from app.routers.admin import CLIPS_DIR, _trigger_zone_label  # noqa
 from app.routers.production_flow import (  # noqa: E402
     delete_flow_raw, flow_cuts, flow_raw, record_cut,
 )
@@ -63,6 +63,20 @@ def a_db():
     return db
 
 
+# ── THE SOURCE HAS TO BE THERE ──────────────────────────────────────
+#
+# A recording whose video is gone is not listed any more, and that is
+# the point of `flow_source_present_test`. A fixture that writes rows
+# and no files is asking this page to list nothing.
+MADE: list = []
+
+
+def a_source(name):
+    (CLIPS_DIR / name).write_bytes(b"x" * 32)
+    MADE.append(CLIPS_DIR / name)
+    return name
+
+
 def a_recording(db, uid, zone, when, label=None, roi_then=None):
     _d = {"zone": zone}
     if label:
@@ -74,7 +88,8 @@ def a_recording(db, uid, zone, when, label=None, roi_then=None):
                      triggered_at=datetime.fromisoformat(when))
     db.add(ev)
     db.commit()
-    up = LongVideoUpload(id=uid, course_id=1, tee_filename="t%d.mp4" % uid,
+    up = LongVideoUpload(id=uid, course_id=1,
+                         tee_filename=a_source("fft-%d.mp4" % uid),
                          camera_event_id=ev.id,
                          base_captured_at=datetime.fromisoformat(when))
     db.add(up)
@@ -268,6 +283,9 @@ except HTTPException as e:
 check("...and it is still there",
       db3.get(LongVideoUpload, 1917) is not None, True)
 check("...with its clip untouched", db3.get(VideoClip, 7) is not None, True)
+
+for _f in MADE:
+    _f.unlink(missing_ok=True)
 
 print("\n%s" % ("all ok" if not FAILED else "%d FAILED:\n  %s" % (
     len(FAILED), "\n  ".join(FAILED))))

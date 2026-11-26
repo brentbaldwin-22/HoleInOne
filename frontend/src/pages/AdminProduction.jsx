@@ -4308,12 +4308,22 @@ export function ClickToPlotModal({
               // parent already tracks the tee frame for `set to
               // current`, so it is handed back on the way in.
               //
-              // Failing that: a new clip opens at frame 1 and the
-              // operator walks forward, because on a swing nobody has
-              // produced yet there is no impact frame to open at and
-              // finding the strike IS the first job. An existing swing
-              // opens on its impact frame.
-              startFrame={teeViewFrame ?? impactF ?? (isNew ? 1 : undefined)}
+              // Failing that: a new clip opens at the start of
+              // whatever it is bounded to and the operator walks
+              // forward, because on a swing nobody has produced yet
+              // there is usually no impact frame to open at and
+              // finding the strike IS the first job. An existing
+              // swing opens on its impact frame.
+              //
+              // UNLESS THE CALLER ALREADY FOUND IT. Production Flow's
+              // "Produce Clip" is pressed on a cut whose strike the
+              // microphone heard, and hands the frame over in `seed`
+              // -- so `impactF` is set on a new swing too, and this
+              // opens on the strike rather than at the window's edge.
+              // The fallback is that edge and not frame 1, which on a
+              // seeded cut is thousands of frames outside it.
+              startFrame={teeViewFrame ?? impactF
+                ?? (isNew ? (swing.start_frame ?? 1) : undefined)}
               track={(swing.ball_track_frames || []).filter(
                 (r) => r.found && r.x != null && r.y != null,
               )}

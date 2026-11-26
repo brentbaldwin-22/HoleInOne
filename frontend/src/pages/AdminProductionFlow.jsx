@@ -252,6 +252,12 @@ export default function AdminProductionFlow() {
   const [day, setDay] = useState("");
   const [zone, setZone] = useState("");
   const [days, setDays] = useState([]);
+  // RECORDINGS LEFT OUT BECAUSE THEIR VIDEO IS GONE, and which ones.
+  // A row quietly missing from a list is the same shape of silence as
+  // a filter that matched nothing, so the page says so — and a band
+  // that still has cuts or drafts can name the reason instead of
+  // shrugging "not on this page of recordings".
+  const [gone, setGone] = useState({ n: 0, ids: [] });
   // ZONE OPTIONS ACCUMULATE. A page filtered to one zone holds only
   // that zone, so a dropdown rebuilt from it would drop every other
   // option the moment it was used. `zones.js` keeps this Map for the
@@ -289,6 +295,7 @@ export default function AdminProductionFlow() {
       setCounts(c); setRaw(r.raw); setCuts(k.cuts);
       setDrafts(d.clips); setFinals(f.clips);
       setDays(r.days || []);
+      setGone({ n: r.hidden_no_source || 0, ids: r.hidden_ids || [] });
       // GROWN, NOT REPLACED. See `zoneSeen` above.
       let _grew = false;
       for (const z of (r.zones || [])) {
@@ -778,8 +785,23 @@ export default function AdminProductionFlow() {
                        + "heard on"}
                 onClick={() => openAdder(
                   k.long_upload_id,
-                  k.impact_frame != null
-                    ? { impact_frame: k.impact_frame } : null,
+                  // ── THE CUT'S OWN WINDOW, NOT THE WHOLE VIDEO ──
+                  //
+                  // `start_frame`/`end_frame` bound the wizard's
+                  // frame stepper, so it opens on the twelve seconds
+                  // this cut is of instead of handing the operator a
+                  // three-minute recording — "1–9239" in the frame
+                  // box — and asking them to find a strike the
+                  // microphone had already located.
+                  //
+                  // In the RECORDING's frame numbers: the produce
+                  // reads the full-resolution source and every number
+                  // on the swing record indexes into it.
+                  (k.impact_frame != null || k.start_frame != null)
+                    ? { impact_frame: k.impact_frame,
+                        start_frame: k.start_frame,
+                        end_frame: k.end_frame }
+                    : null,
                   `cut-${k.id}`)}>
           {acting === `cut-${k.id}` ? "opening…" : "Produce Clip"}
         </button>
@@ -1055,6 +1077,16 @@ export default function AdminProductionFlow() {
                 ))}
               </select>
             </label>
+            {gone.n > 0 && (
+              <span className="tiny muted"
+                    title={"a recording with no video can neither be cut "
+                           + "nor produced, and has no angle to open — "
+                           + "the disk here is wiped on every deploy, so "
+                           + "this is checked against object storage too"}>
+                {gone.n} recording{gone.n === 1 ? "" : "s"} hidden — no
+                {" "}source video
+              </span>
+            )}
             {(day || zone !== "") && (
               <button type="button" className="btn ghost small"
                       onClick={() => { setDay(""); setZone(""); }}>
@@ -1129,7 +1161,17 @@ export default function AdminProductionFlow() {
               <Cell center empty="this recording is gone from the list">
                 {r ? rawCard(r, run, busy, on) : (
                   <div className="tiny muted">
-                    <b>#{uid}</b> — not on this page of recordings
+                    <b>#{uid}</b>
+                    {/* WHY IT IS NOT HERE, where that is knowable. A
+                        recording whose video has been swept still has
+                        its cuts and its drafts, and those are worth
+                        keeping on screen — but "not on this page"
+                        reads like paging, which is a different
+                        problem with a different fix. */}
+                    {gone.ids.includes(uid)
+                      ? " — its source video is gone; the cuts and "
+                        + "drafts it made are still here"
+                      : " — not on this page of recordings"}
                   </div>
                 )}
               </Cell>

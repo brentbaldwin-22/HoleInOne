@@ -51,8 +51,15 @@ eng = create_engine("sqlite://")
 Base.metadata.create_all(eng)
 db = sessionmaker(bind=eng)()
 db.add(Course(id=1, name="Rivertowne"))
+# THE SOURCE HAS TO BE THERE. A recording whose video is gone is not
+# listed any more -- see `flow_source_present_test` -- so a fixture
+# that writes a row and no file is asking the raw column to be empty.
+from app.routers.admin import CLIPS_DIR  # noqa: E402
+
+_SRC = CLIPS_DIR / "pft-5.mp4"
+_SRC.write_bytes(b"x" * 32)
 up = LongVideoUpload(id=5, course_id=1, base_captured_at=datetime.now(),
-                     tee_filename="t.mp4")
+                     tee_filename=_SRC.name)
 db.add(up)
 db.commit()
 
@@ -182,6 +189,11 @@ check("a tee-only cut is still a cut", un[0]["green_url"], None)
 print("\n9. record_cut never raises, whatever it is handed")
 check("a broken upload object costs nothing",
       record_cut(db, upload=object(), idx=0), None)
+
+# BEFORE THE EXIT, AND BEFORE THE BRANCH. Cleaning up only on the
+# success path leaves a file behind on exactly the runs somebody is
+# about to re-run.
+_SRC.unlink(missing_ok=True)
 
 print()
 if FAILED:

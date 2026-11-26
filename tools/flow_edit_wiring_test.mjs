@@ -245,6 +245,25 @@ check("...opening the add wizard on that recording",
       /openAdder\(\s*\n?\s*k\.long_upload_id/.test(page));
 check("...seeded with the frame the strike was heard on",
       /impact_frame: k\.impact_frame/.test(page));
+// ── AND BOUNDED TO THE CUT, NOT THE RECORDING ───────────────────
+// It opened on the whole video — "1–9239" in the frame box — and
+// asked the operator to find a strike the microphone had located.
+check("...and the window the cut covers",
+      /start_frame: k\.start_frame/.test(page)
+        && /end_frame: k\.end_frame/.test(page));
+check("the server gives the window in recording frames",
+      /"start_frame"\] = max\(0, int\(round\(float\(k\.start_sec\)/
+        .test(flow));
+check("...and none at all without a frame rate",
+      /"start_frame": None, "end_frame": None\}/.test(flow));
+check("the stepper is bounded by the swing it was given",
+      /frameLo=\{swing\.start_frame/.test(prod)
+        && /frameHi=\{swing\.end_frame/.test(prod));
+// A SEEDED CUT OPENS ON ITS STRIKE, and failing that on its own
+// window's edge — frame 1 is thousands of frames outside it.
+check("...and opens on the strike, not the edge",
+      /startFrame=\{teeViewFrame \?\? impactF\s*\n?\s*\?\? \(isNew \? \(swing\.start_frame \?\? 1\)/
+        .test(prod));
 check("the modal takes a seed", /row, swingPos, addNew, seed,/.test(prod));
 check("...and uses it only for a new swing",
       /const swing = isNew \? \(seed \|\| \{\}\) :/.test(prod));
@@ -262,6 +281,26 @@ check("a url is only built where the file is there",
       /\(CLIPS_DIR \/ fn\)\.exists\(\)/.test(flow));
 check("...so the dead 'tee only' label is gone",
       /tee only/.test(page), false);
+
+console.log("\n8. a recording with no video is not listed");
+check("the source index is built in bulk, not per row",
+      /def _source_index/.test(flow)
+        && /storage\.list_names\(\)/.test(flow));
+// NOT ONE `ensure_local` PER ROW -- that would try to DOWNLOAD every
+// clip on the course to find out whether it is there.
+check("...without rehydrating anything",
+      /_have_source\(_fn, _local, _bucket\)/.test(flow));
+check("the rows are dropped before the limit, not after",
+      /_have\.append\(_uid\)[\s\S]{0,400}?\.offset\(/.test(flow));
+check("the day counts only count footage that is there",
+      /_have_source\(_fn, _local, _bucket\)[\s\S]{0,200}?_days\[_k\]/
+        .test(flow));
+check("...and so does the header count",
+      /n_raw = sum\(1 for _, _fn in _raw_q\.all\(\)/.test(flow));
+check("the page says how many it left out",
+      /hidden — no/.test(page));
+check("...and a band with cuts but no row says why",
+      /its source video is gone/.test(page));
 
 console.log();
 if (failed.length) {

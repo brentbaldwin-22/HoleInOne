@@ -178,6 +178,7 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 from app.database import Base  # noqa: E402
 from app.models import Course, LongVideoUpload  # noqa: E402
+from app.routers.admin import CLIPS_DIR  # noqa: E402
 from app.routers.admin import _keep_produce_report  # noqa: E402
 from app.routers.production_flow import (  # noqa: E402
     flow_produce_report, flow_raw,
@@ -187,7 +188,11 @@ eng = create_engine("sqlite://")
 Base.metadata.create_all(eng)
 db = sessionmaker(bind=eng)()
 db.add(Course(id=1, name="Rolling Hills"))
-db.add(LongVideoUpload(id=1916, course_id=1, tee_filename="t.mp4",
+# THE SOURCE HAS TO BE THERE: a recording whose video is gone is not
+# listed any more, so a row with no file lists nothing.
+_src = CLIPS_DIR / "prr-1916.mp4"
+_src.write_bytes(b"x" * 32)
+db.add(LongVideoUpload(id=1916, course_id=1, tee_filename=_src.name,
                        base_captured_at=datetime(2026, 11, 25, 14, 0)))
 db.commit()
 
@@ -219,6 +224,8 @@ db.expire_all()
 check("a later produce replaces the report",
       flow_produce_report(1916, db=db)["report"]["reason"],
       "1 of 3 swing(s) produced")
+
+_src.unlink(missing_ok=True)
 
 print("\n%s" % ("all ok" if not FAILED else "%d FAILED:\n  %s" % (
     len(FAILED), "\n  ".join(FAILED))))

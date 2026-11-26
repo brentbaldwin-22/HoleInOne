@@ -160,6 +160,42 @@ check("...including when it is zero",
       "the peak is taken as the strike"
       in get_audio_gates(1916, db=db3)["sentence"])
 
+print("\n6b. the cut's own window, for producing one by hand")
+# ── WHY THIS EXISTS ─────────────────────────────────────────────────
+#
+# "Produce Clip" on a cut opened the wizard on the WHOLE recording --
+# "1–9239" in the frame box on #1915 -- handing the operator three
+# minutes of video and asking them to find a strike the microphone had
+# already located. The cut knows the twelve seconds it is of.
+#
+# IN THE RECORDING'S FRAME NUMBERS, not the cut file's. The produce
+# reads the full-resolution source and every number on the swing
+# record indexes into it; pointing the wizard at the already-cut MP4
+# would re-encode a re-encode and shift every number by the cut's own
+# start.
+db5 = a_db()
+up5 = db5.get(LongVideoUpload, 1916)
+# Swing 4 of #1915, as it really was: peak 123.70s, window
+# 119.7s-131.7s, 60fps, and the hole's lag now at 1.00s.
+k5 = record_cut(db5, upload=up5, idx=3, peak_time_sec=123.70,
+                start_sec=119.7, end_sec=131.7, fps=60.0, lag_sec=1.0)
+f5 = _cut_frames(k5)
+check("the window starts where the cut does", f5["start_frame"], 7182)
+check("...and ends where it ends", f5["end_frame"], 7902)
+check("...which is the twelve seconds the cut is of",
+      round((f5["end_frame"] - f5["start_frame"]) / 60.0, 1), 12.0)
+# AND THE STRIKE IS INSIDE IT, or the wizard would open on a frame its
+# own bounds exclude.
+check("the strike sits inside that window",
+      f5["start_frame"] <= f5["impact_frame"] <= f5["end_frame"], True)
+check("...at the peak less the lag", f5["impact_frame"], 7362)
+# NO FRAME RATE, NO WINDOW. A window guessed at 30 or 60 opens on the
+# wrong seconds, which is worse than opening on the whole recording.
+_k6 = record_cut(db5, upload=up5, idx=4, peak_time_sec=10.0)
+check("a cut with no frame rate has no window",
+      (_cut_frames(_k6)["start_frame"], _cut_frames(_k6)["end_frame"]),
+      (None, None))
+
 print("\n7. and the draft says whose frame it was produced from")
 # THE QUESTION, VERBATIM: "it identified impact frame as 2009 instead
 # of 1920 -- just curious what the audio cut identified it as?" The
