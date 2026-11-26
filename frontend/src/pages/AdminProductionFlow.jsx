@@ -273,7 +273,6 @@ export default function AdminProductionFlow() {
   const [editing, setEditing] = useState(null);
   const [editErr, setEditErr] = useState(null);
   const [viewer, setViewer] = useState(null);
-  const [focus, setFocus] = useState(0);      // which recording, 0 = all
   const polling = useRef(new Set());
 
   const load = useCallback(async () => {
@@ -388,7 +387,6 @@ export default function AdminProductionFlow() {
       const got = await api.flowStart(adminPassword, uploadId);
       setRuns((s) => ({ ...s, [uploadId]: { ...got, running: true } }));
       poll(uploadId);
-      setFocus(uploadId);
     } catch (e) { setErr(e.message); } finally { setActing(null); }
   }
 
@@ -420,7 +418,6 @@ export default function AdminProductionFlow() {
     try {
       const got = await api.flowDeleteRaw(adminPassword, uploadId);
       setArmed(0);
-      if (focus === uploadId) setFocus(0);
       await load();
       setErr(null);
       // NOT AN ERROR, AND WORTH SAYING. A row vanishing is the only
@@ -513,14 +510,18 @@ export default function AdminProductionFlow() {
     (raw || []).forEach((r) => push(r.id));
     [cuts, drafts, finals].forEach((rows) =>
       (rows || []).forEach((x) => push(x.long_upload_id)));
-    return focus ? seen.filter((id) => id === focus) : seen;
+    // EVERY BAND, ALWAYS. This used to narrow to one recording, and
+    // a page whose whole point is the fan-out from one recording to
+    // its cuts and its drafts reads worse one row at a time: the
+    // comparison between neighbouring swings is the thing being
+    // looked at. Narrowing is what the day and tee-box filters are
+    // for, and they say so in the header where a row-level toggle
+    // did not.
+    return seen;
   })();
 
-  const rawCard = (r, run, busy, on) => (
-    <div className="card tight" style={{ margin: 0,
-                                         outline: on
-                                           ? "2px solid var(--accent, #1a56db)"
-                                           : "none" }}>
+  const rawCard = (r, run, busy) => (
+    <div className="card tight" style={{ margin: 0 }}>
       <div className="small">
         <b>#{r.id}</b>
         {r.hole_number ? <> · Hole {r.hole_number}</> : null}
@@ -668,18 +669,17 @@ export default function AdminProductionFlow() {
           delete recording
         </button>
       )}
+      {/* WHAT THIS RECORDING SPAWNED. A line, not a button: it used
+          to narrow the page to this one recording, which is the
+          opposite of what the page is for. The numbers were always
+          the useful half of it. */}
       {(nCuts[r.id] || nDrafts[r.id] || nFinals[r.id]) ? (
-        <button type="button"
-                className={on ? "btn small" : "btn ghost small"}
-                style={{ marginTop: 6, width: "100%" }}
-                title="show only this recording"
-                onClick={() => setFocus(on ? 0 : r.id)}>
+        <div className="tiny muted" style={{ marginTop: 6 }}>
           → {nCuts[r.id] || 0} cut{(nCuts[r.id] || 0) === 1 ? "" : "s"}
           {" · "}{nDrafts[r.id] || 0} draft
           {(nDrafts[r.id] || 0) === 1 ? "" : "s"}
           {(nFinals[r.id] || 0) > 0 && ` · ${nFinals[r.id]} final`}
-          {on ? " — showing" : ""}
-        </button>
+        </div>
       ) : null}
     </div>
   );
@@ -975,14 +975,9 @@ export default function AdminProductionFlow() {
 
   const countOf = (k) =>
     counts?.tabs?.find((t) => t.key === k)?.count;
-  const keep = (list, uploadId) =>
-    (focus ? (list || []).filter((x) => uploadId(x) === focus) : (list || []));
-
-  // The run the columns are narrating: the one being followed, or
-  // whichever is going if nothing is.
+  // The run the columns are narrating: whichever one is going.
   const liveId = Number(
-    Object.keys(runs).find((id) => runs[id]?.running
-      && (!focus || Number(id) === focus)) || 0);
+    Object.keys(runs).find((id) => runs[id]?.running) || 0);
   const liveRun = liveId ? runs[liveId] : null;
 
   // WHAT EACH RECORDING SPAWNED, counted once for every column that
@@ -1000,7 +995,7 @@ export default function AdminProductionFlow() {
   const nDrafts = tally(drafts, (c) => c.long_upload_id);
   const nFinals = tally(finals, (c) => c.long_upload_id);
 
-  const shownCuts = keep(cuts, (k) => k.long_upload_id);
+  const shownCuts = cuts || [];
   // ONLY ONCE IT IS ACTUALLY PRODUCING.
   //
   // The live draft fetch is unfiltered by design: the flow stamp the
@@ -1013,8 +1008,8 @@ export default function AdminProductionFlow() {
   // take.
   const producing = phaseOf(liveRun?.stage).phase === "produce";
   const draftSource = producing && liveDrafts ? liveDrafts : drafts;
-  const shownDrafts = keep(draftSource, (c) => c.long_upload_id);
-  const shownFinals = keep(finals, (c) => c.long_upload_id);
+  const shownDrafts = draftSource || [];
+  const shownFinals = finals || [];
 
   return (
     <div className="wrap wide">
@@ -1093,12 +1088,6 @@ export default function AdminProductionFlow() {
                 clear filters
               </button>
             )}
-            {focus > 0 && (
-              <button type="button" className="btn ghost small"
-                      onClick={() => setFocus(0)}>
-                showing recording #{focus} — show all
-              </button>
-            )}
             <button type="button" className="btn ghost small" onClick={load}>
               refresh
             </button>
@@ -1154,12 +1143,11 @@ export default function AdminProductionFlow() {
           const mine = (rows) => (rows || [])
             .filter((x) => x.long_upload_id === uid);
           const myFinals = mine(shownFinals);
-          const on = focus === uid;
           return (
             <Fragment key={uid}>
               {/* 1. the recording */}
               <Cell center empty="this recording is gone from the list">
-                {r ? rawCard(r, run, busy, on) : (
+                {r ? rawCard(r, run, busy) : (
                   <div className="tiny muted">
                     <b>#{uid}</b>
                     {/* WHY IT IS NOT HERE, where that is knowable. A

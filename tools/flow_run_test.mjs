@@ -241,8 +241,41 @@ console.log("\n3g. the raw card says what the recording became");
         && /const nFinals = tally\(/.test(page));
   check("and printed on the recording it came from",
         /\{nCuts\[r\.id\] \|\| 0\} cut/.test(page));
-  check("clicking it narrows to that recording",
-        /setFocus\(on \? 0 : r\.id\)/.test(page));
+  // ── AND IT IS A LINE, NOT A BUTTON ──────────────────────────────
+  //
+  // It used to narrow the page to that one recording. A page whose
+  // whole point is the fan-out from a recording to its cuts and its
+  // drafts reads worse one row at a time -- the comparison between
+  // neighbouring swings is the thing being looked at -- and
+  // narrowing is what the day and tee-box filters are for, which say
+  // so in the header where a row-level toggle did not.
+  check("the counts no longer narrow the page to one recording",
+        /setFocus/.test(page), false);
+  check("...and nothing else is left of it", /focus/.test(page), false);
+  // ── AND NOTHING CALLS A SETTER THAT NO LONGER EXISTS ────────────
+  //
+  // THE BUG THIS CAUGHT. Removing the state left one `setFocus(...)`
+  // behind in `start()`. An identifier that is used and never
+  // declared is a ReferenceError at RENDER, and `vite build`
+  // compiles it happily — the same failure this file's own modal
+  // warns about in a comment that ends "That shipped once already."
+  //
+  // Declarations counted in every form the page uses: the array from
+  // useState, including `[, setTick]`, a renamed destructure like
+  // `setItems: setClips`, and a plain function or const.
+  {
+    const decl = new Set(["setTimeout", "setInterval"]);
+    for (const re of [
+      /\[\s*[\w\s,]*?(set[A-Z]\w*)\s*\]\s*=\s*use(?:State|Reducer)/g,
+      /(?:const|let|var|function)\s+(set[A-Z]\w*)/g,
+      /[{,]\s*(set[A-Z]\w*)\s*[,}=]/g,
+      /:\s*(set[A-Z]\w*)\s*[,}]/g,
+    ]) for (const m of page.matchAll(re)) decl.add(m[1]);
+    const used = [...page.matchAll(/(?<![\w.])(set[A-Z]\w*)\s*\(/g)]
+      .map((m) => m[1]);
+    const orphans = [...new Set(used.filter((u) => !decl.has(u)))].sort();
+    check("every setter the page calls is one it declares", orphans, []);
+  }
   check("a produced cut is marked as having spawned a draft",
         /→ draft/.test(page));
   check("...and one that produced nothing says so", /no clip/.test(page));
