@@ -55,15 +55,23 @@ def main() -> int:
 
     db = SessionLocal()
     try:
-        clips = (db.query(VideoClip)
-                 .filter(VideoClip.flow_run_at.isnot(None)).all())
-        cuts = db.query(AudioCut).all()
+        # ── IDS, NOT ROWS ───────────────────────────────────────
+        #
+        # Both deletes commit, and a commit expires every object in
+        # the session. Holding ORM rows across the loop means each
+        # `k.id` on the next pass is a fresh SELECT for a row that may
+        # by then be gone -- an ObjectDeletedError in the middle of a
+        # half-finished delete, against production data. A list of
+        # integers cannot go stale.
+        clip_ids = [r[0] for r in db.query(VideoClip.id)
+                    .filter(VideoClip.flow_run_at.isnot(None)).all()]
+        cut_ids = [r[0] for r in db.query(AudioCut.id).all()]
         legacy = (db.query(VideoClip)
                   .filter(VideoClip.flow_run_at.is_(None)).count())
 
         print("the flow made:")
-        print("  %4d audio cut(s)" % len(cuts))
-        print("  %4d clip(s) produced through the flow" % len(clips))
+        print("  %4d audio cut(s)" % len(cut_ids))
+        print("  %4d clip(s) produced through the flow" % len(clip_ids))
         print("untouched:")
         print("  %4d clip(s) from before the flow" % legacy)
         print("  every recording -- no source video is deleted")
@@ -73,21 +81,23 @@ def main() -> int:
             return 0
 
         n_clips = n_cuts = 0
-        for c in clips:
+        for cid in clip_ids:
             try:
                 # keep_swing: the swing still happened. The cut row is
                 # about to go anyway, but failing halfway through must
                 # not leave the recording's edit list mangled.
-                delete_clip(c.id, keep_swing=True, db=db)
+                delete_clip(cid, keep_swing=True, db=db)
                 n_clips += 1
             except Exception as exc:                      # noqa: BLE001
-                print("  ! clip %s: %s" % (c.id, exc))
-        for k in cuts:
+                db.rollback()
+                print("  ! clip %s: %s" % (cid, exc))
+        for kid in cut_ids:
             try:
-                delete_flow_cut(k.id, db=db)
+                delete_flow_cut(kid, db=db)
                 n_cuts += 1
             except Exception as exc:                      # noqa: BLE001
-                print("  ! cut %s: %s" % (k.id, exc))
+                db.rollback()
+                print("  ! cut %s: %s" % (kid, exc))
 
         left_clips = (db.query(VideoClip)
                       .filter(VideoClip.flow_run_at.isnot(None)).count())
