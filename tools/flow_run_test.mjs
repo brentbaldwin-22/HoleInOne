@@ -201,36 +201,46 @@ console.log("\n3e. the measurement table says what the gates did to each row");
         /armed \? "dropped" : "would drop"/.test(panel));
 }
 
-console.log("\n3f. the page is a table: one row per recording");
+console.log("\n3f. the lineage holds, one stage at a time");
 {
-  // FOUR INDEPENDENT LISTS AND NO WAY TO JOIN THEM. Three cuts and a
-  // draft from #1915 sat beside five cuts from #1916 with nothing
-  // lining them up, so the lineage -- the whole point of the page --
-  // had to be reconstructed card by card. A row band says it without
-  // anybody reading anything.
+  // ── IT WAS FOUR COLUMNS AND IS NOW FOUR STAGES ──────────────────
+  //
+  // The problem the columns solved is unchanged and is still the
+  // point of the page: four independent lists with no way to join
+  // them meant three cuts and a draft from #1915 sat beside five cuts
+  // from #1916 with nothing lining them up, and the lineage had to be
+  // reconstructed card by card.
+  //
+  // The columns solved it with a grid row per recording, which did
+  // not survive contact with five hundred recordings and twenty-nine
+  // cuts: 471 rows reading "no cuts". The stages solve it with a
+  // heading per recording and only the recordings that have something
+  // AT THAT STAGE. What must stay true is that the cards are grouped
+  // under the recording they came from, and that nothing is silently
+  // left out.
   check("the rows are built from the recordings",
         /const bands = \(\(\) => \{/.test(page));
-  check("...four cells wide", (page.match(/<Cell /g) || []).length, 4);
-  check("...in one grid, so the cells line up",
-        /gridTemplateColumns:\s*\n?\s*"minmax/.test(page));
-  check("each cell is filtered to its own recording",
+  check("...and each stage shows a heading per recording",
+        /<BandHead uid=\{uid\}/.test(page));
+  check("each group is filtered to its own recording",
         /x\.long_upload_id === uid/.test(page));
-  // A RECORDING WITH NO CUTS STILL GETS A ROW, and the cell says so
-  // rather than collapsing and pulling the row out of alignment.
-  // THE RECORDING SITS AGAINST A CELL AS TALL AS ITS TALLEST
-  // NEIGHBOUR -- four cuts, say -- so it reads as the heading of the
-  // row rather than a card at the top of a column of whitespace.
-  check("the recording is centred in its cell", /<Cell center /.test(page));
-  check("...and only that column is",
-        (page.match(/<Cell center/g) || []).length, 1);
-  check("an empty cell says what is missing",
-        /empty="no cuts"/.test(page) && /empty="no drafts"/.test(page));
-  // AND A CLIP WHOSE RECORDING IS OFF THIS PAGE still gets a row --
+  check("...and a stage only lists what is at it",
+        /const stageRows = step === 1 \? shownCuts/.test(page));
+  // A RECORDING WITH CUTS BUT NO DRAFTS STILL APPEARS AT THE DRAFTS
+  // STAGE, because a cut with no draft is exactly where "+ add a
+  // swing" gets used.
+  check("a recording with cuts but no drafts is kept at the drafts stage",
+        /step === 2 && rawById\[uid\]/.test(page));
+  // AND AN EMPTY STAGE SAYS SO, rather than looking like a page that
+  // failed to load.
+  check("an empty stage says what would fill it",
+        /Nothing at this stage yet/.test(page));
+  // A CLIP WHOSE RECORDING IS OFF THIS PAGE still gets a heading --
   // otherwise it would simply vanish rather than be findable.
   check("uploads known only from their cuts get a row too",
         /\[cuts, drafts, finals\]\.forEach/.test(page));
-  check("...with the cell saying why the recording is not shown",
-        /not on this page of recordings/.test(page));
+  check("...with the heading saying why the recording is not shown",
+        /missing=\{gone\.ids\.includes\(uid\)\}/.test(page));
 }
 
 console.log("\n3g. the raw card says what the recording became");
@@ -266,7 +276,11 @@ console.log("\n3g. the raw card says what the recording became");
   {
     const decl = new Set(["setTimeout", "setInterval"]);
     for (const re of [
-      /\[\s*[\w\s,]*?(set[A-Z]\w*)\s*\]\s*=\s*use(?:State|Reducer)/g,
+      // ANY HOOK THAT HANDS BACK A TUPLE, not just useState and
+      // useReducer: `const [params, setParams] = useSearchParams()`
+      // is a declaration too, and reading it as an orphan is the
+      // false positive that makes a guard like this get deleted.
+      /\[\s*[\w\s,]*?(set[A-Z]\w*)\s*\]\s*=\s*use[A-Z]\w*/g,
       /(?:const|let|var|function)\s+(set[A-Z]\w*)/g,
       /[{,]\s*(set[A-Z]\w*)\s*[,}=]/g,
       /:\s*(set[A-Z]\w*)\s*[,}]/g,

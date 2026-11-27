@@ -98,10 +98,18 @@ check("the drafts column offers it", /\+ add a swing/.test(page));
 // IN THE FOOTER, NOT AS CONTENT. Counted as a child, the button would
 // make an empty column claim to have something in it and the "no
 // drafts" line would never appear.
-check("...without swallowing the empty message",
-      /function Cell\(\{ children, empty, live, center, footer \}\)/
-        .test(page) && /\{\/\* OUTSIDE THE EMPTY TEST[\s\S]{0,400}?\{footer\}/
-        .test(page));
+// ── AND AN EMPTY STAGE STILL SAYS IT IS EMPTY ──────────────────
+// The four columns became four stages, so the old Cell/footer split
+// is gone. The thing it was guarding for is not: a control in a
+// stage is not content in it, and a stage holding only an "add"
+// button must not read as a stage with something in it. The drafts
+// stage carries that button, which is why it is the one excluded
+// from "nothing here yet".
+check("...without an add button making an empty stage look full",
+      /\{step !== 2 && !rows\.length && \(/.test(page));
+check("...and an empty stage says what would fill it",
+      /Nothing at this stage yet/.test(page)
+        && /swing by hand from the Audio cuts stage/.test(page));
 
 console.log("\n5. and the produce's own work is shown, not re-run");
 // THE FLOW'S PRODUCE *IS* PRODUCTION'S PRODUCE -- one function, with
@@ -335,10 +343,11 @@ check("the cut being produced from is greyed, not removed",
 check("...and says so on the tile", /producing swing \{k\.idx \+ 1\}…/
   .test(page));
 // ── AND THE SWING IS NAMED, WITH WHETHER IT REPLACES ONE ────────
-check("the drafts column names the swing being made",
-      /Swing \{_p\.swing\} is/.test(page));
+check("the drafts stage names the swing being made",
+      /Swing \{producingCut\.swing\} is/.test(page));
 check("...and tells producing from re-producing",
-      /_p\.had \? " re-producing" : " producing"/.test(page));
+      /producingCut\.had\s*\n?\s*\? " re-producing" : " producing"/
+        .test(page));
 check("...which it knows from whether a draft of it exists",
       /had: \(drafts \|\| \[\]\)\.some\(/.test(page));
 check("the stale tile is pulled while it is replaced",

@@ -17,6 +17,7 @@ import AdminCaptureLab from "./pages/AdminCaptureLab.jsx";
 import AdminUploadVideos from "./pages/AdminUploadVideos.jsx";
 import AdminProduction from "./pages/AdminProduction.jsx";
 import AdminProductionFlow from "./pages/AdminProductionFlow.jsx";
+import AdminFlowManual from "./pages/AdminFlowManual.jsx";
 import AdminSwingAudit from "./pages/AdminSwingAudit.jsx";
 import AdminProducedClips from "./pages/AdminProducedClips.jsx";
 import AdminCourses from "./pages/AdminCourses.jsx";
@@ -98,6 +99,9 @@ export default function App() {
         <Route path="/admin/production" element={<AdminProduction />} />
         <Route path="/admin/production-flow"
                element={<AdminProductionFlow />} />
+        {/* Opened from Start production flow, one recording at a time. */}
+        <Route path="/admin/production-flow/manual/:uploadId"
+               element={<AdminFlowManual />} />
         <Route path="/admin/swing-audit" element={<AdminSwingAudit />} />
         <Route path="/admin/produced-clips" element={<AdminProducedClips />} />
         <Route path="/admin/courses" element={<AdminCourses />} />

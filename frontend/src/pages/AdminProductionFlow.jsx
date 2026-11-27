@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState }
   from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import AudioGatesPanel from "../components/AudioGatesPanel.jsx";
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
@@ -19,17 +19,35 @@ import { AscentProduceModal, ClickToPlotModal } from "./AdminProduction.jsx";
 import { zoneName } from "../zones.js";
 
 /*
- * The production flow, left to right: one recording becomes drafts.
+ * The production flow, a page at a time: one recording becomes
+ * drafts.
  *
  *   raw     a recording off a camera pair, both angles openable
  *   cuts    what the microphone heard, cut to size, nothing judged
  *   draft   produced automatically, nobody has looked
  *   final   somebody looked and approved it
  *
- * COLUMNS, NOT TABS, because the question the operator is asking is
- * "what happened to this recording" and the answer is spread across
- * all four. Tabs made them check four screens and hold the join in
- * their head.
+ * ONE STAGE PER PAGE, IN ORDER, with a stepper across the top.
+ *
+ * This was four columns side by side. The reasoning there was that
+ * the operator's question is "what happened to THIS recording" and
+ * the answer is spread across all four, which tabs made them hold in
+ * their head across four screens. That reasoning was right about
+ * tabs and wrong about columns: the four stages are never the same
+ * size -- five hundred recordings against twenty-nine cuts against
+ * fifteen drafts -- so in practice it was one tall column beside
+ * three stripes of white, each a quarter as wide as the cards in it
+ * needed.
+ *
+ * THE JOIN DID NOT GO AWAY WITH THE COLUMNS. Every stage after the
+ * first groups its cards under the recording they came from, with
+ * that recording's count in the heading, so the fan-out still reads
+ * -- it reads down the page now instead of across it. And the
+ * stepper says the two things tabs never did: where this stage sits
+ * in the sequence, and how much is waiting in the other three. A run
+ * going on a stage that is not on screen says so in a banner with a
+ * button that goes there, because a stage at a time is the one layout
+ * where work can be happening somewhere the operator cannot see.
  *
  * NOTHING FROM BEFORE THIS FLOW IS SHOWN. There are a thousand clips
  * in the database from every pipeline the console has ever had. A
@@ -97,27 +115,11 @@ function fmtDur(sec) {
 }
 
 /*
- * WHICH RECORDING A CARD BELONGS TO, said in every column.
- *
- * The columns are four independent lists and the eye has no way to
- * join them: three cuts and a draft, all from #1915, sitting next to
- * five cuts from #1916 with nothing but a small grey "#1915" on each
- * card to tell them apart. The lineage is the thing the page is for.
- *
- * So every column groups by recording, under the same heading in the
- * same order, and the heading carries the count for THAT recording in
- * THAT column -- "#1915 · 3 cuts" beside "#1915 · 1 draft" is the
- * fan-out, readable across the row.
- */
-/*
- * ONE ROW PER RECORDING, and the four columns of that row are what
- * became of it.
- *
- * The columns used to be four independent lists, so a reader joined
- * them by eye: three cuts and a draft from #1915 sat beside five cuts
- * from #1916 with nothing lining them up. The lineage is the whole
- * point of the page, and a table says it without anybody having to
- * read a card.
+ * THE HEADING OF A STAGE: its name, how much is in it across the
+ * whole filter, and what it is. The count is the server's, not the
+ * length of what is on screen -- "Raw clips · 532 recordings" with
+ * fifty cards under it is one page of five hundred, and saying 50
+ * there would hide that.
  */
 function HeadCell({ title, unit, count, blurb }) {
   return (
@@ -128,33 +130,6 @@ function HeadCell({ title, unit, count, blurb }) {
         </span>
       </div>
       <div className="tiny muted" style={{ marginTop: 2 }}>{blurb}</div>
-    </div>
-  );
-}
-
-/** One cell of a recording's row: its cards, or a visible nothing. */
-function Cell({ children, empty, live, center, footer }) {
-  const has = Array.isArray(children)
-    ? children.some(Boolean) : !!children;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8,
-                  // The recording sits against a cell as tall as its
-                  // tallest neighbour -- four cuts, say -- and reads
-                  // as the heading of the row rather than a card that
-                  // happens to be at the top of it.
-                  justifyContent: center ? "center" : "flex-start",
-                  padding: "8px", borderTop: "1px solid var(--line)",
-                  borderLeft: "1px solid var(--line)", minWidth: 0 }}>
-      {live}
-      {has ? children : (
-        <div className="tiny muted" style={{ opacity: 0.6 }}>{empty}</div>
-      )}
-      {/* OUTSIDE THE EMPTY TEST. A control in this column is not
-          content in it: counted as a child, an "add" button would
-          make an empty column claim to have something in it, and the
-          "no drafts" line -- the thing that tells an empty column
-          from one still loading -- would never appear. */}
-      {footer}
     </div>
   );
 }
@@ -207,6 +182,102 @@ function Phases({ phases, total, show }) {
   );
 }
 
+/*
+ * THE FOUR STAGES, IN ORDER. The titles and the blurbs are the ones
+ * that were on the four column headings, word for word: the operator
+ * has been reading "Audio cuts" and "Draft produced" for months and
+ * the layout changing is no reason for the labels to. See the top of
+ * the file for why they are pages now.
+ */
+const STEPS = [
+  { key: "raw", title: "Raw clips", unit: "recordings",
+    blurb: "Both angles off the camera pair. Open either in the "
+           + "console's viewer, then start the flow." },
+  { key: "cuts", title: "Audio cuts", unit: "cuts",
+    blurb: "What the microphone heard, both angles. No swing "
+           + "judgement — only that it cleared this tee box's gates." },
+  { key: "draft", title: "Draft produced", unit: "clips",
+    blurb: "Produced from the audio impact — ascent, the ball on the "
+           + "green if it is there, then tracer and graphics." },
+  { key: "final", title: "Final produced", unit: "clips",
+    blurb: "Approved, and grouped by the seven minutes around the "
+           + "first swing in each group." },
+];
+
+/*
+ * WHICH STAGE A RUNNING PHASE IS HAPPENING ON, so a run the operator
+ * started on one page can still be seen from another. Untagged runner
+ * lines ("queued behind 2 uploads") belong to the recording's own
+ * card, which lives on stage 0.
+ */
+const PHASE_STEP = { audio: 1, cut: 1, produce: 2 };
+
+/** Where in the sequence this is, and what is waiting in the rest. */
+function Stepper({ step, onStep, countOf }) {
+  return (
+    <div className="card tight"
+         style={{ display: "flex", flexWrap: "wrap", gap: 6,
+                  alignItems: "center" }}>
+      {STEPS.map((s, i) => (
+        <Fragment key={s.key}>
+          {i > 0 && <span className="tiny muted">→</span>}
+          <button type="button"
+                  className={`btn ${i === step ? "" : "ghost"} small`}
+                  aria-current={i === step ? "step" : undefined}
+                  onClick={() => onStep(i)}>
+            <span className="tiny muted">{i + 1}.</span> {s.title}{" "}
+            <span className="pill small">{countOf(s.key) ?? "—"}</span>
+          </button>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+/*
+ * THE RECORDING A GROUP OF CARDS CAME FROM, on every stage but the
+ * first. This is the join the columns used to make with cell borders:
+ * without it, three cuts from #1915 and five from #1916 are one list
+ * of eight.
+ */
+function BandHead({ uid, r, n, unit, missing }) {
+  return (
+    <div className="small" style={{ borderTop: "1px solid var(--line)",
+                                    padding: "8px 8px 2px",
+                                    display: "flex", flexWrap: "wrap",
+                                    gap: 6, alignItems: "baseline" }}>
+      <b>#{uid}</b>
+      {n != null && (
+        <span className="pill small">{n} {unit}</span>
+      )}
+      {r ? (
+        <span className="muted tiny">
+          {r.hole_number ? `Hole ${r.hole_number} · ` : ""}
+          {r.course_name || `course #${r.course_id}`}
+          {r.captured_at ? ` · ${fmtWhen(r.captured_at)}` : ""}
+        </span>
+      ) : (
+        <span className="muted tiny">
+          {missing
+            ? "its source video is gone; what it made is still here"
+            : "not on this page of recordings"}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** The cards of one group, laid out across the page's full width. */
+function BandCards({ children }) {
+  return (
+    <div style={{ display: "grid", gap: 8, padding: "6px 8px 10px",
+                  gridTemplateColumns:
+                    "repeat(auto-fill, minmax(300px, 1fr))" }}>
+      {children}
+    </div>
+  );
+}
+
 export default function AdminProductionFlow() {
   const adminPassword = readAdminPassword();
 
@@ -247,26 +318,21 @@ export default function AdminProductionFlow() {
   // ── THE MANUAL PRODUCE IN PROGRESS ────────────────────────────
   //
   // {cutId, swing, uploadId, had} — which cut it is from, which swing
-  // that is, and whether a draft of that swing already existed (so
-  // "producing" can be told from "re-producing").
+  // that is, and whether a draft of that swing already existed, so
+  // "producing" can be told from "re-producing".
   //
   // THE PAGE IS THE ONLY THING THAT KNOWS. The produce runs on a
   // thread under the recording's status key and says nothing about
   // which cut an operator started it from, and without that the cut
-  // tile and the draft tile both just change underneath them: the cut
+  // tile and the draft tile both change underneath them: the cut
   // appears to vanish and a second draft of the same swing appears.
   const [producingCut, _setProducingCut] = useState(null);
-  // ── AND THE SAME THING IN A REF ───────────────────────────────
-  //
-  // `poll` is a useCallback whose deps do not include this, so the
-  // copy of it that is running captured whatever the state was when
-  // it was memoised -- which is `null`, because the poll is created
-  // long before anybody presses Produce Clip. Read from there, the
-  // note would never name the swing and the clear would never fire,
-  // leaving the cut greyed out for good.
-  //
-  // The state drives the render and the ref is what the poll reads.
-  // Set through one function so the two cannot drift.
+  // AND THE SAME THING IN A REF. `poll` is a useCallback whose deps
+  // do not include this, so the copy of it that is running captured
+  // whatever the state was when it was memoised — `null`, because
+  // the poll is created long before anybody presses Produce Clip.
+  // Read from there the note would never name the swing and the
+  // clear would never fire, leaving the cut greyed out for good.
   const producingRef = useRef(null);
   const setProducingCut = useCallback((v) => {
     producingRef.current = v;
@@ -298,9 +364,46 @@ export default function AdminProductionFlow() {
   // deletes second, and arming one disarms any other.
   const [armed, setArmed] = useState(0);
   // {row, swingPos} while the edit wizard is open on this page.
+  // ── START OVER ───────────────────────────────────────────────
+  // Two steps, like "delete recording" below, and for the same
+  // reason: the armed state is where the numbers go, so nobody
+  // deletes a day's work from a button whose label is three words.
+  const [resetArmed, setResetArmed] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [editErr, setEditErr] = useState(null);
   const [viewer, setViewer] = useState(null);
+
+  // ── WHICH STAGE IS ON SCREEN ─────────────────────────────────
+  //
+  // Starts on the raw clips, because that is where the work starts
+  // and it is the only stage that is never empty.
+  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  // ?stage=cuts OPENS THERE. The hand cutter sends the operator back
+  // when a recording has been gone through, and "back to the flow"
+  // meaning "back to the five hundred raw clips you just finished
+  // with" is the wrong place to land.
+  const [step, setStep] = useState(() => {
+    const i = STEPS.findIndex((x) => x.key === params.get("stage"));
+    return i < 0 ? 0 : i;
+  });
+  // A NEW PAGE STARTS AT THE TOP. The stages are different lengths --
+  // five hundred recordings, then twenty-nine cuts -- so a click from
+  // a scrolled-down Raw clips landed halfway down a page that had
+  // nothing there.
+  useEffect(() => { window.scrollTo({ top: 0, behavior: "smooth" }); },
+            [step]);
+  // THE URL FOLLOWS THE STAGE, so a reload or a shared link comes
+  // back to the stage that was being worked on. `replace` because
+  // walking four stages should not put four entries in the history
+  // between the operator and the page they came from.
+  useEffect(() => {
+    const want = STEPS[step].key;
+    if (params.get("stage") !== want) {
+      setParams({ stage: want }, { replace: true });
+    }
+  }, [step]);   // eslint-disable-line react-hooks/exhaustive-deps
   const polling = useRef(new Set());
 
   const load = useCallback(async () => {
@@ -394,13 +497,13 @@ export default function AdminProductionFlow() {
             const _c = await api.flowClaimClips(adminPassword, uploadId);
             // ── WHAT THE RUN ACTUALLY DID, IN WORDS ──────────────
             //
-            // The clip the produce writes is a NEW row, so "it
-            // worked" and "nothing happened" look identical on a
-            // column that has just reloaded. This names the swing,
-            // says whether a draft was replaced, and says which
-            // older draft was removed for being of the same swing --
-            // which is the one thing an operator cannot see, because
-            // the tile is already gone by the time they look.
+            // The clip a produce writes is a NEW row, so "it worked"
+            // and "nothing happened" look identical on a stage that
+            // has just reloaded. This names the swing, says whether
+            // a draft was replaced, and says which older draft was
+            // removed for being of the same swing — the one thing an
+            // operator cannot see, because the tile is already gone
+            // by the time they look.
             const _p = producingRef.current;
             const _sup = (_c?.superseded || []).length;
             setNote(
@@ -571,6 +674,30 @@ export default function AdminProductionFlow() {
     catch (e) { setErr(e.message); } finally { setActing(null); }
   }
 
+  async function startOver() {
+    setResetting(true);
+    setErr(null);
+    try {
+      const out = await api.flowReset(adminPassword, { day, zone });
+      setResetArmed(false);
+      setNote(
+        `Started over: ${out.cuts} cut${out.cuts === 1 ? "" : "s"} and `
+        + `${out.clips} draft${out.clips === 1 ? "" : "s"} deleted`
+        + (out.failed ? `, ${out.failed} could not be` : "")
+        + `. The ${out.legacy_after} clip`
+        + `${out.legacy_after === 1 ? "" : "s"} from before this flow `
+        + `${out.legacy_after === 1 ? "was" : "were"} left alone.`);
+      // BACK TO THE RAW CLIPS, because that is what was asked for and
+      // the stage they are standing on is now empty.
+      setStep(0);
+      await load();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setResetting(false);
+    }
+  }
+
   // ── THE ROWS OF THE TABLE ────────────────────────────────────
   //
   // The recordings, newest first, plus any upload that has cuts or
@@ -628,12 +755,25 @@ export default function AdminProductionFlow() {
           green angle
         </button>
       </div>
+      {/* ── TO THE HAND CUTTER, NOT TO THE CUTTER ──────────────────
+          This used to run the whole automatic flow -- listen for
+          strikes, cut around each, produce a draft from every one.
+          It now opens the recording in the manual cutter, where
+          somebody watches it and says where each clip starts.
+
+          THE AUTOMATIC PATH IS STILL HERE, under "Audio cuts only"
+          directly below. Removing it would have thrown away the
+          thing that is right most of the time to fix the times it is
+          wrong; they are two ways to fill the same stage and the
+          operator picks per recording. */}
       <button type="button" className="btn small"
               style={{ marginTop: 6, width: "100%" }}
-              disabled={busy || acting === `raw-${r.id}`}
-              onClick={() => start(r.id)}>
-        {busy ? "running…" : acting === `raw-${r.id}` ? "starting…"
-          : "Start production flow"}
+              disabled={busy}
+              title={"watch this recording and mark where each clip "
+                     + "starts, 13 seconds at a time"}
+              onClick={() => navigate(
+                `/admin/production-flow/manual/${r.id}`)}>
+        {busy ? "running…" : "Start production flow"}
       </button>
       {/* ── THE CUTS, AND STOP THERE ───────────────────────────────
           The produce is the expensive half by a wide margin —
@@ -781,10 +921,10 @@ export default function AdminProductionFlow() {
   const cutCard = (k) => {
     // ── IT NEVER GOES AWAY WHILE IT IS BEING PRODUCED FROM ───────
     //
-    // The cut is the thing the operator is working ON. Watching it
-    // disappear mid-produce is the worst reading available: it looks
-    // like the produce consumed it, and when the column settles
-    // afterwards there is no way to tell what happened.
+    // The cut is the thing being worked ON. Watching it disappear
+    // mid-produce reads as the produce having consumed it, and when
+    // the stage settles afterwards there is no way to tell what
+    // happened.
     const making = producingCut?.cutId === k.id;
     return (
     <div key={k.id} className="card tight"
@@ -792,12 +932,11 @@ export default function AdminProductionFlow() {
       {making && (
         <div className="tiny" style={{ marginBottom: 4, padding: "3px 6px",
                                        borderRadius: 4,
-                                       background: "var(--warn-bg, #fdf3d7)",
-                                       opacity: 1 }}>
+                                       background: "var(--warn-bg, #fdf3d7)" }}>
           <b>producing swing {k.idx + 1}…</b>{" "}
           <span className="muted">
-            this cut stays exactly as it is — the draft is being made
-            from it, not out of it
+            this cut stays exactly as it is — the draft is made FROM
+            it, not out of it
           </span>
         </div>
       )}
@@ -902,9 +1041,9 @@ export default function AdminProductionFlow() {
                   cutId: k.id, swing: k.idx + 1,
                   uploadId: k.long_upload_id,
                   // A DRAFT OF THIS SWING ALREADY? Then this is a
-                  // RE-produce, the old tile is about to be replaced,
-                  // and saying so is the difference between a tile
-                  // disappearing and a tile being superseded.
+                  // RE-produce: the tile on screen is about to be
+                  // replaced, and saying so is the difference between
+                  // that and a tile quietly vanishing.
                   had: (drafts || []).some(
                     (c) => c.long_upload_id === k.long_upload_id
                       && c.cut_idx === k.idx),
@@ -1105,6 +1244,10 @@ export default function AdminProductionFlow() {
   const liveId = Number(
     Object.keys(runs).find((id) => runs[id]?.running) || 0);
   const liveRun = liveId ? runs[liveId] : null;
+  // AND WHICH STAGE THAT RUN IS ON, so a run started on one stage can
+  // still be seen from another.
+  const liveStep = liveRun
+    ? (PHASE_STEP[phaseOf(liveRun.stage).phase] ?? null) : null;
 
   // WHAT EACH RECORDING SPAWNED, counted once for every column that
   // needs it. This is the fan-out the page exists to show: one
@@ -1161,7 +1304,7 @@ export default function AdminProductionFlow() {
           <div className="small">
             <b>Production flow</b>{" "}
             <span className="muted tiny">
-              · one row per recording · only what this flow made
+              · one stage at a time · only what this flow made
             </span>
           </div>
           <div className="row" style={{ gap: 8, alignItems: "center" }}>
@@ -1217,132 +1360,232 @@ export default function AdminProductionFlow() {
             <button type="button" className="btn ghost small" onClick={load}>
               refresh
             </button>
+            {/* ── START OVER ─────────────────────────────────────
+                Deletes what the flow made and leaves the recordings,
+                so the stepper reads "532 / 0 / 0 / 0" again. Armed,
+                with the counts said out loud: the numbers live in
+                the confirmation because that is the only place a
+                reader is looking at the moment it matters. */}
+            {!resetArmed ? (
+              <button type="button" className="btn ghost small"
+                      disabled={!countOf("cuts") && !countOf("draft")}
+                      title={"delete this flow's cuts and drafts and go "
+                             + "back to the raw clips"}
+                      onClick={() => setResetArmed(true)}>
+                start over
+              </button>
+            ) : (
+              <span className="tiny"
+                    style={{ padding: "4px 6px", borderRadius: 4,
+                             background: "var(--warn-bg, #fdf3d7)",
+                             display: "inline-flex", gap: 6,
+                             alignItems: "center", flexWrap: "wrap" }}>
+                <b>Start over?</b> Deletes {countOf("cuts") ?? "—"} cut
+                {countOf("cuts") === 1 ? "" : "s"} and{" "}
+                {countOf("draft") ?? "—"} draft
+                {countOf("draft") === 1 ? "" : "s"}
+                {(day || zone !== "") ? " for the current filter" : ""}.
+                {" "}No recording is deleted. This cannot be undone.
+                <button type="button" className="btn small"
+                        disabled={resetting}
+                        onClick={startOver}>
+                  {resetting ? "deleting…" : "yes, start over"}
+                </button>
+                <button type="button" className="btn ghost small"
+                        disabled={resetting}
+                        onClick={() => setResetArmed(false)}>
+                  cancel
+                </button>
+              </span>
+            )}
           </div>
         </div>
       </div>
 
       {err && <div className="card err-text small">{err}</div>}
 
-      {/* ── THE TABLE: ONE ROW PER RECORDING ──────────────────
-          Four cells across, so what a recording became is read
-          along its own row instead of reconstructed from four
-          lists. Cell borders make the band, which is the only
-          thing that actually separates #1915's cuts from
-          #1916's when both have several. */}
-      <div style={{ display: "grid", alignItems: "stretch",
-                    gridTemplateColumns:
-                      "minmax(230px, 1fr) minmax(210px, 1fr) "
-                      + "minmax(230px, 1.1fr) minmax(210px, 1fr)",
-                    borderRight: "1px solid var(--line)",
-                    borderBottom: "1px solid var(--line)" }}>
-        <HeadCell title="Raw clips" unit="recordings" count={countOf("raw")}
-                  blurb="Both angles off the camera pair. Open either in
-                         the console's viewer, then start the flow." />
-        <HeadCell title="Audio cuts" unit="cuts" count={countOf("cuts")}
-                  blurb="What the microphone heard, both angles. No
-                         swing judgement — only that it cleared this
-                         tee box's gates." />
-        <HeadCell title="Draft produced" unit="clips"
-                  count={countOf("draft")}
-                  blurb="Produced from the audio impact — ascent, the
-                         ball on the green if it is there, then tracer
-                         and graphics." />
-        <HeadCell title="Final produced" unit="clips"
-                  count={countOf("final")}
-                  blurb="Approved, and grouped by the seven minutes
-                         around the first swing in each group." />
+      {/* ── WHERE IN THE SEQUENCE ──────────────────────────────── */}
+      <Stepper step={step} onStep={setStep} countOf={countOf} />
+
+      {/* WORK HAPPENING ON A STAGE THAT IS NOT ON SCREEN. With four
+          columns the run narrated itself wherever it was; one stage at
+          a time, a produce started on page 3 is invisible from page 1,
+          and an operator who cannot see the run assumes it died. */}
+      {liveRun && liveStep != null && liveStep !== step && (
+        <div className="card tight small"
+             style={{ display: "flex", gap: 8, flexWrap: "wrap",
+                      alignItems: "center" }}>
+          <span className="pill small">working</span>
+          <span>
+            #{liveId} on <b>{STEPS[liveStep].title}</b>
+            {" — "}{phaseOf(liveRun.stage).text || "…"}
+            {liveRun.total
+              ? ` · ${liveRun.done ?? 0} of ${liveRun.total}` : ""}
+          </span>
+          <button type="button" className="btn ghost small"
+                  onClick={() => setStep(liveStep)}>
+            go there
+          </button>
+        </div>
+      )}
+
+      {/* ── ONE STAGE, THE WIDTH OF THE PAGE ────────────────────── */}
+      <div style={{ borderRight: "1px solid var(--line)",
+                    borderBottom: "1px solid var(--line)",
+                    borderLeft: "1px solid var(--line)" }}>
+        <div style={{ paddingTop: 8 }}>
+          <HeadCell title={STEPS[step].title} unit={STEPS[step].unit}
+                    count={countOf(STEPS[step].key)}
+                    blurb={STEPS[step].blurb} />
+        </div>
 
         {raw === null && (
-          <div style={{ gridColumn: "1 / -1", padding: 10 }}>
+          <div style={{ padding: 10 }}>
             <div className="shimmer" style={{ height: 90 }} />
           </div>
         )}
         {raw?.length === 0 && (
-          <div style={{ gridColumn: "1 / -1", padding: 10 }}
-               className="tiny muted">No recordings.</div>
+          <div style={{ padding: 10 }} className="tiny muted">
+            No recordings.
+          </div>
         )}
 
-        {bands.map((uid) => {
-          const r = rawById[uid];
-          const run = runs[uid];
-          const busy = !!run?.running;
-          const mine = (rows) => (rows || [])
-            .filter((x) => x.long_upload_id === uid);
-          const myFinals = mine(shownFinals);
-          return (
-            <Fragment key={uid}>
-              {/* 1. the recording */}
-              <Cell center empty="this recording is gone from the list">
-                {r ? rawCard(r, run, busy) : (
-                  <div className="tiny muted">
+        {/* 1. THE RAW CLIPS, as one list. Every recording on the
+               page, each card carrying its own two angles and the
+               button that starts the flow — the labels are the ones
+               that were on the column. */}
+        {step === 0 && raw?.length > 0 && (
+          <BandCards>
+            {bands.map((uid) => {
+              const r = rawById[uid];
+              const run = runs[uid];
+              if (!r) {
+                return (
+                  <div className="card tight tiny muted" key={uid}
+                       style={{ margin: 0 }}>
                     <b>#{uid}</b>
-                    {/* WHY IT IS NOT HERE, where that is knowable. A
-                        recording whose video has been swept still has
-                        its cuts and its drafts, and those are worth
-                        keeping on screen — but "not on this page"
-                        reads like paging, which is a different
-                        problem with a different fix. */}
                     {gone.ids.includes(uid)
                       ? " — its source video is gone; the cuts and "
                         + "drafts it made are still here"
                       : " — not on this page of recordings"}
                   </div>
-                )}
-              </Cell>
+                );
+              }
+              return (
+                <Fragment key={uid}>
+                  {rawCard(r, run, !!run?.running)}
+                </Fragment>
+              );
+            })}
+          </BandCards>
+        )}
 
-              {/* 2. its cuts */}
-              <Cell empty="no cuts"
-                    live={busy ? (
-                      <>
-                        <Working run={run} phase="audio" />
-                        <Working run={run} phase="cut" />
-                      </>
-                    ) : null}>
-                {mine(shownCuts).map(cutCard)}
-              </Cell>
+        {/* 2., 3., 4. EVERYTHING AFTER THE RAW LIST, grouped under
+               the recording it came from.
 
-              {/* 3. its drafts */}
-              <Cell empty="no drafts"
-                    live={(() => {
-                      const _p = producingCut?.uploadId === uid
-                        ? producingCut : null;
-                      return (
-                        <>
-                          {/* ── THE SWING BEING MADE, BY NAME ──────
-                              The tile for it is pulled out below
-                              while this runs, because for a
-                              re-produce the one on screen is about
-                              to be replaced and leaving it there
-                              means watching a stale draft sit under
-                              a progress bar. Saying WHICH swing, and
-                              whether this replaces one, is the whole
-                              difference between that and a tile
-                              quietly vanishing. */}
-                          {_p && (
-                            <div className="tiny" style={{
-                              padding: "4px 6px", borderRadius: 4,
-                              background: "var(--warn-bg, #fdf3d7)" }}>
-                              <b>
-                                Swing {_p.swing} is
-                                {_p.had ? " re-producing" : " producing"}…
-                              </b>
-                              <div className="muted">
-                                {_p.had
-                                  ? "the draft that was here is still on "
-                                    + "disk and is replaced only when this "
-                                    + "one succeeds — there is never more "
-                                    + "than one draft of a swing"
-                                  : "plotted by hand from the audio cut "
-                                    + "beside it"}
-                              </div>
-                            </div>
-                          )}
-                          {busy
-                            ? <Working run={run} phase="produce" /> : null}
-                        </>
-                      );
-                    })()}
-                    footer={r ? (
+               ONLY THE RECORDINGS THAT HAVE SOMETHING AT THIS STAGE.
+               Five hundred recordings and twenty-nine cuts means 471
+               headings reading "no cuts", which is how the columns
+               read and the only thing they had no room to fix. The
+               drafts stage keeps the recordings that have cuts but no
+               drafts, because a cut with no draft is exactly where
+               "+ add a swing" gets used. */}
+        {step > 0 && raw !== null && (() => {
+          const stageRows = step === 1 ? shownCuts
+            : step === 2 ? shownDrafts : shownFinals;
+          const mineOf = (rows, uid) => (rows || [])
+            .filter((x) => x.long_upload_id === uid);
+          const shown = bands.filter((uid) => {
+            if (mineOf(stageRows, uid).length) return true;
+            // a run going here needs somewhere to narrate itself
+            if (runs[uid]?.running
+                && PHASE_STEP[phaseOf(runs[uid].stage).phase] === step) {
+              return true;
+            }
+            // the add-a-swing case
+            if (step === 2 && rawById[uid]
+                && mineOf(shownCuts, uid).length) return true;
+            return false;
+          });
+          if (!shown.length) {
+            return (
+              <div style={{ padding: 10, borderTop:
+                            "1px solid var(--line)" }}
+                   className="tiny muted">
+                Nothing at this stage yet
+                {step === 1 ? " — start the flow on a raw clip."
+                  : step === 2 ? " — cut a recording first, or plot a "
+                    + "swing by hand from the Audio cuts stage."
+                    : " — approve a draft and it lands here."}
+              </div>
+            );
+          }
+          return shown.map((uid) => {
+            const r = rawById[uid];
+            const run = runs[uid];
+            const busy = !!run?.running;
+            const rows = mineOf(stageRows, uid);
+            return (
+              <Fragment key={uid}>
+                <BandHead uid={uid} r={r} n={rows.length}
+                          unit={STEPS[step].unit}
+                          missing={gone.ids.includes(uid)} />
+                <BandCards>
+                  {step === 1 && busy && (
+                    <Fragment key="live">
+                      <Working run={run} phase="audio" />
+                      <Working run={run} phase="cut" />
+                    </Fragment>
+                  )}
+                  {step === 2 && busy && (
+                    <Fragment key="live">
+                      <Working run={run} phase="produce" />
+                    </Fragment>
+                  )}
+                  {/* ── THE SWING BEING MADE, BY NAME ─────────────
+                      The tile for it is pulled out below while this
+                      runs, because on a re-produce the one on screen
+                      is about to be replaced and leaving it there
+                      means watching a stale draft sit beside a
+                      progress bar. Saying WHICH swing, and whether
+                      this replaces one, is the whole difference
+                      between that and a tile quietly vanishing. */}
+                  {step === 2 && producingCut?.uploadId === uid && (
+                    <div key="making" className="card tight"
+                         style={{ margin: 0,
+                                  background: "var(--warn-bg, #fdf3d7)" }}>
+                      <div className="small">
+                        <b>
+                          Swing {producingCut.swing} is
+                          {producingCut.had
+                            ? " re-producing" : " producing"}…
+                        </b>
+                      </div>
+                      <div className="tiny muted" style={{ marginTop: 3 }}>
+                        {producingCut.had
+                          ? "the draft that was here is replaced only "
+                            + "when this one succeeds — a swing never "
+                            + "has two drafts"
+                          : "plotted by hand from the audio cut it "
+                            + "came from"}
+                      </div>
+                    </div>
+                  )}
+                  {step === 1 && rows.map(cutCard)}
+                  {/* ONE TILE PER SWING. The one being re-produced
+                      is pulled while that runs, so the stage never
+                      shows the old draft and the new one together. */}
+                  {step === 2 && rows
+                    .filter((c) => !(producingCut
+                      && producingCut.uploadId === uid
+                      && c.cut_idx != null
+                      && c.cut_idx + 1 === producingCut.swing))
+                    .map(draftCard)}
+                  {step === 3 && rows.map((c, n) => finalCard(
+                    c, n === 0 || rows[n - 1].group_label
+                      !== c.group_label))}
+                  {step === 2 && r && (
+                    <div key="add" style={{ alignSelf: "start" }}>
                       <button type="button" className="btn ghost small"
                               disabled={acting === `add-${uid}` || busy}
                               title={"plot a swing the cutter missed, or "
@@ -1352,27 +1595,41 @@ export default function AdminProductionFlow() {
                         {acting === `add-${uid}`
                           ? "opening…" : "+ add a swing"}
                       </button>
-                    ) : null}>
-                {/* ONE TILE PER SWING. The one being re-produced is
-                    pulled out while that runs, so the column never
-                    shows the old draft and the new one together. */}
-                {mine(shownDrafts)
-                  .filter((c) => !(producingCut
-                    && producingCut.uploadId === uid
-                    && c.cut_idx != null
-                    && c.cut_idx + 1 === producingCut.swing))
-                  .map(draftCard)}
-              </Cell>
+                    </div>
+                  )}
+                  {step !== 2 && !rows.length && (
+                    <div key="none" className="tiny muted"
+                         style={{ opacity: 0.6 }}>
+                      nothing here yet
+                    </div>
+                  )}
+                </BandCards>
+              </Fragment>
+            );
+          });
+        })()}
+      </div>
 
-              {/* 4. and what was approved */}
-              <Cell empty="nothing approved">
-                {myFinals.map((c, n) => finalCard(
-                  c, n === 0 || myFinals[n - 1].group_label
-                    !== c.group_label))}
-              </Cell>
-            </Fragment>
-          );
-        })}
+      {/* ── ON TO THE NEXT ONE ─────────────────────────────────── */}
+      <div className="row" style={{ justifyContent: "space-between",
+                                    gap: 8, marginTop: 8,
+                                    flexWrap: "wrap" }}>
+        <button type="button" className="btn ghost small"
+                disabled={step === 0}
+                onClick={() => setStep(step - 1)}>
+          ← {step > 0 ? STEPS[step - 1].title : "Back"}
+        </button>
+        {step < STEPS.length - 1 ? (
+          <button type="button" className="btn small"
+                  onClick={() => setStep(step + 1)}>
+            {STEPS[step + 1].title} →
+          </button>
+        ) : (
+          <button type="button" className="btn ghost small"
+                  onClick={() => setStep(0)}>
+            start over at Raw clips
+          </button>
+        )}
       </div>
 
       {note && (
@@ -1405,8 +1662,8 @@ export default function AdminProductionFlow() {
           // nothing. `poll` watches the produce and reloads the
           // columns when it stops.
           // CANCELLED. Nothing was produced, so nothing is
-          // producing -- without this the cut stays greyed out and
-          // the drafts column goes on announcing a swing that is not
+          // producing — without this the cut stays greyed out and
+          // the drafts stage goes on announcing a swing that is not
           // being made, for as long as the page is open.
           onClose={() => {
             setEditing(null);

@@ -236,8 +236,17 @@ with TemporaryDirectory() as tmp:
               bool(db3.get(VideoClip, 90)), True)
 
         # And a second clear on an upload with nothing is harmless.
-        check("clearing twice costs nothing", _clear_previous(db3, up3),
-              {"cuts": 0, "files": 0})
+        #
+        # ASSERTED FIELD BY FIELD, NOT AS A WHOLE DICT. The report
+        # grew a `kept_manual` count when cuts made BY HAND stopped
+        # being cleared -- they are work, not an earlier run's
+        # leftovers -- and an equality check on the whole dict fails
+        # the moment the report learns to say one more true thing.
+        _again = _clear_previous(db3, up3)
+        check("clearing twice costs nothing",
+              (_again["cuts"], _again["files"]), (0, 0))
+        check("...and keeps no hand-made cut it did not have",
+              _again.get("kept_manual"), 0)
     finally:
         _adm.CLIPS_DIR = _was
 

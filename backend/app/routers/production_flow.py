@@ -27,7 +27,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi import APIRouter, Body, Depends, Form, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -1370,10 +1370,24 @@ def _clear_previous(db, row) -> dict:
     """
     from .admin import CLIPS_DIR
 
-    out = {"cuts": 0, "files": 0}
+    out = {"cuts": 0, "files": 0, "kept_manual": 0}
     try:
+        # ── THE MACHINE'S OWN, NOT THE OPERATOR'S ───────────────────
+        #
+        # This clears so that a re-cut is a re-cut and not a history of
+        # experiments. A cut somebody MADE BY HAND is not an earlier
+        # run's leftovers -- it is work, and the operator pressing
+        # "Audio cuts only" afterwards is asking the machine to have
+        # another go at the strikes, not to throw away the swings they
+        # marked themselves. Those live at or above MANUAL_IDX_BASE and
+        # are left exactly where they are.
+        out["kept_manual"] = (
+            db.query(func.count(AudioCut.id))
+            .filter(AudioCut.long_upload_id == row.id,
+                    AudioCut.idx >= MANUAL_IDX_BASE).scalar() or 0)
         old = (db.query(AudioCut)
-               .filter(AudioCut.long_upload_id == row.id).all())
+               .filter(AudioCut.long_upload_id == row.id,
+                       AudioCut.idx < MANUAL_IDX_BASE).all())
         if not old:
             return out
         ids = {k.id for k in old}
@@ -1579,6 +1593,418 @@ def _flow_runner(row, src_path, db, progress=None):
 
 def _flow_runner_cuts(row, src_path, db, progress=None):
     return flow_run(row, src_path, db, progress=progress, cuts_only=True)
+
+
+# ══ CUTTING BY HAND ═══════════════════════════════════════════════
+#
+# THIRTEEN SECONDS FROM WHERE THE OPERATOR SAID, which is a different
+# statement from the one the cutter makes. The audio cutter finds a
+# peak and takes FLOW_CUT_PRE_SEC before it and FLOW_CUT_POST_SEC
+# after, because it has located a strike and is centring on it. An
+# operator pressing "Start clip" is not marking a strike -- they are
+# marking where the clip should BEGIN, and everything they want is
+# after that. So this is a span forward, not a window around.
+MANUAL_CUT_SEC = 13.0
+
+# ── A NUMBERING RANGE OF ITS OWN ──────────────────────────────────
+#
+# `record_cut` is idempotent on (upload, idx) and the audio cutter
+# numbers its strikes 0..n-1 from scratch on every re-run. Share the
+# range and a hand-made cut at idx 0 is silently REPLACED by whatever
+# the cutter hears first next time -- the row survives, the file is
+# overwritten, and the clip the operator chose quietly becomes a
+# different swing. A thousand is past any recording's strike count, so
+# the two schemes can never meet and "is this one mine?" is answerable
+# from the number alone.
+MANUAL_IDX_BASE = 1000
+
+# ── HOW MUCH VIDEO THE ACCURATE CUT IS ALLOWED TO DECODE ──────────
+#
+# `-ss` after `-i` is frame-accurate because ffmpeg decodes the file
+# from the beginning and discards frames until it reaches the start.
+# A cut at 1:47 into a recording therefore decodes 107 seconds to
+# write 13, per angle, while the operator watches a spinner. Passing
+# a pad switches `cut_segment` to a two-stage seek: a cheap keyframe
+# jump to (start - pad), then an accurate walk of `pad` seconds. Same
+# frames out, and the cost stops depending on how far into the
+# recording the swing was.
+#
+# IT MUST EXCEED THE SOURCE'S GOP, or the pre-seek lands after the
+# frame wanted and the cut is early. Five seconds is well past any
+# keyframe interval these cameras write.
+MANUAL_SEEK_PAD_SEC = 5.0
+
+
+@router.delete("/cuts/{cut_id}")
+def delete_flow_cut(cut_id: int, db: Session = Depends(get_db)):
+    """Throw one cut away — the row and both angle files.
+
+    THE UNDO FOR THE HAND CUTTER. Marking a clip is one button press
+    at the speed of a video playing, so a press half a second early,
+    or twice, or on the practice swing, is the single most likely
+    thing to happen on that page. Without this the only remedies were
+    to re-cut the whole recording — which does not even remove a
+    hand-made cut any more — or to leave a wrong clip in the stage
+    and remember it was wrong.
+
+    THE DRAFT IS NOT TAKEN WITH IT. A cut that has already been
+    produced from has a clip somewhere downstream, possibly accepted
+    or already out, and quietly deleting that as a consequence of
+    tidying up a cut list is a much larger action than the operator
+    asked for. The clip is unpointed instead — the same thing
+    `_clear_previous` does, and for the same reason — so it survives
+    as a clip that no longer claims provenance it does not have.
+    """
+    from .admin import CLIPS_DIR
+
+    k = db.get(AudioCut, cut_id)
+    if not k:
+        raise HTTPException(404, "cut not found")
+
+    out = {"ok": True, "id": cut_id, "idx": k.idx, "files": 0,
+           "unpointed": 0}
+    for c in (db.query(VideoClip)
+              .filter(VideoClip.audio_cut_id == cut_id).all()):
+        c.audio_cut_id = None
+        out["unpointed"] += 1
+    for field in ("tee_filename", "green_filename"):
+        name = getattr(k, field, None)
+        if not name:
+            continue
+        try:
+            path = (CLIPS_DIR / name).resolve()
+            # INSIDE CLIPS_DIR OR NOT AT ALL. The name comes off a
+            # database row; resolving first and checking the parent
+            # after is what stops a "../.." in one from reaching a
+            # file this has no business touching.
+            if CLIPS_DIR.resolve() in path.parents and path.is_file():
+                path.unlink()
+                out["files"] += 1
+        except OSError as exc:
+            log.warning("flow: could not delete %s: %s", name, exc)
+    db.delete(k)
+    db.commit()
+    log.info("flow: deleted cut %s (idx %s) — %d file(s), %d clip(s) "
+             "unpointed", cut_id, out["idx"], out["files"], out["unpointed"])
+    return out
+
+
+def reset_flow(db, upload_ids=None) -> dict:
+    """Put the flow back to raw clips: delete its cuts and its drafts.
+
+    THE ONE ANSWER, shared by the button on the page and the script in
+    backend/tools, because "start over" has to mean the same thing
+    whichever one is used. Two copies would drift, and the one that
+    drifts is the one run at two in the morning.
+
+    THE FENCE IS `flow_run_at`. About a thousand clips in this
+    database come from earlier pipelines and some are in player
+    galleries or have been shared. A clip produced through the flow
+    carries `flow_run_at`; nothing else does. That is the same
+    predicate `flow_clips` filters on, so what this deletes is exactly
+    what the page counts, and a legacy clip cannot be caught by it.
+    The count of those is taken before and after and returned, so a
+    caller can assert on it rather than trust this docstring.
+
+    THE CONSOLE'S OWN DELETES, not a third answer to "what does
+    deleting this mean". Four real foreign keys point at video_clips
+    -- camera_events.produced_clip_id is stamped on every clip the
+    moment it is produced -- and the hand-rolled version is always the
+    one missing a table.
+
+    NO RECORDING IS TOUCHED. Going back to raw clips means going back
+    to the recordings, not losing them.
+
+    `upload_ids` None means everything; a set narrows it to those
+    recordings, which is how the page's day and tee-box filters reach
+    this.
+    """
+    from .admin import delete_clip
+
+    out = {"cuts": 0, "clips": 0, "failed": 0,
+           "legacy_before": 0, "legacy_after": 0}
+
+    _legacy = db.query(func.count(VideoClip.id)).filter(
+        VideoClip.flow_run_at.is_(None))
+    out["legacy_before"] = _legacy.scalar() or 0
+
+    # ── IDS, NOT ROWS ──────────────────────────────────────────────
+    #
+    # Both deletes commit, and a commit expires every object in the
+    # session. Holding rows across the loop means each `.id` on the
+    # next pass is a fresh SELECT for a row that may by then be gone
+    # -- an ObjectDeletedError halfway through, with no way to tell
+    # how far it had got. A list of integers cannot go stale.
+    cq = db.query(VideoClip.id).filter(VideoClip.flow_run_at.isnot(None))
+    kq = db.query(AudioCut.id)
+    if upload_ids is not None:
+        cq = cq.filter(VideoClip.long_upload_id.in_(upload_ids))
+        kq = kq.filter(AudioCut.long_upload_id.in_(upload_ids))
+    clip_ids = [r[0] for r in cq.all()]
+    cut_ids = [r[0] for r in kq.all()]
+
+    for cid in clip_ids:
+        try:
+            # keep_swing: the swing still happened. Its cut row is
+            # about to go anyway, but failing halfway through must not
+            # leave a recording's edit list mangled.
+            delete_clip(cid, keep_swing=True, db=db)
+            out["clips"] += 1
+        except Exception as exc:  # noqa: BLE001
+            # ROLLED BACK, OR THE REST FAIL TOO. One bad delete leaves
+            # the session in a failed transaction and every delete
+            # after it raises, so a single stuck row reported as a
+            # total failure.
+            db.rollback()
+            out["failed"] += 1
+            log.warning("flow reset: clip %s: %s", cid, exc)
+    for kid in cut_ids:
+        try:
+            delete_flow_cut(kid, db=db)
+            out["cuts"] += 1
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            out["failed"] += 1
+            log.warning("flow reset: cut %s: %s", kid, exc)
+
+    out["legacy_after"] = _legacy.scalar() or 0
+    log.info("flow reset: deleted %d clip(s) and %d cut(s), %d failed; "
+             "legacy clips %d -> %d", out["clips"], out["cuts"],
+             out["failed"], out["legacy_before"], out["legacy_after"])
+    return out
+
+
+@router.post("/reset")
+def flow_reset(course_id: int = 0, day: str = "", zone: int = -1,
+               db: Session = Depends(get_db)):
+    """Start over: throw away this flow's cuts and drafts.
+
+    Takes the same filter the rest of the page does, so "start over"
+    while looking at one day means that day. Resetting everything
+    while the operator is looking at a filtered page would be a much
+    larger action than the button they pressed appears to be.
+    """
+    _ids = _flow_filter(db, course_id, day, zone)
+    out = reset_flow(db, upload_ids=_ids)
+    if out["legacy_after"] != out["legacy_before"]:
+        # Loud, because it would mean `flow_run_at` is not the fence
+        # this is built on.
+        log.error("flow reset: the legacy clip count CHANGED (%d -> %d)",
+                  out["legacy_before"], out["legacy_after"])
+    return {"ok": True, **out}
+
+
+@router.get("/raw/{upload_id}")
+def flow_raw_one(upload_id: int, db: Session = Depends(get_db)):
+    """One recording, shaped exactly like a row of the raw list.
+
+    The manual cutter needs the tee URL, the duration and the cuts it
+    has already made. The list endpoint could answer that, but only by
+    being asked for a page of forty and filtered down on the client --
+    which breaks the moment the recording is not on the first page,
+    and breaks silently, as an empty player.
+    """
+    from .admin import _local_tee
+
+    row = db.get(LongVideoUpload, upload_id)
+    if not row:
+        raise HTTPException(404, "long upload not found")
+
+    def _dur(r):
+        # Same probe, same refusal to fail the row over it, as the list.
+        try:
+            from ..services.video import probe_video_info
+            _p = _local_tee(r)
+            if not _p or not _p.exists():
+                return None
+            _d = (probe_video_info(_p) or {}).get("duration")
+            return round(float(_d), 1) if _d else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    out = _raw_row(db, row, _dur)
+    _c = db.get(Course, row.course_id) if row.course_id else None
+    out["course_name"] = _c.name if _c else None
+    out["cuts"] = (db.query(func.count(AudioCut.id))
+                   .filter(AudioCut.long_upload_id == row.id).scalar() or 0)
+    return out
+
+
+@router.post("/raw/{upload_id}/manual-cut")
+def flow_manual_cut(upload_id: int, payload: dict = Body(default={}),
+                    db: Session = Depends(get_db)):
+    """Cut MANUAL_CUT_SEC of both angles from where the operator said.
+
+    No microphone, no gates, no judgement: somebody watched the
+    recording and said "here". That is the entire input.
+
+    IT MAKES A CUT, NOT A CLIP. A produce is minutes of sky-searching
+    per swing, and queueing one behind every button press would turn
+    a pass through a three-minute recording into an afternoon of
+    waiting. These land in the Audio cuts stage and are produced from
+    there, exactly like the cutter's own -- the stage means "a
+    swing-sized piece of the recording", and how the piece was chosen
+    is what `detector` is for.
+
+    FRAME-ACCURATE, NOT FAST-SEEK. `cut_segment(fast=True)` is what
+    the audio cutter uses and it snaps to the nearest keyframe --
+    0-2s off the requested start, which its own docstring says not to
+    use for deliverables. The cutter can afford that because it pads
+    four seconds either side of a peak it measured; an operator who
+    pressed the button ON the moment they wanted cannot, and a swing
+    that starts 1.5s before the clip does is the whole clip wasted.
+    So this re-encodes -- with MANUAL_SEEK_PAD_SEC, which keeps the
+    accurate cut from costing more the further into the recording the
+    swing is. The page is built not to wait on it either: the
+    operator keeps watching while the cut finishes behind them.
+    """
+    from pathlib import Path
+
+    from ..services.video import cut_segment, probe_video_info
+    from .admin import (
+        CLIPS_DIR, _audio_lag_sec, _clip_url_for, _local_green, _local_tee,
+        _trigger_zone, probe_fps,
+    )
+
+    row = db.get(LongVideoUpload, upload_id)
+    if not row:
+        raise HTTPException(404, "long upload not found")
+
+    try:
+        start = float(payload.get("start_sec"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "start_sec must be a number of seconds")
+    if start < 0 or start != start:          # NaN fails both comparisons
+        raise HTTPException(400, "start_sec must not be negative")
+
+    src = _local_tee(row)
+    if not src or not Path(src).exists():
+        # THE SAME REASON THE RAW LIST HIDES IT. A recording whose
+        # source video has been swept cannot be cut from, and saying
+        # so is better than an ffmpeg error four layers down.
+        raise HTTPException(
+            409, "this recording's tee video is gone — it cannot be cut")
+
+    _dur = None
+    try:
+        _dur = (probe_video_info(Path(src)) or {}).get("duration")
+        _dur = float(_dur) if _dur else None
+    except Exception:  # noqa: BLE001
+        _dur = None
+    if _dur and start >= _dur:
+        raise HTTPException(
+            400, "start_sec %.2f is past the end of this %.2fs recording"
+                 % (start, _dur))
+
+    end = start + MANUAL_CUT_SEC
+    if _dur:
+        # SHORT IS FINE, EMPTY IS NOT. Pressing the button nine
+        # seconds from the end should give nine seconds, not refuse.
+        end = min(end, _dur)
+
+    _green_src = None
+    try:
+        _g = _local_green(row)
+        _green_src = _g if (_g and Path(_g).exists()) else None
+    except Exception:  # noqa: BLE001
+        _green_src = None
+
+    # The next free slot in the hand-cut range. See MANUAL_IDX_BASE.
+    _max = (db.query(func.max(AudioCut.idx))
+            .filter(AudioCut.long_upload_id == row.id,
+                    AudioCut.idx >= MANUAL_IDX_BASE).scalar())
+    idx = int(_max) + 1 if _max is not None else MANUAL_IDX_BASE
+
+    _sub = CLIPS_DIR / FLOW_CUTS_SUBDIR
+    _sub.mkdir(parents=True, exist_ok=True)
+    _tok = "%d-%02d" % (row.id, idx)
+    _tee_name = "flowcut-%s-tee.mp4" % _tok
+    _green_name = "flowcut-%s-green.mp4" % _tok
+
+    _tee_ok = _green_ok = False
+    try:
+        _tee_ok = bool(cut_segment(src, _sub / _tee_name, start, end,
+                                   seek_pad_sec=MANUAL_SEEK_PAD_SEC))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("flow: manual tee cut %s of %s failed: %s",
+                    idx, row.id, exc)
+    if not _tee_ok:
+        # NOTHING RECORDED WITHOUT A FILE. A cut row whose tee angle
+        # does not exist shows up in the stage as a cut that cannot be
+        # opened or produced, and the operator has no way to tell it
+        # from one that merely has not finished.
+        raise HTTPException(500, "ffmpeg could not cut the tee angle")
+    if _green_src is not None:
+        try:
+            _green_ok = bool(cut_segment(
+                _green_src, _sub / _green_name, start, end,
+                seek_pad_sec=MANUAL_SEEK_PAD_SEC))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("flow: manual green cut %s of %s failed: %s",
+                        idx, row.id, exc)
+
+    _size = None
+    try:
+        _p = _sub / _tee_name
+        _size = round(_p.stat().st_size / 1e6, 2) if _p.exists() else None
+    except OSError:
+        pass
+
+    _zone = None
+    try:
+        _zone = _trigger_zone(db, row)
+    except Exception:  # noqa: BLE001
+        _zone = None
+    try:
+        fps = float(probe_fps(src) or 0.0) or 30.0
+    except Exception:  # noqa: BLE001
+        fps = 30.0
+    try:
+        _lag = float(_audio_lag_sec(db, row))
+    except Exception:  # noqa: BLE001
+        _lag = 0.0
+
+    # ── WHERE THE STRIKE IS ASSUMED TO BE ──────────────────────────
+    #
+    # A manual cut has no measured peak -- nobody listened. But the
+    # produce anchors on `impact_frame`, which is derived from one, so
+    # leaving it empty would hand the produce a cut it cannot start
+    # from, and `_cut_frames` would report no frames at all.
+    #
+    # FLOW_CUT_PRE_SEC IN gives the produce the same geometry it gets
+    # from the cutter -- a cut whose strike sits four seconds from the
+    # start -- so a manual cut and an automatic one behave alike
+    # downstream. It is an ASSUMPTION, not a measurement, and
+    # `detector="manual"` is what says so on the row: an operator
+    # producing from this cut should expect to move the impact frame.
+    _peak = start + FLOW_CUT_PRE_SEC
+    if _dur:
+        _peak = min(_peak, max(start, _dur - 0.01))
+
+    k = record_cut(
+        db, upload=row, idx=idx,
+        peak_time_sec=round(_peak, 2),
+        start_sec=round(start, 2), end_sec=round(end, 2),
+        detector="manual", zone=_zone,
+        tee_filename="%s/%s" % (FLOW_CUTS_SUBDIR, _tee_name),
+        green_filename=("%s/%s" % (FLOW_CUTS_SUBDIR, _green_name)
+                        if _green_ok else None),
+        duration_sec=round(end - start, 2), size_mb=_size,
+        fps=round(fps, 3), lag_sec=round(_lag, 3))
+    if k is None:
+        raise HTTPException(500, "the cut was made but could not be recorded")
+
+    log.info("flow: manual cut upload=%s idx=%s %.2f-%.2fs green=%s",
+             row.id, idx, start, end, _green_ok)
+    return {
+        "ok": True, "id": k.id, "idx": idx,
+        "start_sec": round(start, 2), "end_sec": round(end, 2),
+        "duration_sec": round(end - start, 2),
+        "source_duration_sec": round(_dur, 2) if _dur else None,
+        "tee_url": _clip_url_for("%s/%s" % (FLOW_CUTS_SUBDIR, _tee_name)),
+        "green_url": (_clip_url_for("%s/%s" % (FLOW_CUTS_SUBDIR, _green_name))
+                      if _green_ok else None),
+    }
 
 
 @router.delete("/raw/{upload_id}")

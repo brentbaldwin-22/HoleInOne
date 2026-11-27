@@ -53,6 +53,7 @@ def cut_segment(
     start_sec: float,
     end_sec: float,
     fast: bool = False,
+    seek_pad_sec: float | None = None,
 ) -> bool:
     """Cut a [start_sec, end_sec] window out of input_path into a new MP4.
 
@@ -67,6 +68,27 @@ def cut_segment(
     faster because no decode/re-encode happens. Use this for preview
     cuts where the operator is just eyeballing segmentation, not for
     deliverables.
+
+    `seek_pad_sec` makes the accurate path FAST AS WELL, and is what
+    you want whenever the cut is deep into a long recording.
+
+    THE PROBLEM IT SOLVES. `-ss` after `-i` is accurate because
+    ffmpeg DECODES THE FILE FROM THE BEGINNING and throws frames away
+    until it reaches the start. Cutting 13 s at 1:47 into a recording
+    therefore decodes 107 s of video to write 13 — per angle. On a
+    few-minute scrubbed segment, which is what this was written for,
+    that is invisible. On a request an operator is waiting on, it is
+    the difference between two seconds and two minutes, and it gets
+    worse the further into the recording they go.
+
+    WHAT IT DOES. Two-stage seek: `-ss (start - pad)` BEFORE `-i` to
+    jump to a keyframe cheaply, then `-ss pad` AFTER `-i` to walk the
+    remaining `pad` seconds accurately. Output is frame-identical to
+    the plain accurate path — only `pad` seconds are decoded wastefully
+    instead of everything before the cut. The pad must exceed the
+    source's GOP length or the pre-seek lands after the frame wanted;
+    a few seconds is ample for camera footage. Ignored when the start
+    is inside the pad, where the plain path is already cheap.
     """
     if not have_ffmpeg():
         log.warning("ffmpeg missing; cannot cut %s", input_path)
@@ -85,10 +107,7 @@ def cut_segment(
             str(output_path),
         ]
     else:
-        cmd = [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-i", str(input_path),
-            "-ss", str(float(start_sec)),
+        _enc = [
             "-t", str(duration),
             "-c:v", "libx264", "-preset", "veryfast",
             "-c:a", "aac", "-b:a", "96k", "-ac", "2",
@@ -96,6 +115,24 @@ def cut_segment(
             "-movflags", "+faststart",
             str(output_path),
         ]
+        _pad = float(seek_pad_sec or 0.0)
+        if _pad > 0 and float(start_sec) > _pad:
+            # Two-stage: cheap keyframe jump, then an accurate walk of
+            # `_pad` seconds. See the docstring.
+            cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-ss", str(float(start_sec) - _pad),
+                "-i", str(input_path),
+                "-ss", str(_pad),
+                *_enc,
+            ]
+        else:
+            cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", str(input_path),
+                "-ss", str(float(start_sec)),
+                *_enc,
+            ]
     try:
         subprocess.run(cmd, check=True, timeout=600)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:

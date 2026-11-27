@@ -510,6 +510,46 @@ export const api = {
     request(`/api/admin/flow/raw/${uploadId}/start`,
             { method: "POST", adminPassword: key }),
 
+  flowRawOne: (key, uploadId) =>
+    // ONE RECORDING, not a page of forty filtered on the client. The
+    // manual cutter is opened by id and the recording it wants is
+    // very often not on the first page of the list.
+    request(`/api/admin/flow/raw/${uploadId}`, { adminPassword: key }),
+
+  flowReset: (key, { day = "", zone = null } = {}) => {
+    // START OVER: delete this flow's cuts and drafts and go back to
+    // the raw clips. Takes the page's own filter, so "start over"
+    // while looking at one day means that day.
+    const p = new URLSearchParams();
+    api.flowFilterParams(p, { day, zone });
+    return request(`/api/admin/flow/reset?${p}`,
+                   { method: "POST", adminPassword: key });
+  },
+
+  flowDeleteCut: (key, cutId) =>
+    // The undo for the hand cutter. Removes the cut and both angle
+    // files; any draft produced from it survives, unpointed.
+    request(`/api/admin/flow/cuts/${cutId}`,
+            { method: "DELETE", adminPassword: key }),
+
+  flowManualCut: (key, uploadId, startSec) =>
+    // THIRTEEN SECONDS FROM HERE. No microphone and no gates -- the
+    // operator watched the recording and said where. Frame-accurate
+    // on the server, so it takes a few seconds; the page is built not
+    // to wait on it.
+    request(`/api/admin/flow/raw/${uploadId}/manual-cut`, {
+      method: "POST",
+      body: { start_sec: startSec },
+      adminPassword: key,
+      // BOUNDED, because without a timeout a cut that never comes
+      // back leaves its mark shimmering "cutting…" for the rest of
+      // the session -- indistinguishable from one still working, and
+      // the operator has no way to retry it. Two minutes is far past
+      // a two-stage-seek cut of thirteen seconds; anything that slow
+      // has gone wrong and should say so.
+      timeoutMs: 120_000,
+    }),
+
   flowStartCuts: (key, uploadId) =>
     // THE SAME RUN, STOPPED AFTER THE CUTS. The produce is the
     // expensive half and the half most often done by hand, so this

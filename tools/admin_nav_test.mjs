@@ -49,9 +49,19 @@ console.log("\n1. the console's pages carry its nav");
 check("more than a handful of them do", console_.length >= 10);
 check("Production Flow is one of them",
       console_.includes("AdminProductionFlow.jsx"));
+// `Make clips by hand` is the third of them: Dashboard, back to
+// Production Flow, and the page itself. It is opened FROM the flow to
+// do one job on one recording, so a full console nav on it would be a
+// row of links away from the thing it was opened to do.
 check("and the short-nav pages are not counted as console pages",
       withNav.filter((f) => !console_.includes(f)).sort(),
-      ["AdminClaims.jsx", "AdminReviews.jsx"]);
+      ["AdminClaims.jsx", "AdminFlowManual.jsx", "AdminReviews.jsx"]);
+// AND EACH ONE REACHES THE REST THROUGH DASHBOARD, which is the
+// bargain that makes a short nav acceptable rather than a dead end.
+for (const f of withNav.filter((x) => !console_.includes(x))) {
+  check(`  ${f} still reaches Dashboard`,
+        src[f].includes('to="/admin"'));
+}
 
 console.log("\n2. every console page links to Production Flow");
 for (const f of console_) {
