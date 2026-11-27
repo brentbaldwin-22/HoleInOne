@@ -15682,8 +15682,23 @@ def wizard_produce(
     #
     # Keywords cannot do that. A new parameter anywhere in the
     # signature is then a default, which is what a default is for.
+    _t_queued = time.monotonic()
+
     def _produce_then_count(**kw):
         """The job, then the count. See `_produce_inflight`."""
+        # ── HOW LONG IT WAITED FOR ITS TURN ────────────────────────
+        #
+        # By the time this runs the heavy gate is in hand: one clip is
+        # built at a time site-wide, so a produce behind another one,
+        # or behind a Pi upload's re-encode, can sit here for minutes
+        # doing nothing. That is a completely different problem from a
+        # slow encode and wants a completely different fix, and the
+        # breakdown could not tell them apart because the job's own
+        # clock starts after the wait.
+        #
+        # The thread is the same one the job runs on, so this reaches
+        # it without a parameter nothing else would ever pass.
+        _produce_clock.queued_sec = round(time.monotonic() - _t_queued, 2)
         try:
             run_wizard_produce_job(**kw)
         finally:
@@ -37648,6 +37663,17 @@ def run_wizard_produce_job(
 
         _debugx_set("produce", upload_id, stage="Starting", done=0, total=0,
                     running=True, error=None)
+        # ── START THE CLOCK ────────────────────────────────────────
+        #
+        # "WHAT TAKES SO LONG?" HAD NO ANSWER, because this path is
+        # the one nobody timed. Every ffmpeg and render helper is
+        # already wrapped (`_timed`), and every other produce path
+        # resets the clock and keeps the breakdown -- this one, which
+        # is the one an operator runs by hand and waits on, threw it
+        # away. Five minutes with no account of where it went is a
+        # question that can only be answered by guessing.
+        _pt_reset()
+        _t_job = time.monotonic()
         try:
             from ..services import debug3 as d3
 
@@ -37896,6 +37922,57 @@ def run_wizard_produce_job(
                 out.get("ok"), len(out.get("clips") or []),
             )
             _n_ok = len(out.get("clips") or [])
+            # ── WHERE THE TIME WENT ────────────────────────────────
+            #
+            # Seconds AND counts, because they answer different
+            # questions: "ffmpeg_overlay 62s" is a mystery, and
+            # "ffmpeg_overlay 62s over 6 calls, 2 per clip" names an
+            # encode that should not be happening twice. Kept on the
+            # row, so "show work" on the Production Flow page answers
+            # this without anybody reading a log.
+            try:
+                _secs = {k: v for k, v in sorted(
+                    _pt_snapshot().items(), key=lambda kv: -kv[1]) if v > 0}
+                _total = round(time.monotonic() - _t_job, 2)
+                _keep_produce_report(db, upload_id, {
+                    "kind": "wizard produce",
+                    "swing": swing_idx,
+                    "total_sec": _total,
+                    # `n_clips`, NOT `clips`: the panel that shows this
+                    # report reads `rep.clips` as a LIST and maps over
+                    # it, so a count under that name is a TypeError in
+                    # the one place an operator goes to find out what
+                    # went wrong.
+                    "n_clips": _n_ok,
+                    "ok": bool(out.get("ok")) and _n_ok > 0,
+                    "error": out.get("error"),
+                    "phases": _secs,
+                    "phase_calls": {k: v for k, v in _pt_counts().items()
+                                    if v},
+                    # WHAT IS LEFT OVER after the timed helpers: the
+                    # flight work, the database, the waiting. A big
+                    # number here means the encodes are not the
+                    # problem and the next look belongs elsewhere.
+                    "untimed_sec": round(
+                        max(0.0, _total - sum(_secs.values())), 2),
+                    # AND WHAT WAS NOT WORK AT ALL. See
+                    # `_produce_then_count`.
+                    "queued_sec": getattr(_produce_clock, "queued_sec",
+                                          None),
+                    "machine": _machine_desc(),
+                })
+                log.info(
+                    "wizard produce: upload=%s swing %s took %.1fs "
+                    "(waited %ss) — %s",
+                    upload_id, swing_idx, _total,
+                    getattr(_produce_clock, "queued_sec", None),
+                    ", ".join("%s %.1fs x%d" % (k, v,
+                                                _pt_counts().get(k, 0))
+                              for k, v in list(_secs.items())[:6])
+                    or "nothing timed")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("wizard produce: could not keep the "
+                            "breakdown for %s: %s", upload_id, exc)
             _finish_wizard_produce(
                 db, upload_id,
                 ok=bool(out.get("ok")) and _n_ok > 0,

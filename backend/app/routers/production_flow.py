@@ -2487,6 +2487,19 @@ def flow_status(upload_id: int):
     out["produce_stage"] = _p.get("stage") if _busy else None
     out["produce_done"] = _p.get("done") if _busy else None
     out["produce_total"] = _p.get("total") if _busy else None
+    # ── AND WHAT HAPPENED WHEN IT STOPPED ───────────────────────────
+    #
+    # A PRODUCE THAT FAILS LOOKED EXACTLY LIKE ONE THAT WORKED. The
+    # job sets `running=False`, `stage="failed"` and the reason, and
+    # none of that was passed on: the page saw the work stop, claimed
+    # nothing (there was nothing to claim), reloaded a column that had
+    # not changed, and said "produced." The operator watched the
+    # notice disappear and was left looking for a clip that was never
+    # written, with the reason sitting in a dict two functions away.
+    out["produce_error"] = _p.get("error")
+    out["produce_last_stage"] = _p.get("stage")
+    out["produce_failed"] = bool(
+        not _busy and (_p.get("error") or _p.get("stage") == "failed"))
     # HOW MANY ARE OUT ON THIS RECORDING, this one included. One
     # produce runs at a time site-wide, so a second swing plotted
     # while the first is rendering is queued, not refused -- and an

@@ -17,8 +17,8 @@
  * clips from. `swing_count` survives only as the Edit wizard's shape
  * switch (see isMulti); it is no longer an operator choice.
  */
-import { Component, useCallback, useEffect, useMemo, useRef, useState }
-  from "react";
+import { Component, Fragment, useCallback, useEffect, useMemo, useRef,
+  useState } from "react";
 import { growZoneOptions, zoneWords } from "../zones";
 import { Link } from "react-router-dom";
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
@@ -11782,6 +11782,69 @@ export function AscentProduceModal({ state, adminPassword, onClose }) {
           {findOnly && " Nothing is produced and the upload's existing "
             + "clips are left alone."}
         </div>
+
+        {/* ── WHERE THE TIME WENT ──────────────────────────────────
+            "What takes so long?" is a fair question that nothing here
+            could answer: the helpers were all timed and the numbers
+            were thrown away at the end of the run. Seconds and CALL
+            COUNTS together, because they answer different questions --
+            62s of overlay is a mystery; 62s over six calls on three
+            clips names an encode happening twice per clip. */}
+        {rep?.phases && Object.keys(rep.phases).length > 0 && (
+          <div className="tiny" style={{
+            marginTop: 8, padding: "6px 8px", borderRadius: 6,
+            background: "rgba(255,255,255,0.04)" }}>
+            <b>Where the time went</b>
+            {rep.total_sec != null && (
+              <span className="muted">
+                {" "}· {Number(rep.total_sec).toFixed(1)}s in all
+                {rep.n_clips != null
+                  ? `, ${rep.n_clips} clip${rep.n_clips === 1 ? "" : "s"}`
+                  : ""}
+              </span>
+            )}
+            <div style={{ marginTop: 4, display: "grid",
+                          gridTemplateColumns: "1fr auto auto", gap: "1px 10px" }}>
+              {Object.entries(rep.phases).map(([k, v]) => (
+                <Fragment key={k}>
+                  <span>{k.replace(/_/g, " ")}</span>
+                  <span style={{ textAlign: "right" }}>
+                    {Number(v).toFixed(1)}s
+                  </span>
+                  <span className="muted">
+                    ×{rep.phase_calls?.[k] ?? 1}
+                  </span>
+                </Fragment>
+              ))}
+              {/* WHAT IS NOT AN ENCODE. A big number here says the
+                  encodes are not the problem and the next look
+                  belongs somewhere else entirely. */}
+              {/* WAITING IS NOT WORKING. One clip is built at a time
+                  site-wide, so a produce behind another one can sit
+                  here for minutes doing nothing — which is a
+                  different problem from a slow encode and wants a
+                  different fix. */}
+              {rep.queued_sec != null && rep.queued_sec > 0.05 && (
+                <Fragment key="queued">
+                  <span className="muted">waiting its turn</span>
+                  <span className="muted" style={{ textAlign: "right" }}>
+                    {Number(rep.queued_sec).toFixed(1)}s
+                  </span>
+                  <span />
+                </Fragment>
+              )}
+              {rep.untimed_sec != null && rep.untimed_sec > 0.05 && (
+                <Fragment key="untimed">
+                  <span className="muted">everything else</span>
+                  <span className="muted" style={{ textAlign: "right" }}>
+                    {Number(rep.untimed_sec).toFixed(1)}s
+                  </span>
+                  <span />
+                </Fragment>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* WHICH CUTTER RAN, AND WHAT IT FOUND.
             The cutter narrows the search before any of this starts,

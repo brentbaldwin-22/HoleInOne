@@ -706,6 +706,27 @@ export default function AdminProductionFlow() {
         }
         polling.current.delete(uploadId);
         setLiveDrafts(null);
+        // ── IT STOPPED. DID IT WORK? ─────────────────────────────
+        //
+        // A produce that FAILS stops exactly like one that worked:
+        // the flag goes false and the column has nothing new in it.
+        // This read that as success, claimed nothing, and said
+        // "produced." — so the notice vanished and the operator was
+        // left looking for a clip that was never written, with the
+        // reason sitting in a status field nobody passed on.
+        if (st?.produce_failed) {
+          adopting.current.delete(uploadId);
+          if (producingRef.current?.uploadId === uploadId) {
+            setProducingCut(null);
+          }
+          setErr(`#${uploadId}: the produce failed — `
+                 + `${st.produce_error || "no reason was recorded"}. `
+                 + `Nothing was written, so nothing has changed in `
+                 + `these columns.`);
+          setNote(null);
+          await load();
+          return;
+        }
         if (adopting.current.has(uploadId)) {
           adopting.current.delete(uploadId);
           try {
@@ -733,7 +754,15 @@ export default function AdminProductionFlow() {
               + (_c?.claimed
                 ? ` ${_c.claimed} clip${_c.claimed === 1 ? "" : "s"} `
                   + `adopted into this flow.`
-                : "")
+                // NOTHING CLAIMED AND NOTHING SUPERSEDED IS NOT A
+                // SUCCESS STORY. It means the run ended without
+                // writing a clip this page can see -- which is worth
+                // saying out loud rather than printing "produced."
+                // over a column that did not change.
+                : (_sup ? "" : " No new clip arrived — if the column "
+                  + "looks unchanged, that is because it is. Open "
+                  + "“show work” on the recording for what the run "
+                  + "did."))
               + (_c && _c.matched === 0 && _c.claimed
                 ? " It could not be matched to a cut, so it shows as"
                   + " 'swing unknown' — the cut windows and the clip's"
