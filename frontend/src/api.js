@@ -516,6 +516,16 @@ export const api = {
     // very often not on the first page of the list.
     request(`/api/admin/flow/raw/${uploadId}`, { adminPassword: key }),
 
+  flowReset: (key, { day = "", zone = null } = {}) => {
+    // START OVER: delete this flow's cuts and drafts and go back to
+    // the raw clips. Takes the page's own filter, so "start over"
+    // while looking at one day means that day.
+    const p = new URLSearchParams();
+    api.flowFilterParams(p, { day, zone });
+    return request(`/api/admin/flow/reset?${p}`,
+                   { method: "POST", adminPassword: key });
+  },
+
   flowDeleteCut: (key, cutId) =>
     // The undo for the hand cutter. Removes the cut and both angle
     // files; any draft produced from it survives, unpointed.

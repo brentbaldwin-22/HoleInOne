@@ -1673,6 +1673,111 @@ def delete_flow_cut(cut_id: int, db: Session = Depends(get_db)):
     return out
 
 
+def reset_flow(db, upload_ids=None) -> dict:
+    """Put the flow back to raw clips: delete its cuts and its drafts.
+
+    THE ONE ANSWER, shared by the button on the page and the script in
+    backend/tools, because "start over" has to mean the same thing
+    whichever one is used. Two copies would drift, and the one that
+    drifts is the one run at two in the morning.
+
+    THE FENCE IS `flow_run_at`. About a thousand clips in this
+    database come from earlier pipelines and some are in player
+    galleries or have been shared. A clip produced through the flow
+    carries `flow_run_at`; nothing else does. That is the same
+    predicate `flow_clips` filters on, so what this deletes is exactly
+    what the page counts, and a legacy clip cannot be caught by it.
+    The count of those is taken before and after and returned, so a
+    caller can assert on it rather than trust this docstring.
+
+    THE CONSOLE'S OWN DELETES, not a third answer to "what does
+    deleting this mean". Four real foreign keys point at video_clips
+    -- camera_events.produced_clip_id is stamped on every clip the
+    moment it is produced -- and the hand-rolled version is always the
+    one missing a table.
+
+    NO RECORDING IS TOUCHED. Going back to raw clips means going back
+    to the recordings, not losing them.
+
+    `upload_ids` None means everything; a set narrows it to those
+    recordings, which is how the page's day and tee-box filters reach
+    this.
+    """
+    from .admin import delete_clip
+
+    out = {"cuts": 0, "clips": 0, "failed": 0,
+           "legacy_before": 0, "legacy_after": 0}
+
+    _legacy = db.query(func.count(VideoClip.id)).filter(
+        VideoClip.flow_run_at.is_(None))
+    out["legacy_before"] = _legacy.scalar() or 0
+
+    # ── IDS, NOT ROWS ──────────────────────────────────────────────
+    #
+    # Both deletes commit, and a commit expires every object in the
+    # session. Holding rows across the loop means each `.id` on the
+    # next pass is a fresh SELECT for a row that may by then be gone
+    # -- an ObjectDeletedError halfway through, with no way to tell
+    # how far it had got. A list of integers cannot go stale.
+    cq = db.query(VideoClip.id).filter(VideoClip.flow_run_at.isnot(None))
+    kq = db.query(AudioCut.id)
+    if upload_ids is not None:
+        cq = cq.filter(VideoClip.long_upload_id.in_(upload_ids))
+        kq = kq.filter(AudioCut.long_upload_id.in_(upload_ids))
+    clip_ids = [r[0] for r in cq.all()]
+    cut_ids = [r[0] for r in kq.all()]
+
+    for cid in clip_ids:
+        try:
+            # keep_swing: the swing still happened. Its cut row is
+            # about to go anyway, but failing halfway through must not
+            # leave a recording's edit list mangled.
+            delete_clip(cid, keep_swing=True, db=db)
+            out["clips"] += 1
+        except Exception as exc:  # noqa: BLE001
+            # ROLLED BACK, OR THE REST FAIL TOO. One bad delete leaves
+            # the session in a failed transaction and every delete
+            # after it raises, so a single stuck row reported as a
+            # total failure.
+            db.rollback()
+            out["failed"] += 1
+            log.warning("flow reset: clip %s: %s", cid, exc)
+    for kid in cut_ids:
+        try:
+            delete_flow_cut(kid, db=db)
+            out["cuts"] += 1
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            out["failed"] += 1
+            log.warning("flow reset: cut %s: %s", kid, exc)
+
+    out["legacy_after"] = _legacy.scalar() or 0
+    log.info("flow reset: deleted %d clip(s) and %d cut(s), %d failed; "
+             "legacy clips %d -> %d", out["clips"], out["cuts"],
+             out["failed"], out["legacy_before"], out["legacy_after"])
+    return out
+
+
+@router.post("/reset")
+def flow_reset(course_id: int = 0, day: str = "", zone: int = -1,
+               db: Session = Depends(get_db)):
+    """Start over: throw away this flow's cuts and drafts.
+
+    Takes the same filter the rest of the page does, so "start over"
+    while looking at one day means that day. Resetting everything
+    while the operator is looking at a filtered page would be a much
+    larger action than the button they pressed appears to be.
+    """
+    _ids = _flow_filter(db, course_id, day, zone)
+    out = reset_flow(db, upload_ids=_ids)
+    if out["legacy_after"] != out["legacy_before"]:
+        # Loud, because it would mean `flow_run_at` is not the fence
+        # this is built on.
+        log.error("flow reset: the legacy clip count CHANGED (%d -> %d)",
+                  out["legacy_before"], out["legacy_after"])
+    return {"ok": True, **out}
+
+
 @router.get("/raw/{upload_id}")
 def flow_raw_one(upload_id: int, db: Session = Depends(get_db)):
     """One recording, shaped exactly like a row of the raw list.

@@ -341,6 +341,12 @@ export default function AdminProductionFlow() {
   // deletes second, and arming one disarms any other.
   const [armed, setArmed] = useState(0);
   // {row, swingPos} while the edit wizard is open on this page.
+  // ── START OVER ───────────────────────────────────────────────
+  // Two steps, like "delete recording" below, and for the same
+  // reason: the armed state is where the numbers go, so nobody
+  // deletes a day's work from a button whose label is three words.
+  const [resetArmed, setResetArmed] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [editErr, setEditErr] = useState(null);
   const [viewer, setViewer] = useState(null);
@@ -606,6 +612,30 @@ export default function AdminProductionFlow() {
     setActing(key); setErr(null);
     try { await fn(adminPassword, ...args); await load(); }
     catch (e) { setErr(e.message); } finally { setActing(null); }
+  }
+
+  async function startOver() {
+    setResetting(true);
+    setErr(null);
+    try {
+      const out = await api.flowReset(adminPassword, { day, zone });
+      setResetArmed(false);
+      setNote(
+        `Started over: ${out.cuts} cut${out.cuts === 1 ? "" : "s"} and `
+        + `${out.clips} draft${out.clips === 1 ? "" : "s"} deleted`
+        + (out.failed ? `, ${out.failed} could not be` : "")
+        + `. The ${out.legacy_after} clip`
+        + `${out.legacy_after === 1 ? "" : "s"} from before this flow `
+        + `${out.legacy_after === 1 ? "was" : "were"} left alone.`);
+      // BACK TO THE RAW CLIPS, because that is what was asked for and
+      // the stage they are standing on is now empty.
+      setStep(0);
+      await load();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setResetting(false);
+    }
   }
 
   // ── THE ROWS OF THE TABLE ────────────────────────────────────
@@ -1239,6 +1269,44 @@ export default function AdminProductionFlow() {
             <button type="button" className="btn ghost small" onClick={load}>
               refresh
             </button>
+            {/* ── START OVER ─────────────────────────────────────
+                Deletes what the flow made and leaves the recordings,
+                so the stepper reads "532 / 0 / 0 / 0" again. Armed,
+                with the counts said out loud: the numbers live in
+                the confirmation because that is the only place a
+                reader is looking at the moment it matters. */}
+            {!resetArmed ? (
+              <button type="button" className="btn ghost small"
+                      disabled={!countOf("cuts") && !countOf("draft")}
+                      title={"delete this flow's cuts and drafts and go "
+                             + "back to the raw clips"}
+                      onClick={() => setResetArmed(true)}>
+                start over
+              </button>
+            ) : (
+              <span className="tiny"
+                    style={{ padding: "4px 6px", borderRadius: 4,
+                             background: "var(--warn-bg, #fdf3d7)",
+                             display: "inline-flex", gap: 6,
+                             alignItems: "center", flexWrap: "wrap" }}>
+                <b>Start over?</b> Deletes {countOf("cuts") ?? "—"} cut
+                {countOf("cuts") === 1 ? "" : "s"} and{" "}
+                {countOf("draft") ?? "—"} draft
+                {countOf("draft") === 1 ? "" : "s"}
+                {(day || zone !== "") ? " for the current filter" : ""}.
+                {" "}No recording is deleted. This cannot be undone.
+                <button type="button" className="btn small"
+                        disabled={resetting}
+                        onClick={startOver}>
+                  {resetting ? "deleting…" : "yes, start over"}
+                </button>
+                <button type="button" className="btn ghost small"
+                        disabled={resetting}
+                        onClick={() => setResetArmed(false)}>
+                  cancel
+                </button>
+              </span>
+            )}
           </div>
         </div>
       </div>
