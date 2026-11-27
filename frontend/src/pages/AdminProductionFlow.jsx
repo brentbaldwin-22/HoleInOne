@@ -1188,7 +1188,13 @@ export default function AdminProductionFlow() {
           {(nCuts[r.id] || 0) === 1 ? "" : "s"}, {nDrafts[r.id] || 0} draft
           {(nDrafts[r.id] || 0) === 1 ? "" : "s"} and both source videos.
           <div className="row" style={{ gap: 6, marginTop: 4 }}>
-            <button type="button" className="btn small"
+            {/* RED, AND THE ONLY RED THING IN THE CARD. It was the
+                same blue as "produce" and "edit" — the house colour
+                for "go on then" — on the one control here that
+                cannot be undone. The classes are the ones the stylesheet
+                already has for this, rather than a colour typed in
+                here that nothing else would follow. */}
+            <button type="button" className="btn danger small"
                     disabled={acting === `rm-${r.id}`}
                     onClick={() => removeRaw(r.id)}>
               {acting === `rm-${r.id}` ? "deleting…" : "yes, delete"}
@@ -1200,7 +1206,7 @@ export default function AdminProductionFlow() {
           </div>
         </div>
       ) : (
-        <button type="button" className="btn ghost small"
+        <button type="button" className="btn ghost danger small"
                 style={{ marginTop: 5, width: "100%" }}
                 disabled={busy}
                 title={busy ? "a run is going on this recording"

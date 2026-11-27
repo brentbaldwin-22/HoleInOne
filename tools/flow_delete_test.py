@@ -159,6 +159,29 @@ try:
 except HTTPException as e:
     check("a clip that was never there is a 404", e.status_code, 404)
 
+print("\nX. and the button that starts all this is red")
+# IT WAS THE HOUSE BLUE -- the same colour as "produce" and "edit",
+# which is the colour for "go on then" -- on the one control in the
+# card that cannot be undone. Both halves: the trigger and the
+# confirm inside the armed state.
+_page = (Path(__file__).resolve().parents[1] / "frontend" / "src"
+         / "pages" / "AdminProductionFlow.jsx").read_text()
+check("the trigger is a destructive ghost",
+      'className="btn ghost danger small"' in _page
+      and 'delete recording' in _page, True)
+check("...and the confirm is filled red",
+      'className="btn danger small"' in _page, True)
+# THE STYLESHEET'S OWN CLASSES, not a colour typed into this file.
+# `.btn.danger` and `.btn.ghost.danger` already exist and already
+# have their hover states; an inline hex here would be a fourth red
+# that nothing else follows and that no theme can change.
+_css = (Path(__file__).resolve().parents[1] / "frontend" / "src"
+        / "styles.css").read_text()
+check("those classes exist to be used",
+      ".btn.danger, .danger {" in _css
+      and ".btn.ghost.danger, button.ghost.danger, .ghost.danger {" in _css,
+      True)
+
 print("\n%s" % ("all ok" if not FAILED else "%d FAILED:\n  %s" % (
     len(FAILED), "\n  ".join(FAILED))))
 sys.exit(1 if FAILED else 0)
