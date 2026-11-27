@@ -1279,6 +1279,36 @@ export default function AdminProductionFlow() {
           {k.produce_error}
         </div>
       )}
+      {/* ── ONE STAGE BACK ─────────────────────────────────────────
+          A cut is a claim that there was a swing here. When it is
+          wrong -- a practice swing, a car door, a hand-marked clip
+          half a second late -- the only ways back were to re-cut the
+          whole recording, which throws away every OTHER cut on it
+          too, or to leave the wrong one in the column and remember
+          it was wrong.
+
+          IT REALLY DELETES. "Back" is the direction, not a promise
+          that nothing is lost: the row and both angle files go, and
+          the swing has to be found again by the cutter or by hand.
+          What survives is the recording, which is the stage this
+          sends it back to.
+
+          NOT WHILE A DRAFT EXISTS. Deleting the cut under a draft
+          leaves that draft in the next column pointing at a swing
+          that no longer exists -- provenance that reads as real and
+          is not. Send the draft back first; one stage at a time, in
+          the order they were made. */}
+      <button type="button" className="btn ghost small"
+              style={{ marginTop: 5, width: "100%" }}
+              disabled={making || !!k.produced || acting === `cutdel-${k.id}`}
+              title={k.produced
+                ? "this swing has a draft — send that back to Audio "
+                  + "cuts first, then this can go back to the recording"
+                : "delete this cut and its two angle files; the "
+                  + "recording itself is untouched"}
+              onClick={() => act(`cutdel-${k.id}`, api.flowDeleteCut, k.id)}>
+        {acting === `cutdel-${k.id}` ? "removing…" : "← back to Raw clips"}
+      </button>
     </div>
     );
   };
@@ -1376,10 +1406,21 @@ export default function AdminProductionFlow() {
                 onClick={() => openEditor(c)}>
           {acting === `edit-${c.id}` ? "opening…" : "edit"}
         </button>
+        {/* ── ONE STAGE BACK ───────────────────────────────────
+            This was labelled "delete", which is what it does to the
+            clip and not what it does to the swing: the cut survives
+            and goes back to unproduced, so the tile reappears in
+            Audio cuts with Produce Clip on it. An operator looking
+            for a way to undo a bad produce had no reason to think
+            "delete" was it, and every reason to think it would take
+            the swing with it. The name is the direction now; the
+            title says what is actually thrown away. */}
         <button type="button" className="btn ghost small"
                 disabled={acting === `del-${c.id}`}
+                title={"throw this draft away — the swing goes back to "
+                       + "Audio cuts and can be produced again"}
                 onClick={() => act(`del-${c.id}`, api.flowDeleteClip, c.id)}>
-          {acting === `del-${c.id}` ? "deleting…" : "delete"}
+          {acting === `del-${c.id}` ? "sending back…" : "← back to Audio cuts"}
         </button>
         <button type="button" className="btn small"
                 disabled={acting === `ok-${c.id}`}

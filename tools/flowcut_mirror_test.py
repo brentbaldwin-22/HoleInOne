@@ -159,7 +159,7 @@ with tempfile.TemporaryDirectory() as _d:
 S._enabled = False
 S._client = None
 
-print("\n5. both deletes un-mirror")
+print("\n5. every delete un-mirrors")
 import app.routers.production_flow as F  # noqa: E402
 from app.services import retention as R  # noqa: E402
 
@@ -172,6 +172,27 @@ check("a re-cut clears the bucket copy of what it deleted",
 check("...and says why", re.search(r"same name again", _clear) is not None)
 _ret = inspect.getsource(R)
 check("the retention sweep does too", "_storage.remove(name)" in _ret)
+# ── AND THE THIRD ONE ────────────────────────────────────────────
+#
+# `delete_flow_cut` is the per-cut delete behind "back to Raw clips"
+# on the cuts column. It arrived before the mirror existed and took
+# the local file only, which is the same stale-object bug as a re-cut
+# and MORE likely to fire: that button exists so a mis-marked swing
+# can be thrown away and marked again, and `flow_manual_cut` numbers
+# from the highest index in use -- so deleting the last hand-made cut
+# frees its number for the very next one, which then writes the exact
+# name the bucket is still holding.
+_one = inspect.getsource(F.delete_flow_cut)
+check("deleting one cut clears its bucket copy too",
+      "_storage.remove(name)" in _one)
+check("...for both angles, not just the tee",
+      'for field in ("tee_filename", "green_filename"):' in _one)
+# The un-mirror must be INSIDE the per-field loop. Outside it, only
+# the last name is cleared and the tee copy survives the delete.
+_loop = _one.split('for field in ("tee_filename", "green_filename"):')[1]
+check("...inside the loop over the two names",
+      "_storage.remove(name)" in _loop)
+check("...and says why", re.search(r"same name again", _one) is not None)
 
 print("\n6. a cut is mirrored when it is made, not a minute later")
 _src = inspect.getsource(F)

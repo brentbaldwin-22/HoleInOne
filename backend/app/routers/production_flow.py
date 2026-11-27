@@ -1767,6 +1767,25 @@ def delete_flow_cut(cut_id: int, db: Session = Depends(get_db)):
                 out["files"] += 1
         except OSError as exc:
             log.warning("flow: could not delete %s: %s", name, exc)
+        # AND THE MIRROR, for the same reason `_clear_previous`
+        # un-mirrors: cut file names are DETERMINISTIC in the upload
+        # and the cut index, so the next cut to take this index
+        # writes the same name again. A copy left in the bucket is
+        # then the deleted swing's footage sitting under the new
+        # swing's row, waiting to be pulled down the first time this
+        # disk loses the new one -- the old clip, with the new clip's
+        # provenance on it.
+        #
+        # THE REMOVE-THEN-REUSE PATH IS THE NORMAL ONE HERE. "Back to
+        # Raw clips" exists so a mis-marked swing can be thrown away
+        # and marked again, and `flow_manual_cut` numbers from the
+        # highest index in use -- so deleting the last hand-made cut
+        # frees its number for the very next one.
+        try:
+            from ..services import storage as _storage
+            _storage.remove(name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("flow: could not un-mirror %s: %s", name, exc)
     db.delete(k)
     db.commit()
     log.info("flow: deleted cut %s (idx %s) — %d file(s), %d clip(s) "
