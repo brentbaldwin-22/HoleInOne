@@ -69,6 +69,10 @@ const POLL_MS = 2500;
 // treated the first idle status as "finished" announced the produce
 // done before it had started. See `poll`.
 const START_GRACE_MS = 30000;
+// HOW OFTEN THE PAGE ASKS WHAT EVERYONE ELSE IS DOING. Slower than a
+// watch on this page's own run -- it is one call for the whole site
+// and nobody is staring at it waiting for a number to move.
+const ACTIVE_MS = 5000;
 
 /*
  * WHICH COLUMN A STATUS LINE BELONGS TO.
@@ -541,6 +545,78 @@ export default function AdminProductionFlow() {
   }, [adminPassword, day, zone]);
 
   useEffect(() => { load(); }, [load]);
+
+  // ── WHO ELSE IS WORKING, AND ON WHAT ──────────────────────────
+  //
+  // `flowStatus` answers for ONE recording and this page only asked
+  // about the ones it had started itself. So a produce begun in
+  // another tab, by another operator, or on another backend was
+  // invisible here: the card sat offering Produce Clip for a swing
+  // already being produced, and the draft turned up later with
+  // nothing having said it was coming.
+  //
+  // One call for all of it. Produce serialises site-wide, so the
+  // answer is almost always one recording and never more than a
+  // handful -- asking per card would be forty requests a tick to
+  // learn the same thing.
+  const activeIds = useRef(new Set());
+  useEffect(() => {
+    if (!adminPassword) return undefined;
+    let dead = false;
+    const ask = async () => {
+      try {
+        const got = await api.flowActive(adminPassword);
+        if (dead) return;
+        const rows = got?.active || [];
+        const now = new Set(rows.map((a) => a.upload_id));
+        setRuns((s) => {
+          const next = { ...s };
+          for (const a of rows) {
+            // THE WATCH'S OWN STATUS WINS where there is one: it is
+            // this page's running job, it is asked for more often,
+            // and it carries the report this page prints when the
+            // run ends.
+            if (polling.current.has(a.upload_id)) continue;
+            next[a.upload_id] = {
+              ...(next[a.upload_id] || {}),
+              running: !!a.flow_running,
+              flow_running: !!a.flow_running,
+              produce_running: !!a.produce_running,
+              produce_stage: a.produce_running ? a.stage : null,
+              produce_queued: a.produce_queued || 0,
+              busy: !!(a.flow_running || a.produce_running),
+              stage: a.stage, done: a.done, total: a.total,
+              elsewhere: !a.known_here,
+            };
+          }
+          // AND WHEN SOMEBODY ELSE'S WORK STOPS, the row it wrote is
+          // new on this page. Clear the flags and reload, or the
+          // card goes on saying "producing" until something else
+          // happens to reload the columns.
+          for (const id of activeIds.current) {
+            if (now.has(id) || polling.current.has(id)) continue;
+            next[id] = {
+              ...(next[id] || {}), running: false, flow_running: false,
+              produce_running: false, produce_stage: null, busy: false,
+              produce_queued: 0,
+            };
+          }
+          return next;
+        });
+        const stopped = [...activeIds.current].filter(
+          (id) => !now.has(id) && !polling.current.has(id));
+        activeIds.current = now;
+        if (stopped.length) await load();
+      } catch {
+        // SILENT. This is a background question about other people's
+        // work; a failed one is answered by the next tick, and an
+        // error banner over the page for it would be noise.
+      }
+    };
+    ask();
+    const id = setInterval(ask, ACTIVE_MS);
+    return () => { dead = true; clearInterval(id); };
+  }, [adminPassword, load]);
 
   // WHILE A RUN IS GOING, only the two columns it is filling.
   //

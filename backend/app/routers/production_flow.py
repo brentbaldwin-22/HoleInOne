@@ -260,6 +260,94 @@ def _cut_row(k: AudioCut, base: str, zone_label=None,
     }
 
 
+@router.get("/active")
+def flow_active(db: Session = Depends(get_db)):
+    """Every recording being worked on right now, by anybody.
+
+    THE PAGE ONLY EVER ASKED ABOUT ITS OWN WORK. `flow_status` takes
+    one recording, and the page called it for the ones IT had started
+    -- so a produce another operator (or another tab, or a scheduled
+    run) started was invisible here: the card sat there offering
+    Produce Clip for a swing already being produced, and the draft
+    appeared later with nothing having said it was coming.
+
+    ONE CALL FOR ALL OF IT, because the answer is tiny. Produce
+    serialises site-wide -- one heavy job at a time -- so this list is
+    almost always a single recording and never more than a handful,
+    whatever is on the page. Asking per card would be forty requests a
+    tick to learn the same thing.
+
+    TWO SOURCES, because neither alone is the answer:
+
+      THIS PROCESS'S MEMORY (`_debugx_state`) has the stage, the
+      counter and the queue depth -- everything worth printing -- and
+      knows about the flow runs, which do not touch the row.
+
+      THE ROW (`processing_status`) is the only thing that survives a
+      restart and the only thing visible ACROSS instances. A produce
+      running on another backend has no entry in this process's
+      memory at all, and reading that silence as "nothing is
+      happening" is exactly the bug this endpoint exists to fix.
+    """
+    from .admin import (_debugx_lock, _debugx_state, produce_inflight)
+
+    out: dict[int, dict] = {}
+
+    def _slot(uid):
+        return out.setdefault(int(uid), {
+            "upload_id": int(uid), "flow_running": False,
+            "produce_running": False, "stage": None, "done": None,
+            "total": None, "produce_queued": 0, "since": None,
+            "known_here": False})
+
+    with _debugx_lock:
+        _items = [(k, dict(v or {})) for k, v in _debugx_state.items()]
+    # `_run`, NOT `st`: in this file `st.get(...)` means a key off one
+    # of the produce's STAGE dicts, and a test holds that convention
+    # by checking every such read against what the produce actually
+    # writes. This is a run's status blob, which is a different shape.
+    for (kind, uid), _run in _items:
+        if not _run.get("running"):
+            continue
+        if kind not in ("flow", "produce", "ascentproduce",
+                        "ballscanproduce"):
+            continue
+        _s = _slot(uid)
+        _s["known_here"] = True
+        if kind == "flow":
+            _s["flow_running"] = True
+        else:
+            _s["produce_running"] = True
+            _s["produce_queued"] = produce_inflight(uid)
+        # THE FLOW'S STAGE WINS where both are going: it is the one
+        # that moves the whole recording, and its lines are tagged
+        # with the column they belong to.
+        if _s["stage"] is None or kind == "flow":
+            _s["stage"] = _run.get("stage")
+            _s["done"] = _run.get("done")
+            _s["total"] = _run.get("total")
+
+    try:
+        _rows = (db.query(LongVideoUpload.id,
+                          LongVideoUpload.processing_started_at)
+                 .filter(LongVideoUpload.processing_status == "processing")
+                 .all())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("flow: could not read who is processing (%s)", exc)
+        _rows = []
+    for _uid, _at in _rows:
+        _s = _slot(_uid)
+        _s["produce_running"] = True
+        _s["since"] = _at.isoformat() if _at else None
+        if _s["stage"] is None:
+            # NOT "Queued": this process has no idea what stage it is
+            # on, and guessing one would be a made-up answer. Say the
+            # true thing -- it is being produced somewhere else.
+            _s["stage"] = "producing on another backend"
+    return {"active": sorted(out.values(),
+                             key=lambda d: d["upload_id"])}
+
+
 @router.get("/counts")
 def flow_counts(day: str = "", zone: int = -1, course_id: int = 0,
                 db: Session = Depends(get_db)):

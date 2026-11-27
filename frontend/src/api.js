@@ -562,6 +562,14 @@ export const api = {
   flowStatus: (key, uploadId) =>
     request(`/api/admin/flow/raw/${uploadId}/status`, { adminPassword: key }),
 
+  flowActive: (key) =>
+    // EVERY RECORDING BEING WORKED ON, by anybody — this page, another
+    // tab, another operator, another backend. `flowStatus` answers for
+    // one recording and the page only asked about its own work, so
+    // somebody else's produce was invisible here. One call because the
+    // answer is tiny: produce serialises site-wide.
+    request(`/api/admin/flow/active`, { adminPassword: key }),
+
   flowDeleteRaw: (key, uploadId) =>
     // THE WHOLE RECORDING: its cuts and their files, its drafts, the
     // source videos and the camera event behind them. Refused when
