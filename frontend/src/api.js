@@ -541,6 +541,13 @@ export const api = {
       method: "POST",
       body: { start_sec: startSec },
       adminPassword: key,
+      // BOUNDED, because without a timeout a cut that never comes
+      // back leaves its mark shimmering "cutting…" for the rest of
+      // the session -- indistinguishable from one still working, and
+      // the operator has no way to retry it. Two minutes is far past
+      // a two-stage-seek cut of thirteen seconds; anything that slow
+      // has gone wrong and should say so.
+      timeoutMs: 120_000,
     }),
 
   flowStartCuts: (key, uploadId) =>

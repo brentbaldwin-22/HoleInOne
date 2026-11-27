@@ -204,7 +204,7 @@ export default function AdminFlowManual() {
     return () => window.removeEventListener("keydown", onKey);
   }, [cutHere]);
 
-  const working = marks.some((m) => m.state === "cutting");
+  const working = marks.filter((m) => m.state === "cutting").length;
   const made = marks.filter((m) => m.state === "done").length;
   const failed = marks.filter((m) => m.state === "failed").length;
   const left = dur ? Math.max(0, dur - now) : null;
@@ -344,7 +344,7 @@ export default function AdminFlowManual() {
             <b>That is the whole recording.</b>{" "}
             <span className="muted">
               {made} clip{made === 1 ? "" : "s"} cut from it
-              {working && " · one still finishing"}
+              {working > 0 && ` · ${working} still finishing`}
               {failed > 0 && ` · ${failed} failed`}
             </span>
           </div>
@@ -365,10 +365,11 @@ export default function AdminFlowManual() {
               back to Raw clips
             </Link>
           </div>
-          {working && (
+          {working > 0 && (
             <div className="tiny muted" style={{ marginTop: 6 }}>
-              A cut is still being made. It will finish on the server
-              {" "}whether you stay on this page or not.
+              {working === 1 ? "A cut is" : `${working} cuts are`} still
+              {" "}being made. {working === 1 ? "It" : "They"} will finish
+              {" "}on the server whether you stay on this page or not.
             </div>
           )}
         </div>

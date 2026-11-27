@@ -1618,6 +1618,22 @@ MANUAL_CUT_SEC = 13.0
 # from the number alone.
 MANUAL_IDX_BASE = 1000
 
+# ── HOW MUCH VIDEO THE ACCURATE CUT IS ALLOWED TO DECODE ──────────
+#
+# `-ss` after `-i` is frame-accurate because ffmpeg decodes the file
+# from the beginning and discards frames until it reaches the start.
+# A cut at 1:47 into a recording therefore decodes 107 seconds to
+# write 13, per angle, while the operator watches a spinner. Passing
+# a pad switches `cut_segment` to a two-stage seek: a cheap keyframe
+# jump to (start - pad), then an accurate walk of `pad` seconds. Same
+# frames out, and the cost stops depending on how far into the
+# recording the swing was.
+#
+# IT MUST EXCEED THE SOURCE'S GOP, or the pre-seek lands after the
+# frame wanted and the cut is early. Five seconds is well past any
+# keyframe interval these cameras write.
+MANUAL_SEEK_PAD_SEC = 5.0
+
 
 @router.delete("/cuts/{cut_id}")
 def delete_flow_cut(cut_id: int, db: Session = Depends(get_db)):
@@ -1837,7 +1853,9 @@ def flow_manual_cut(upload_id: int, payload: dict = Body(default={}),
     four seconds either side of a peak it measured; an operator who
     pressed the button ON the moment they wanted cannot, and a swing
     that starts 1.5s before the clip does is the whole clip wasted.
-    So this re-encodes, and the page is built not to wait on it: the
+    So this re-encodes -- with MANUAL_SEEK_PAD_SEC, which keeps the
+    accurate cut from costing more the further into the recording the
+    swing is. The page is built not to wait on it either: the
     operator keeps watching while the cut finishes behind them.
     """
     from pathlib import Path
@@ -1905,7 +1923,8 @@ def flow_manual_cut(upload_id: int, payload: dict = Body(default={}),
 
     _tee_ok = _green_ok = False
     try:
-        _tee_ok = bool(cut_segment(src, _sub / _tee_name, start, end))
+        _tee_ok = bool(cut_segment(src, _sub / _tee_name, start, end,
+                                   seek_pad_sec=MANUAL_SEEK_PAD_SEC))
     except Exception as exc:  # noqa: BLE001
         log.warning("flow: manual tee cut %s of %s failed: %s",
                     idx, row.id, exc)
@@ -1917,8 +1936,9 @@ def flow_manual_cut(upload_id: int, payload: dict = Body(default={}),
         raise HTTPException(500, "ffmpeg could not cut the tee angle")
     if _green_src is not None:
         try:
-            _green_ok = bool(cut_segment(_green_src, _sub / _green_name,
-                                         start, end))
+            _green_ok = bool(cut_segment(
+                _green_src, _sub / _green_name, start, end,
+                seek_pad_sec=MANUAL_SEEK_PAD_SEC))
         except Exception as exc:  # noqa: BLE001
             log.warning("flow: manual green cut %s of %s failed: %s",
                         idx, row.id, exc)
