@@ -19,17 +19,35 @@ import { AscentProduceModal, ClickToPlotModal } from "./AdminProduction.jsx";
 import { zoneName } from "../zones.js";
 
 /*
- * The production flow, left to right: one recording becomes drafts.
+ * The production flow, a page at a time: one recording becomes
+ * drafts.
  *
  *   raw     a recording off a camera pair, both angles openable
  *   cuts    what the microphone heard, cut to size, nothing judged
  *   draft   produced automatically, nobody has looked
  *   final   somebody looked and approved it
  *
- * COLUMNS, NOT TABS, because the question the operator is asking is
- * "what happened to this recording" and the answer is spread across
- * all four. Tabs made them check four screens and hold the join in
- * their head.
+ * ONE STAGE PER PAGE, IN ORDER, with a stepper across the top.
+ *
+ * This was four columns side by side. The reasoning there was that
+ * the operator's question is "what happened to THIS recording" and
+ * the answer is spread across all four, which tabs made them hold in
+ * their head across four screens. That reasoning was right about
+ * tabs and wrong about columns: the four stages are never the same
+ * size -- five hundred recordings against twenty-nine cuts against
+ * fifteen drafts -- so in practice it was one tall column beside
+ * three stripes of white, each a quarter as wide as the cards in it
+ * needed.
+ *
+ * THE JOIN DID NOT GO AWAY WITH THE COLUMNS. Every stage after the
+ * first groups its cards under the recording they came from, with
+ * that recording's count in the heading, so the fan-out still reads
+ * -- it reads down the page now instead of across it. And the
+ * stepper says the two things tabs never did: where this stage sits
+ * in the sequence, and how much is waiting in the other three. A run
+ * going on a stage that is not on screen says so in a banner with a
+ * button that goes there, because a stage at a time is the one layout
+ * where work can be happening somewhere the operator cannot see.
  *
  * NOTHING FROM BEFORE THIS FLOW IS SHOWN. There are a thousand clips
  * in the database from every pipeline the console has ever had. A
@@ -97,27 +115,11 @@ function fmtDur(sec) {
 }
 
 /*
- * WHICH RECORDING A CARD BELONGS TO, said in every column.
- *
- * The columns are four independent lists and the eye has no way to
- * join them: three cuts and a draft, all from #1915, sitting next to
- * five cuts from #1916 with nothing but a small grey "#1915" on each
- * card to tell them apart. The lineage is the thing the page is for.
- *
- * So every column groups by recording, under the same heading in the
- * same order, and the heading carries the count for THAT recording in
- * THAT column -- "#1915 · 3 cuts" beside "#1915 · 1 draft" is the
- * fan-out, readable across the row.
- */
-/*
- * ONE ROW PER RECORDING, and the four columns of that row are what
- * became of it.
- *
- * The columns used to be four independent lists, so a reader joined
- * them by eye: three cuts and a draft from #1915 sat beside five cuts
- * from #1916 with nothing lining them up. The lineage is the whole
- * point of the page, and a table says it without anybody having to
- * read a card.
+ * THE HEADING OF A STAGE: its name, how much is in it across the
+ * whole filter, and what it is. The count is the server's, not the
+ * length of what is on screen -- "Raw clips · 532 recordings" with
+ * fifty cards under it is one page of five hundred, and saying 50
+ * there would hide that.
  */
 function HeadCell({ title, unit, count, blurb }) {
   return (
@@ -128,33 +130,6 @@ function HeadCell({ title, unit, count, blurb }) {
         </span>
       </div>
       <div className="tiny muted" style={{ marginTop: 2 }}>{blurb}</div>
-    </div>
-  );
-}
-
-/** One cell of a recording's row: its cards, or a visible nothing. */
-function Cell({ children, empty, live, center, footer }) {
-  const has = Array.isArray(children)
-    ? children.some(Boolean) : !!children;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8,
-                  // The recording sits against a cell as tall as its
-                  // tallest neighbour -- four cuts, say -- and reads
-                  // as the heading of the row rather than a card that
-                  // happens to be at the top of it.
-                  justifyContent: center ? "center" : "flex-start",
-                  padding: "8px", borderTop: "1px solid var(--line)",
-                  borderLeft: "1px solid var(--line)", minWidth: 0 }}>
-      {live}
-      {has ? children : (
-        <div className="tiny muted" style={{ opacity: 0.6 }}>{empty}</div>
-      )}
-      {/* OUTSIDE THE EMPTY TEST. A control in this column is not
-          content in it: counted as a child, an "add" button would
-          make an empty column claim to have something in it, and the
-          "no drafts" line -- the thing that tells an empty column
-          from one still loading -- would never appear. */}
-      {footer}
     </div>
   );
 }
@@ -204,6 +179,102 @@ function Phases({ phases, total, show }) {
         )}
       </tbody>
     </table>
+  );
+}
+
+/*
+ * THE FOUR STAGES, IN ORDER. The titles and the blurbs are the ones
+ * that were on the four column headings, word for word: the operator
+ * has been reading "Audio cuts" and "Draft produced" for months and
+ * the layout changing is no reason for the labels to. See the top of
+ * the file for why they are pages now.
+ */
+const STEPS = [
+  { key: "raw", title: "Raw clips", unit: "recordings",
+    blurb: "Both angles off the camera pair. Open either in the "
+           + "console's viewer, then start the flow." },
+  { key: "cuts", title: "Audio cuts", unit: "cuts",
+    blurb: "What the microphone heard, both angles. No swing "
+           + "judgement — only that it cleared this tee box's gates." },
+  { key: "draft", title: "Draft produced", unit: "clips",
+    blurb: "Produced from the audio impact — ascent, the ball on the "
+           + "green if it is there, then tracer and graphics." },
+  { key: "final", title: "Final produced", unit: "clips",
+    blurb: "Approved, and grouped by the seven minutes around the "
+           + "first swing in each group." },
+];
+
+/*
+ * WHICH STAGE A RUNNING PHASE IS HAPPENING ON, so a run the operator
+ * started on one page can still be seen from another. Untagged runner
+ * lines ("queued behind 2 uploads") belong to the recording's own
+ * card, which lives on stage 0.
+ */
+const PHASE_STEP = { audio: 1, cut: 1, produce: 2 };
+
+/** Where in the sequence this is, and what is waiting in the rest. */
+function Stepper({ step, onStep, countOf }) {
+  return (
+    <div className="card tight"
+         style={{ display: "flex", flexWrap: "wrap", gap: 6,
+                  alignItems: "center" }}>
+      {STEPS.map((s, i) => (
+        <Fragment key={s.key}>
+          {i > 0 && <span className="tiny muted">→</span>}
+          <button type="button"
+                  className={`btn ${i === step ? "" : "ghost"} small`}
+                  aria-current={i === step ? "step" : undefined}
+                  onClick={() => onStep(i)}>
+            <span className="tiny muted">{i + 1}.</span> {s.title}{" "}
+            <span className="pill small">{countOf(s.key) ?? "—"}</span>
+          </button>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+/*
+ * THE RECORDING A GROUP OF CARDS CAME FROM, on every stage but the
+ * first. This is the join the columns used to make with cell borders:
+ * without it, three cuts from #1915 and five from #1916 are one list
+ * of eight.
+ */
+function BandHead({ uid, r, n, unit, missing }) {
+  return (
+    <div className="small" style={{ borderTop: "1px solid var(--line)",
+                                    padding: "8px 8px 2px",
+                                    display: "flex", flexWrap: "wrap",
+                                    gap: 6, alignItems: "baseline" }}>
+      <b>#{uid}</b>
+      {n != null && (
+        <span className="pill small">{n} {unit}</span>
+      )}
+      {r ? (
+        <span className="muted tiny">
+          {r.hole_number ? `Hole ${r.hole_number} · ` : ""}
+          {r.course_name || `course #${r.course_id}`}
+          {r.captured_at ? ` · ${fmtWhen(r.captured_at)}` : ""}
+        </span>
+      ) : (
+        <span className="muted tiny">
+          {missing
+            ? "its source video is gone; what it made is still here"
+            : "not on this page of recordings"}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** The cards of one group, laid out across the page's full width. */
+function BandCards({ children }) {
+  return (
+    <div style={{ display: "grid", gap: 8, padding: "6px 8px 10px",
+                  gridTemplateColumns:
+                    "repeat(auto-fill, minmax(300px, 1fr))" }}>
+      {children}
+    </div>
   );
 }
 
@@ -273,6 +344,18 @@ export default function AdminProductionFlow() {
   const [editing, setEditing] = useState(null);
   const [editErr, setEditErr] = useState(null);
   const [viewer, setViewer] = useState(null);
+
+  // ── WHICH STAGE IS ON SCREEN ─────────────────────────────────
+  //
+  // Starts on the raw clips, because that is where the work starts
+  // and it is the only stage that is never empty.
+  const [step, setStep] = useState(0);
+  // A NEW PAGE STARTS AT THE TOP. The stages are different lengths --
+  // five hundred recordings, then twenty-nine cuts -- so a click from
+  // a scrolled-down Raw clips landed halfway down a page that had
+  // nothing there.
+  useEffect(() => { window.scrollTo({ top: 0, behavior: "smooth" }); },
+            [step]);
   const polling = useRef(new Set());
 
   const load = useCallback(async () => {
@@ -1008,6 +1091,10 @@ export default function AdminProductionFlow() {
   const liveId = Number(
     Object.keys(runs).find((id) => runs[id]?.running) || 0);
   const liveRun = liveId ? runs[liveId] : null;
+  // AND WHICH STAGE THAT RUN IS ON, so a run started on one stage can
+  // still be seen from another.
+  const liveStep = liveRun
+    ? (PHASE_STEP[phaseOf(liveRun.stage).phase] ?? null) : null;
 
   // WHAT EACH RECORDING SPAWNED, counted once for every column that
   // needs it. This is the fan-out the page exists to show: one
@@ -1064,7 +1151,7 @@ export default function AdminProductionFlow() {
           <div className="small">
             <b>Production flow</b>{" "}
             <span className="muted tiny">
-              · one row per recording · only what this flow made
+              · one stage at a time · only what this flow made
             </span>
           </div>
           <div className="row" style={{ gap: 8, alignItems: "center" }}>
@@ -1126,88 +1213,151 @@ export default function AdminProductionFlow() {
 
       {err && <div className="card err-text small">{err}</div>}
 
-      {/* ── THE TABLE: ONE ROW PER RECORDING ──────────────────
-          Four cells across, so what a recording became is read
-          along its own row instead of reconstructed from four
-          lists. Cell borders make the band, which is the only
-          thing that actually separates #1915's cuts from
-          #1916's when both have several. */}
-      <div style={{ display: "grid", alignItems: "stretch",
-                    gridTemplateColumns:
-                      "minmax(230px, 1fr) minmax(210px, 1fr) "
-                      + "minmax(230px, 1.1fr) minmax(210px, 1fr)",
-                    borderRight: "1px solid var(--line)",
-                    borderBottom: "1px solid var(--line)" }}>
-        <HeadCell title="Raw clips" unit="recordings" count={countOf("raw")}
-                  blurb="Both angles off the camera pair. Open either in
-                         the console's viewer, then start the flow." />
-        <HeadCell title="Audio cuts" unit="cuts" count={countOf("cuts")}
-                  blurb="What the microphone heard, both angles. No
-                         swing judgement — only that it cleared this
-                         tee box's gates." />
-        <HeadCell title="Draft produced" unit="clips"
-                  count={countOf("draft")}
-                  blurb="Produced from the audio impact — ascent, the
-                         ball on the green if it is there, then tracer
-                         and graphics." />
-        <HeadCell title="Final produced" unit="clips"
-                  count={countOf("final")}
-                  blurb="Approved, and grouped by the seven minutes
-                         around the first swing in each group." />
+      {/* ── WHERE IN THE SEQUENCE ──────────────────────────────── */}
+      <Stepper step={step} onStep={setStep} countOf={countOf} />
+
+      {/* WORK HAPPENING ON A STAGE THAT IS NOT ON SCREEN. With four
+          columns the run narrated itself wherever it was; one stage at
+          a time, a produce started on page 3 is invisible from page 1,
+          and an operator who cannot see the run assumes it died. */}
+      {liveRun && liveStep != null && liveStep !== step && (
+        <div className="card tight small"
+             style={{ display: "flex", gap: 8, flexWrap: "wrap",
+                      alignItems: "center" }}>
+          <span className="pill small">working</span>
+          <span>
+            #{liveId} on <b>{STEPS[liveStep].title}</b>
+            {" — "}{phaseOf(liveRun.stage).text || "…"}
+            {liveRun.total
+              ? ` · ${liveRun.done ?? 0} of ${liveRun.total}` : ""}
+          </span>
+          <button type="button" className="btn ghost small"
+                  onClick={() => setStep(liveStep)}>
+            go there
+          </button>
+        </div>
+      )}
+
+      {/* ── ONE STAGE, THE WIDTH OF THE PAGE ────────────────────── */}
+      <div style={{ borderRight: "1px solid var(--line)",
+                    borderBottom: "1px solid var(--line)",
+                    borderLeft: "1px solid var(--line)" }}>
+        <div style={{ paddingTop: 8 }}>
+          <HeadCell title={STEPS[step].title} unit={STEPS[step].unit}
+                    count={countOf(STEPS[step].key)}
+                    blurb={STEPS[step].blurb} />
+        </div>
 
         {raw === null && (
-          <div style={{ gridColumn: "1 / -1", padding: 10 }}>
+          <div style={{ padding: 10 }}>
             <div className="shimmer" style={{ height: 90 }} />
           </div>
         )}
         {raw?.length === 0 && (
-          <div style={{ gridColumn: "1 / -1", padding: 10 }}
-               className="tiny muted">No recordings.</div>
+          <div style={{ padding: 10 }} className="tiny muted">
+            No recordings.
+          </div>
         )}
 
-        {bands.map((uid) => {
-          const r = rawById[uid];
-          const run = runs[uid];
-          const busy = !!run?.running;
-          const mine = (rows) => (rows || [])
-            .filter((x) => x.long_upload_id === uid);
-          const myFinals = mine(shownFinals);
-          return (
-            <Fragment key={uid}>
-              {/* 1. the recording */}
-              <Cell center empty="this recording is gone from the list">
-                {r ? rawCard(r, run, busy) : (
-                  <div className="tiny muted">
+        {/* 1. THE RAW CLIPS, as one list. Every recording on the
+               page, each card carrying its own two angles and the
+               button that starts the flow — the labels are the ones
+               that were on the column. */}
+        {step === 0 && raw?.length > 0 && (
+          <BandCards>
+            {bands.map((uid) => {
+              const r = rawById[uid];
+              const run = runs[uid];
+              if (!r) {
+                return (
+                  <div className="card tight tiny muted" key={uid}
+                       style={{ margin: 0 }}>
                     <b>#{uid}</b>
-                    {/* WHY IT IS NOT HERE, where that is knowable. A
-                        recording whose video has been swept still has
-                        its cuts and its drafts, and those are worth
-                        keeping on screen — but "not on this page"
-                        reads like paging, which is a different
-                        problem with a different fix. */}
                     {gone.ids.includes(uid)
                       ? " — its source video is gone; the cuts and "
                         + "drafts it made are still here"
                       : " — not on this page of recordings"}
                   </div>
-                )}
-              </Cell>
+                );
+              }
+              return (
+                <Fragment key={uid}>
+                  {rawCard(r, run, !!run?.running)}
+                </Fragment>
+              );
+            })}
+          </BandCards>
+        )}
 
-              {/* 2. its cuts */}
-              <Cell empty="no cuts"
-                    live={busy ? (
-                      <>
-                        <Working run={run} phase="audio" />
-                        <Working run={run} phase="cut" />
-                      </>
-                    ) : null}>
-                {mine(shownCuts).map(cutCard)}
-              </Cell>
+        {/* 2., 3., 4. EVERYTHING AFTER THE RAW LIST, grouped under
+               the recording it came from.
 
-              {/* 3. its drafts */}
-              <Cell empty="no drafts"
-                    live={busy ? <Working run={run} phase="produce" /> : null}
-                    footer={r ? (
+               ONLY THE RECORDINGS THAT HAVE SOMETHING AT THIS STAGE.
+               Five hundred recordings and twenty-nine cuts means 471
+               headings reading "no cuts", which is how the columns
+               read and the only thing they had no room to fix. The
+               drafts stage keeps the recordings that have cuts but no
+               drafts, because a cut with no draft is exactly where
+               "+ add a swing" gets used. */}
+        {step > 0 && raw !== null && (() => {
+          const stageRows = step === 1 ? shownCuts
+            : step === 2 ? shownDrafts : shownFinals;
+          const mineOf = (rows, uid) => (rows || [])
+            .filter((x) => x.long_upload_id === uid);
+          const shown = bands.filter((uid) => {
+            if (mineOf(stageRows, uid).length) return true;
+            // a run going here needs somewhere to narrate itself
+            if (runs[uid]?.running
+                && PHASE_STEP[phaseOf(runs[uid].stage).phase] === step) {
+              return true;
+            }
+            // the add-a-swing case
+            if (step === 2 && rawById[uid]
+                && mineOf(shownCuts, uid).length) return true;
+            return false;
+          });
+          if (!shown.length) {
+            return (
+              <div style={{ padding: 10, borderTop:
+                            "1px solid var(--line)" }}
+                   className="tiny muted">
+                Nothing at this stage yet
+                {step === 1 ? " — start the flow on a raw clip."
+                  : step === 2 ? " — cut a recording first, or plot a "
+                    + "swing by hand from the Audio cuts stage."
+                    : " — approve a draft and it lands here."}
+              </div>
+            );
+          }
+          return shown.map((uid) => {
+            const r = rawById[uid];
+            const run = runs[uid];
+            const busy = !!run?.running;
+            const rows = mineOf(stageRows, uid);
+            return (
+              <Fragment key={uid}>
+                <BandHead uid={uid} r={r} n={rows.length}
+                          unit={STEPS[step].unit}
+                          missing={gone.ids.includes(uid)} />
+                <BandCards>
+                  {step === 1 && busy && (
+                    <Fragment key="live">
+                      <Working run={run} phase="audio" />
+                      <Working run={run} phase="cut" />
+                    </Fragment>
+                  )}
+                  {step === 2 && busy && (
+                    <Fragment key="live">
+                      <Working run={run} phase="produce" />
+                    </Fragment>
+                  )}
+                  {step === 1 && rows.map(cutCard)}
+                  {step === 2 && rows.map(draftCard)}
+                  {step === 3 && rows.map((c, n) => finalCard(
+                    c, n === 0 || rows[n - 1].group_label
+                      !== c.group_label))}
+                  {step === 2 && r && (
+                    <div key="add" style={{ alignSelf: "start" }}>
                       <button type="button" className="btn ghost small"
                               disabled={acting === `add-${uid}` || busy}
                               title={"plot a swing the cutter missed, or "
@@ -1217,19 +1367,41 @@ export default function AdminProductionFlow() {
                         {acting === `add-${uid}`
                           ? "opening…" : "+ add a swing"}
                       </button>
-                    ) : null}>
-                {mine(shownDrafts).map(draftCard)}
-              </Cell>
+                    </div>
+                  )}
+                  {step !== 2 && !rows.length && (
+                    <div key="none" className="tiny muted"
+                         style={{ opacity: 0.6 }}>
+                      nothing here yet
+                    </div>
+                  )}
+                </BandCards>
+              </Fragment>
+            );
+          });
+        })()}
+      </div>
 
-              {/* 4. and what was approved */}
-              <Cell empty="nothing approved">
-                {myFinals.map((c, n) => finalCard(
-                  c, n === 0 || myFinals[n - 1].group_label
-                    !== c.group_label))}
-              </Cell>
-            </Fragment>
-          );
-        })}
+      {/* ── ON TO THE NEXT ONE ─────────────────────────────────── */}
+      <div className="row" style={{ justifyContent: "space-between",
+                                    gap: 8, marginTop: 8,
+                                    flexWrap: "wrap" }}>
+        <button type="button" className="btn ghost small"
+                disabled={step === 0}
+                onClick={() => setStep(step - 1)}>
+          ← {step > 0 ? STEPS[step - 1].title : "Back"}
+        </button>
+        {step < STEPS.length - 1 ? (
+          <button type="button" className="btn small"
+                  onClick={() => setStep(step + 1)}>
+            {STEPS[step + 1].title} →
+          </button>
+        ) : (
+          <button type="button" className="btn ghost small"
+                  onClick={() => setStep(0)}>
+            start over at Raw clips
+          </button>
+        )}
       </div>
 
       {note && (
