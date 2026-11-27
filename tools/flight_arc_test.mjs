@@ -199,7 +199,30 @@ console.log("\n8. and the handles are wired to the drag");
         /px above frame/.test(src));
 }
 
-console.log("\n9. clearing the arc leaves the hand work alone");
+console.log("\n9. the arc is ONE thing in the list below the map");
+{
+  // WHAT WENT WRONG THE FIRST TIME IT WAS USED. That list is of
+  // things to remove ONE AT A TIME, which is what a hand-placed point
+  // is. An arc is not: it is one decision that happens to be three
+  // hundred points, and a chip for each pushed the map itself down to
+  // a strip at the top of the modal — the whole screen a wall of
+  // frame numbers nobody would ever click.
+  check("the arc's frames are not chips",
+        /\.filter\(\(f\) => Number\.isFinite\(f\) && !arcOwned\.has\(f\)\)/
+          .test(src));
+  check("...it gets one chip that removes the arc",
+        /arc f\{arcFrames\[0\]\}–f\{arcFrames\[arcFrames\.length - 1\]\}/
+          .test(src));
+  // AND THE HAND POINTS ARE CAPPED TOO. A green crawl merges its
+  // whole chain into the marks, which is the same wall by another
+  // road.
+  check("hand points are capped", /all\.slice\(0, 60\)/.test(src));
+  check("...and the rest are counted, not hidden",
+        /more: Math\.max\(0, all\.length - 60\)/.test(src)
+          && /\{handChips\.more\} more/.test(src));
+}
+
+console.log("\n10. clearing the arc leaves the hand work alone");
 {
   const clear = src.slice(src.indexOf("function clearArc()"),
                           src.indexOf("function clearArc()") + 420);

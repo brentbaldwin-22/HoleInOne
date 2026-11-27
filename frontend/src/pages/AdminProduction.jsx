@@ -3360,6 +3360,19 @@ export function ClickToPlotModal({
   // no dots -- was stored, saved, rendered, and invisible on the one
   // screen built to show it.
   const arcOwned = new Set(arcFrames);
+  // THE CHIPS BELOW THE MAP, and how many of them there may be. An
+  // arc is one decision; the points placed by hand are many, and each
+  // of those is worth a chip because removing one is a real thing to
+  // want. Sixty is already more than anybody clicks through, and it
+  // is the difference between a row of chips and a page of them.
+  const handChips = (() => {
+    const all = Object.keys(marks)
+      .map((f) => parseInt(f, 10))
+      .filter((f) => Number.isFinite(f) && !arcOwned.has(f))
+      .sort((a, b) => a - b);
+    return { shown: all.slice(0, 60),
+             more: Math.max(0, all.length - 60) };
+  })();
   const markPath = Object.entries(marks)
     .map(([f, p]) => ({ frame: Number(f), x: p.x, y: p.y }))
     .filter((p) => Number.isFinite(p.frame)
@@ -5007,30 +5020,58 @@ export function ClickToPlotModal({
             }}
           >
             <span className="muted">plotted:</span>
-            {Object.keys(marks)
-              .map((f) => parseInt(f, 10))
-              .sort((a, b) => a - b)
-              .map((f) => (
-                <button
-                  key={`mk-${f}`}
-                  type="button"
-                  className="ghost small"
-                    onClick={() =>
-                    setMarks((m) => {
-                      const next = { ...m };
-                      delete next[f];
-                      return next;
-                    })
-                  }
-                  title={`Remove the plotted point on frame ${f}`}
-                  style={{
-                    width: "auto", padding: "0 6px", lineHeight: "18px",
-                    fontSize: 11,
-                  }}
-                >
-                  f{f} ✕
-                </button>
-              ))}
+            {/* ── ONE CHIP PER POINT, UP TO A POINT ──────────────────
+                This is a list of things to REMOVE ONE AT A TIME, which
+                is what a hand-placed point is. An arc is not: it is one
+                decision that happens to be three hundred points, and
+                rendering a chip for each of them pushed the map itself
+                down to a strip at the top of the modal -- the whole
+                screen became a wall of frame numbers nobody would ever
+                click. The arc gets ONE chip that removes the arc, and
+                the hand points get a chip each up to a sane number. */}
+            {handChips.shown.map((f) => (
+              <button
+                key={`mk-${f}`}
+                type="button"
+                className="ghost small"
+                onClick={() =>
+                  setMarks((m) => {
+                    const next = { ...m };
+                    delete next[f];
+                    return next;
+                  })
+                }
+                title={`Remove the plotted point on frame ${f}`}
+                style={{
+                  width: "auto", padding: "0 6px", lineHeight: "18px",
+                  fontSize: 11,
+                }}
+              >
+                f{f} ✕
+              </button>
+            ))}
+            {handChips.more > 0 && (
+              <span className="muted">
+                +{handChips.more} more — use “clear tee tracer” to drop
+                them all
+              </span>
+            )}
+            {arcFrames.length > 0 && (
+              <button
+                type="button"
+                className="ghost small"
+                onClick={clearArc}
+                title={"Remove the whole arc. The points you placed by "
+                       + "hand are left alone."}
+                style={{
+                  width: "auto", padding: "0 6px", lineHeight: "18px",
+                  fontSize: 11, color: "var(--danger)",
+                }}
+              >
+                arc f{arcFrames[0]}–f{arcFrames[arcFrames.length - 1]} ·{" "}
+                {arcFrames.length} frames ✕
+              </button>
+            )}
           </div>
         )}
 
