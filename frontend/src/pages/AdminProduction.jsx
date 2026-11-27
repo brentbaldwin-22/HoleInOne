@@ -2599,7 +2599,30 @@ export function ClickToPlotModal({
   // exists in the picture it is dragged; arming a mode to move
   // something you can already see is a button standing between the
   // operator and the obvious gesture.
-  const [placeOnTee, setPlaceOnTee] = useState(null);    // 'tee' | 'pin'
+  const [placeOnTee, setPlaceOnTee] = useState(null);
+  // 'tee' | 'pin' | 'plot' | 'land'
+  // ── THE ARC: WHERE IT ENDS, HOW HIGH IT GOES ──────────────────
+  //
+  // For the swing the detector found nothing on. The tracer's own
+  // solver extends a TRACKED flight -- it needs MOG2 points to read
+  // the launch direction and the fall off, and on "0 dots" it has
+  // nothing to extend and says so. But an operator looking at the
+  // picture can see where the ball finished, and the shape between
+  // here and there is not a mystery: it is a ball flight.
+  //
+  // So: a landing placed on the tee view, an apex that can be dragged
+  // anywhere including off the top of the frame, and a curve through
+  // both written into `marks` -- the same per-frame points a hand plot
+  // makes, which is what the produce renders from. Nothing new
+  // downstream; the arc just fills in the frames faster than clicking
+  // two hundred of them would.
+  const [arcEnd, setArcEnd] = useState(null);     // {x, y} on the tee view
+  const [arcApex, setArcApex] = useState(null);   // {x, y}, y may be < 0
+  // WHICH FRAMES THE ARC OWNS, so re-drawing it replaces its own
+  // points and clearing it takes only those -- a hand-plotted ascent
+  // the arc was told to start from is the operator's work and is not
+  // the arc's to throw away.
+  const [arcFrames, setArcFrames] = useState([]);
   const [placeOnGreen, setPlaceOnGreen] = useState(null); // 'landing' | 'pin'
   const [teeViewFrame, setTeeViewFrame] = useState(null);
   // WHERE THE RAW PLAYER IS STOPPED, or null while it is running. The
@@ -3215,7 +3238,133 @@ export function ClickToPlotModal({
   // is "remove the whole plotted track", not just "forget my edits".
   function clearAllMarks() {
     setMarks({});
+    setArcFrames([]);
   }
+
+  // ── WHERE THE ARC STARTS ──────────────────────────────────────
+  //
+  // THE LAST PLOTTED POINT, if there is one. "If there are already
+  // some ascent points mapped, have it go over them to the landing" --
+  // so those points stay exactly as they are and the arc picks up
+  // from the end of them. Drawing from the tee through a chain that
+  // is already on screen would either ignore it or fight it.
+  //
+  // Otherwise the tee: the ball at rest is where every flight starts,
+  // and on a swing with nothing plotted it is the only anchor there
+  // is.
+  const arcStart = (() => {
+    const own = new Set(arcFrames);
+    const hand = Object.entries(marks)
+      .map(([f, p]) => ({ frame: Number(f), x: p.x, y: p.y }))
+      .filter((p) => Number.isFinite(p.frame) && !own.has(p.frame))
+      .sort((a, b) => a.frame - b.frame);
+    if (hand.length) {
+      const last = hand[hand.length - 1];
+      return { ...last, from: "plot", before: hand };
+    }
+    const b = ballAtRest || swing.ball || null;
+    if (!b) return null;
+    return { frame: impactFrame ?? swing.impact_frame ?? null,
+             x: b.x, y: b.y, from: "tee", before: [] };
+  })();
+
+  // THE DEFAULT APEX: half way along, a quarter of the way up. Not a
+  // measurement -- nothing here measured anything -- but it is the
+  // shape of a struck golf ball rather than a straight line, which is
+  // what makes the handle worth dragging rather than worth building.
+  function defaultApex(from, to) {
+    if (!from || !to) return null;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const chord = Math.hypot(dx, dy) || 1;
+    return { x: Math.round((from.x + to.x) / 2),
+             y: Math.round((from.y + to.y) / 2 - chord * 0.28) };
+  }
+
+  // THE CURVE, THROUGH THE HANDLE. A quadratic Bézier passes near its
+  // control point, not through it, which makes an apex handle that
+  // the curve never reaches -- the operator drags it to the treeline
+  // and the ball tops out half way there. Solving the control point
+  // backwards from the midpoint puts the curve ON the handle at
+  // t=0.5, so "apex" means what it says.
+  function arcAt(from, to, apex, t) {
+    const cx = 2 * apex.x - (from.x + to.x) / 2;
+    const cy = 2 * apex.y - (from.y + to.y) / 2;
+    const u = 1 - t;
+    return {
+      x: u * u * from.x + 2 * u * t * cx + t * t * to.x,
+      y: u * u * from.y + 2 * u * t * cy + t * t * to.y,
+    };
+  }
+
+  // HOW MANY FRAMES THE FLIGHT TAKES. The tracer tab's own flight
+  // time where one has been measured or set; otherwise four and a
+  // half seconds, which is a full shot and is honest about being a
+  // default -- the hint says so and the landing frame is printed.
+  const arcFps = Number(row.tee_fps) || 30;
+  const arcSec = flightSec != null && flightSec > 0 ? flightSec : 4.5;
+  const arcSpan = Math.max(2, Math.round(arcSec * arcFps));
+
+  function buildArc(end = arcEnd, apex = arcApex) {
+    const from = arcStart;
+    if (!from || !end) return;
+    const peak = apex || defaultApex(from, end);
+    if (!peak) return;
+    const f0 = from.frame ?? impactFrame ?? swing.impact_frame ?? 0;
+    // THE SWING'S OWN WINDOW FIRST. Points past it are points the
+    // produce will not render and the map will not show -- an arc
+    // that silently ends early, with no way to tell that from one
+    // that was drawn wrong.
+    const lastF = swing.end_frame
+      ?? (row.tee_nb_frames ? row.tee_nb_frames - 1 : (f0 + arcSpan));
+    const f1 = Math.min(f0 + arcSpan, Math.max(f0 + 2, lastF));
+    const next = {};
+    const owned = [];
+    // ONE POINT PER FRAME. The renderer draws the ball where the
+    // track says it is on that frame, so a sparse arc is a dotted
+    // line with gaps rather than a flight.
+    for (let f = f0 + 1; f <= f1; f += 1) {
+      const t = (f - f0) / (f1 - f0);
+      const q = arcAt(from, end, peak, t);
+      next[f] = { x: Math.round(q.x), y: Math.round(q.y) };
+      owned.push(f);
+    }
+    setMarks((m) => {
+      const kept = { ...m };
+      // ITS OWN PREVIOUS POINTS GO, nothing else does. Re-drawing
+      // after a drag must not leave the old curve behind, and must
+      // not take the hand-plotted ascent with it.
+      for (const f of arcFrames) delete kept[f];
+      return { ...kept, ...next };
+    });
+    setArcFrames(owned);
+    setArcApex(peak);
+    setArcEnd(end);
+  }
+
+  function clearArc() {
+    setMarks((m) => {
+      const kept = { ...m };
+      for (const f of arcFrames) delete kept[f];
+      return kept;
+    });
+    setArcFrames([]);
+    setArcApex(null);
+    setArcEnd(null);
+  }
+
+  // EVERY PLOTTED POINT, IN FRAME ORDER, for the picture to draw. The
+  // map had no idea these existed: `marks` was only ever read to ask
+  // whether a DETECTED dot was queued, so a point plotted where the
+  // detector found nothing -- the only kind there is on a swing with
+  // no dots -- was stored, saved, rendered, and invisible on the one
+  // screen built to show it.
+  const arcOwned = new Set(arcFrames);
+  const markPath = Object.entries(marks)
+    .map(([f, p]) => ({ frame: Number(f), x: p.x, y: p.y }))
+    .filter((p) => Number.isFinite(p.frame)
+      && Number.isFinite(p.x) && Number.isFinite(p.y))
+    .sort((a, b) => a.frame - b.frame);
 
   // Put it back to whatever was saved before this modal was opened.
   function resetMarks() {
@@ -3231,6 +3380,9 @@ export function ClickToPlotModal({
     setBallAtRest(swing.ball ?? null);
     setPlaceOnTee(null);
     setPlaceOnGreen(null);
+    setArcEnd(null);
+    setArcApex(null);
+    setArcFrames([]);
   }
 
   // Diff vs the baked state: new/moved picks become manual points,
@@ -4311,6 +4463,8 @@ export function ClickToPlotModal({
               frameW={frameW}
               frameH={frameH}
               marks={marks}
+              // AND DRAWS THEM. See `markPath`.
+              markPath={markPath}
               // THE SWING'S OWN BOUNDS, not the dot window. The dot
               // window is impact−5…impact+40, and the commonest reason
               // to want the video is that the impact frame is WRONG --
@@ -4359,6 +4513,17 @@ export function ClickToPlotModal({
                   setMarks((m) => ({ ...m, [f]: { x: pt.x, y: pt.y } }));
                   return;
                 }
+                // WHERE IT CAME DOWN, ON THIS PICTURE. Not the green
+                // camera's landing: that is a different camera, a
+                // different clock and a mapping between them, and the
+                // arc only needs the end of a line drawn on the frame
+                // it is drawn on. Placing it DRAWS the arc, because
+                // placing it is the whole instruction.
+                if (placeOnTee === "land") {
+                  setPlaceOnTee(null);
+                  buildArc(pt, arcApex || defaultApex(arcStart, pt));
+                  return;
+                }
                 setBallAtRest(pt);
                 setPlaceOnTee(null);
               }}
@@ -4380,12 +4545,55 @@ export function ClickToPlotModal({
                   colour: "#f472b6",
                   title: "Where the tracer is aimed. Drag it onto the spot you can actually see; the landing on the green camera is not changed.",
                 }] : []),
+                // EVERY POINT PLOTTED BY HAND, DRAGGABLE. The same
+                // bargain the green view already makes: a point put
+                // down in the wrong place should be correctable
+                // without clearing the chain and starting again.
+                // The ARC's points are not in here -- there are
+                // hundreds of them and they are shaped by the two
+                // handles below, not one at a time.
+                ...markPath
+                  // A SET, NOT `includes`. This runs on every pointer
+                  // move of an apex drag, against an arc that is one
+                  // point per frame -- a linear scan inside a filter
+                  // over the same list is the drag going sticky at
+                  // the exact moment it has to feel direct.
+                  .filter((q) => !arcOwned.has(q.frame))
+                  .slice(0, 60)
+                  .map((q) => ({
+                    id: `mark-${q.frame}`, x: q.x, y: q.y, icon: "ball",
+                    title: `Plotted at f${q.frame}. Drag to correct it.`,
+                  })),
+                // ── THE ARC'S TWO CONTROLS ────────────────────────
+                ...(arcEnd ? [{
+                  id: "arcend", x: arcEnd.x, y: arcEnd.y,
+                  colour: "#fbbf24",
+                  title: "Where the ball came down, as seen from the tee. Drag it and the arc is re-drawn to finish there.",
+                }] : []),
+                ...(arcEnd && arcApex ? [{
+                  id: "arcapex", x: arcApex.x, y: arcApex.y,
+                  colour: "#67e8f9", unclamped: true,
+                  title: "The top of the flight. Drag it to change how high the ball went — up past the top of the frame is fine, and usual: a real shot leaves the picture.",
+                }] : []),
               ]}
               onHandleDrag={(id, pt) => {
                 if (!pt) return;
                 if (id === "tee") setBallAtRest(pt);
                 if (id === "pin") setPinTee(pt);
                 if (id === "aim") setTeeLandingXY(pt);
+                // RE-DRAWN ON EVERY MOVE, not on the drop. The curve
+                // is the thing being aimed; watching it follow the
+                // handle is how an operator knows where to let go,
+                // and it is all arithmetic in this browser -- there
+                // is nothing to wait for.
+                if (id === "arcend") buildArc(pt, arcApex);
+                if (id === "arcapex") buildArc(arcEnd, pt);
+                if (id.startsWith("mark-")) {
+                  const f = Number(id.slice(5));
+                  if (Number.isFinite(f)) {
+                    setMarks((m) => ({ ...m, [f]: { x: pt.x, y: pt.y } }));
+                  }
+                }
               }}
               onHandleDrop={(id, pt) => {
                 if (id === "pin" && pt) setPinFromTee(pt);
@@ -4514,12 +4722,65 @@ export function ClickToPlotModal({
                 ? "✎ plotting — click the tee view (press to stop)"
                 : "✎ plot ascent by hand"}
             </button>
+            {/* ── THE WHOLE FLIGHT IN ONE GESTURE ─────────────────
+                The solver on the Tracer tab EXTENDS a tracked flight:
+                it reads the launch direction and the fall off the
+                MOG2 points, so on a swing with no dots it has nothing
+                to extend and says so. But the operator can see where
+                the ball finished, and the shape in between is not a
+                mystery — it is a ball flight. Mark the landing, drag
+                the apex, and the frames in between are filled with
+                the same per-frame points a hand plot makes. */}
+            <button type="button"
+                    className={placeOnTee === "land" ? "small" : "ghost small"}
+                    style={{ width: "100%", marginTop: 3 }}
+                    disabled={!arcStart}
+                    onClick={() => {
+                      setCam("tee");
+                      setPlaceOnTee((v) => (v === "land" ? null : "land"));
+                    }}
+                    title={arcStart
+                      ? "Click the tee view where the ball came down. An arc is drawn from "
+                        + (arcStart.from === "plot"
+                          ? "the end of the points you have plotted"
+                          : "the tee")
+                        + " to that spot, and its apex becomes a handle you can drag."
+                      : "Place the tee first — the arc has to start somewhere."}>
+              {placeOnTee === "land"
+                ? "◠ click where it came down (press to stop)"
+                : (arcEnd ? "◠ move the landing" : "◠ draw a flight arc")}
+            </button>
+            {arcEnd && (
+              <div className="tiny muted" style={{ marginTop: 4 }}>
+                arc from {arcStart?.from === "plot"
+                  ? `the last plotted point (f${arcStart.frame})`
+                  : "the tee"}
+                {arcFrames.length
+                  ? ` over ${arcFrames.length} frames (${arcSec.toFixed(1)}s`
+                    + `${flightSec == null ? ", assumed" : ""})`
+                  : ""}
+                {arcApex && arcApex.y < 0
+                  ? ` · apex ${Math.abs(Math.round(arcApex.y))}px above the `
+                    + "frame"
+                  : ""}
+                {". "}
+                Drag the gold point to move the landing and the blue one
+                to change the height.
+                <button type="button" className="ghost small"
+                        style={{ width: "100%", marginTop: 3,
+                                 color: "var(--danger)" }}
+                        onClick={clearArc}
+                        title="Remove the arc's points. Anything plotted by hand is left alone.">
+                  ✕ clear the arc ({arcFrames.length})
+                </button>
+              </div>
+            )}
             <button type="button" className="ghost small"
                     style={{ width: "100%", marginTop: 3,
                              color: "var(--danger)" }}
                     disabled={Object.keys(marks).length === 0}
                     onClick={clearAllMarks}
-                    title="Remove every plotted tee point for this swing.">
+                    title="Remove every plotted tee point for this swing — the arc's as well as the ones placed by hand.">
               ✕ clear tee tracer ({Object.keys(marks).length})
             </button>
             {/* WHERE THE NUMBER CAME FROM. A frame the microphone
@@ -14896,7 +15157,7 @@ const DENSE_DOT_ZOOM = 2.5;
 function PlotHeatCanvas({
   bgUrl, dots, denseDots, frameW, frameH, marks, onToggleDot, onClose,
   scanRegion, track, ballXY, placingBall, onPlaceBall, comet,
-  note, noteColour, shape, handles, onHandleDrag, onHandleDrop,
+  note, noteColour, shape, handles, onHandleDrag, onHandleDrop, markPath,
   // STEP THE REAL VIDEO UNDER THE DOTS. The map's background is a
   // motion-heat composite: every frame of the window smeared into one
   // picture, which is what makes a flight legible as a streak and makes
@@ -15112,15 +15373,22 @@ function PlotHeatCanvas({
   // right at 1x and wrong everywhere else.
   const stageRef = useRef(null);
   const [dragId, setDragId] = useState(null);
-  function stageXY(e) {
+  // `loose` LETS A POINT LEAVE THE PICTURE. Everything placed here
+  // is a thing in the frame, so clamping is right -- except for the
+  // apex of a ball flight, which on any real shot from a tee-level
+  // camera is ABOVE the top of the frame. Clamping that to y=0 caps
+  // every arc at the skyline and makes the one control that shapes it
+  // stop responding halfway through the drag.
+  function stageXY(e, loose = false) {
     const el = stageRef.current;
     if (!el || !hasDims) return null;
     const r = el.getBoundingClientRect();
+    const x = Math.round(((e.clientX - r.left) / r.width) * frameW);
+    const y = Math.round(((e.clientY - r.top) / r.height) * frameH);
+    if (loose) return { x, y };
     return {
-      x: Math.max(0, Math.min(frameW - 1,
-        Math.round(((e.clientX - r.left) / r.width) * frameW))),
-      y: Math.max(0, Math.min(frameH - 1,
-        Math.round(((e.clientY - r.top) / r.height) * frameH))),
+      x: Math.max(0, Math.min(frameW - 1, x)),
+      y: Math.max(0, Math.min(frameH - 1, y)),
     };
   }
 
@@ -15352,6 +15620,52 @@ function PlotHeatCanvas({
             />
           </svg>
         )}
+        {/* ── EVERY PLOTTED POINT, DRAWN ─────────────────────────
+            `marks` was only ever read to DECORATE a dot: "is this
+            detected point queued?". A point plotted by hand on a
+            frame the detector found nothing on -- which is the whole
+            reason to plot by hand, and the only kind there is on a
+            swing with no dots at all -- matched no dot and was drawn
+            nowhere. The click registered, the mark was stored, the
+            save used it, and the picture did not change: the operator
+            had no way to tell a plotted point from a missed click.
+
+            A LINE AS WELL AS THE POINTS, because the thing being
+            built is a path and reading one off scattered dots is
+            work. Display only -- clicking is the dot layers' job. */}
+        {hasDims && (markPath?.length || 0) > 0 && (
+          <svg
+            viewBox={`0 0 ${frameW} ${frameH}`}
+            preserveAspectRatio="none"
+            style={{
+              position: "absolute", inset: 0, width: "100%", height: "100%",
+              pointerEvents: "none", zIndex: 7,
+            }}
+          >
+            {markPath.length > 1 && (
+              <>
+                <polyline
+                  points={markPath.map((q) => `${q.x},${q.y}`).join(" ")}
+                  fill="none" stroke="#0b1220" strokeOpacity={0.55}
+                  strokeWidth={Math.max(5, frameW / 260)}
+                  strokeLinecap="round" strokeLinejoin="round"
+                />
+                <polyline
+                  points={markPath.map((q) => `${q.x},${q.y}`).join(" ")}
+                  fill="none" stroke="#fbbf24"
+                  strokeWidth={Math.max(2, frameW / 650)}
+                  strokeLinecap="round" strokeLinejoin="round"
+                />
+              </>
+            )}
+            {markPath.map((q, i) => (
+              <circle key={`mk-${q.frame ?? i}`} cx={q.x} cy={q.y}
+                      r={Math.max(2.5, frameW / 520)}
+                      fill="#fbbf24" stroke="#0b1220"
+                      strokeWidth={Math.max(0.8, frameW / 1600)} />
+            ))}
+          </svg>
+        )}
         {hasDims && (handles || []).map((h) => (
           <div
             key={h.id}
@@ -15362,20 +15676,27 @@ function PlotHeatCanvas({
             }}
             onPointerMove={(e) => {
               if (dragId !== h.id) return;
-              const pt = stageXY(e);
+              const pt = stageXY(e, h.unclamped);
               if (pt) onHandleDrag?.(h.id, pt);
             }}
             onPointerUp={(e) => {
               if (dragId !== h.id) return;
               setDragId(null);
-              const pt = stageXY(e);
+              const pt = stageXY(e, h.unclamped);
               onHandleDrop?.(h.id, pt);
             }}
             title={h.title}
             style={{
               position: "absolute",
               left: `${(h.x / frameW) * 100}%`,
-              top: `${(h.y / frameH) * 100}%`,
+              // PINNED TO THE EDGE WHEN IT IS PAST IT. An apex above
+              // the frame is a real place -- the ball went over the
+              // top of the picture -- but the stage clips, so a
+              // handle drawn at a negative percentage is a handle
+              // that cannot be grabbed back. It rides the top edge
+              // instead and says how far beyond it the point is.
+              top: `${(Math.max(h.unclamped ? frameH * 0.02 : 0, h.y)
+                / frameH) * 100}%`,
               // AN ICON HANGS FROM ITS OWN ANCHOR. A flagstick is at
               // the BOTTOM of the stick and a tee is at the bottom of
               // the peg, so centring them would put both a dozen pixels
@@ -15462,6 +15783,20 @@ function PlotHeatCanvas({
                   + "inset 0 0 0 1px rgba(0,0,0,0.6)",
               }} />
             ) : null}
+            {/* HOW FAR PAST THE EDGE IT ACTUALLY IS. The handle is
+                pinned, so without this the last two hundred pixels of
+                the drag look like nothing happening. */}
+            {h.unclamped && h.y < 0 && (
+              <div style={{
+                position: "absolute", left: "50%", top: "100%",
+                transform: "translate(-50%, 2px)",
+                background: "rgba(11,18,32,0.85)", color: "#67e8f9",
+                font: "600 10px/1.4 system-ui, sans-serif",
+                padding: "1px 4px", borderRadius: 3, whiteSpace: "nowrap",
+              }}>
+                {`${Math.abs(Math.round(h.y))}px above frame`}
+              </div>
+            )}
           </div>
         ))}
 
