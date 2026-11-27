@@ -1716,9 +1716,73 @@ def claim_clips(upload_id: int, db: Session = Depends(get_db)):
                       .filter(AudioCut.long_upload_id == upload_id)
                       .order_by(AudioCut.idx.asc()).all())]
     claimed, matched = _claim_clips(db, row, cuts)
+    _superseded = _one_clip_per_cut(db, upload_id)
     return {"ok": True, "upload_id": upload_id,
             "claimed": claimed, "matched": matched,
-            "cuts": len(cuts)}
+            "cuts": len(cuts), "superseded": _superseded}
+
+
+def _one_clip_per_cut(db, upload_id: int) -> list:
+    """Leave one draft per swing, the newest, and say which went.
+
+    TWO TILES READING "SWING 5" IS NOT A DISPLAY PROBLEM. Producing a
+    swing by hand from its cut adds a NEW swing to the recording's
+    edit list -- a slot nothing has produced yet -- and the renderer's
+    single-swing replace only drops the clip belonging to the slot it
+    is producing. So the clip the earlier run made for that same cut
+    is not its business and survives, and the column shows the shot
+    twice: the one that was just corrected, and the one it was
+    supposed to replace, indistinguishable from each other.
+
+    A re-produce of a swing supersedes it. The newest clip of a cut
+    wins -- it is the one the operator just made -- and the older ones
+    go through the console's own delete, which is the only thing that
+    knows the four foreign keys pointing at a clip.
+
+    ONLY WHERE THE CUT IS THE SAME. A clip matched to no cut is not
+    evidence of anything and is left alone; so is a clip that has been
+    broadcast, because that is a retraction and not a tidy-up.
+
+    Returns the clips it removed, each with the reason, so the page
+    can say what happened rather than having a tile vanish.
+    """
+    from .admin import delete_clip
+
+    gone: list = []
+    try:
+        _by_cut: dict = {}
+        for c in (db.query(VideoClip)
+                  .filter(VideoClip.long_upload_id == upload_id,
+                          VideoClip.audio_cut_id.isnot(None))
+                  .order_by(VideoClip.id.desc()).all()):
+            _by_cut.setdefault(int(c.audio_cut_id), []).append(c)
+        for _cut_id, _clips in _by_cut.items():
+            # Newest first, so everything after the head is superseded.
+            for c in _clips[1:]:
+                if c.broadcast_at is not None:
+                    log.info("flow: clip %s of cut %s is superseded but has "
+                             "been broadcast — left alone", c.id, _cut_id)
+                    continue
+                _k = db.get(AudioCut, _cut_id)
+                _idx = getattr(_k, "idx", None)
+                try:
+                    delete_clip(c.id, keep_swing=True, db=db)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("flow: could not supersede clip %s: %s",
+                                c.id, exc)
+                    continue
+                gone.append({
+                    "clip_id": c.id, "cut_id": _cut_id,
+                    "swing": None if _idx is None else int(_idx) + 1,
+                    "why": ("replaced by a newer draft of the same swing"),
+                })
+        if gone:
+            log.info("flow: upload %s -- %d superseded draft(s) removed: %s",
+                     upload_id, len(gone), [g["clip_id"] for g in gone])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("flow: could not tidy the drafts on %s: %s",
+                    upload_id, exc)
+    return gone
 
 
 @router.get("/raw/{upload_id}/status")

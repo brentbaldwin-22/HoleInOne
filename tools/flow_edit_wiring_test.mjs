@@ -325,6 +325,50 @@ check("...keyed apart from a cut's own Produce Clip",
 check("the produce phase says it did not run, rather than showing 0",
       /not run — audio cuts only/.test(flow));
 
+console.log("\n10. producing from a cut, with the operator told what is going on");
+// ── THE CUT NEVER GOES AWAY ─────────────────────────────────────
+// It is the thing being worked ON. Watching it vanish mid-produce
+// reads as the produce having consumed it, and when the column
+// settles there is no way to tell what happened.
+check("the cut being produced from is greyed, not removed",
+      /opacity: making \? 0\.55 : 1/.test(page));
+check("...and says so on the tile", /producing swing \{k\.idx \+ 1\}…/
+  .test(page));
+// ── AND THE SWING IS NAMED, WITH WHETHER IT REPLACES ONE ────────
+check("the drafts column names the swing being made",
+      /Swing \{_p\.swing\} is/.test(page));
+check("...and tells producing from re-producing",
+      /_p\.had \? " re-producing" : " producing"/.test(page));
+check("...which it knows from whether a draft of it exists",
+      /had: \(drafts \|\| \[\]\)\.some\(/.test(page));
+check("the stale tile is pulled while it is replaced",
+      /c\.cut_idx \+ 1 === producingCut\.swing/.test(page));
+// ── A STALE CLOSURE WOULD STRAND IT ─────────────────────────────
+// `poll` is memoised without this in its deps, so the copy that runs
+// captured `null` — the note would never name the swing and the cut
+// would stay greyed out for good.
+check("the poll reads it from a ref, not from the closure",
+      /producingRef\.current/.test(page));
+// ── AND EVERY WAY OUT CLEARS IT ─────────────────────────────────
+// Cancel, a refused save, or a wizard that would not open: nothing
+// was produced, so nothing is producing.
+check("cancelling clears it", /setProducingCut\(null\)/.test(page));
+check("...on at least three paths",
+      (page.match(/setProducingCut\(null\)/g) || []).length >= 3, true);
+// ── ONE DRAFT PER SWING ─────────────────────────────────────────
+check("the server supersedes older drafts of a swing",
+      /def _one_clip_per_cut/.test(flow));
+check("...through the delete that knows the four keys",
+      /delete_clip\(c\.id, keep_swing=True, db=db\)/.test(flow));
+check("...but never a broadcast one",
+      /if c\.broadcast_at is not None:/.test(flow));
+check("...and reports what it removed",
+      /"superseded": _superseded/.test(flow));
+check("the page says what the run did, by swing",
+      /re-produced" : "produced"/.test(page));
+check("...including the drafts it removed",
+      /older draft\$\{_sup === 1 \? "" : "s"\} of the same/.test(page));
+
 console.log();
 if (failed.length) {
   console.log(`${failed.length} FAILED:\n  ${failed.join("\n  ")}`);

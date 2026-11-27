@@ -244,6 +244,34 @@ export default function AdminProductionFlow() {
   // thing on the row and nobody reads it until they ask.
   const [work, setWork] = useState(null);
   const [note, setNote] = useState(null);
+  // ── THE MANUAL PRODUCE IN PROGRESS ────────────────────────────
+  //
+  // {cutId, swing, uploadId, had} — which cut it is from, which swing
+  // that is, and whether a draft of that swing already existed (so
+  // "producing" can be told from "re-producing").
+  //
+  // THE PAGE IS THE ONLY THING THAT KNOWS. The produce runs on a
+  // thread under the recording's status key and says nothing about
+  // which cut an operator started it from, and without that the cut
+  // tile and the draft tile both just change underneath them: the cut
+  // appears to vanish and a second draft of the same swing appears.
+  const [producingCut, _setProducingCut] = useState(null);
+  // ── AND THE SAME THING IN A REF ───────────────────────────────
+  //
+  // `poll` is a useCallback whose deps do not include this, so the
+  // copy of it that is running captured whatever the state was when
+  // it was memoised -- which is `null`, because the poll is created
+  // long before anybody presses Produce Clip. Read from there, the
+  // note would never name the swing and the clear would never fire,
+  // leaving the cut greyed out for good.
+  //
+  // The state drives the render and the ref is what the poll reads.
+  // Set through one function so the two cannot drift.
+  const producingRef = useRef(null);
+  const setProducingCut = useCallback((v) => {
+    producingRef.current = v;
+    _setProducingCut(v);
+  }, []);
   // ── THE TWO FILTERS ───────────────────────────────────────────
   //
   // A day and a tee box. Both are server-side: the list is
@@ -363,7 +391,36 @@ export default function AdminProductionFlow() {
         if (adopting.current.has(uploadId)) {
           adopting.current.delete(uploadId);
           try {
-            await api.flowClaimClips(adminPassword, uploadId);
+            const _c = await api.flowClaimClips(adminPassword, uploadId);
+            // ── WHAT THE RUN ACTUALLY DID, IN WORDS ──────────────
+            //
+            // The clip the produce writes is a NEW row, so "it
+            // worked" and "nothing happened" look identical on a
+            // column that has just reloaded. This names the swing,
+            // says whether a draft was replaced, and says which
+            // older draft was removed for being of the same swing --
+            // which is the one thing an operator cannot see, because
+            // the tile is already gone by the time they look.
+            const _p = producingRef.current;
+            const _sup = (_c?.superseded || []).length;
+            setNote(
+              (_p
+                ? `Swing ${_p.swing} of #${uploadId} `
+                  + `${_p.had ? "re-produced" : "produced"}.`
+                : `#${uploadId} produced.`)
+              + (_sup
+                ? ` ${_sup} older draft${_sup === 1 ? "" : "s"} of the same `
+                  + `swing removed — a swing has one draft.`
+                : "")
+              + (_c?.claimed
+                ? ` ${_c.claimed} clip${_c.claimed === 1 ? "" : "s"} `
+                  + `adopted into this flow.`
+                : "")
+              + (_c && _c.matched === 0 && _c.claimed
+                ? " It could not be matched to a cut, so it shows as"
+                  + " 'swing unknown' — the cut windows and the clip's"
+                  + " own time do not overlap."
+                : ""));
           } catch (e) {
             // NOT FATAL AND NOT SILENT. The clip exists either way;
             // without the stamp it simply will not be in this
@@ -372,6 +429,12 @@ export default function AdminProductionFlow() {
             setErr(`the clip was produced but this page could not `
                    + `claim it: ${e.message}`);
           }
+        }
+        // THE TILE COMES BACK NOW, not before: clearing this any
+        // earlier would un-grey the cut and restore the old draft
+        // while the new one was still being written.
+        if (producingRef.current?.uploadId === uploadId) {
+          setProducingCut(null);
         }
         await load();
       } catch {
@@ -473,6 +536,8 @@ export default function AdminProductionFlow() {
       setEditing({ row, swingPos: null, addNew: true, seed });
     } catch (e) {
       setEditErr(e.message);
+      // The wizard never opened, so nothing is being produced.
+      setProducingCut(null);
     } finally {
       setActing(null);
     }
@@ -713,8 +778,29 @@ export default function AdminProductionFlow() {
     </div>
   );
 
-  const cutCard = (k) => (
-    <div key={k.id} className="card tight" style={{ margin: 0 }}>
+  const cutCard = (k) => {
+    // ── IT NEVER GOES AWAY WHILE IT IS BEING PRODUCED FROM ───────
+    //
+    // The cut is the thing the operator is working ON. Watching it
+    // disappear mid-produce is the worst reading available: it looks
+    // like the produce consumed it, and when the column settles
+    // afterwards there is no way to tell what happened.
+    const making = producingCut?.cutId === k.id;
+    return (
+    <div key={k.id} className="card tight"
+         style={{ margin: 0, opacity: making ? 0.55 : 1 }}>
+      {making && (
+        <div className="tiny" style={{ marginBottom: 4, padding: "3px 6px",
+                                       borderRadius: 4,
+                                       background: "var(--warn-bg, #fdf3d7)",
+                                       opacity: 1 }}>
+          <b>producing swing {k.idx + 1}…</b>{" "}
+          <span className="muted">
+            this cut stays exactly as it is — the draft is being made
+            from it, not out of it
+          </span>
+        </div>
+      )}
       <div className="small">
         <b>swing {k.idx + 1}</b>
         {/* WHICH CUTS BECAME CLIPS is the question this column
@@ -812,7 +898,17 @@ export default function AdminProductionFlow() {
                 title={"plot this swing by hand and produce a draft of "
                        + "it, starting from the frame the strike was "
                        + "heard on"}
-                onClick={() => openAdder(
+                onClick={() => { setProducingCut({
+                  cutId: k.id, swing: k.idx + 1,
+                  uploadId: k.long_upload_id,
+                  // A DRAFT OF THIS SWING ALREADY? Then this is a
+                  // RE-produce, the old tile is about to be replaced,
+                  // and saying so is the difference between a tile
+                  // disappearing and a tile being superseded.
+                  had: (drafts || []).some(
+                    (c) => c.long_upload_id === k.long_upload_id
+                      && c.cut_idx === k.idx),
+                }); openAdder(
                   k.long_upload_id,
                   // ── THE CUT'S OWN WINDOW, NOT THE WHOLE VIDEO ──
                   //
@@ -831,7 +927,7 @@ export default function AdminProductionFlow() {
                         start_frame: k.start_frame,
                         end_frame: k.end_frame }
                     : null,
-                  `cut-${k.id}`)}>
+                  `cut-${k.id}`); }}>
           {acting === `cut-${k.id}` ? "opening…" : "Produce Clip"}
         </button>
       )}
@@ -841,7 +937,8 @@ export default function AdminProductionFlow() {
         </div>
       )}
     </div>
-  );
+    );
+  };
 
   const draftCard = (c) => (
     <div key={c.id} className="card tight" style={{ margin: 0 }}>
@@ -1206,7 +1303,45 @@ export default function AdminProductionFlow() {
 
               {/* 3. its drafts */}
               <Cell empty="no drafts"
-                    live={busy ? <Working run={run} phase="produce" /> : null}
+                    live={(() => {
+                      const _p = producingCut?.uploadId === uid
+                        ? producingCut : null;
+                      return (
+                        <>
+                          {/* ── THE SWING BEING MADE, BY NAME ──────
+                              The tile for it is pulled out below
+                              while this runs, because for a
+                              re-produce the one on screen is about
+                              to be replaced and leaving it there
+                              means watching a stale draft sit under
+                              a progress bar. Saying WHICH swing, and
+                              whether this replaces one, is the whole
+                              difference between that and a tile
+                              quietly vanishing. */}
+                          {_p && (
+                            <div className="tiny" style={{
+                              padding: "4px 6px", borderRadius: 4,
+                              background: "var(--warn-bg, #fdf3d7)" }}>
+                              <b>
+                                Swing {_p.swing} is
+                                {_p.had ? " re-producing" : " producing"}…
+                              </b>
+                              <div className="muted">
+                                {_p.had
+                                  ? "the draft that was here is still on "
+                                    + "disk and is replaced only when this "
+                                    + "one succeeds — there is never more "
+                                    + "than one draft of a swing"
+                                  : "plotted by hand from the audio cut "
+                                    + "beside it"}
+                              </div>
+                            </div>
+                          )}
+                          {busy
+                            ? <Working run={run} phase="produce" /> : null}
+                        </>
+                      );
+                    })()}
                     footer={r ? (
                       <button type="button" className="btn ghost small"
                               disabled={acting === `add-${uid}` || busy}
@@ -1218,7 +1353,15 @@ export default function AdminProductionFlow() {
                           ? "opening…" : "+ add a swing"}
                       </button>
                     ) : null}>
-                {mine(shownDrafts).map(draftCard)}
+                {/* ONE TILE PER SWING. The one being re-produced is
+                    pulled out while that runs, so the column never
+                    shows the old draft and the new one together. */}
+                {mine(shownDrafts)
+                  .filter((c) => !(producingCut
+                    && producingCut.uploadId === uid
+                    && c.cut_idx != null
+                    && c.cut_idx + 1 === producingCut.swing))
+                  .map(draftCard)}
               </Cell>
 
               {/* 4. and what was approved */}
@@ -1261,7 +1404,15 @@ export default function AdminProductionFlow() {
           // which is indistinguishable from the edit having done
           // nothing. `poll` watches the produce and reloads the
           // columns when it stops.
-          onClose={() => { setEditing(null); load(); }}
+          // CANCELLED. Nothing was produced, so nothing is
+          // producing -- without this the cut stays greyed out and
+          // the drafts column goes on announcing a swing that is not
+          // being made, for as long as the page is open.
+          onClose={() => {
+            setEditing(null);
+            setProducingCut(null);
+            load();
+          }}
           onBackground={() => {
             const _id = editing.row?.id;
             setEditing(null);
@@ -1278,6 +1429,7 @@ export default function AdminProductionFlow() {
             // was still rendering.
             if (ok === false) {
               setEditErr(msg || "the produce was refused");
+              setProducingCut(null);
               load();
               return;
             }
