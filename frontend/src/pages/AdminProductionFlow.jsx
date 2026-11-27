@@ -381,10 +381,21 @@ export default function AdminProductionFlow() {
     setTimeout(tick, 600);
   }, [adminPassword, load, loadLive]);
 
-  async function start(uploadId) {
-    setActing(`raw-${uploadId}`); setErr(null);
+  // ONE STARTER, TWO DEPTHS. The whole flow, or the cuts and stop.
+  // The same status key either way, because it is the same recording
+  // -- two keys would let one recording look like it was running
+  // twice, and the second to finish would be the one the columns
+  // believed.
+  async function start(uploadId, cutsOnly = false) {
+    // NOT `cut-${id}`: that key already belongs to Produce Clip on a
+    // CUT card, which is keyed by the cut's id — and an upload and a
+    // cut can share a number, which would grey out an unrelated
+    // button in another column.
+    const _k = `${cutsOnly ? "cutsonly" : "raw"}-${uploadId}`;
+    setActing(_k); setErr(null);
     try {
-      const got = await api.flowStart(adminPassword, uploadId);
+      const got = await (cutsOnly ? api.flowStartCuts : api.flowStart)(
+        adminPassword, uploadId);
       setRuns((s) => ({ ...s, [uploadId]: { ...got, running: true } }));
       poll(uploadId);
     } catch (e) { setErr(e.message); } finally { setActing(null); }
@@ -558,6 +569,24 @@ export default function AdminProductionFlow() {
               onClick={() => start(r.id)}>
         {busy ? "running…" : acting === `raw-${r.id}` ? "starting…"
           : "Start production flow"}
+      </button>
+      {/* ── THE CUTS, AND STOP THERE ───────────────────────────────
+          The produce is the expensive half by a wide margin —
+          minutes of sky searching per swing against seconds of
+          ffmpeg — and it is the half most often done by hand. On a
+          recording where the ascent search is going to find nothing
+          anyway, waiting for it to fail four times before being
+          allowed to plot the swings is the long way round to the
+          same place. This fills the cuts column and leaves every cut
+          waiting for its own Produce Clip. */}
+      <button type="button" className="btn ghost small"
+              style={{ marginTop: 5, width: "100%" }}
+              disabled={busy || acting === `cutsonly-${r.id}`}
+              title={"cut on audio and stop — the same cuts the full "
+                     + "flow makes, with no produce after them, so each "
+                     + "one can be plotted by hand"}
+              onClick={() => start(r.id, true)}>
+        {acting === `cutsonly-${r.id}` ? "starting…" : "Audio cuts only"}
       </button>
       {/* Only the runner's OWN lines -- "starting", "queued behind 2
           uploads". Everything tagged with a phase belongs in the cell

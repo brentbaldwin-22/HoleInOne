@@ -1089,8 +1089,24 @@ def _flow_phase(rep, name, title, secs, detail="", count=None, units=None):
                           "count": count, "units": units})
 
 
-def flow_run(row, src_path, db, progress=None) -> dict:
+def flow_run(row, src_path, db, progress=None, cuts_only=False) -> dict:
     """Cut this recording on audio, then produce a draft from each cut.
+
+    `cuts_only` STOPS AFTER THE CUTS. The produce is the expensive
+    half by a wide margin -- minutes of sky searching per swing
+    against seconds of ffmpeg -- and it is also the half an operator
+    most often wants to do by hand: on a recording where the ascent
+    search is going to find nothing anyway, waiting for it to fail
+    four times before being allowed to plot the swings is the long way
+    round to the same place. The cuts alone give the cuts column, and
+    every cut carries a Produce Clip button.
+
+    IT STILL CLEARS THE EARLIER RUN'S CUTS. Re-cutting is re-cutting,
+    and leaving the old rows would mean the column showed the cuts of
+    two different gate settings at once. What it does NOT clear is
+    produced clips: those are somebody's work, and a cut is not an
+    instruction to throw them away. They lose their link to a cut
+    that no longer exists, which the card already says out loud.
 
     Never raises: it is handed to the console's background runner, and
     a traceback there is a spinner that never stops.
@@ -1255,6 +1271,33 @@ def flow_run(row, src_path, db, progress=None) -> dict:
                 detail=_gates_sentence(dbg),
                 count=len(hits), units="strikes")
     rep["phases"].sort(key=lambda p: 0 if p["name"] == "audio" else 1)
+
+    # ── STOP HERE IF THAT IS ALL THAT WAS ASKED FOR ───────────────
+    if cuts_only:
+        rep["cuts_only"] = True
+        rep["total_sec"] = round(_time.monotonic() - _t_run, 2)
+        rep["ok"] = True
+        # WHAT IS LEFT OF AN EARLIER PRODUCE, counted rather than
+        # removed. A draft of a cut this run has just replaced is not
+        # wrong, it is OLD -- and quietly deleting it would be this
+        # function deciding something it was not asked about.
+        try:
+            rep["n_clips"] = (
+                db.query(VideoClip)
+                .filter(VideoClip.long_upload_id == row.id).count())
+        except Exception:  # noqa: BLE001
+            rep["n_clips"] = 0
+        rep["reason"] = (
+            "%d cut(s) — the produce was not run, so each cut is waiting "
+            "for Produce Clip%s"
+            % (rep["n_cuts"],
+               ". The %d clip(s) already on this recording were left "
+               "alone, and no longer name a cut" % rep["n_clips"]
+               if rep["n_clips"] else ""))
+        _flow_phase(rep, "produce", "Producing a draft from each cut",
+                    0.0, count=0, units="clips",
+                    detail="not run — audio cuts only")
+        return rep
 
     # ══ PHASE 3. PRODUCE A DRAFT FROM EACH ════════════════════════
     _t = _time.monotonic()
@@ -1508,8 +1551,34 @@ def flow_start(upload_id: int, db: Session = Depends(get_db)):
     return _debugx_start("flow", upload_id, _flow_runner)
 
 
+@router.post("/raw/{upload_id}/cut")
+def flow_start_cuts(upload_id: int, db: Session = Depends(get_db)):
+    """Cut this recording on audio and stop there.
+
+    THE SAME RUN, STOPPED AFTER PHASE 2 — not a second cutter. Which
+    gates ran, which tee box they came from and which strikes cleared
+    them are decided in one place, so the cuts this makes are the cuts
+    the full flow would have made.
+
+    FILED UNDER THE SAME KEY ("flow"), because it is the same
+    recording and the page polls one status for it. Two kinds would
+    mean a recording could appear to be running twice, and the second
+    one to finish would be the one the columns believed.
+    """
+    from .admin import _debugx_start
+
+    row = db.get(LongVideoUpload, upload_id)
+    if not row:
+        raise HTTPException(404, "long upload not found")
+    return _debugx_start("flow", upload_id, _flow_runner_cuts)
+
+
 def _flow_runner(row, src_path, db, progress=None):
     return flow_run(row, src_path, db, progress=progress)
+
+
+def _flow_runner_cuts(row, src_path, db, progress=None):
+    return flow_run(row, src_path, db, progress=progress, cuts_only=True)
 
 
 @router.delete("/raw/{upload_id}")

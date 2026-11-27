@@ -302,6 +302,29 @@ check("the page says how many it left out",
 check("...and a band with cuts but no row says why",
       /its source video is gone/.test(page));
 
+console.log("\n9. the cuts, without the produce after them");
+check("the server can stop after the cuts",
+      /def flow_start_cuts/.test(flow) && /cuts_only=True/.test(flow));
+// THE SAME RUN, not a second cutter: two would be two answers to
+// "which strikes cleared this hole's gates", and they could disagree
+// while both looked authoritative.
+check("...through the same run, with a stop in it",
+      /if cuts_only:/.test(flow));
+check("...and the same status key, so one recording is one run",
+      /_debugx_start\("flow", upload_id, _flow_runner_cuts\)/.test(flow));
+check("the api can ask for it", /flowStartCuts:/.test(apijs));
+check("the button is under Start production flow",
+      /Audio cuts only/.test(page));
+check("...and is disabled while a run is going",
+      /disabled=\{busy \|\| acting === `cutsonly-\$\{r\.id\}`\}/.test(page));
+// NOT `cut-${id}`: that key belongs to Produce Clip on a CUT card,
+// and an upload and a cut can share a number — which would grey out
+// an unrelated button in another column.
+check("...keyed apart from a cut's own Produce Clip",
+      /cutsonly-\$\{uploadId\}/.test(page) || /"cutsonly"/.test(page));
+check("the produce phase says it did not run, rather than showing 0",
+      /not run — audio cuts only/.test(flow));
+
 console.log();
 if (failed.length) {
   console.log(`${failed.length} FAILED:\n  ${failed.join("\n  ")}`);

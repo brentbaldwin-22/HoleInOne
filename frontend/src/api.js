@@ -510,6 +510,15 @@ export const api = {
     request(`/api/admin/flow/raw/${uploadId}/start`,
             { method: "POST", adminPassword: key }),
 
+  flowStartCuts: (key, uploadId) =>
+    // THE SAME RUN, STOPPED AFTER THE CUTS. The produce is the
+    // expensive half and the half most often done by hand, so this
+    // fills the cuts column and leaves each cut waiting for Produce
+    // Clip. Filed under the same status key, because it is the same
+    // recording.
+    request(`/api/admin/flow/raw/${uploadId}/cut`,
+            { method: "POST", adminPassword: key }),
+
   flowStatus: (key, uploadId) =>
     request(`/api/admin/flow/raw/${uploadId}/status`, { adminPassword: key }),
 
