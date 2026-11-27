@@ -144,6 +144,32 @@ check("the editor names the swing it is about to rebuild",
       re.search(r"openEditor[\s\S]{0,900}?swing: clip\.cut_idx != null",
                 page) is not None)
 
+print("\n6. a watch does not end before the work has begun")
+page = (ROOT / "frontend" / "src" / "pages"
+        / "AdminProductionFlow.jsx").read_text()
+# ── "WORKING, DONE, WORKING, DONE" FOR ONE CLIP ─────────────────
+#
+# "Nothing is running" is the state BEFORE a job as well as after it,
+# and the watch read the first as the second. Save & close hands the
+# work over several server calls before the produce is queued -- a
+# tracer re-render, a finalize -- so the first status came back idle,
+# the watch announced the produce finished, claimed nothing, and
+# reloaded the OLD draft as though it were the new one. Then the
+# produce started and said so all over again.
+check("an idle status does not end a watch that saw nothing",
+      "if (!(st?.busy ?? st?.running) && !seen) {" in page)
+check("...it is only the end once something has been seen running",
+      "if (st?.busy ?? st?.running) seen = true;" in page)
+check("...and the wait for a start is bounded",
+      "waitedMs < START_GRACE_MS" in page)
+# AND WHEN IT RUNS OUT, IT SAYS SO. Reporting a clip that was never
+# produced is the failure this whole watch exists to prevent.
+check("...with nothing claimed if it never starts",
+      "nothing started producing within" in page
+      and "Nothing has been claimed." in page)
+check("the grace is long enough for the calls that come first",
+      "const START_GRACE_MS = 30000;" in page)
+
 print("\n" + ("all ok" if not FAILED
                else "%d FAILED:\n  %s" % (len(FAILED), "\n  ".join(FAILED))))
 sys.exit(1 if FAILED else 0)

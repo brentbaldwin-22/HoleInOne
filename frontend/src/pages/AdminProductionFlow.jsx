@@ -63,6 +63,12 @@ import { zoneName } from "../zones.js";
  */
 
 const POLL_MS = 2500;
+// HOW LONG A WATCH WILL WAIT FOR THE WORK TO BEGIN. The wizard hands
+// the run over before it has made the call that starts it -- there is
+// a tracer re-render and a finalize in between -- so a watch that
+// treated the first idle status as "finished" announced the produce
+// done before it had started. See `poll`.
+const START_GRACE_MS = 30000;
 
 /*
  * WHICH COLUMN A STATUS LINE BELONGS TO.
@@ -570,10 +576,46 @@ export default function AdminProductionFlow() {
   const poll = useCallback((uploadId) => {
     if (polling.current.has(uploadId)) return;
     polling.current.add(uploadId);
+    // ── NOT FINISHED UNTIL IT HAS STARTED ────────────────────────
+    //
+    // "Nothing is running" is the state BEFORE a job as well as
+    // after it, and this read the first one as the second: it
+    // announced the produce finished, claimed, reloaded and showed
+    // the old draft as though it were the new one — and then the
+    // produce actually started and announced itself all over again.
+    // Working, done, working, done, for one clip.
+    //
+    // So an idle status only ends the watch once a running one has
+    // been seen. A short grace before that, because the start is a
+    // server round trip away, and after it the watch gives up rather
+    // than hanging on a job that never began.
+    let seen = false;
+    let waitedMs = 0;
     const tick = async () => {
       try {
         const st = await api.flowStatus(adminPassword, uploadId);
         setRuns((s) => ({ ...s, [uploadId]: st }));
+        if (!(st?.busy ?? st?.running) && !seen) {
+          waitedMs += POLL_MS;
+          if (waitedMs < START_GRACE_MS) {
+            setTimeout(tick, POLL_MS);
+            return;
+          }
+          // IT NEVER STARTED. Say so: the alternative is the page
+          // reporting a clip that was never produced.
+          polling.current.delete(uploadId);
+          setLiveDrafts(null);
+          adopting.current.delete(uploadId);
+          if (producingRef.current?.uploadId === uploadId) {
+            setProducingCut(null);
+          }
+          setErr(`#${uploadId}: nothing started producing within `
+                 + `${Math.round(START_GRACE_MS / 1000)}s — the save may `
+                 + `have been refused. Nothing has been claimed.`);
+          await load();
+          return;
+        }
+        if (st?.busy ?? st?.running) seen = true;
         // `busy`, NOT `running`: the poll has to keep asking until
         // the flow run AND any hand-made produce have stopped. On
         // `running` alone it would give up while a produce was still
@@ -601,7 +643,7 @@ export default function AdminProductionFlow() {
             const _p = producingRef.current;
             const _sup = (_c?.superseded || []).length;
             setNote(
-              (_p
+              (_p && _p.swing != null
                 ? `Swing ${_p.swing} of #${uploadId} `
                   + `${_p.had ? "re-produced" : "produced"}.`
                 : `#${uploadId} produced.`)
@@ -1685,8 +1727,16 @@ export default function AdminProductionFlow() {
                           <div className="tiny" style={{
                             padding: "4px 6px", borderRadius: 4,
                             background: "var(--warn-bg, #fdf3d7)" }}>
+                            {/* A SWING NUMBER ONLY WHERE THERE IS
+                                ONE. A clip that never matched a cut
+                                has no swing number -- the card for it
+                                says "swing unknown" -- and this read
+                                "Swing  is producing…", a blank where
+                                the operator looks for the answer. */}
                             <b>
-                              Swing {making.swing} is
+                              {making.swing != null
+                                ? `Swing ${making.swing} is`
+                                : "A draft is"}
                               {making.had ? " re-producing" : " producing"}…
                             </b>
                             <div className="muted">
@@ -1855,10 +1905,10 @@ export default function AdminProductionFlow() {
             // indistinguishable from a save that did not register.
             const _p = producingRef.current;
             setNote(
-              (_p?.swing
+              (_p?.swing != null
                 ? `Swing ${_p.swing} of #${_id} queued — `
                   + `${_p.had ? "re-producing" : "producing"}. `
-                : `#${_id} queued — producing. `)
+                : `#${_id} queued — ${_p?.had ? "re-" : ""}producing. `)
               + (msg ? `${msg} ` : "")
               + "One clip is built at a time; this page files it into "
               + "Draft produced when it lands. You can keep plotting "
@@ -1867,8 +1917,19 @@ export default function AdminProductionFlow() {
               setProducingCut({ cutId: null, swing: null, slot: null,
                                 uploadId: _id, had: false, from: "add" });
             }
+            // ── NO WATCH YET ────────────────────────────────────
+            //
+            // This fires when the wizard hands the work over, which
+            // is BEFORE the call that queues the produce: a tracer
+            // re-render and a finalize come first, and they are the
+            // slow part. A watch started here saw an idle server,
+            // called the produce finished, claimed nothing and
+            // reloaded the old draft as though it were the new one
+            // -- and then the produce began and said so all over
+            // again. `onDone` fires once the produce is queued, and
+            // that is when there is something to watch.
+            if (_id) adopting.current.add(_id);
             load();
-            if (_id) { adopting.current.add(_id); poll(_id); }
           }}
           onDone={(ok, msg) => {
             const _id = editing.row?.id;

@@ -42,11 +42,26 @@ console.log("\n1. the editor closing starts a watch, not just a reload");
 // `load()` alone is the bug: it reads the draft mid-render.
 check("onDone polls the recording", /onDone=\{\([\s\S]{0,900}?poll\(_id\)/
   .test(page));
-// `(msg)`, NOT `()`: the wizard reports the stage it is starting
-// when it hands the work over, and the page now says it rather than
-// leaving the operator with nothing until the next status poll.
-check("onBackground does too",
-      /onBackground=\{\(msg\)[\s\S]{0,2000}?poll\(_id\)/.test(page));
+// ── AND onBackground DOES NOT ───────────────────────────────────
+//
+// It fires when the wizard HANDS THE WORK OVER, which is before the
+// call that queues the produce: a tracer re-render and a finalize
+// come first, and they are the slow part. A watch started there found
+// an idle server, called the produce finished, claimed nothing and
+// reloaded the OLD draft as though it were the new one -- and then
+// the produce began and announced itself all over again. Working,
+// done, working, done, for one clip.
+//
+// `(msg)`, not `()`: the wizard reports the stage it is starting, and
+// the page says it immediately rather than leaving the operator with
+// nothing until the next status poll.
+check("onBackground says so at once", /onBackground=\{\(msg\)/.test(page));
+check("...and marks the recording for adoption",
+      /onBackground=\{\(msg\)[\s\S]{0,2600}?adopting\.current\.add\(_id\)/
+        .test(page));
+check("...but starts no watch, because nothing is running yet",
+      /onBackground=\{\(msg\)[\s\S]{0,2000}?poll\(_id\)/.test(page),
+      false);
 // A SAVE CAN BE REFUSED, and the modal is gone by then. The arguments
 // carried the reason all along and the page dropped them.
 check("a refused save surfaces its reason",
@@ -357,7 +372,14 @@ check("...and says so on the tile", /producing swing \{k\.idx \+ 1\}…/
   .test(page));
 // ── AND THE SWING IS NAMED, WITH WHETHER IT REPLACES ONE ────────
 check("the drafts column names the swing being made",
-      /Swing \{making\.swing\} is/.test(page));
+      /`Swing \$\{making\.swing\} is`/.test(page));
+// ── AND LEAVES NO BLANK WHERE THE NUMBER WOULD GO ───────────────
+// A clip that never matched a cut has no swing number -- its card
+// says "swing unknown" -- and this read "Swing  is producing…", a
+// gap exactly where the operator looks for the answer.
+check("...and says something else when there is no number",
+      /making\.swing != null/.test(page)
+        && /"A draft is"/.test(page));
 check("...and tells producing from re-producing",
       /making\.had \? " re-producing" : " producing"/.test(page));
 check("...which it knows from whether a draft of it exists",
