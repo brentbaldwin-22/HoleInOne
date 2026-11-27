@@ -2242,10 +2242,25 @@ def flow_status(upload_id: int):
     out["produce_stage"] = _p.get("stage") if _busy else None
     out["produce_done"] = _p.get("done") if _busy else None
     out["produce_total"] = _p.get("total") if _busy else None
-    # NOT `or` ON THE REPORT. `running` is the only field folded
-    # together: the flow run's report is the flow run's, and a produce
-    # finishing must not make this claim the flow produced it.
-    out["running"] = bool(out.get("running")) or _busy
+    # ── THREE FLAGS, BECAUSE THEY ANSWER THREE QUESTIONS ────────────
+    #
+    # `running` IS THE FLOW'S OWN, and it is what the raw card reads.
+    # It used to be the two folded together, which put "RUNNING…" on
+    # the recording while an operator was producing one swing by hand
+    # from its cut -- the page going backwards to stage 1 for work
+    # that belongs to stage 3. Producing a draft is not the recording
+    # being re-cut.
+    #
+    # `produce_running` is the wizard's, and belongs in the drafts
+    # column where that work shows up.
+    #
+    # `busy` is "anything at all", which is what the POLLER wants: it
+    # has to keep asking until both have stopped, and a poller that
+    # reads `running` alone would stop while a produce was still going
+    # and never claim the clip it wrote.
+    out["flow_running"] = bool(out.get("running"))
+    out["busy"] = bool(out.get("running")) or _busy
+    out["running"] = bool(out.get("running"))
     return _json_safe(out)
 
 

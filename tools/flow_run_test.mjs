@@ -49,8 +49,22 @@ for (const f of ["running", "stage", "done", "total", "report", "error"]) {
 // What the page reads off a run.
 const read = new Set(
   [...page.matchAll(/\brun\??\.([a-zA-Z_]+)/g)].map((m) => m[1]));
-check("the page reads only fields the runner writes",
-      [...read].filter((f) => !fields.includes(f)), []);
+// ── AND THE ONES THE ENDPOINT ADDS TO IT ────────────────────────
+//
+// The point of this check is the `run.result` / `run.report` bug: a
+// field nobody writes reads as absent, absence renders as "nothing to
+// show", and there is no error anywhere to find.
+//
+// `flow_status` decorates the runner's blob with facts the runner
+// cannot know -- whether a WIZARD produce is going on the same
+// recording, which is a different key in a different process. Those
+// are written, just not there, so the set they must be in is both.
+const statusAdds = [...flow.matchAll(/out\["([a-z_]+)"\]\s*=/g)]
+  .map((m) => m[1]);
+check("the status endpoint was found", statusAdds.length > 3);
+check("the page reads only fields something writes",
+      [...read].filter((f) => !fields.includes(f)
+        && !statusAdds.includes(f)), []);
 check("...and it does read the report", read.has("report"));
 check("...and surfaces an error rather than swallowing it",
       read.has("error"));
@@ -152,8 +166,11 @@ console.log("\n3d. the columns refresh while the run is still going");
   check("it refetches the cuts", /api\.flowCuts\(adminPassword[\s\S]{0,120}?\)/
     .test(page.slice(page.indexOf("const loadLive"),
                      page.indexOf("const loadLive") + 700)));
-  check("...and runs on every poll while running",
-        /if \(st\?\.running\) \{\s*\n\s*await loadLive\(uploadId\);/
+  // ON `busy`, NOT `running`: `running` is now the FLOW's alone, and
+  // a poll that stopped at it would give up while a hand-made
+  // produce was still writing and never claim the clip it made.
+  check("...and runs on every poll while anything is going",
+        /if \(st\?\.busy \?\? st\?\.running\) \{\s*\n\s*await loadLive\(uploadId\);/
           .test(page));
   check("...and is dropped when the run ends",
         /setLiveDrafts\(null\);/.test(page));
@@ -212,10 +229,10 @@ console.log("\n3f. the lineage holds: one row per recording, four cells");
   // card.
   //
   // Stages fixed the cramping and lost the lineage -- one stage of
-  // everything, joined by reading headings. Columns keep the lineage
-  // and were cramped. So the columns are back and the stage strip
-  // chooses which one is WIDE rather than which is the only one
-  // shown.
+  // everything, joined by reading headings. Columns keep the
+  // lineage. So the columns are back, all four, all the same width,
+  // and the stage strip marks where the work is instead of resizing
+  // anything.
   //
   // SO THESE ASSERT THE INVARIANT, not the layout: every recording
   // gets a row, each cell holds that recording's own cards, an empty
@@ -225,7 +242,7 @@ console.log("\n3f. the lineage holds: one row per recording, four cells");
         /const bands = \(\(\) => \{/.test(page));
   check("...four cells wide", (page.match(/<Cell /g) || []).length, 4);
   check("...in one grid, so the cells line up",
-        /gridTemplateColumns: COLS\[step\]/.test(page));
+        /gridTemplateColumns: GRID,/.test(page));
   check("each cell is filtered to its own recording",
         /x\.long_upload_id === uid/.test(page));
   // A RECORDING WITH NO CUTS STILL GETS A ROW, and the cell says so
@@ -234,7 +251,8 @@ console.log("\n3f. the lineage holds: one row per recording, four cells");
         /empty="no cuts"/.test(page) && /empty="no drafts"/.test(page));
   // THE RECORDING SITS AGAINST A CELL AS TALL AS ITS TALLEST
   // NEIGHBOUR, so it reads as the heading of the row.
-  check("the recording is centred in its cell", /<Cell center /.test(page));
+  check("the recording is centred in its cell",
+        /<Cell center\s/.test(page));
   check("...and only that column is",
         (page.match(/<Cell center/g) || []).length, 1);
   // AND A CLIP WHOSE RECORDING IS OFF THIS PAGE still gets a row --
@@ -245,31 +263,48 @@ console.log("\n3f. the lineage holds: one row per recording, four cells");
         /not on this page of recordings/.test(page));
 }
 
-console.log("\n3f2. the stage strip chooses width, not visibility");
+console.log("\n3f2. the stage strip marks a column, it does not resize one");
 {
   // THE WHOLE POINT OF BRINGING THE COLUMNS BACK. If picking a stage
   // hid the other three, this would be the stage view with extra
   // steps and the lineage would be gone again.
-  check("there is a width per stage", /^const COLS = \[/m.test(page));
-  check("...four of them", (page.match(/minmax\(0, 2\.2fr\)/g) || []).length,
-        4);
-  // `minmax(0, …)` ON EVERY TRACK: a grid column's default minimum is
-  // its CONTENT, so one long filename in a narrowed cell pushes the
-  // track past its fraction and the emphasis quietly collapses.
+  //
+  // AND IT DOES NOT RESIZE ONE EITHER. Widening the picked column
+  // and shrinking its neighbours reflowed every card on the page on
+  // each click: the table never looked the same twice, which is
+  // harder to read past than a quarter-width column is to read. So
+  // there is ONE width -- four equal quarters, every row, always.
+  check("there is one width, not a width per stage",
+        /^const GRID = "minmax/m.test(page));
+  check("...no emphasised track", /2\.2fr/.test(page), false);
+  // `minmax(0, …)` ON EVERY TRACK: a grid column's default minimum
+  // is its CONTENT, so one long filename would push its track past a
+  // quarter and pull every row out of line with the headings.
   check("...with a zero minimum, so content cannot widen a track",
-        (page.match(/minmax\(0, 1fr\)/g) || []).length, 12);
+        (page.match(/minmax\(0, 1fr\)/g) || []).length, 4);
+  // AND NOTHING ELSE SIGNALS THE PICK BY MAKING A COLUMN HARDER TO
+  // READ: no fading the three that were not picked.
+  check("...and no column is dimmed for not being picked",
+        /opacity: dim/.test(page), false);
   check("every column is rendered whatever is picked",
         /raw !== null && bands\.map/.test(page));
   check("...and no column is hidden by the choice",
         /step === 1 && rows\.map\(cutCard\)/.test(page), false);
-  check("the heading picks it", /onPick=\{\(\) => setStep\(i\)\}/
+  check("the heading marks it", /onPick=\{\(\) => setStep\(i\)\}/
     .test(page));
   check("...and so does the strip above", /<Stepper step=\{step\}/
     .test(page));
   // ONE STATE BEHIND BOTH, or the strip and the headings could
-  // disagree about which column is in front.
+  // disagree about where the work is.
   check("both drive the same state",
         (page.match(/setStep\(/g) || []).length >= 2);
+  // AND NO CONTROL CLAIMS TO DO MORE THAN MARK. A footer button
+  // labelled with the next stage, or one offering to "bring that
+  // column forward", would look like navigation and move a mark.
+  check("no button offers to bring a column forward",
+        /bring that column forward/.test(page), false);
+  check("...and no next-stage button at the foot of the table",
+        /STEPS\[step \+ 1\]\.title/.test(page), false);
 }
 
 console.log("\n3g. the raw card says what the recording became");

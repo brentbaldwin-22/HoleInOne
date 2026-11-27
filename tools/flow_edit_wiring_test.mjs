@@ -54,8 +54,13 @@ check("...and does not then wait for a render that is not coming",
 console.log("\n2. the status the page polls knows about a wizard produce");
 check("the endpoint reads the produce's own state",
       /_debugx_get\("produce", upload_id\)/.test(flow));
-check("...and folds it into one `running`",
-      /out\["running"\] = bool\(out\.get\("running"\)\) or _busy/.test(flow));
+// IT USED TO FOLD THE TWO INTO ONE `running`, which is how a
+// hand-made produce greyed out stage 1 and put RUNNING on the raw
+// card — the page appearing to go backwards for work that belongs at
+// stage 3. There are three flags now and `busy` is the folded one,
+// which is what the poller reads.
+check("...and folds them into `busy` for the poller",
+      /out\["busy"\] = bool\(out\.get\("running"\)\) or _busy/.test(flow));
 check("...while leaving the flow's report alone",
       /out\["report"\]\s*=/.test(flow), false);
 check("...and reports no stale stage once it stops",
@@ -105,7 +110,7 @@ check("the drafts column offers it", /\+ add a swing/.test(page));
 // column from one still loading — would never appear. That is why
 // the footer sits outside the empty test.
 check("...without an add button making an empty column look full",
-      /function Cell\(\{ children, empty, live, center, footer, dim \}\)/
+      /function Cell\(\{ children, empty, live, center, footer \}\)/
         .test(page)
         && /\{\/\* OUTSIDE THE EMPTY TEST[\s\S]{0,500}?\{footer\}/
           .test(page));
@@ -324,8 +329,12 @@ check("...and the same status key, so one recording is one run",
 check("the api can ask for it", /flowStartCuts:/.test(apijs));
 check("the button is under Start production flow",
       /Audio cuts only/.test(page));
-check("...and is disabled while a run is going",
-      /disabled=\{busy \|\| acting === `cutsonly-\$\{r\.id\}`\}/.test(page));
+// BY `anyWork`, NOT `busy`: starting a flow on top of a hand-made
+// produce is wrong too — the flow clears the cuts while the produce
+// writes clips that name them.
+check("...and is disabled while any work is going",
+      /disabled=\{anyWork \|\| acting === `cutsonly-\$\{r\.id\}`\}/
+        .test(page));
 // NOT `cut-${id}`: that key belongs to Produce Clip on a CUT card,
 // and an upload and a cut can share a number — which would grey out
 // an unrelated button in another column.
@@ -377,6 +386,68 @@ check("the page says what the run did, by swing",
       /re-produced" : "produced"/.test(page));
 check("...including the drafts it removed",
       /older draft\$\{_sup === 1 \? "" : "s"\} of the same/.test(page));
+
+console.log("\n11. producing a swing produces THAT swing");
+// ── THE BUG ─────────────────────────────────────────────────────
+// Produce Clip on swing 1's cut opened the wizard as "a new swing",
+// so the save appended one past the highest index: swing 1's cut
+// produced a SWING 5, and the old draft stayed beside the new one.
+// A caller that knows which swing this is now says so.
+{
+  const rule = (isNew, swing, swings, swingPos) => isNew
+    ? (swing.idx != null ? swing.idx
+      : (swings.length ? Math.max(...swings.map((x) => x.idx ?? 0)) + 1 : 0))
+    : (swing.idx ?? swingPos);
+  // The rule as the modal actually writes it, so this cannot drift.
+  check("the modal honours a slot the caller names",
+        /const newIdx = isNew\s*\n\s*\? \(swing\.idx != null \? swing\.idx/
+          .test(prod));
+  const four = [{ idx: 0 }, { idx: 1 }, { idx: 2 }, { idx: 3 }];
+  check("Produce Clip on swing 1 produces slot 0",
+        rule(true, { idx: 0 }, four, null), 0);
+  check("...and on swing 3, slot 2", rule(true, { idx: 2 }, four, null), 2);
+  check("+ add a swing still appends", rule(true, {}, four, null), 4);
+  check("...and is 0 on a recording with none",
+        rule(true, {}, [], null), 0);
+  check("editing an existing swing patches it",
+        rule(false, { idx: 1 }, four, 1), 1);
+  // ONE PAST THE HIGHEST INDEX, NOT THE ARRAY LENGTH, so a deleted
+  // swing cannot make two share a number.
+  check("...and a deleted swing does not make two share a number",
+        rule(true, {}, [{ idx: 0 }, { idx: 1 }, { idx: 3 }], null), 4);
+
+  check("the flow tells it which swing", /idx: k\.idx,/.test(page));
+  // AND WHERE THAT SWING ALREADY HAS A RECORD, the map opens ON it
+  // and the save patches it: re-producing a swing replaces it.
+  check("...and opens on the existing record where there is one",
+        /_arr\.findIndex\(\(sw\) => \(sw\?\.idx \?\? -1\) === seed\.idx\)/
+          .test(page));
+  check("...patching rather than appending",
+        /setEditing\(\{ row, swingPos: _pos, addNew: false/.test(page));
+}
+
+console.log("\n12. the status belongs to the column doing the work");
+// Producing one swing by hand is stage 3 work. Folded into the
+// recording's own `running` it greyed out stage 1 and said RUNNING
+// on the raw card, which reads as the page going backwards.
+check("the flow's own flag is separate", /out\["flow_running"\]/.test(flow));
+check("...from a hand-made produce", /out\["produce_running"\] = _busy/
+  .test(flow));
+check("...and `running` is the flow's alone",
+      /out\["running"\] = bool\(out\.get\("running"\)\)$/m.test(flow));
+// THE POLLER STILL WAITS FOR BOTH, or it stops while a produce is
+// writing and never claims the clip it made.
+check("but the poller waits for either", /out\["busy"\]/.test(flow)
+  && /st\?\.busy \?\? st\?\.running/.test(page));
+check("the raw card's label follows the flow only",
+      /\{busy \? "running…" : "Start production flow"\}/.test(page));
+// STARTING A FLOW ON TOP OF EITHER IS STILL WRONG: the flow clears
+// the cuts while the produce writes clips naming them.
+check("...while its buttons lock for either",
+      /const anyWork = busy \|\| !!run\?\.produce_running/.test(page)
+        && /disabled=\{anyWork\}/.test(page));
+check("and a produce this page did not start is still announced",
+      /a draft is being produced…/.test(page));
 
 console.log();
 if (failed.length) {

@@ -3334,9 +3334,22 @@ export function ClickToPlotModal({
       // the existing one patched in place. `newIdx` follows the wizard's
       // rule -- one past the highest idx on the row, not the array length,
       // so a deleted swing cannot make two swings share a number.
+      // ── A CALLER THAT KNOWS WHICH SWING THIS IS, SAYS SO ────────
+      //
+      // `seed.idx` is Production Flow pressing Produce Clip on the cut
+      // for swing 1. That is not "a new swing" in the sense this rule
+      // was written for -- the swing exists, the microphone found it,
+      // the cut is sitting there -- it is swing 1, which has no draft
+      // yet. Appending instead produced a SWING 5 from the cut for
+      // swing 1, and then a second draft beside the first.
+      //
+      // Only when nobody says. Appending one past the highest idx --
+      // not the array length -- is still the rule for a genuinely new
+      // swing, so a deleted swing cannot make two share a number.
       const newIdx = isNew
-        ? (swings.length
-          ? Math.max(...swings.map((s) => s.idx ?? 0)) + 1 : 0)
+        ? (swing.idx != null ? swing.idx
+          : (swings.length
+            ? Math.max(...swings.map((s) => s.idx ?? 0)) + 1 : 0))
         : (swing.idx ?? swingPos);
       const patch = (s) => ({
               ...s,

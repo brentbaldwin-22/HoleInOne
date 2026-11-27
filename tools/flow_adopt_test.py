@@ -78,18 +78,25 @@ print("\n1. the page can see a wizard produce, not just a flow run")
 A._debugx_set("produce", 1916, stage="Queued", done=0, total=0,
               running=True, error=None)
 st = flow_status(1916)
-check("the status says something is running", st.get("running"))
+# `busy`, NOT `running`. A hand-made produce started from an audio
+# cut goes FORWARD -- it builds one draft for one swing -- so the raw
+# card above it must not light up as though the whole flow had
+# restarted on the recording. `running` is the flow's alone;
+# `produce_running` is the wizard's; `busy` is either, and it is what
+# the poller watches so it still claims the clip at the end.
+check("the status says something is busy", st.get("busy"))
+check("...but the flow itself is not running",
+      bool(st.get("running")), False)
 check("...and says which kind", st.get("produce_running"))
 check("...and the stage it is on", st.get("produce_stage"), "Queued")
-# THE FLOW'S OWN REPORT IS NOT TOUCHED. Only `running` is folded
-# together: a produce finishing must not make this claim the flow
-# produced it.
+# THE FLOW'S OWN REPORT IS NOT TOUCHED: a produce finishing must not
+# make this claim the flow produced it.
 check("the flow's report is not borrowed from the produce",
       st.get("report"), None)
 A._debugx_set("produce", 1916, stage="Done", running=False)
 st2 = flow_status(1916)
 check("and when it stops, so does the page's tick",
-      bool(st2.get("running")), False)
+      bool(st2.get("busy")), False)
 check("...with no stale stage left behind",
       st2.get("produce_stage"), None)
 
