@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Put the production flow back to raw clips.
+
+Deletes what the FLOW made -- its audio cuts and the drafts produced
+through it -- and nothing else. The recordings themselves are never
+touched: the point is to get back to a stepper reading
+"532 recordings / 0 cuts / 0 clips / 0 clips" and start again.
+
+WHAT IT CANNOT REACH, BY CONSTRUCTION. There are about a thousand
+clips in this database from every pipeline the console has ever had,
+and some of them are in player galleries or have been shared. A clip
+produced through the flow carries `flow_run_at`; nothing else does.
+That is the same predicate the page itself filters on (`flow_only` in
+`flow_clips`), so what this deletes is exactly what the page counts,
+and a legacy clip cannot be caught by it even by accident.
+
+THE CONSOLE'S OWN DELETE, not a second answer to "what does deleting
+a clip mean". Four real foreign keys point at video_clips --
+camera_events.produced_clip_id is stamped on every clip the moment it
+is produced -- and a hand-rolled delete here would be the one that is
+missing a table. `delete_flow_cut` is likewise reused for the cuts so
+the files on disk go with the rows.
+
+Usage, from the Render Shell:
+
+    python tools/flow_reset.py            # counts only, changes nothing
+    python tools/flow_reset.py --yes      # actually deletes
+"""
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+
+from app.database import SessionLocal                      # noqa: E402
+from app.models import AudioCut, VideoClip                 # noqa: E402
+from app.routers.admin import delete_clip                  # noqa: E402
+from app.routers.production_flow import delete_flow_cut    # noqa: E402
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--yes", action="store_true",
+                    help="actually delete; without it nothing changes")
+    args = ap.parse_args()
+
+    db = SessionLocal()
+    try:
+        clips = (db.query(VideoClip)
+                 .filter(VideoClip.flow_run_at.isnot(None)).all())
+        cuts = db.query(AudioCut).all()
+        legacy = (db.query(VideoClip)
+                  .filter(VideoClip.flow_run_at.is_(None)).count())
+
+        print("the flow made:")
+        print("  %4d audio cut(s)" % len(cuts))
+        print("  %4d clip(s) produced through the flow" % len(clips))
+        print("untouched:")
+        print("  %4d clip(s) from before the flow" % legacy)
+        print("  every recording -- no source video is deleted")
+
+        if not args.yes:
+            print("\nnothing was changed. re-run with --yes to delete.")
+            return 0
+
+        n_clips = n_cuts = 0
+        for c in clips:
+            try:
+                # keep_swing: the swing still happened. The cut row is
+                # about to go anyway, but failing halfway through must
+                # not leave the recording's edit list mangled.
+                delete_clip(c.id, keep_swing=True, db=db)
+                n_clips += 1
+            except Exception as exc:                      # noqa: BLE001
+                print("  ! clip %s: %s" % (c.id, exc))
+        for k in cuts:
+            try:
+                delete_flow_cut(k.id, db=db)
+                n_cuts += 1
+            except Exception as exc:                      # noqa: BLE001
+                print("  ! cut %s: %s" % (k.id, exc))
+
+        left_clips = (db.query(VideoClip)
+                      .filter(VideoClip.flow_run_at.isnot(None)).count())
+        left_cuts = db.query(AudioCut).count()
+        left_legacy = (db.query(VideoClip)
+                       .filter(VideoClip.flow_run_at.is_(None)).count())
+        print("\ndeleted %d clip(s) and %d cut(s)." % (n_clips, n_cuts))
+        print("still there: %d flow clip(s), %d cut(s), %d legacy clip(s)"
+              % (left_clips, left_cuts, left_legacy))
+        if left_legacy != legacy:
+            # Loud, because it would mean the predicate above is not
+            # the fence this script claims it is.
+            print("WARNING: the legacy clip count CHANGED (%d -> %d). "
+                  "That should be impossible -- stop and look."
+                  % (legacy, left_legacy))
+            return 2
+        return 0 if (left_clips == 0 and left_cuts == 0) else 1
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
