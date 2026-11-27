@@ -510,6 +510,29 @@ export const api = {
     request(`/api/admin/flow/raw/${uploadId}/start`,
             { method: "POST", adminPassword: key }),
 
+  flowRawOne: (key, uploadId) =>
+    // ONE RECORDING, not a page of forty filtered on the client. The
+    // manual cutter is opened by id and the recording it wants is
+    // very often not on the first page of the list.
+    request(`/api/admin/flow/raw/${uploadId}`, { adminPassword: key }),
+
+  flowDeleteCut: (key, cutId) =>
+    // The undo for the hand cutter. Removes the cut and both angle
+    // files; any draft produced from it survives, unpointed.
+    request(`/api/admin/flow/cuts/${cutId}`,
+            { method: "DELETE", adminPassword: key }),
+
+  flowManualCut: (key, uploadId, startSec) =>
+    // THIRTEEN SECONDS FROM HERE. No microphone and no gates -- the
+    // operator watched the recording and said where. Frame-accurate
+    // on the server, so it takes a few seconds; the page is built not
+    // to wait on it.
+    request(`/api/admin/flow/raw/${uploadId}/manual-cut`, {
+      method: "POST",
+      body: { start_sec: startSec },
+      adminPassword: key,
+    }),
+
   flowStartCuts: (key, uploadId) =>
     // THE SAME RUN, STOPPED AFTER THE CUTS. The produce is the
     // expensive half and the half most often done by hand, so this

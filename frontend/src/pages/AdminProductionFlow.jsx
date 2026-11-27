@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState }
   from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import AudioGatesPanel from "../components/AudioGatesPanel.jsx";
 import PlayerIdLink from "../components/PlayerIdLink.jsx";
@@ -349,13 +349,32 @@ export default function AdminProductionFlow() {
   //
   // Starts on the raw clips, because that is where the work starts
   // and it is the only stage that is never empty.
-  const [step, setStep] = useState(0);
+  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  // ?stage=cuts OPENS THERE. The hand cutter sends the operator back
+  // when a recording has been gone through, and "back to the flow"
+  // meaning "back to the five hundred raw clips you just finished
+  // with" is the wrong place to land.
+  const [step, setStep] = useState(() => {
+    const i = STEPS.findIndex((x) => x.key === params.get("stage"));
+    return i < 0 ? 0 : i;
+  });
   // A NEW PAGE STARTS AT THE TOP. The stages are different lengths --
   // five hundred recordings, then twenty-nine cuts -- so a click from
   // a scrolled-down Raw clips landed halfway down a page that had
   // nothing there.
   useEffect(() => { window.scrollTo({ top: 0, behavior: "smooth" }); },
             [step]);
+  // THE URL FOLLOWS THE STAGE, so a reload or a shared link comes
+  // back to the stage that was being worked on. `replace` because
+  // walking four stages should not put four entries in the history
+  // between the operator and the page they came from.
+  useEffect(() => {
+    const want = STEPS[step].key;
+    if (params.get("stage") !== want) {
+      setParams({ stage: want }, { replace: true });
+    }
+  }, [step]);   // eslint-disable-line react-hooks/exhaustive-deps
   const polling = useRef(new Set());
 
   const load = useCallback(async () => {
@@ -646,12 +665,25 @@ export default function AdminProductionFlow() {
           green angle
         </button>
       </div>
+      {/* ── TO THE HAND CUTTER, NOT TO THE CUTTER ──────────────────
+          This used to run the whole automatic flow -- listen for
+          strikes, cut around each, produce a draft from every one.
+          It now opens the recording in the manual cutter, where
+          somebody watches it and says where each clip starts.
+
+          THE AUTOMATIC PATH IS STILL HERE, under "Audio cuts only"
+          directly below. Removing it would have thrown away the
+          thing that is right most of the time to fix the times it is
+          wrong; they are two ways to fill the same stage and the
+          operator picks per recording. */}
       <button type="button" className="btn small"
               style={{ marginTop: 6, width: "100%" }}
-              disabled={busy || acting === `raw-${r.id}`}
-              onClick={() => start(r.id)}>
-        {busy ? "running…" : acting === `raw-${r.id}` ? "starting…"
-          : "Start production flow"}
+              disabled={busy}
+              title={"watch this recording and mark where each clip "
+                     + "starts, 13 seconds at a time"}
+              onClick={() => navigate(
+                `/admin/production-flow/manual/${r.id}`)}>
+        {busy ? "running…" : "Start production flow"}
       </button>
       {/* ── THE CUTS, AND STOP THERE ───────────────────────────────
           The produce is the expensive half by a wide margin —
