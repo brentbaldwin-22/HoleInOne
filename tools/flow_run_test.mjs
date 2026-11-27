@@ -201,46 +201,75 @@ console.log("\n3e. the measurement table says what the gates did to each row");
         /armed \? "dropped" : "would drop"/.test(panel));
 }
 
-console.log("\n3f. the lineage holds, one stage at a time");
+console.log("\n3f. the lineage holds: one row per recording, four cells");
 {
-  // ── IT WAS FOUR COLUMNS AND IS NOW FOUR STAGES ──────────────────
+  // ── IT WENT COLUMNS → STAGES → COLUMNS ──────────────────────────
   //
-  // The problem the columns solved is unchanged and is still the
-  // point of the page: four independent lists with no way to join
-  // them meant three cuts and a draft from #1915 sat beside five cuts
-  // from #1916 with nothing lining them up, and the lineage had to be
-  // reconstructed card by card.
+  // The problem is the same throughout and is the point of the page:
+  // four independent lists with no way to join them meant three cuts
+  // and a draft from #1915 sat beside five cuts from #1916 with
+  // nothing lining them up, and the lineage had to be rebuilt card by
+  // card.
   //
-  // The columns solved it with a grid row per recording, which did
-  // not survive contact with five hundred recordings and twenty-nine
-  // cuts: 471 rows reading "no cuts". The stages solve it with a
-  // heading per recording and only the recordings that have something
-  // AT THAT STAGE. What must stay true is that the cards are grouped
-  // under the recording they came from, and that nothing is silently
-  // left out.
+  // Stages fixed the cramping and lost the lineage -- one stage of
+  // everything, joined by reading headings. Columns keep the lineage
+  // and were cramped. So the columns are back and the stage strip
+  // chooses which one is WIDE rather than which is the only one
+  // shown.
+  //
+  // SO THESE ASSERT THE INVARIANT, not the layout: every recording
+  // gets a row, each cell holds that recording's own cards, an empty
+  // cell says what is missing, and nothing is silently left out. Any
+  // of the three layouts can satisfy that; only a broken one cannot.
   check("the rows are built from the recordings",
         /const bands = \(\(\) => \{/.test(page));
-  check("...and each stage shows a heading per recording",
-        /<BandHead uid=\{uid\}/.test(page));
-  check("each group is filtered to its own recording",
+  check("...four cells wide", (page.match(/<Cell /g) || []).length, 4);
+  check("...in one grid, so the cells line up",
+        /gridTemplateColumns: COLS\[step\]/.test(page));
+  check("each cell is filtered to its own recording",
         /x\.long_upload_id === uid/.test(page));
-  check("...and a stage only lists what is at it",
-        /const stageRows = step === 1 \? shownCuts/.test(page));
-  // A RECORDING WITH CUTS BUT NO DRAFTS STILL APPEARS AT THE DRAFTS
-  // STAGE, because a cut with no draft is exactly where "+ add a
-  // swing" gets used.
-  check("a recording with cuts but no drafts is kept at the drafts stage",
-        /step === 2 && rawById\[uid\]/.test(page));
-  // AND AN EMPTY STAGE SAYS SO, rather than looking like a page that
-  // failed to load.
-  check("an empty stage says what would fill it",
-        /Nothing at this stage yet/.test(page));
-  // A CLIP WHOSE RECORDING IS OFF THIS PAGE still gets a heading --
-  // otherwise it would simply vanish rather than be findable.
+  // A RECORDING WITH NO CUTS STILL GETS A ROW, and the cell says so
+  // rather than collapsing and pulling the row out of alignment.
+  check("an empty cell says what is missing",
+        /empty="no cuts"/.test(page) && /empty="no drafts"/.test(page));
+  // THE RECORDING SITS AGAINST A CELL AS TALL AS ITS TALLEST
+  // NEIGHBOUR, so it reads as the heading of the row.
+  check("the recording is centred in its cell", /<Cell center /.test(page));
+  check("...and only that column is",
+        (page.match(/<Cell center/g) || []).length, 1);
+  // AND A CLIP WHOSE RECORDING IS OFF THIS PAGE still gets a row --
+  // otherwise it would vanish rather than be findable.
   check("uploads known only from their cuts get a row too",
         /\[cuts, drafts, finals\]\.forEach/.test(page));
-  check("...with the heading saying why the recording is not shown",
-        /missing=\{gone\.ids\.includes\(uid\)\}/.test(page));
+  check("...with the cell saying why the recording is not shown",
+        /not on this page of recordings/.test(page));
+}
+
+console.log("\n3f2. the stage strip chooses width, not visibility");
+{
+  // THE WHOLE POINT OF BRINGING THE COLUMNS BACK. If picking a stage
+  // hid the other three, this would be the stage view with extra
+  // steps and the lineage would be gone again.
+  check("there is a width per stage", /^const COLS = \[/m.test(page));
+  check("...four of them", (page.match(/minmax\(0, 2\.2fr\)/g) || []).length,
+        4);
+  // `minmax(0, …)` ON EVERY TRACK: a grid column's default minimum is
+  // its CONTENT, so one long filename in a narrowed cell pushes the
+  // track past its fraction and the emphasis quietly collapses.
+  check("...with a zero minimum, so content cannot widen a track",
+        (page.match(/minmax\(0, 1fr\)/g) || []).length, 12);
+  check("every column is rendered whatever is picked",
+        /raw !== null && bands\.map/.test(page));
+  check("...and no column is hidden by the choice",
+        /step === 1 && rows\.map\(cutCard\)/.test(page), false);
+  check("the heading picks it", /onPick=\{\(\) => setStep\(i\)\}/
+    .test(page));
+  check("...and so does the strip above", /<Stepper step=\{step\}/
+    .test(page));
+  // ONE STATE BEHIND BOTH, or the strip and the headings could
+  // disagree about which column is in front.
+  check("both drive the same state",
+        (page.match(/setStep\(/g) || []).length >= 2);
 }
 
 console.log("\n3g. the raw card says what the recording became");
