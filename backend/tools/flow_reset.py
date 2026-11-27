@@ -21,7 +21,13 @@ is produced -- and a hand-rolled delete here would be the one that is
 missing a table. `delete_flow_cut` is likewise reused for the cuts so
 the files on disk go with the rows.
 
-Usage, from the Render Shell:
+IT LIVES UNDER backend/ BECAUSE THAT IS WHAT SHIPS. The Dockerfile
+copies `backend/` and `pi-agent/` and nothing else, so a tool in the
+repo root exists on the laptop and not in the image -- which shows up
+as "No such file or directory" in the Render Shell, at the moment
+somebody is trying to run it.
+
+Usage, from the Render Shell (which starts in /app/backend):
 
     python tools/flow_reset.py            # counts only, changes nothing
     python tools/flow_reset.py --yes      # actually deletes
@@ -30,7 +36,10 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+# backend/ -- the import root for `app.*`. Already the working
+# directory in the image; spelled out so the script also runs from
+# anywhere else, including the repo root on a laptop.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.database import SessionLocal                      # noqa: E402
 from app.models import AudioCut, VideoClip                 # noqa: E402
