@@ -15636,8 +15636,26 @@ def wizard_produce(
                     "(%s at f%s)", upload_id, swing_idx, landing_spot,
                     landing_frame)
 
-    _debugx_set("produce", upload_id, stage="Queued", done=0, total=0,
-                running=True, error=None)
+    # ── IN THE QUEUE, AND SAYING SO BEFORE THE THREAD STARTS ───────
+    #
+    # Set here rather than inside the job because the endpoint RETURNS
+    # IMMEDIATELY and the page asks for status straight after: a flag
+    # the job sets when it gets to run would read "nothing is
+    # happening" for however long the gate is held by somebody else,
+    # which is the silence an operator reads as "my save did nothing".
+    _n_out = _produce_began(upload_id)
+    # STARTED FROM THE FLOW PAGE? Then the clip it writes belongs in
+    # that page's column, and saying so here means the stamp does not
+    # depend on the operator leaving the tab open. See
+    # `_produce_claim_for_flow`.
+    if payload.get("claim_for_flow"):
+        with _produce_inflight_lock:
+            _produce_claim_for_flow.add(int(upload_id))
+    _debugx_set("produce", upload_id, done=0, total=0,
+                running=True, error=None,
+                stage=("Queued" if _n_out <= 1 else
+                       "Queued — %d to produce on this recording"
+                       % _n_out))
     # BY NAME, NOT BY POSITION. This was a ten-item tuple lined up
     # against the job's signature, and the signature then gained
     # `descent_first_frame` in the middle of it -- so `solo` became the
@@ -15648,8 +15666,15 @@ def wizard_produce(
     #
     # Keywords cannot do that. A new parameter anywhere in the
     # signature is then a default, which is what a default is for.
+    def _produce_then_count(**kw):
+        """The job, then the count. See `_produce_inflight`."""
+        try:
+            run_wizard_produce_job(**kw)
+        finally:
+            _produce_ended(upload_id)
+
     _heavy_thread(
-        run_wizard_produce_job,
+        _produce_then_count,
         kwargs={
             "upload_id": upload_id,
             "ball_xy": (bx, by),
@@ -15686,6 +15711,13 @@ def wizard_produce(
     )
     return {"ok": True, "started": True, "upload_id": upload_id,
             "ball": [bx, by], "impact_frame": impact_frame,
+            # WHAT THE OPERATOR IS WAITING BEHIND. One produce at a
+            # time, site-wide (`_produce_gate`), so a second plot on
+            # the same recording is accepted and queued rather than
+            # refused -- and this is how many are now out, including
+            # this one, so the page can say so instead of leaving them
+            # guessing whether the second click registered.
+            "inflight": produce_inflight(upload_id),
             "landing_frame": landing_frame, "landing_spot": landing_spot}
 
 
@@ -37231,6 +37263,92 @@ _produce_worker: threading.Thread | None = None
 # an ffmpeg transcode can no longer split the one core between them and
 # starve the health check.
 _produce_gate = workload.heavy_gate
+
+# ── HOW MANY WIZARD PRODUCES ARE OUT ON ONE RECORDING ───────────────
+#
+# Two swings of the same recording can be produced one after the
+# other, and an operator does exactly that: plot swing 1 from its cut,
+# then swing 2 from its own, without waiting. Both are accepted; the
+# gate above runs them one at a time.
+#
+# BUT THE STATUS IS ONE SLOT PER RECORDING. Both jobs write
+# `_debugx_state[("produce", upload_id)]`, and the first to finish set
+# `running=False` while the second was still waiting for the gate. The
+# page believed it, stopped polling, and the second clip landed in the
+# database with nothing watching for it -- so it never got claimed
+# into the flow and never appeared in the column. The work was done
+# and invisible, which is the worst way for this to fail.
+#
+# So the flag is reference-counted: `running` goes false when the LAST
+# one finishes, and the count says how many are still to come.
+_produce_inflight: dict[int, int] = {}
+_produce_inflight_lock = threading.Lock()
+# RECORDINGS WHOSE PRODUCE WAS STARTED FROM THE PRODUCTION FLOW PAGE,
+# and which should therefore have their clips adopted into that flow
+# when the produce finishes.
+#
+# The flow's columns show clips carrying `flow_run_at`, and a wizard
+# produce writes a BRAND NEW clip row with no stamp. The page used to
+# do the stamping itself, from its own poll -- which works right up
+# until the operator closes the tab, and then the clip is produced,
+# saved, and invisible: the work is done and nothing shows it.
+#
+# A FLAG FROM THE CALLER, not a rule about which recordings are "flow"
+# ones. Producing the same recording from the Production page is not
+# the flow's output, and claiming it would make the stamp mean "some
+# clip of a recording the flow has touched".
+_produce_claim_for_flow: set[int] = set()
+
+
+def produce_inflight(upload_id: int) -> int:
+    """How many wizard produces are queued or running for a recording."""
+    with _produce_inflight_lock:
+        return int(_produce_inflight.get(int(upload_id), 0))
+
+
+def _produce_began(upload_id: int) -> int:
+    with _produce_inflight_lock:
+        _produce_inflight[int(upload_id)] = (
+            _produce_inflight.get(int(upload_id), 0) + 1)
+        return _produce_inflight[int(upload_id)]
+
+
+def _produce_ended(upload_id: int) -> int:
+    """One finished. Returns how many of that recording's are left."""
+    with _produce_inflight_lock:
+        _n = max(0, _produce_inflight.get(int(upload_id), 0) - 1)
+        if _n:
+            _produce_inflight[int(upload_id)] = _n
+        else:
+            _produce_inflight.pop(int(upload_id), None)
+    if _n:
+        # THE JOB THAT JUST ENDED SET `running=False` on the way out --
+        # it has no idea it has a sibling. Put the flag back, or the
+        # page stops watching a recording that is still producing.
+        _debugx_set("produce", upload_id, running=True,
+                    stage=("Waiting for the produce queue — %d more "
+                           "to produce on this recording" % _n))
+        return _n
+    # ── THE LAST ONE IS IN: FILE IT ────────────────────────────────
+    #
+    # Server-side so it does not depend on a browser staying open.
+    # See `_produce_claim_for_flow`.
+    _want = False
+    with _produce_inflight_lock:
+        if int(upload_id) in _produce_claim_for_flow:
+            _produce_claim_for_flow.discard(int(upload_id))
+            _want = True
+    if _want:
+        try:
+            from .production_flow import claim_produced_clips
+            claim_produced_clips(int(upload_id))
+        except Exception as exc:  # noqa: BLE001
+            # NOT FATAL. The clip exists; without the stamp it simply
+            # will not be in the flow's column until something claims
+            # it, and the page claims on its own poll as well.
+            log.warning("produce: could not claim upload %s into the "
+                        "flow: %s", upload_id, exc)
+    return _n
 
 # PAUSE, FOR WHEN A HUMAN NEEDS THE BOX. Produce is the heaviest thing
 # here and it serialises, so a backlog of automatic camera captures

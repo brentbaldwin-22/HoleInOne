@@ -42,8 +42,11 @@ console.log("\n1. the editor closing starts a watch, not just a reload");
 // `load()` alone is the bug: it reads the draft mid-render.
 check("onDone polls the recording", /onDone=\{\([\s\S]{0,900}?poll\(_id\)/
   .test(page));
+// `(msg)`, NOT `()`: the wizard reports the stage it is starting
+// when it hands the work over, and the page now says it rather than
+// leaving the operator with nothing until the next status poll.
 check("onBackground does too",
-      /onBackground=\{\(\)[\s\S]{0,400}?poll\(_id\)/.test(page));
+      /onBackground=\{\(msg\)[\s\S]{0,2000}?poll\(_id\)/.test(page));
 // A SAVE CAN BE REFUSED, and the modal is gone by then. The arguments
 // carried the reason all along and the page dropped them.
 check("a refused save surfaces its reason",

@@ -2246,6 +2246,11 @@ function leadInVerdict(points, landingFrame, fps) {
 export function ClickToPlotModal({
   row, swingPos, addNew, seed, adminPassword, onClose, onBackground,
   onDone,
+  // OPENED FROM THE PRODUCTION FLOW. The clip this produce writes is
+  // a new row with no flow stamp, so the flow's columns would not
+  // show it; passed on to the produce, the SERVER stamps it when the
+  // job finishes instead of the page having to stay open to do it.
+  claimForFlow = false,
 }) {
   const swings = row.edit_metrics?.swings || [];
   // ADDING A SWING IS THE SAME SCREEN WITH EMPTY FIELDS. A swing the
@@ -3544,6 +3549,8 @@ export function ClickToPlotModal({
           + "- they belong to a different swing");
       }
       await api.wizardProduce(adminPassword, row.id, {
+        // See `claimForFlow`.
+        claim_for_flow: !!claimForFlow,
         // NO BALL AT REST IS NORMAL HERE. Click-to-plot is often used on
         // exactly the swings where the rest ball was never found -- the
         // operator plots the flight off the motion map instead. The

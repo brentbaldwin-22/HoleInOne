@@ -413,6 +413,17 @@ export default function AdminProductionFlow() {
   // Read from there the note would never name the swing and the
   // clear would never fire, leaving the cut greyed out for good.
   const producingRef = useRef(null);
+  // ── SAVED, OR CANCELLED? ──────────────────────────────────────
+  //
+  // The wizard calls `onBackground` and then `onClose` on Save &
+  // close -- it hands the run over and dismisses itself. This page
+  // read that `onClose` as a CANCEL and cleared the producing state
+  // the save had just set, so the cut tile came back, the "Swing N is
+  // producing" tile never appeared, and what the operator got instead
+  // was the generic notice for a produce started somewhere else.
+  //
+  // Set by `onBackground`, read and cleared by `onClose`.
+  const backgrounded = useRef(false);
   const setProducingCut = useCallback((v) => {
     producingRef.current = v;
     _setProducingCut(v);
@@ -714,6 +725,15 @@ export default function AdminProductionFlow() {
   async function openAdder(uploadId, seed = null, key = null) {
     setActing(key || `add-${uploadId}`);
     setEditErr(null);
+    backgrounded.current = false;
+    // "+ ADD A SWING" COMES WITH NO SEED, so the swing number is not
+    // known until the operator saves. Still worth saying that THIS
+    // recording is producing, and from this page: without it the only
+    // notice is the one for a produce nobody here started.
+    if (!producingRef.current) {
+      setProducingCut({ cutId: null, swing: null, slot: null,
+                        uploadId, had: false, from: "add" });
+    }
     try {
       const got = await api.listLongUploads(adminPassword, 1, 0,
                                             { uploadId });
@@ -750,6 +770,19 @@ export default function AdminProductionFlow() {
   async function openEditor(clip) {
     setActing(`edit-${clip.id}`);
     setEditErr(null);
+    backgrounded.current = false;
+    // WHICH SWING IS ABOUT TO BE REBUILT. Editing a draft re-produces
+    // it, and without this the drafts column had nothing to say while
+    // that ran -- the tile sat there looking finished and the only
+    // notice came from the status poll seconds later.
+    setProducingCut({
+      cutId: clip.audio_cut_id ?? null,
+      swing: clip.cut_idx != null ? clip.cut_idx + 1 : null,
+      slot: clip.cut_idx ?? null,
+      uploadId: clip.long_upload_id,
+      had: true,
+      from: "edit",
+    });
     try {
       const got = await api.listLongUploads(adminPassword, 1, 0,
                                             { uploadId: clip.long_upload_id });
@@ -764,6 +797,11 @@ export default function AdminProductionFlow() {
       setEditing({ row, swingPos: pos >= 0 ? pos : 0, addNew: false });
     } catch (e) {
       setEditErr(e.message);
+      // The wizard never opened, so nothing is being produced -- and
+      // the state set on the click would otherwise grey the tile and
+      // announce a swing nobody is making, for as long as the page
+      // is open.
+      setProducingCut(null);
     } finally {
       setActing(null);
     }
@@ -1659,6 +1697,25 @@ export default function AdminProductionFlow() {
                                 : "plotted by hand from the audio cut "
                                   + "it came from"}
                             </div>
+                            {/* ── WHAT THEY MAY DO WHILE IT RUNS ───
+                                Asked for, and the answer is not
+                                obvious: one clip is built at a time
+                                site-wide, a second plot is QUEUED
+                                rather than refused, and the clip is
+                                filed by the server, so closing the
+                                tab does not lose it. Without this an
+                                operator either sits and watches or
+                                clicks again and wonders. */}
+                            <div className="muted" style={{ marginTop: 3 }}>
+                              Keep working: plot another cut now and it
+                              queues — one clip is built at a time.
+                              {run?.produce_queued > 1
+                                ? ` ${run.produce_queued} are queued on `
+                                  + "this recording."
+                                : ""}
+                              {" "}It is filed into this column when it
+                              lands, whether or not this page is open.
+                            </div>
                           </div>
                         )}
                         {/* The flow's own third phase. */}
@@ -1673,9 +1730,22 @@ export default function AdminProductionFlow() {
                             padding: "4px 6px", borderRadius: 4,
                             background: "var(--warn-bg, #fdf3d7)" }}>
                             <b>a draft is being produced…</b>
+                            {/* NO CLAIM ABOUT WHERE IT CAME FROM.
+                                This used to read "started somewhere
+                                other than this page", which was a
+                                guess from one fact -- that this tab
+                                had no swing number for it -- and it
+                                was usually wrong: a Save & close was
+                                being read as a cancel, which threw
+                                the swing away a moment before this
+                                rendered. Say what is known. */}
                             <div className="muted">
-                              started somewhere other than this page —
-                              it will appear here when it lands
+                              {run?.produce_stage
+                                || "it will appear here when it lands"}
+                              {run?.produce_queued > 1
+                                ? ` · ${run.produce_queued} queued on `
+                                  + "this recording"
+                                : ""}
                             </div>
                           </div>
                         )}
@@ -1752,19 +1822,57 @@ export default function AdminProductionFlow() {
           // producing — without this the cut stays greyed out and
           // the drafts stage goes on announcing a swing that is not
           // being made, for as long as the page is open.
+          claimForFlow
           onClose={() => {
+            // A SAVE CLOSES THIS TOO. `onBackground` fires first and
+            // sets the flag; without reading it here, Save & close
+            // was handled as a cancel -- the producing state the save
+            // had just set was wiped, the cut un-greyed, and the one
+            // notice left was the generic "a draft is being produced"
+            // meant for a run this page knows nothing about.
+            const _saved = backgrounded.current;
+            backgrounded.current = false;
             setEditing(null);
-            setProducingCut(null);
+            if (!_saved) {
+              // A REAL CANCEL: nothing was produced, so nothing is
+              // producing. Without this the cut stays greyed and the
+              // drafts column announces a swing nobody is making.
+              setProducingCut(null);
+            }
             load();
           }}
-          onBackground={() => {
+          onBackground={(msg) => {
             const _id = editing.row?.id;
+            backgrounded.current = true;
             setEditing(null);
+            // ── SAY IT NOW, NOT AFTER THE NEXT POLL ─────────────
+            //
+            // The wizard calls this the instant it hands the work
+            // over -- before the first server call. Everything else
+            // on this page waits for a status poll, which is a
+            // second of silence at best and five while the queue is
+            // answering, and silence after pressing Save is
+            // indistinguishable from a save that did not register.
+            const _p = producingRef.current;
+            setNote(
+              (_p?.swing
+                ? `Swing ${_p.swing} of #${_id} queued — `
+                  + `${_p.had ? "re-producing" : "producing"}. `
+                : `#${_id} queued — producing. `)
+              + (msg ? `${msg} ` : "")
+              + "One clip is built at a time; this page files it into "
+              + "Draft produced when it lands. You can keep plotting "
+              + "other swings meanwhile — they queue behind this one.");
+            if (_id && !producingRef.current) {
+              setProducingCut({ cutId: null, swing: null, slot: null,
+                                uploadId: _id, had: false, from: "add" });
+            }
             load();
             if (_id) { adopting.current.add(_id); poll(_id); }
           }}
           onDone={(ok, msg) => {
             const _id = editing.row?.id;
+            backgrounded.current = false;
             setEditing(null);
             // THE MODAL IS GONE, so a save that was REFUSED has
             // nowhere to say so. It reported through these arguments

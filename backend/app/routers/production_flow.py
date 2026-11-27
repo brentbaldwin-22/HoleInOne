@@ -147,7 +147,36 @@ def _cut_frames(k: AudioCut) -> dict:
     return out
 
 
-def _cut_why_no_file(k: AudioCut, which: str, has_green=None) -> str | None:
+def _cut_has_file(fn, index=None) -> bool:
+    """Is this cut's footage anywhere -- local disk or the bucket?
+
+    THE DISK HERE IS WIPED BY EVERY DEPLOY. Before the cuts were
+    mirrored, "not under CLIPS_DIR" meant gone and the page said so.
+    Now it usually means "not pulled back down yet", and the serving
+    route fetches it the moment the link is opened -- so a cut in the
+    bucket is a cut, and offering its link is right.
+
+    `index` is the (local, bucket) pair from `_source_index`: one
+    directory scan and one bucket listing for the whole page. Without
+    one, fall back to the disk alone rather than a bucket call per
+    row -- a page of forty cuts would be eighty.
+    """
+    from .admin import CLIPS_DIR
+
+    if not fn:
+        return False
+    if (CLIPS_DIR / fn).exists():
+        return True
+    if index is None:
+        return False
+    _local, _bucket = index
+    from ..services import storage
+    _key = storage.key_for(fn)
+    return _key in _local or _key in _bucket
+
+
+def _cut_why_no_file(k: AudioCut, which: str, has_green=None,
+                     index=None) -> str | None:
     """Why this angle has no link, or None when it has one.
 
     A DISABLED BUTTON IS NOT AN ANSWER. There are four reasons a cut
@@ -180,7 +209,7 @@ def _cut_why_no_file(k: AudioCut, which: str, has_green=None) -> str | None:
 
     _fn = k.green_filename if which == "green" else k.tee_filename
     if _fn:
-        if (CLIPS_DIR / _fn).exists():
+        if _cut_has_file(_fn, index):
             return None
         return ("the file is not on disk any more — the row still names "
                 "%s, so this was cleared out from under it rather than "
@@ -197,15 +226,15 @@ def _cut_why_no_file(k: AudioCut, which: str, has_green=None) -> str | None:
 
 
 def _cut_row(k: AudioCut, base: str, zone_label=None,
-             has_green=None) -> dict:
-    from .admin import CLIPS_DIR
-
+             has_green=None, index=None) -> dict:
     def _u(fn):
-        # ONLY WHERE THE FILE IS ACTUALLY THERE. A URL built from a
-        # name whose file is gone is a link that 404s, which is worse
-        # than no link: it looks like footage.
+        # ONLY WHERE THE FILE IS ACTUALLY THERE -- on disk OR in the
+        # bucket. A URL built from a name whose file is nowhere is a
+        # link that 404s, which is worse than no link: it looks like
+        # footage. One that is only in the bucket plays: the serving
+        # route pulls it down on the first request.
         return (f"{base}/uploads/clips/{fn}"
-                if fn and (CLIPS_DIR / fn).exists() else None)
+                if _cut_has_file(fn, index) else None)
     return {
         "id": k.id, "long_upload_id": k.long_upload_id,
         "idx": k.idx, "hole_number": k.hole_number,
@@ -222,8 +251,8 @@ def _cut_row(k: AudioCut, base: str, zone_label=None,
         **_cut_frames(k),
         "tee_url": _u(k.tee_filename), "green_url": _u(k.green_filename),
         # AND WHY, WHERE THERE IS NONE. See `_cut_why_no_file`.
-        "tee_why": _cut_why_no_file(k, "tee", has_green),
-        "green_why": _cut_why_no_file(k, "green", has_green),
+        "tee_why": _cut_why_no_file(k, "tee", has_green, index),
+        "green_why": _cut_why_no_file(k, "green", has_green, index),
         "duration_sec": k.duration_sec, "size_mb": k.size_mb,
         "produced": bool(k.produced), "produce_error": k.produce_error,
         "created_at": k.created_at.isoformat() if k.created_at else None,
@@ -486,9 +515,12 @@ def flow_cuts(upload_id: int = 0, produced: str = "", limit: int = 80,
             _labels[_uid] = _trigger_zone_label(db, _up)
         except Exception:  # noqa: BLE001
             _labels[_uid] = None
+    # ONE SCAN AND ONE BUCKET LISTING FOR THE WHOLE PAGE. See
+    # `_cut_has_file`: the alternative is two bucket questions per row.
+    _index = _source_index()
     return {"offset": offset, "limit": limit,
             "cuts": [_cut_row(k, base, _labels.get(k.long_upload_id),
-                              _greens.get(k.long_upload_id))
+                              _greens.get(k.long_upload_id), _index)
                      for k in rows]}
 
 
@@ -751,6 +783,17 @@ def _source_index():
                     _local.add(_e.name)
     except OSError as exc:
         log.warning("flow: could not list %s (%s)", CLIPS_DIR, exc)
+    # AND THE CUTS, which live one level down and are named with their
+    # folder on the row (`_flowcuts/flowcut-1406-00-tee.mp4`). Indexed
+    # under that same name, so a lookup is the row's own value.
+    for _sub_name in storage.MIRRORED_SUBDIRS:
+        try:
+            with os.scandir(CLIPS_DIR / _sub_name) as _it:
+                for _e in _it:
+                    if _e.is_file():
+                        _local.add("%s/%s" % (_sub_name, _e.name))
+        except OSError:
+            continue
     _bucket: set = set()
     try:
         _bucket = storage.list_names() or set()
@@ -1062,6 +1105,33 @@ FLOW_CUT_POST_SEC = 8.0
 FLOW_CUTS_SUBDIR = "_flowcuts"
 
 
+def _mirror_cut(*names) -> None:
+    """Push a freshly written cut into object storage now.
+
+    THE SWEEPER WOULD GET THERE, but not for a while: it runs every 30
+    seconds and deliberately skips anything written in the last 20, so
+    a cut is unprotected for up to a minute -- and a deploy inside
+    that minute takes the file with it. A cut is final the instant
+    ffmpeg returns, so there is nothing to wait for.
+
+    Best-effort and silent on failure: the sweeper is still behind
+    this, and a bucket that cannot be reached must not fail a cut that
+    was made.
+    """
+    from ..services import storage
+    from .admin import CLIPS_DIR
+
+    for name in names:
+        if not name:
+            continue
+        try:
+            _p = CLIPS_DIR / name
+            if _p.is_file():
+                storage.upload(storage.key_for(name), _p)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("flow: could not mirror %s: %s", name, exc)
+
+
 def _phased(progress, phase):
     """Tag every progress line with the column it belongs to.
 
@@ -1239,6 +1309,10 @@ def flow_run(row, src_path, db, progress=None, cuts_only=False) -> dict:
             _size = round(_p.stat().st_size / 1e6, 2) if _p.exists() else None
         except OSError:
             pass
+        _mirror_cut("%s/%s" % (FLOW_CUTS_SUBDIR, _tee_name)
+                    if _tee_ok else None,
+                    "%s/%s" % (FLOW_CUTS_SUBDIR, _green_name)
+                    if _green_ok else None)
         k = record_cut(
             db, upload=row, idx=idx, peak_time_sec=round(float(_peak), 2),
             start_sec=round(_a, 2), end_sec=round(_b, 2), detector="audio",
@@ -1406,6 +1480,17 @@ def _clear_previous(db, row) -> dict:
                         out["files"] += 1
                 except OSError as exc:
                     log.warning("flow: could not delete %s: %s", name, exc)
+                # AND THE MIRROR. A re-cut writes the same name again,
+                # so a stale copy left in the bucket is the PREVIOUS
+                # run's footage sitting under the new run's row,
+                # waiting to be pulled down the first time this disk
+                # loses the new one.
+                try:
+                    from ..services import storage as _storage
+                    _storage.remove(name)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("flow: could not un-mirror %s: %s",
+                                name, exc)
             db.delete(k)
             out["cuts"] += 1
         db.commit()
@@ -1981,6 +2066,9 @@ def flow_manual_cut(upload_id: int, payload: dict = Body(default={}),
     if _dur:
         _peak = min(_peak, max(start, _dur - 0.01))
 
+    _mirror_cut("%s/%s" % (FLOW_CUTS_SUBDIR, _tee_name),
+                "%s/%s" % (FLOW_CUTS_SUBDIR, _green_name)
+                if _green_ok else None)
     k = record_cut(
         db, upload=row, idx=idx,
         peak_time_sec=round(_peak, 2),
@@ -2148,6 +2236,39 @@ def claim_clips(upload_id: int, db: Session = Depends(get_db)):
             "cuts": len(cuts), "superseded": _superseded}
 
 
+def claim_produced_clips(upload_id: int) -> dict:
+    """The claim above, from the server, with its own session.
+
+    CALLED WHEN A PRODUCE STARTED FROM THIS PAGE FINISHES, by the job
+    itself rather than by the browser. The page claims too, on its own
+    poll, and this is idempotent -- but the page can only claim while
+    it is open, and an operator who plots a swing and then closes the
+    tab had produced a clip that no column would ever show. The work
+    was done and invisible, which is the one failure shape worth
+    spending code on.
+    """
+    from ..database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        row = db.get(LongVideoUpload, upload_id)
+        if row is None:
+            return {"ok": False, "why": "recording not found"}
+        cuts = [{"id": k.id, "start_sec": k.start_sec, "end_sec": k.end_sec}
+                for k in (db.query(AudioCut)
+                          .filter(AudioCut.long_upload_id == upload_id)
+                          .order_by(AudioCut.idx.asc()).all())]
+        claimed, matched = _claim_clips(db, row, cuts)
+        _sup = _one_clip_per_cut(db, upload_id)
+        log.info("flow: upload %s -- claimed %d clip(s) after the produce "
+                 "finished, %d matched, %d superseded",
+                 upload_id, claimed, matched, len(_sup))
+        return {"ok": True, "claimed": claimed, "matched": matched,
+                "superseded": _sup}
+    finally:
+        db.close()
+
+
 def _one_clip_per_cut(db, upload_id: int) -> list:
     """Leave one draft per swing, the newest, and say which went.
 
@@ -2233,7 +2354,8 @@ def flow_status(upload_id: int):
     see. `produce_running` stays separate because the two are not the
     same event and a caller may want to say which.
     """
-    from .admin import _debugx_get, _debugx_status, _json_safe
+    from .admin import (_debugx_get, _debugx_status, _json_safe,
+                        produce_inflight)
 
     out = dict(_debugx_status("flow", upload_id) or {})
     _p = _debugx_get("produce", upload_id) or {}
@@ -2242,6 +2364,12 @@ def flow_status(upload_id: int):
     out["produce_stage"] = _p.get("stage") if _busy else None
     out["produce_done"] = _p.get("done") if _busy else None
     out["produce_total"] = _p.get("total") if _busy else None
+    # HOW MANY ARE OUT ON THIS RECORDING, this one included. One
+    # produce runs at a time site-wide, so a second swing plotted
+    # while the first is rendering is queued, not refused -- and an
+    # operator who cannot see that has no way to tell a queued job
+    # from a click that did not register.
+    out["produce_queued"] = produce_inflight(upload_id)
     # ── THREE FLAGS, BECAUSE THEY ANSWER THREE QUESTIONS ────────────
     #
     # `running` IS THE FLOW'S OWN, and it is what the raw card reads.

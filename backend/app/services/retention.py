@@ -561,6 +561,19 @@ def sweep_audio_cuts(
                     report["files_deleted"] += 1
                     report["bytes"] += size
                 if not dry_run:
+                    # AND THE BUCKET'S COPY. The cuts are mirrored now
+                    # (the disk here is wiped by every deploy), so
+                    # deleting the local file alone would leave the
+                    # bucket holding it for ever -- and the next thing
+                    # to ask for it would pull the swept file straight
+                    # back down. Best-effort: a bucket that cannot be
+                    # reached must not stop the sweep.
+                    try:
+                        from . import storage as _storage
+                        _storage.remove(name)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("retention: could not un-mirror "
+                                    "%s: %s", name, exc)
                     setattr(k, field, None)
             except OSError as exc:
                 report["errors"] += 1

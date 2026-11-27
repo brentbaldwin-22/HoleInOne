@@ -784,6 +784,32 @@ def serve_clip(name: str, request: Request):
     return _ranged_file(local, request.headers.get("range"))
 
 
+@app.get("/uploads/clips/{sub}/{name}", include_in_schema=False)
+def serve_clip_in_subdir(sub: str, name: str, request: Request):
+    """A clip in a mirrored subfolder, with the same bucket fallback.
+
+    `/uploads/clips/{name}` MATCHES ONE SEGMENT. A flow cut's URL has
+    two -- `/uploads/clips/_flowcuts/flowcut-1406-00-tee.mp4` -- so it
+    never reached the handler above; it fell through to the static
+    mount, which reads local disk and nothing else. On a host whose
+    disk is wiped by every deploy that is a 404 for every cut older
+    than the last deploy, with no way to tell it from a cut that was
+    never made.
+
+    ONLY THE MIRRORED FOLDERS, and only a bare filename under one, so
+    this cannot be walked outwards into the rest of the disk.
+    """
+    if sub not in storage.MIRRORED_SUBDIRS:
+        raise StarletteHTTPException(status_code=404)
+    safe = Path(name).name
+    local = CLIPS_DIR / sub / safe
+    if not local.exists():
+        storage.ensure_local(CLIPS_DIR, "%s/%s" % (sub, safe))
+    if not local.exists():
+        raise StarletteHTTPException(status_code=404)
+    return _ranged_file(local, request.headers.get("range"))
+
+
 # Serve showcase files (home page videos) with the same bucket-fallback
 # behaviour — they live in uploads/showcase/ which the sweeper doesn't cover,
 # so we upload them to the bucket on write and restore them here on demand.

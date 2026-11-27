@@ -433,8 +433,11 @@ console.log("\n3i. the edit wizard opens ON this page, with no navigation");
   // QUEUED, not when the clip exists), so the bodies are no longer
   // one-liners and a text match on the old shape only found the
   // handler that had not been fixed.
+  // The window is generous because these bodies carry their reasons:
+  // `onBackground` names the swing, says it is queued and says what
+  // may be done while it builds, all before it reloads.
   for (const h of ["onClose", "onBackground", "onDone"]) {
-    const m = new RegExp(`${h}=\\{\\([^)]*\\) => \\{?[\\s\\S]{0,900}?load\\(\\)`);
+    const m = new RegExp(`${h}=\\{\\([^)]*\\) => \\{?[\\s\\S]{0,2400}?load\\(\\)`);
     check(`${h} reloads the columns`, m.test(page));
   }
   check("...and setEditing is cleared on all three",
