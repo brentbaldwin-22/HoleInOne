@@ -138,6 +138,43 @@ check("...and the waiting called what it is",
       "waiting its turn" in prod)
 check("Fragment is imported for it", "Component, Fragment," in prod)
 
+print("\n7. the preview overlay cannot cancel the clip")
+prodsrc = prod
+# THE LOG FROM 1762, TWICE OVER:
+#   [POST] 499 .../1762/render-tracer-fast responseTimeMS=300013
+# 300,013ms is the CLIENT's own five-minute abort. `saveAndClose`
+# awaited that call bare, so when it did not come back the save threw
+# and `wizardProduce` -- the call that actually writes the clip -- was
+# never made. Five minutes of waiting, no clip, and no error anywhere
+# the operator was looking.
+check("the render is not awaited bare any more",
+      "const fast = teeChanged\n        ? await api.renderWizardTracerFast"
+      in prodsrc, False)
+check("...it is caught", "fast = fallbackFast;" in prodsrc
+      and "} catch (e) {" in prodsrc)
+check("...and says so on the line being watched",
+      "the preview overlay could not be rendered" in prodsrc)
+check("...then produces anyway",
+      prodsrc.index("producing the clip anyway")
+      < prodsrc.index("await api.wizardProduce("))
+# AND THE WORK JUST PLOTTED SURVIVES IT. The produce builds its
+# flight from the MERGED track the preview hands back, so falling
+# back to the saved one would quietly produce the old line.
+check("the fallback merges the overrides in",
+      "const mergedTrack = (() => {" in prodsrc)
+check("...dropping what was cleared",
+      "for (const f of cleared) byFrame.delete(Number(f));" in prodsrc)
+check("...and the fallback uses it, not the saved track",
+      "ball_track_frames: mergedTrack," in prodsrc)
+# NINETY SECONDS, NOT FIVE MINUTES: this is a preview, and the
+# produce draws its own tracer from the same points.
+api_js = (ROOT / "frontend" / "src" / "api.js").read_text()
+check("the wait is bounded to something a person will sit through",
+      "timeoutMs: 90_000," in api_js)
+check("...and not the five minutes that timed out",
+      "timeoutMs: 5 * 60_000,\n    }),\n  finalizeWizardVideo" in api_js,
+      False)
+
 print("\n" + ("all ok" if not FAILED
                else "%d FAILED:\n  %s" % (len(FAILED), "\n  ".join(FAILED))))
 sys.exit(1 if FAILED else 0)

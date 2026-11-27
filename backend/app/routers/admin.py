@@ -37586,6 +37586,30 @@ def produce_queue_status() -> dict:
         }
 
 
+def _produce_outcome(upload_id: int, out: dict) -> dict:
+    """Stop the status with WHAT HAPPENED, not just that it stopped.
+
+    THE REFUSALS ARE NOT EXCEPTIONS. `_d3_fast_produce` returns
+    `{"ok": False, "error": "no swing with a flight to produce"}` and
+    every early return in the job does the same -- a missing source
+    file, no ball to start from, an upload that is gone. Nothing
+    raises, so the one place that reported a failure (the `except`)
+    never ran, and the `finally` underneath it set "done" with no
+    error on every single one of them.
+
+    What that looked like: the produce finishes, says nothing, writes
+    nothing. Twice on upload 1762, with the reason sitting in the
+    returned dict that nobody read.
+    """
+    _err = (out or {}).get("error")
+    _ok = bool((out or {}).get("ok")) and not _err
+    _debugx_set("produce", upload_id, running=False,
+                stage="done" if _ok else "failed",
+                error=None if _ok else (_err or "the produce wrote no clip "
+                                        "and gave no reason"))
+    return out
+
+
 def run_wizard_produce_job(
     upload_id: int,
     ball_xy,
@@ -37647,15 +37671,23 @@ def run_wizard_produce_job(
     try:
         row = db.get(LongVideoUpload, upload_id)
         if row is None:
-            return {"ok": False, "error": f"upload {upload_id} not found"}
+            # EVERY EXIT REPORTS. These two run BEFORE the inner try,
+            # so the `finally` that stops the status never covered
+            # them: the endpoint had already set running=True, and a
+            # job returning here left the page watching a run that had
+            # finished before it started.
+            return _produce_outcome(
+                upload_id,
+                {"ok": False, "error": f"upload {upload_id} not found"})
         if row.tee_filename:
             storage.ensure_local(CLIPS_DIR, row.tee_filename)
         if row.green_filename:
             storage.ensure_local(CLIPS_DIR, row.green_filename)
         src_path = CLIPS_DIR / row.tee_filename if row.tee_filename else None
         if not src_path or not src_path.exists():
-            return {"ok": False,
-                    "error": f"tee source missing on disk: {row.tee_filename}"}
+            return _produce_outcome(upload_id, {
+                "ok": False,
+                "error": f"tee source missing on disk: {row.tee_filename}"})
 
         def _prog(stage: str, done: int = 0, total: int = 0) -> None:
             _debugx_set("produce", upload_id, stage=stage, done=done,
@@ -37674,6 +37706,11 @@ def run_wizard_produce_job(
         # question that can only be answered by guessing.
         _pt_reset()
         _t_job = time.monotonic()
+        # SET BEFORE THE WORK, so the `finally` below always has the
+        # run's own answer to report rather than falling back to a
+        # generic one. Every exit inside assigns it.
+        out = {"ok": False, "error": "the produce ended before it "
+                                     "reached the renderer"}
         try:
             from ..services import debug3 as d3
 
@@ -37683,8 +37720,9 @@ def run_wizard_produce_job(
             # ball, and letting one through silently would produce a
             # clip with no line and no explanation.
             if ball_xy is None and not no_tracer:
-                return {"ok": False,
-                        "error": "no ball to start the tracer from"}
+                out = {"ok": False,
+                       "error": "no ball to start the tracer from"}
+                return out
             _bx, _by = ((float(ball_xy[0]), float(ball_xy[1]))
                         if ball_xy is not None else (None, None))
             _imp = int(impact_frame)
@@ -37832,7 +37870,8 @@ def run_wizard_produce_job(
                 if not _ff.get("ok"):
                     _finish_wizard_produce(db, upload_id, ok=False, n_ok=0,
                                            error=_err)
-                    return {"ok": False, "error": _err}
+                    out = {"ok": False, "error": _err}
+                    return out
 
             # `_d3_fast_produce` reads swings off a Debug3 report, so hand
             # it one with the single swing the operator pointed at.
@@ -37981,7 +38020,12 @@ def run_wizard_produce_job(
             )
             return out
         finally:
-            _debugx_set("produce", upload_id, running=False, stage="done")
+            # NOT ALWAYS "done". See `_produce_outcome`: a refusal
+            # comes back as a returned dict, not as an exception, so
+            # this used to stamp success on every one of them --
+            # including "no swing with a flight to produce", which is
+            # the whole of what went wrong on 1762.
+            _produce_outcome(upload_id, out)
     except Exception as exc:  # noqa: BLE001
         log.exception("wizard produce %s crashed: %s", upload_id, exc)
         _debugx_set("produce", upload_id, running=False, stage="failed",

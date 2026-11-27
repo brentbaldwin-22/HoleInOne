@@ -1145,14 +1145,21 @@ export const api = {
     }),
   renderWizardTracerFast: (key, uploadId, payload = {}) =>
     // cv2-only: merges manual_positions into the cached ball_track
-    // and re-renders the tracer overlay. No Claude calls. Timeout is
-    // generous because the overlay is re-rendered across the whole source
-    // clip — a long mirrored clip (2+ min) can take a few minutes.
+    // and re-renders the tracer overlay. No Claude calls.
+    //
+    // NINETY SECONDS, NOT FIVE MINUTES. This is a PREVIEW overlay —
+    // the produce that follows draws its own tracer from the same
+    // points — and the caller treats a failure as "no preview", not
+    // as a failed save. Five minutes of waiting bought nothing: on
+    // upload 1762 the client aborted at exactly 300s (a 499 in the
+    // logs), the save threw, and the produce that should have come
+    // next was never called. Five minutes of nothing, no clip, and
+    // no error the operator could see.
     request(`/api/admin/long-uploads/${uploadId}/render-tracer-fast`, {
       method: "POST",
       body: payload,
       adminPassword: key,
-      timeoutMs: 5 * 60_000,
+      timeoutMs: 90_000,
     }),
   finalizeWizardVideo: (key, uploadId, payload = {}) =>
     request(`/api/admin/long-uploads/${uploadId}/finalize`, {

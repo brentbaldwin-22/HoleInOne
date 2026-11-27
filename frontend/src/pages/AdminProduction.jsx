@@ -3567,25 +3567,70 @@ export function ClickToPlotModal({
           end_frame: lastF_ == null ? hi : Math.min(hi, lastF_),
         };
       })();
-      const fast = teeChanged
-        ? await api.renderWizardTracerFast(adminPassword, row.id, {
-          manual_positions: overrides,
-          cleared_frames: cleared,
-          base_track_frames: swing.ball_track_frames || [],
-          impact_frame: impactFrame ?? null,
-          ball_at_rest: ballAtRest || null,
-          // THE ARC AS SHAPED. The aim point the operator dragged wins
-          // over the wizard's target — on this screen they are looking
-          // at the picture the line is drawn on, which the target was
-          // only ever a proxy for.
-          target: tracerEnd || swing.target || null,
-          flight_sec: flightSec,
-          render_window: renderWindow,
-        })
-        : {
-          tracer_url: swing.tracer_url,
-          ball_track_frames: swing.ball_track_frames || [],
-        };
+      // ── THE PREVIEW OVERLAY, AND IT IS ONLY A PREVIEW ──────────
+      //
+      // A FAILURE HERE MUST NOT COST THE CLIP. This was awaited bare,
+      // so when it did not come back the whole save threw and the
+      // produce underneath it — the call that actually writes the
+      // clip — was never made. On upload 1762 that is exactly what
+      // happened: the client aborted the render at five minutes (a
+      // 499 in the server log, 300,013ms), and the operator got five
+      // minutes of waiting, no clip, and nothing on screen saying
+      // why.
+      //
+      // The produce draws its own tracer from the SAME plotted
+      // points. Losing this costs the thumbnail-sized preview on the
+      // card, not the line on the video.
+      // THE OPERATOR'S POINTS SURVIVE THE FALLBACK. The produce
+      // builds its flight from `fast.ball_track_frames` — the MERGED
+      // track the preview render hands back — so falling back to the
+      // saved track would silently throw away everything just
+      // plotted and produce the old line. Same merge the server
+      // does: last write per frame wins, cleared frames go.
+      const mergedTrack = (() => {
+        const byFrame = new Map();
+        for (const p of (swing.ball_track_frames || [])) {
+          if (p && p.frame != null) byFrame.set(Number(p.frame), { ...p });
+        }
+        for (const f of cleared) byFrame.delete(Number(f));
+        for (const o of overrides) {
+          byFrame.set(Number(o.frame), {
+            ...(byFrame.get(Number(o.frame)) || {}),
+            frame: Number(o.frame), x: o.x, y: o.y, found: true,
+          });
+        }
+        return [...byFrame.values()].sort((a, b) => a.frame - b.frame);
+      })();
+      const fallbackFast = {
+        tracer_url: swing.tracer_url,
+        ball_track_frames: mergedTrack,
+      };
+      let fast = fallbackFast;
+      if (teeChanged) {
+        try {
+          fast = await api.renderWizardTracerFast(adminPassword, row.id, {
+            manual_positions: overrides,
+            cleared_frames: cleared,
+            base_track_frames: swing.ball_track_frames || [],
+            impact_frame: impactFrame ?? null,
+            ball_at_rest: ballAtRest || null,
+            // THE ARC AS SHAPED. The aim point the operator dragged
+            // wins over the wizard's target — on this screen they are
+            // looking at the picture the line is drawn on, which the
+            // target was only ever a proxy for.
+            target: tracerEnd || swing.target || null,
+            flight_sec: flightSec,
+            render_window: renderWindow,
+          });
+        } catch (e) {
+          // SAY IT AND CARRY ON. The operator is watching the
+          // production page by now, so this goes to the stage line
+          // they are actually looking at.
+          fast = fallbackFast;
+          stage(`the preview overlay could not be rendered (${
+            e?.message || e}) — producing the clip anyway`);
+        }
+      }
       // The swing this save writes: a fresh one appended to the list when
       // the map was opened on a swing that does not exist yet, otherwise
       // the existing one patched in place. `newIdx` follows the wizard's
