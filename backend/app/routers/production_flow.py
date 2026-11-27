@@ -383,8 +383,24 @@ def flow_counts(day: str = "", zone: int = -1, course_id: int = 0,
     q = db.query(VideoClip).filter(VideoClip.flow_run_at.isnot(None))
     if _ids is not None:
         q = q.filter(VideoClip.long_upload_id.in_(_ids))
+    # ── APPROVED CLIPS ARE STILL PRODUCED CLIPS ─────────────────
+    #
+    # This counted only the UNAPPROVED ones, which matched a column
+    # that emptied as each clip was approved -- so a row whose swing
+    # had gone all the way through read "1 cut · 0 drafts · 1 final",
+    # as if the draft had never existed and the final had come from
+    # nowhere. Approving is not un-producing. The column keeps the
+    # tile and this counts it, so the row reads left to right as the
+    # thing it is: a progression, where later stages are subsets of
+    # earlier ones rather than places a clip moves away to.
+    #
+    # THE NUMBERS ACROSS THE STRIP STILL DO NOT ADD UP, and never
+    # did: raw counts recordings, cuts counts cuts, and one recording
+    # holding four swings is one row in `raw` and four in `draft`.
+    # `final` being a subset of `draft` is the same kind of fact.
     n_draft = q.filter((VideoClip.stage == "draft")
-                       | (VideoClip.stage.is_(None))).count()
+                       | (VideoClip.stage.is_(None))
+                       | (VideoClip.stage == "final")).count()
     n_final = q.filter(VideoClip.stage == "final").count()
     n_bcast = q.filter(VideoClip.broadcast_at.isnot(None)).count()
     return {

@@ -16,6 +16,7 @@ import { VideoLightbox } from "../components/VideoLightbox.jsx";
 // screen that explains it is the same screen, not a second one that
 // can drift from it.
 import { AscentProduceModal, ClickToPlotModal } from "./AdminProduction.jsx";
+import { producedTiles } from "./producedTiles.js";
 import { zoneName } from "../zones.js";
 
 /*
@@ -264,7 +265,9 @@ const STEPS = [
            + "judgement — only that it cleared this tee box's gates." },
   { key: "draft", title: "Draft produced", unit: "clips",
     blurb: "Produced from the audio impact — ascent, the ball on the "
-           + "green if it is there, then tracer and graphics." },
+           + "green if it is there, then tracer and graphics. A clip "
+           + "stays here after it is approved, so the row reads all "
+           + "the way across." },
   { key: "final", title: "Final produced", unit: "clips",
     blurb: "Approved, and grouped by the seven minutes around the "
            + "first swing in each group." },
@@ -1389,12 +1392,26 @@ export default function AdminProductionFlow() {
     );
   };
 
-  const draftCard = (c) => (
-    <div key={c.id} className="card tight" style={{ margin: 0 }}>
+  const draftCard = (c) => {
+    // ── IT IS STILL HERE, AND IT HAS MOVED ON ──────────────────
+    //
+    // An approved clip stays in this column so the row reads all the
+    // way across, which means the tile has to say which of the two
+    // it is. Without that it looks like a draft nobody has got to
+    // yet, sitting next to an identical one in Final produced.
+    const done = c.stage === "final";
+    return (
+    <div key={c.id} className="card tight"
+         style={{ margin: 0, opacity: done ? 0.8 : 1 }}>
       <div className="small">
         {/* THE SWING FIRST: it is what joins this card to the cut in
             the cell to its left. */}
         <b>{c.cut_idx != null ? `swing ${c.cut_idx + 1}` : "swing unknown"}</b>
+        {done && (
+          <span className="pill ok small" style={{ marginLeft: 6 }}>
+            → approved
+          </span>
+        )}
         <span className="muted"> · Hole {c.hole_number}</span>
         {c.cut_idx == null && (
           <span className="muted tiny">
@@ -1491,22 +1508,41 @@ export default function AdminProductionFlow() {
             "delete" was it, and every reason to think it would take
             the swing with it. The name is the direction now; the
             title says what is actually thrown away. */}
-        <button type="button" className="btn ghost small"
-                disabled={acting === `del-${c.id}`}
-                title={"throw this draft away — the swing goes back to "
-                       + "Audio cuts and can be produced again"}
-                onClick={() => act(`del-${c.id}`, api.flowDeleteClip, c.id)}>
-          {acting === `del-${c.id}` ? "sending back…" : "← back to Audio cuts"}
-        </button>
-        <button type="button" className="btn small"
-                disabled={acting === `ok-${c.id}`}
-                onClick={() => act(`ok-${c.id}`, api.flowAccept, c.id,
-                                   "admin")}>
-          {acting === `ok-${c.id}` ? "approving…" : "approve"}
-        </button>
+        {/* ── ONE STAGE BACK, FROM THE FURTHEST ────────────────
+            Same rule as the cuts column: an approved clip goes back
+            to this column first, from its tile in Final produced.
+            Sending it straight to Audio cuts from here would delete
+            a clip that an administrator has signed off, two stages
+            away, from the tile that looks the least consequential.
+            There is nothing to approve either — it already is. */}
+        {!done && (
+          <>
+            <button type="button" className="btn ghost small"
+                    disabled={acting === `del-${c.id}`}
+                    title={"throw this draft away — the swing goes back "
+                           + "to Audio cuts and can be produced again"}
+                    onClick={() => act(`del-${c.id}`, api.flowDeleteClip,
+                                       c.id)}>
+              {acting === `del-${c.id}`
+                ? "sending back…" : "← back to Audio cuts"}
+            </button>
+            <button type="button" className="btn small"
+                    disabled={acting === `ok-${c.id}`}
+                    onClick={() => act(`ok-${c.id}`, api.flowAccept, c.id,
+                                       "admin")}>
+              {acting === `ok-${c.id}` ? "approving…" : "approve"}
+            </button>
+          </>
+        )}
+        {done && (
+          <span className="tiny muted">
+            approved — it is in Final produced
+          </span>
+        )}
       </div>
     </div>
-  );
+    );
+  };
 
   const finalCard = (c, newGroup) => (
     <div key={c.id}>
@@ -1540,6 +1576,30 @@ export default function AdminProductionFlow() {
                                    !c.broadcast_at)}>
           {acting === `b-${c.id}` ? "…"
             : c.broadcast_at ? "un-broadcast" : "Broadcast"}
+        </button>
+        {/* ── ONE STAGE BACK ─────────────────────────────────────
+            The last of the three, so every transition along the row
+            is reversible from the tile that made it. This un-signs
+            the approval and nothing else: the clip is not touched,
+            it goes back to being a draft waiting to be looked at,
+            and its tile in Draft produced drops the "approved" mark.
+
+            NOT WHILE IT IS OUT. Broadcast is an independent fact
+            from the stage — a clip can go out from draft or from
+            final — so un-approving one that is live would leave
+            something published that the console no longer says
+            anybody signed off. Un-broadcast first; the button above
+            does it. */}
+        <button type="button" className="btn ghost small"
+                style={{ marginTop: 5, width: "100%" }}
+                disabled={!!c.broadcast_at || acting === `un-${c.id}`}
+                title={c.broadcast_at
+                  ? "this clip is broadcast — un-broadcast it first"
+                  : "take the approval back; the clip returns to Draft "
+                    + "produced as it was"}
+                onClick={() => act(`un-${c.id}`, api.flowUnaccept, c.id)}>
+          {acting === `un-${c.id}`
+            ? "sending back…" : "← back to Draft produced"}
         </button>
       </div>
     </div>
@@ -1582,7 +1642,13 @@ export default function AdminProductionFlow() {
     return m;
   };
   const nCuts = tally(cuts, (k) => k.long_upload_id);
-  const nDrafts = tally(drafts, (c) => c.long_upload_id);
+  // SAME RULE AS THE COLUMN: a produced clip stays counted once it
+  // is approved, or the summary line contradicts the tiles above it.
+  const nDrafts = tally(
+    (drafts || []).concat(
+      (finals || []).filter(
+        (c) => !(drafts || []).some((d) => d.id === c.id))),
+    (c) => c.long_upload_id);
   const nFinals = tally(finals, (c) => c.long_upload_id);
 
   const shownCuts = cuts || [];
@@ -1598,8 +1664,22 @@ export default function AdminProductionFlow() {
   // take.
   const producing = phaseOf(liveRun?.stage).phase === "produce";
   const draftSource = producing && liveDrafts ? liveDrafts : drafts;
-  const shownDrafts = draftSource || [];
+  // ── APPROVING IS NOT UN-PRODUCING ────────────────────────────
+  //
+  // The two columns are fed by two queries, one for stage "draft"
+  // and one for stage "final", and approving a clip moves its row
+  // from the first to the second. So the draft tile VANISHED at the
+  // moment of approval and the row went from "1 cut · 1 draft" to
+  // "1 cut · 0 drafts · 1 final" -- reading as though the draft had
+  // never happened and the final had arrived from nowhere. The
+  // middle of the process was the one part of it the page could not
+  // show.
+  //
+  // The finals are already on the page for the fourth column, so
+  // this costs no extra request. Deduplicated by id because a clip
+  // produced and approved between the two fetches lands in both.
   const shownFinals = finals || [];
+  const shownDrafts = producedTiles(draftSource, shownFinals);
 
   return (
     <div className="wrap wide">
