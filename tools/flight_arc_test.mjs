@@ -124,20 +124,72 @@ console.log("\n4. the apex may be above the frame, and the arc goes there");
 
 console.log("\n5. one point per frame, inside the swing's own window");
 {
-  const build = src.slice(src.indexOf("function buildArc("));
+  // THE FUNCTION ITSELF, not the rest of the file after it: an
+  // unbounded slice makes every "this is absent" check below pass on
+  // the strength of some other function a thousand lines later.
+  const build = grab("buildArc");
   check("a point for every frame, not a sparse few",
         /for \(let f = f0 \+ 1; f <= f1; f \+= 1\)/.test(build));
-  // POINTS PAST THE WINDOW ARE POINTS NOTHING RENDERS. An arc that
-  // silently ends early cannot be told from one drawn wrong.
-  check("the swing's end frame bounds it",
-        /const lastF = swing\.end_frame/.test(build));
-  check("...and the clip's end behind that",
-        /row\.tee_nb_frames \? row\.tee_nb_frames - 1/.test(build));
+  // ── THE FOOTAGE IS THE ONLY LIMIT ──────────────────────────────
+  //
+  // It used to stop at `swing.end_frame` -- the window a PREVIOUS
+  // produce chose, often a second or two after impact -- and the arc
+  // was silently squeezed into it. The flight then ran its whole
+  // length inside that second: up and down in a blink, with nothing
+  // on screen saying the duration had been overruled. The window is
+  // widened to hold the points instead; see `renderWindow`.
+  check("the clip's last frame is the bound",
+        /const lastF = row\.tee_nb_frames \? row\.tee_nb_frames - 1 : null;/
+          .test(build));
+  check("...and the window a previous produce chose is not",
+        /const lastF = swing\.end_frame/.test(build), false);
+  check("the saved window is widened to hold the points",
+        /const hi = Math\.max\(baseWindow\.end_frame, \.\.\.fs\);/
+          .test(src));
+  check("...clamped to the footage that exists",
+        /end_frame: lastF_ == null \? hi : Math\.min\(hi, lastF_\),/
+          .test(src));
   // ITS OWN PREVIOUS POINTS GO AND NOTHING ELSE DOES: re-drawing
   // after a drag must not leave the old curve behind, and must not
   // take a hand-plotted ascent with it.
   check("re-drawing replaces only the arc's own points",
         /for \(const f of arcFrames\) delete kept\[f\];/.test(build));
+}
+
+console.log("\n5b. and it lasts as long as the shot does");
+{
+  // THE ARC IS PACED BY THE FRAMES IT COVERS, so the duration IS the
+  // speed: the same curve over a fifth of the frames is the same shot
+  // at five times the speed, which is what "it seems to be going too
+  // fast" looked like -- a 145-yard shot up and down inside a second.
+  check("a hard-coded default is not the answer",
+        /const arcSec = flightSec != null \? flightSec : 4\.5;/.test(src),
+        false);
+  // IN ORDER OF AUTHORITY: what the operator set, then the two
+  // cameras' own clocks, then the hole's yardage through the
+  // carry-time table the renderer itself paces with.
+  check("what the operator set wins",
+        /const arcSec = \(arcFlight != null && arcFlight > 0\) \? arcFlight/
+          .test(src));
+  check("...then anything measured", /: \(flightSec != null && flightSec > 0 \? flightSec : null\);/
+    .test(src));
+  check("...then the table, fetched from the server",
+        /async function askFlightSec\(\)/.test(src)
+          && /setArcFlight\(Number\(out\.flight_sec\)\)/.test(src));
+  // NOT COMPUTED IN THE BROWSER. A second copy of the carry-time
+  // table is a copy that drifts, and the one that drifts is the one
+  // the operator is looking at.
+  check("the table itself is not copied here",
+        /3\.1 \+ \(y - 75/.test(src), false);
+  check("asked for when the arc is armed, not mid-drag",
+        /askFlightSec\(\);\s*\n\s*setPlaceOnTee/.test(src));
+  check("the operator can overrule it", /setArcFlight\(v\); setArcFlightFrom\("you"\);/
+    .test(src));
+  check("...and changing it re-draws the arc",
+        /buildArc\(arcEnd, arcApex\);\s*\n\s*\/\/ eslint-disable-next-line[\s\S]{0,60}\}, \[arcSec\]\);/
+          .test(src));
+  check("...and the panel says whose number it is",
+        /arcFlightFrom === "you" \? "— set here"/.test(src));
 }
 
 console.log("\n6. it picks up from what is already plotted");

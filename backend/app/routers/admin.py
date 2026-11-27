@@ -14131,9 +14131,6 @@ def tracer_shape(
         except (AttributeError, TypeError, ValueError):
             continue
     pts.sort(key=lambda q: q[0])
-    if len(pts) < 2:
-        return {"tail": [], "kind": None,
-                "reason": "the tracer has fewer than two points to leave from"}
 
     _w = int(payload.get("width") or row.tee_width or 1920)
     _h = int(payload.get("height") or row.tee_height or 1080)
@@ -14177,6 +14174,25 @@ def tracer_shape(
         # is the one thing the renderer actually times from.
         if _flight is not None and _impact is not None and _fps > 0:
             _lf = int(round(float(_impact) + _flight * _fps))
+    # ── THE FLIGHT TIME IS NOT ABOUT THE TRACK ─────────────────────
+    #
+    # This used to refuse everything, flight time included, the moment
+    # there were fewer than two tracked points -- which is the swing
+    # the editor is most often open on. But how long a 145-yard shot
+    # hangs in the air is a fact about the HOLE, and the caller asking
+    # it is the hand-drawn flight arc, which exists precisely because
+    # there is no track to extend. Refusing to answer left the arc
+    # guessing at its own duration, and a guess of four seconds where
+    # the table says five drew the ball up and down in a blink.
+    #
+    # So the guard moved below this: no tail, said plainly, with the
+    # number that does not depend on one.
+    if len(pts) < 2:
+        return {"tail": [], "kind": None,
+                "reason": "the tracer has fewer than two points to leave "
+                          "from",
+                "flight_sec": _flight, "flight_from": _flight_from}
+
     # NOTHING MARKED YET? GUESS, AND SAY SO. The editor has nothing to
     # show and nothing to take hold of without an aim point, and the
     # flight has already half-answered the question -- so continue the

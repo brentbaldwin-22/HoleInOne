@@ -2623,6 +2623,13 @@ export function ClickToPlotModal({
   // the arc was told to start from is the operator's work and is not
   // the arc's to throw away.
   const [arcFrames, setArcFrames] = useState([]);
+  // HOW LONG THE BALL IS IN THE AIR, and where that number came from.
+  // The server's carry-time table off the hole's yardage -- the same
+  // one the renderer paces its own continuation with -- so the arc
+  // lasts as long as the shot did rather than as long as some default
+  // guessed. Null until asked for; the operator can overrule it.
+  const [arcFlight, setArcFlight] = useState(null);
+  const [arcFlightFrom, setArcFlightFrom] = useState(null);
   const [placeOnGreen, setPlaceOnGreen] = useState(null); // 'landing' | 'pin'
   const [teeViewFrame, setTeeViewFrame] = useState(null);
   // WHERE THE RAW PLAYER IS STOPPED, or null while it is running. The
@@ -3301,9 +3308,50 @@ export function ClickToPlotModal({
   // time where one has been measured or set; otherwise four and a
   // half seconds, which is a full shot and is honest about being a
   // default -- the hint says so and the landing frame is printed.
+  // ── HOW LONG THE FLIGHT LASTS, IN ORDER OF AUTHORITY ───────────
+  //
+  // What the operator set here; then the two cameras' own clocks
+  // where both saw the shot (`flightSec`, measured); then the hole's
+  // yardage through the carry-time table the renderer itself uses.
+  //
+  // A HARD-CODED DEFAULT IS THE WRONG ANSWER HERE. The first version
+  // used four and a half seconds for everything, and a 145-yard shot
+  // whose table time is five seconds was drawn up and down inside
+  // one: the arc is paced by the frames it covers, so the duration IS
+  // the speed.
   const arcFps = Number(row.tee_fps) || 30;
-  const arcSec = flightSec != null && flightSec > 0 ? flightSec : 4.5;
-  const arcSpan = Math.max(2, Math.round(arcSec * arcFps));
+  const arcSec = (arcFlight != null && arcFlight > 0) ? arcFlight
+    : (flightSec != null && flightSec > 0 ? flightSec : null);
+  const arcSpan = Math.max(2, Math.round((arcSec || 5.0) * arcFps));
+
+  // ASKED FOR ONCE, FROM THE SAME PLACE THE RENDERER GETS IT. Not
+  // computed here: a second copy of the carry-time table in the
+  // browser is a copy that drifts, and the one that drifts is the one
+  // the operator is looking at.
+  async function askFlightSec() {
+    if (arcSec != null) return arcSec;
+    try {
+      const out = await api.tracerShape(adminPassword, row.id, {
+        track_frames: [],
+        ball: ballAtRest || swing.ball || null,
+        impact_frame: impactFrame ?? swing.impact_frame ?? null,
+        end: null,
+        flight_sec: null,
+        land_frame: swing.tracer_tail?.land_frame ?? null,
+        width: frameW, height: frameH, fps: row.tee_fps || null,
+      });
+      if (out?.flight_sec != null) {
+        setArcFlight(Number(out.flight_sec));
+        setArcFlightFrom(out.flight_from || null);
+        return Number(out.flight_sec);
+      }
+    } catch {
+      // THE TABLE IS A COURTESY, NOT A GATE. A hole with no yardage
+      // on record, or a server that cannot be reached, still gets an
+      // arc -- five seconds, and the panel says it was assumed.
+    }
+    return null;
+  }
 
   function buildArc(end = arcEnd, apex = arcApex) {
     const from = arcStart;
@@ -3311,13 +3359,21 @@ export function ClickToPlotModal({
     const peak = apex || defaultApex(from, end);
     if (!peak) return;
     const f0 = from.frame ?? impactFrame ?? swing.impact_frame ?? 0;
-    // THE SWING'S OWN WINDOW FIRST. Points past it are points the
-    // produce will not render and the map will not show -- an arc
-    // that silently ends early, with no way to tell that from one
-    // that was drawn wrong.
-    const lastF = swing.end_frame
-      ?? (row.tee_nb_frames ? row.tee_nb_frames - 1 : (f0 + arcSpan));
-    const f1 = Math.min(f0 + arcSpan, Math.max(f0 + 2, lastF));
+    // ── THE FOOTAGE IS THE ONLY LIMIT ──────────────────────────────
+    //
+    // This used to stop at `swing.end_frame`, which is the window a
+    // PREVIOUS produce chose -- often a second or two after impact --
+    // and the arc was silently squeezed into it. The flight then ran
+    // its whole length in that second: up and down in a blink, with
+    // nothing on screen saying the duration had been overruled.
+    //
+    // The clip's own last frame is a real limit (there are no frames
+    // past it). The window is not: it is widened to hold the flight
+    // where it has to be, below, where the clip is rendered.
+    const lastF = row.tee_nb_frames ? row.tee_nb_frames - 1 : null;
+    const want = f0 + arcSpan;
+    const f1 = lastF == null ? want
+      : Math.min(want, Math.max(f0 + 2, lastF));
     const next = {};
     const owned = [];
     // ONE POINT PER FRAME. The renderer draws the ball where the
@@ -3359,6 +3415,16 @@ export function ClickToPlotModal({
   // detector found nothing -- the only kind there is on a swing with
   // no dots -- was stored, saved, rendered, and invisible on the one
   // screen built to show it.
+  // A NEW FLIGHT TIME IS A NEW ARC. The duration is the arc's speed --
+  // the same curve over half the frames is the same shot at double
+  // speed -- so a number changed here has to reach the points, or the
+  // panel says five seconds over a line that still runs in one.
+  useEffect(() => {
+    if (!arcEnd || !arcFrames.length) return;
+    buildArc(arcEnd, arcApex);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arcSec]);
+
   const arcOwned = new Set(arcFrames);
   // THE CHIPS BELOW THE MAP, and how many of them there may be. An
   // arc is one decision; the points placed by hand are many, and each
@@ -3476,10 +3542,31 @@ export function ClickToPlotModal({
           : null;
       const hasWindow =
         swing.start_frame != null && swing.end_frame != null;
-      const renderWindow = newWindow
+      const baseWindow = newWindow
         || (hasWindow
           ? { start_frame: swing.start_frame, end_frame: swing.end_frame }
           : null);
+      // ── AND IT HAS TO HOLD THE FLIGHT ──────────────────────────
+      //
+      // The window an earlier produce chose can end a second after
+      // impact. Points past it are points nothing renders, so a
+      // five-second arc in a one-second window is a ball that
+      // disappears mid-air -- or, before this, an arc squeezed to fit
+      // and flung up and down in a blink.
+      //
+      // The plotted points are the operator's statement of where the
+      // ball is on which frame. The window follows them, clamped to
+      // the footage that exists.
+      const renderWindow = (() => {
+        if (!baseWindow || !overrides.length) return baseWindow;
+        const fs = overrides.map((o) => o.frame);
+        const lo = Math.min(baseWindow.start_frame, ...fs);
+        const hi = Math.max(baseWindow.end_frame, ...fs);
+        return {
+          start_frame: Math.max(0, lo),
+          end_frame: lastF_ == null ? hi : Math.min(hi, lastF_),
+        };
+      })();
       const fast = teeChanged
         ? await api.renderWizardTracerFast(adminPassword, row.id, {
           manual_positions: overrides,
@@ -4750,6 +4837,12 @@ export function ClickToPlotModal({
                     disabled={!arcStart}
                     onClick={() => {
                       setCam("tee");
+                      // THE TABLE, BEFORE THE CLICK NEEDS IT. Asked
+                      // for here rather than mid-drag so the first
+                      // arc is already the right length instead of
+                      // being drawn short and corrected a moment
+                      // later under the operator's cursor.
+                      askFlightSec();
                       setPlaceOnTee((v) => (v === "land" ? null : "land"));
                     }}
                     title={arcStart
@@ -4765,12 +4858,44 @@ export function ClickToPlotModal({
             </button>
             {arcEnd && (
               <div className="tiny muted" style={{ marginTop: 4 }}>
+                {/* ── HOW LONG IT HANGS, AND WHOSE NUMBER THAT IS ───
+                    The arc is paced by the frames it covers, so this
+                    IS its speed: the same five-second shot over one
+                    second of frames is a ball fired up and pulled
+                    straight back down. The table's number is a
+                    stand-in for a measurement and says so; a lower
+                    shot or a longer one is the operator's to set. */}
+                <div style={{ display: "flex", gap: 4, alignItems: "center",
+                              flexWrap: "wrap", marginBottom: 2 }}>
+                  <span>flight</span>
+                  <button type="button" className="ghost small"
+                          style={{ width: "auto", padding: "0 6px",
+                                   lineHeight: "18px" }}
+                          title="A quarter of a second less in the air — a lower, flatter shot."
+                          onClick={() => {
+                            const v = Math.max(1, (arcSec || 5) - 0.25);
+                            setArcFlight(v); setArcFlightFrom("you");
+                          }}>−</button>
+                  <b>{(arcSec || 5).toFixed(2)}s</b>
+                  <button type="button" className="ghost small"
+                          style={{ width: "auto", padding: "0 6px",
+                                   lineHeight: "18px" }}
+                          title="A quarter of a second more in the air."
+                          onClick={() => {
+                            const v = Math.min(12, (arcSec || 5) + 0.25);
+                            setArcFlight(v); setArcFlightFrom("you");
+                          }}>+</button>
+                  <span className="muted">
+                    {arcFlightFrom === "you" ? "— set here"
+                      : (arcFlightFrom ? `— ${arcFlightFrom}`
+                        : (arcSec == null ? "— assumed" : ""))}
+                  </span>
+                </div>
                 arc from {arcStart?.from === "plot"
                   ? `the last plotted point (f${arcStart.frame})`
                   : "the tee"}
                 {arcFrames.length
-                  ? ` over ${arcFrames.length} frames (${arcSec.toFixed(1)}s`
-                    + `${flightSec == null ? ", assumed" : ""})`
+                  ? ` over ${arcFrames.length} frames`
                   : ""}
                 {arcApex && arcApex.y < 0
                   ? ` · apex ${Math.abs(Math.round(arcApex.y))}px above the `
