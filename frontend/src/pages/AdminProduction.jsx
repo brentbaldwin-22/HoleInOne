@@ -41,7 +41,12 @@ import { useInfiniteList } from "../hooks/useInfiniteList.js";
  * This keeps the page, shows what actually threw, and logs the stack to
  * the console so it can be copied.
  */
-class Boundary extends Component {
+// EXPORTED, because the Production Flow page opens the same modal and
+// was rendering it bare: a throw inside it had nothing to catch it, so
+// React unmounted the whole route and the wizard "just went away" with
+// no error anywhere. The one fact needed to fix it was the one thing
+// the failure destroyed.
+export class Boundary extends Component {
   constructor(props) {
     super(props);
     this.state = { err: null };
@@ -2243,6 +2248,13 @@ function leadInVerdict(points, landingFrame, fps) {
 // helpers, and a copy on the other page would be a second editor
 // that drifts -- which is the thing the deep link was added to
 // avoid in the first place.
+// RENDER THE PREVIEW OVERLAY BEFORE PRODUCING? No: the produce draws
+// its own tracer from the same points and replaces this one's output,
+// so it was forty to ninety seconds of an operator's wait spent
+// drawing a picture that is thrown away. See the note at the call.
+const PRODUCE_PREVIEW_RENDER = false;
+
+
 export function ClickToPlotModal({
   row, swingPos, addNew, seed, adminPassword, onClose, onBackground,
   onDone,
@@ -3605,8 +3617,28 @@ export function ClickToPlotModal({
         tracer_url: swing.tracer_url,
         ball_track_frames: mergedTrack,
       };
+      // ── AND IT IS NOT RENDERED AT ALL ANY MORE ─────────────────
+      //
+      // THE TRACER WAS BEING DRAWN TWICE. This call renders the
+      // overlay across the clip; the produce below then renders its
+      // own from the SAME points, and overwrites this one's
+      // `tracer_url` on the swing when it lands. Measured on upload
+      // 1762: 39-51s of the run, for a picture nothing outlives.
+      //
+      // It used to matter. This path was three legacy calls --
+      // render-tracer-fast, then finalize, then commit-clip -- and
+      // finalize composited what this produced. That has been one
+      // call to the produce for a while; nothing composites it now.
+      //
+      // `mergedTrack` is what the server was handing back: the same
+      // merge, over the same base track, with the same frames
+      // cleared. The produce builds its flight from it either way.
+      //
+      // The code stays because `PRODUCE_PREVIEW_RENDER` is how to get
+      // it back if something turns out to have been leaning on the
+      // round trip -- flip it and the old behaviour returns intact.
       let fast = fallbackFast;
-      if (teeChanged) {
+      if (PRODUCE_PREVIEW_RENDER && teeChanged) {
         try {
           fast = await api.renderWizardTracerFast(adminPassword, row.id, {
             manual_positions: overrides,

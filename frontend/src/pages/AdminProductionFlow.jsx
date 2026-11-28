@@ -15,7 +15,8 @@ import { VideoLightbox } from "../components/VideoLightbox.jsx";
 // Production's produce -- one function, `_produce_run` -- so the
 // screen that explains it is the same screen, not a second one that
 // can drift from it.
-import { AscentProduceModal, ClickToPlotModal } from "./AdminProduction.jsx";
+import { AscentProduceModal, Boundary, ClickToPlotModal }
+  from "./AdminProduction.jsx";
 import { producedTiles } from "./producedTiles.js";
 import { zoneName } from "../zones.js";
 
@@ -2079,7 +2080,18 @@ export default function AdminProductionFlow() {
         </div>
       )}
       {editErr && <div className="card err-text small">{editErr}</div>}
+      {/* ── A THROW IN HERE MUST NOT TAKE THE PAGE WITH IT ────────
+          This was rendered bare. React unmounts the whole tree when a
+          render throws and nothing catches it, so a single bad value
+          inside the wizard took the route with it -- which is what
+          "the wizard just went away while I was working" looks like
+          from the outside, with nothing left to report. The Production
+          page has caught this around the same modal for a while; this
+          one did not. It shows what threw, keeps the page, and puts
+          the stack in the console. */}
       {editing && (
+        <Boundary name="Click-to-plot"
+                  onClose={() => { setEditing(null); setProducingCut(null); }}>
         <ClickToPlotModal
           row={editing.row}
           swingPos={editing.swingPos}
@@ -2182,6 +2194,7 @@ export default function AdminProductionFlow() {
             if (_id) { adopting.current.add(_id); poll(_id); }
           }}
         />
+        </Boundary>
       )}
 
       {work && (

@@ -151,6 +151,7 @@ from ..services.video import (
     probe_fps,
     probe_source_device,
     probe_video_info,
+    SEEK_PAD_SEC,
     splice_impact_clip,
     transcode_for_web,
 )
@@ -40012,7 +40013,8 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     "d3 produce: swing %s has no flight — cutting the "
                     "clip from the impact (f%d) with no tracer drawn",
                     i, _impact_f)
-                if not cut_segment(src_path, _tee, t0, t_render_end):
+                if not cut_segment(src_path, _tee, t0, t_render_end,
+                                   seek_pad_sec=SEEK_PAD_SEC):
                     raise RuntimeError(
                         "could not cut the clip for a swing with no "
                         "tracer")
@@ -40054,8 +40056,25 @@ def _d3_fast_produce(row, src_path, db, rep, fps, progress=None,
                     green_seg = (
                         CLIPS_DIR / f"d3prod-{row.id}-{tok}-{i}-green.mp4"
                     )
+                    # ── A PAD, OR THE CUT COSTS WHAT THE SWING'S
+                    #    POSITION IN THE RECORDING COSTS ──────────
+                    #
+                    # `-ss` after `-i` is frame-accurate because
+                    # ffmpeg decodes from the START and throws frames
+                    # away until it reaches the cut. Four seconds of
+                    # green cut out of a three-minute recording
+                    # therefore decodes everything before it: measured
+                    # at 91 SECONDS for one call on upload 1762, and
+                    # 33s on another -- the difference being how far
+                    # into the round the swing was, which is not a
+                    # thing an operator should be able to feel.
+                    #
+                    # `cut_segment` has had the two-stage seek that
+                    # fixes this for a while; the manual cutter passes
+                    # it and the produce never did. Same frames out.
                     if not cut_segment(
                         green_path, green_seg, g0, g0 + _green_sec,
+                        seek_pad_sec=SEEK_PAD_SEC,
                     ):
                         log.warning(
                             "d3 produce: green cut failed for swing %s "

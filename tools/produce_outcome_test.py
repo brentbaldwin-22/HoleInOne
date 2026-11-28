@@ -175,6 +175,57 @@ check("...and not the five minutes that timed out",
       "timeoutMs: 5 * 60_000,\n    }),\n  finalizeWizardVideo" in api_js,
       False)
 
+print("\n8. and the clip is not drawn twice")
+# MEASURED, FROM THE PANEL THIS ADDED: 114.1s and 162.0s for one
+# clip, against a wall clock of about 210s from Save & close. The
+# gap, and most of the rest, was work that did not need doing.
+#
+# THE TRACER WAS RENDERED TWICE. The preview render draws the overlay
+# across the clip (39-51s of those runs), and the produce then draws
+# its own from the SAME points and overwrites the preview's
+# `tracer_url` when it lands. It used to matter -- this path was
+# render-tracer-fast, then finalize, then commit-clip, and finalize
+# composited what the preview made. It has been one call to the
+# produce for a while, and nothing composites it now.
+check("the preview render is off", "const PRODUCE_PREVIEW_RENDER = false;"
+      in prod)
+check("...and the call is behind that switch",
+      "if (PRODUCE_PREVIEW_RENDER && teeChanged) {" in prod)
+# THE MERGE IT WAS FETCHED FOR IS DONE HERE INSTEAD. Same base track,
+# same frames cleared, same last-write-per-frame.
+check("...so the produce still gets the plotted track",
+      "ball_track_frames: mergedTrack," in prod)
+
+# AND THE CUT STOPS COSTING WHAT THE SWING'S POSITION COSTS. `-ss`
+# after `-i` decodes from the start of the file: 91.1s in one of
+# those runs for ONE call, 32.9s in the other, the difference being
+# how far into the round the swing was. `cut_segment` has had the
+# two-stage seek that fixes it for a while and the produce never
+# passed it.
+admin_src = inspect.getsource(A)
+check("the produce's cuts pass a seek pad",
+      admin_src.count("seek_pad_sec=SEEK_PAD_SEC"), 2)
+from app.services.video import SEEK_PAD_SEC  # noqa: E402
+check("the pad is long enough to clear a GOP", SEEK_PAD_SEC >= 2.0)
+# ONE CONSTANT. The manual cutter had its own copy with its own
+# comment; two numbers for one decision drift in opposite directions.
+import app.routers.production_flow as _F  # noqa: E402
+check("...and the hand cutter uses the same one",
+      _F.MANUAL_SEEK_PAD_SEC, SEEK_PAD_SEC)
+
+print("\n9. a throw in the wizard does not take the page")
+# "THE ADD/EDIT WIZARD JUST WENT AWAY." React unmounts the whole tree
+# when a render throws and nothing catches it. The Production page
+# has caught this around the same modal for a while; the Production
+# Flow page rendered it bare, so a single bad value inside took the
+# route with it and left nothing to report.
+check("the flow page wraps it", '<Boundary name="Click-to-plot"' in page)
+check("...in the same boundary, not a second one",
+      "export class Boundary extends Component {" in prod)
+check("...and closes it", "</Boundary>" in page)
+check("...with a way out that clears the edit",
+      "onClose={() => { setEditing(null); setProducingCut(null); }}" in page)
+
 print("\n" + ("all ok" if not FAILED
                else "%d FAILED:\n  %s" % (len(FAILED), "\n  ".join(FAILED))))
 sys.exit(1 if FAILED else 0)

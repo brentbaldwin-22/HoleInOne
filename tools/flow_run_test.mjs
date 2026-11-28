@@ -410,7 +410,7 @@ console.log("\n3i. the edit wizard opens ON this page, with no navigation");
   // import line meant adding a second panel to the same statement --
   // which is the behaviour this wants -- broke the check.
   check("...the same one Production opens, imported not copied",
-        /import \{[^}]*\bClickToPlotModal\b[^}]*\} from "\.\/AdminProduction\.jsx"/
+        /import \{[^}]*\bClickToPlotModal\b[^}]*\}\s*from "\.\/AdminProduction\.jsx"/
           .test(page));
   check("...which means it is exported there",
         /export function ClickToPlotModal\(\{/.test(prod));
@@ -440,8 +440,13 @@ console.log("\n3i. the edit wizard opens ON this page, with no navigation");
     const m = new RegExp(`${h}=\\{\\([^)]*\\) => \\{?[\\s\\S]{0,2400}?load\\(\\)`);
     check(`${h} reloads the columns`, m.test(page));
   }
-  check("...and setEditing is cleared on all three",
-        (page.match(/setEditing\(null\)/g) || []).length, 3);
+  // FOUR, NOT THREE. The fourth is the error boundary's own way out:
+  // a throw inside the wizard used to unmount the whole route, which
+  // is what "the wizard just went away" looks like from the outside,
+  // and closing the panel it leaves behind has to clear the edit too
+  // or the modal comes straight back.
+  check("...and setEditing is cleared on every exit",
+        (page.match(/setEditing\(null\)/g) || []).length, 4);
 }
 
 console.log("\n4. the cuts column prints fields the cut row serves");

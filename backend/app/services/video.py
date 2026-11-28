@@ -47,6 +47,15 @@ CLIP_SECONDS_GREEN_AFTER_CUT: float = 6.0     # green footage after the camera s
 CLIP_SECONDS_TEE_ONLY_AFTER_IMPACT: float = 6.0  # post-impact duration when green unavailable
 
 
+# HOW FAR BACK A TWO-STAGE SEEK JUMPS. See `cut_segment`: it must
+# exceed the source's GOP or the cheap pre-seek lands AFTER the frame
+# wanted and the cut comes out early. Five seconds is well past any
+# keyframe interval these cameras write, and the extra decode is five
+# seconds of video instead of however many minutes into the recording
+# the swing happened to be.
+SEEK_PAD_SEC = 5.0
+
+
 def cut_segment(
     input_path: Path,
     output_path: Path,

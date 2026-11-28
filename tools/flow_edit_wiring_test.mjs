@@ -142,8 +142,12 @@ console.log("\n5. and the produce's own work is shown, not re-run");
 // drift would show up as two screens disagreeing about one run.
 check("Production exports its panel",
       /export function AscentProduceModal/.test(prod));
+// LOOSE ON THE BRACES, like the same check in flow_run: the intent
+// is "imported from Production, not copied here", and pinning the
+// exact list meant that adding a third name to the statement -- the
+// error boundary, which is the behaviour we want -- broke the check.
 check("...and the flow page imports that one",
-      /import \{ AscentProduceModal, ClickToPlotModal \}/.test(page));
+      /import \{[^}]*\bAscentProduceModal\b[^}]*\}/.test(page));
 check("...rather than defining its own",
       /function AscentProduceModal/.test(page), false);
 check("the flow serves the kept report",

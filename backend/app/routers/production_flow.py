@@ -1819,9 +1819,12 @@ MANUAL_IDX_BASE = 1000
 # recording the swing was.
 #
 # IT MUST EXCEED THE SOURCE'S GOP, or the pre-seek lands after the
-# frame wanted and the cut is early. Five seconds is well past any
-# keyframe interval these cameras write.
-MANUAL_SEEK_PAD_SEC = 5.0
+# frame wanted and the cut is early. The number lives with
+# `cut_segment` now, because the produce needs the same one and two
+# copies of it would drift apart in opposite directions.
+from ..services.video import SEEK_PAD_SEC  # noqa: E402
+
+MANUAL_SEEK_PAD_SEC = SEEK_PAD_SEC
 
 
 @router.delete("/cuts/{cut_id}")
